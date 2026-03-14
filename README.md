@@ -4,6 +4,14 @@ pyCluster is a modern DX cluster core written in Python.
 
 It keeps the familiar telnet-style operator experience, adds a public web UI and a System Operator web console, and remains compatible with legacy cluster ecosystems such as DXSpider-family node links.
 
+## 🔴 Live Demo
+
+- public web UI: https://pycluster.ai3i.net
+- public telnet listeners:
+  - `pycluster.ai3i.net:7300`
+  - `pycluster.ai3i.net:7373`
+  - `pycluster.ai3i.net:8000`
+
 ## ✨ Highlights
 
 - Telnet-first DX cluster workflow with modernized operator output
