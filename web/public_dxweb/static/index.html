@@ -1807,7 +1807,7 @@ function updateFooterUser() {
   const el = document.getElementById('footer-user');
   if (!el) return;
   if (!(webToken && webCall)) {
-    el.innerHTML = '<span class="footer-user-line"><button id="footer-login" class="footer-user-edit footer-user-login" type="button">Log In</button></span>';
+    el.innerHTML = '<span class="footer-user-line"><button id="footer-login" class="footer-user-edit footer-user-login" type="button">Log In</button> <span class="footer-user-note">(must be registered locally)</span></span>';
     document.getElementById('footer-login')?.addEventListener('click', openOperateLogin);
     return;
   }
