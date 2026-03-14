@@ -50,7 +50,6 @@ The next phase inspected the running DXSpider instance at `dxcluster.ai3i.net`.
 
 This reconnaissance became the factual baseline for parser and compatibility work and is reflected in:
 
-- [dxcluster-compat-scout-2026-03-01.md](/home/jdlewis/GitHub/pyCluster/dxcluster-compat-scout-2026-03-01.md)
 - [fixtures/raw/telnet/session.txt](/home/jdlewis/GitHub/pyCluster/fixtures/raw/telnet/session.txt)
 
 ## Compatibility harness phase
