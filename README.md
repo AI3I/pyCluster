@@ -136,6 +136,7 @@ Automatic refresh:
 - [Configuration](docs/configuration.md)
 - [Feature Highlights](docs/feature-highlights.md)
 - [Telnet Commands](docs/telnet-commands.md)
+- [Telnet Command Reference](docs/telnet-command-reference.md)
 - [System Operator Web](docs/sysop-web.md)
 - [Public Web UI](docs/public-web.md)
 - [Node Linking](docs/node-linking.md)
