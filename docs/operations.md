@@ -14,12 +14,12 @@ Validated operational environments so far:
 
 - Debian 12 and 13
 - Ubuntu 24.04 LTS and 25.10
-- Fedora with SELinux enforcing
+- Fedora 42 and 43 with SELinux enforcing
 - CentOS Stream 9 and 10 with SELinux enforcing
 
 Operational stance:
 
-- these results are strong enough to describe pyCluster as working on modern Debian-family and EL-family `systemd` hosts
+- these results are strong enough to describe pyCluster as working on modern Debian-family and EL-family systemd hosts
 - Red Hat Enterprise Linux is expected to follow the same EL-family path, but has not yet been tested on a subscription-backed host
 - Oracle Linux remains likely but unverified
 - older distro baselines are out of scope for the supported deployment path because pyCluster requires Python 3.11+
@@ -50,7 +50,7 @@ Supported operational scripts:
 - SQLite database path
 - CTY file path
 - CTY timer state
-- `fail2ban` service state
+- fail2ban service state
 - SELinux state, when available
 - SYSOP bootstrap note presence
 - public branding response
@@ -92,7 +92,7 @@ Automatic:
 
 ### fail2ban
 
-pyCluster ships `fail2ban` filters and jails for auth-failure events.
+pyCluster ships fail2ban filters and jails for auth-failure events.
 
 Relevant repo paths:
 

@@ -70,7 +70,7 @@ Highlights:
 - callsign blocking with reason tracking
 - per-user channel and posting controls
 - structured auth-failure logging
-- shipped `fail2ban` support
+- shipped fail2ban support
 - current-ban and recent-failure visibility in the sysop UI
 
 ## Operational Improvements
