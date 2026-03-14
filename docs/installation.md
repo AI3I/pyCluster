@@ -4,13 +4,13 @@
 
 - Linux
 - Python 3.11+
-- `systemd` for the supported deployment path
+- systemd for the supported deployment path
 
 Recommended:
 
 - reverse proxy for public exposure
 - fast local storage for SQLite
-- `fail2ban`
+- fail2ban
 
 ## Validated Platforms
 
@@ -67,7 +67,7 @@ Additional notes:
 
 - 1 GB RAM works, but leaves less headroom during package operations and service restarts
 - EL-family hosts with 1 GB RAM may require temporary swap during package installation; the deploy scripts handle that automatically
-- if you plan to run reverse proxy, TLS, `fail2ban`, and longer spot retention on the same host, prefer 2 GB RAM or better
+- if you plan to run reverse proxy, TLS, fail2ban, and longer spot retention on the same host, prefer 2 GB RAM or better
 
 ## Local Development Install
 
@@ -98,7 +98,7 @@ This installs:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-cty-refresh.timer`
-- `fail2ban` filters and jails for pyCluster auth failures
+- fail2ban filters and jails for pyCluster auth failures
 - an initial `SYSOP` account bootstrap note at `/root/pycluster-initial-sysop.txt`
 
 ## Upgrade
