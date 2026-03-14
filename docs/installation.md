@@ -3,7 +3,7 @@
 ## Requirements
 
 - Linux
-- Python `3.11+`
+- Python 3.11+
 - `systemd` for the supported deployment path
 
 Recommended:
@@ -16,12 +16,12 @@ Recommended:
 
 The deploy scripts have been validated on:
 
-- Debian `12` and `13`
-- Ubuntu `24.04 LTS` and `25.10`
-- Fedora `42` and `43` with SELinux enforcing
-- CentOS Stream `9` and `10` with SELinux enforcing
-- AlmaLinux `8`, `9`, and `10` with SELinux enforcing
-- Rocky Linux `8`, `9`, and `10` with SELinux enforcing
+- Debian 12 and 13
+- Ubuntu 24.04 LTS and 25.10
+- Fedora 42 and 43 with SELinux enforcing
+- CentOS Stream 9 and 10 with SELinux enforcing
+- AlmaLinux 8, 9, and 10 with SELinux enforcing
+- Rocky Linux 8, 9, and 10 with SELinux enforcing
 
 Not yet directly validated:
 
@@ -32,42 +32,42 @@ Not yet directly validated:
 Support guidance:
 
 - RHEL-family support is strongly indicated by the validated CentOS Stream, AlmaLinux, and Rocky Linux paths
-- Red Hat Enterprise Linux should be described as expected to work on `9/10`-class systems, but not yet directly tested
+- Red Hat Enterprise Linux should be described as expected to work on 9/10-class systems, but not yet directly tested
 - Oracle Linux is likely to work as an EL-family target, but it should stay in the unvalidated bucket until it is tested directly
-- Raspberry Pi OS / Raspbian is plausible on `64-bit` Debian-family images, but should not be claimed as tested yet
+- Raspberry Pi OS / Raspbian is plausible on 64-bit Debian-family images, but should not be claimed as tested yet
 
 Do not target older distro baselines for the supported deployment path:
 
-- Debian `11`
-- Ubuntu `22.04 LTS`
-- CentOS `7`
-- Red Hat Enterprise Linux `7` and below
-- Oracle Linux `7` and below
+- Debian 11
+- Ubuntu 22.04 LTS
+- CentOS 7
+- Red Hat Enterprise Linux 7 and below
+- Oracle Linux 7 and below
 
 Reason:
 
-- pyCluster requires Python `3.11+`
+- pyCluster requires Python 3.11+
 - older distro baselines are too old for the current dependency/runtime requirements
 
 ## Hardware and Resource Guidance
 
 Minimum practical node:
 
-- `1 vCPU`
-- `1 GB RAM`
-- `10 GB` disk
+- 1 vCPU
+- 1 GB RAM
+- 10 GB disk
 
 Recommended small production node:
 
-- `2 vCPU`
-- `2 GB RAM`
-- `20 GB` SSD-backed disk
+- 2 vCPU
+- 2 GB RAM
+- 20 GB SSD-backed disk
 
 Additional notes:
 
-- `1 GB RAM` works, but leaves less headroom during package operations and service restarts
-- EL-family hosts with `1 GB RAM` may require temporary swap during package installation; the deploy scripts handle that automatically
-- if you plan to run reverse proxy, TLS, `fail2ban`, and longer spot retention on the same host, prefer `2 GB RAM` or better
+- 1 GB RAM works, but leaves less headroom during package operations and service restarts
+- EL-family hosts with 1 GB RAM may require temporary swap during package installation; the deploy scripts handle that automatically
+- if you plan to run reverse proxy, TLS, `fail2ban`, and longer spot retention on the same host, prefer 2 GB RAM or better
 
 ## Local Development Install
 
