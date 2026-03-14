@@ -16,9 +16,9 @@ pyCluster keeps the familiar telnet interface, but improves:
 
 Examples of improvements:
 
-- `AI3I-16> ` for normal users
-- `AI3I-16# ` for sysops
-- `Password updated for AI3I.` instead of raw `password=...`
+- `N0CALL-1> ` for normal users
+- `N0CALL-1# ` for sysops
+- `Password updated for N0CALL.` instead of raw `password=...`
 - `show/links` and `show/node` focused on operator usefulness
 
 ### Explicit System Operator Command Model
@@ -84,6 +84,8 @@ Highlights:
 - `systemd` services
 - install, upgrade, repair, and uninstall scripts
 - doctor script for host checks
+- validated deployment on Debian 12/13, Ubuntu 24.04/25.10, Fedora 42/43, and SELinux-enforcing EL-family hosts
+- Python `3.11+` baseline, with older distro generations intentionally left out of the supported path
 
 ### CTY Data Management
 

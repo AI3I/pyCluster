@@ -9,6 +9,11 @@ status() {
   printf '%-24s %s\n' "$1" "$2"
 }
 
+selinux_state="unavailable"
+if command -v getenforce >/dev/null 2>&1; then
+  selinux_state="$(getenforce 2>/dev/null || printf 'unknown')"
+fi
+
 app_user_ok="no"
 id -u "$PYCLUSTER_USER" >/dev/null 2>&1 && app_user_ok="yes"
 
@@ -30,13 +35,19 @@ if systemctl list-unit-files "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1
   [ -n "$cty_timer_state" ] || cty_timer_state="inactive"
 fi
 
+fail2ban_state="missing"
+if systemctl list-unit-files fail2ban.service >/dev/null 2>&1; then
+  fail2ban_state="$(systemctl is-active fail2ban.service 2>/dev/null || true)"
+  [ -n "$fail2ban_state" ] || fail2ban_state="inactive"
+fi
+
 config_ok="no"
 [ -f "$PYCLUSTER_CONFIG_DEST" ] && config_ok="yes"
 
 db_path=""
 cty_path=""
 if [ -f "$PYCLUSTER_CONFIG_DEST" ]; then
-  readarray -t cfg_values < <(python3 - <<PY
+  readarray -t cfg_values < <("${PYCLUSTER_PYTHON_LINK:-/usr/bin/python3}" - <<PY
 import tomllib
 from pathlib import Path
 p = Path("$PYCLUSTER_CONFIG_DEST")
@@ -63,6 +74,9 @@ db_ok="no"
 cty_ok="no"
 [ -n "$cty_path" ] && [ -f "$cty_path" ] && cty_ok="yes"
 
+sysop_bootstrap="no"
+[ -f "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE" ] && sysop_bootstrap="yes"
+
 api_stats="unavailable"
 if [ "$service_state" = "active" ]; then
   api_stats="$(curl -fsS http://127.0.0.1:8080/api/stats 2>/dev/null || printf 'unavailable')"
@@ -81,5 +95,8 @@ status "cty.dat" "${cty_path:-unset} ($cty_ok)"
 status "core service" "$PYCLUSTER_SERVICE_NAME ($service_state)"
 status "web service" "$PYCLUSTER_WEB_SERVICE_NAME ($web_service_state)"
 status "cty timer" "$PYCLUSTER_CTY_REFRESH_TIMER_NAME ($cty_timer_state)"
+status "fail2ban" "fail2ban.service ($fail2ban_state)"
+status "selinux" "$selinux_state"
+status "sysop bootstrap" "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE ($sysop_bootstrap)"
 status "api stats" "$api_stats"
 status "public branding" "$public_branding"

@@ -29,11 +29,11 @@ Most users will spend their time in a small subset of the command surface:
 ```text
 sh/dx 10
 show/messages
-send K3AJ Hello from pyCluster
-set/name John Lewis
-set/qth Western Pennsylvania
-set/qra FN00FS
-set/homenode AI3I-16
+send K9JR Hello from pyCluster
+set/name Example Operator
+set/qth Example City
+set/qra FN31PR
+set/homenode N0CALL-1
 set/password mynewpass
 set/page 20
 set/nowrap
@@ -49,13 +49,13 @@ Privileged actions live under `sysop/*`:
 ```text
 sysop/users
 sysop/sysops
-sysop/showuser AI3I
-sysop/password AI3I newpass
-sysop/clearpassword AI3I
-sysop/user AI3I qth Western Pennsylvania
-sysop/privilege AI3I sysop
-sysop/access AI3I
-sysop/setaccess AI3I web login on
+sysop/showuser N0CALL
+sysop/password N0CALL newpass
+sysop/clearpassword N0CALL
+sysop/user N0CALL qth Example City
+sysop/privilege N0CALL sysop
+sysop/access N0CALL
+sysop/setaccess N0CALL web login on
 sysop/audit
 sysop/services
 sysop/restart telnet

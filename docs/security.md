@@ -40,7 +40,7 @@ pyCluster emits structured auth-failure lines suitable for `fail2ban`.
 Example:
 
 ```text
-AUTHFAIL channel=sysop-web ip=198.51.100.24 call=AI3I reason=bad_password
+AUTHFAIL channel=sysop-web ip=198.51.100.24 call=N0CALL reason=bad_password
 ```
 
 Common reasons:
