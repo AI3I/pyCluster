@@ -189,6 +189,33 @@ class SpotStore:
             self._conn.commit()
         return counts
 
+    async def apply_retention(
+        self,
+        now_epoch: int,
+        *,
+        spots_days: int = 0,
+        messages_days: int = 0,
+        bulletins_days: int = 0,
+    ) -> dict[str, int]:
+        async with self._lock:
+            removed = {"spots": 0, "messages": 0, "bulletins": 0}
+            plans = [
+                ("spots", "spots", spots_days),
+                ("messages", "messages", messages_days),
+                ("bulletins", "bulletins", bulletins_days),
+            ]
+            for key, table, days in plans:
+                keep_days = max(0, int(days or 0))
+                if keep_days <= 0:
+                    continue
+                cutoff = int(now_epoch - keep_days * 86400)
+                cur = self._conn.execute(f"DELETE FROM {table} WHERE epoch < ?", (cutoff,))
+                removed[key] = int(cur.rowcount if cur.rowcount is not None else 0)
+            self._conn.commit()
+            self._conn.execute("PRAGMA optimize")
+            self._conn.commit()
+        return removed
+
     async def add_spot(self, spot: Spot) -> bool:
         async with self._lock:
             if self._spot_blocked_nolock(spot):

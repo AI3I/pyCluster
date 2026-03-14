@@ -98,7 +98,9 @@ This installs:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-cty-refresh.timer`
+- `pycluster-retention.timer`
 - fail2ban filters and jails for pyCluster auth failures
+- logrotate policy for `/var/log/pycluster/authfail.log`
 - an initial `SYSOP` account bootstrap note at `/root/pycluster-initial-sysop.txt`
 
 ## Upgrade
@@ -122,6 +124,24 @@ Keep config and data:
 sudo ./deploy/uninstall.sh
 ```
 
+## DXSpider Migration
+
+After pyCluster is installed, the first migration pass from DXSpider is available through:
+
+```bash
+sudo ./deploy/migrate.sh --from-dxspider /spider --dry-run
+sudo ./deploy/migrate.sh --from-dxspider /spider
+```
+
+See [Migration](migration.md) for details and current scope.
+
+Current migration behavior also includes:
+
+- simple outbound DXSpider peer import from `connect/*`
+- exact `badip.local` IP entries exported to `config/fail2ban-badip.local`
+- reconciliation of imported exact IPs into the active pyCluster fail2ban block set
+- unsupported connect scripts and CIDR-style `badip.local` entries are reported, not guessed
+
 Remove config and data too:
 
 ```bash
@@ -142,6 +162,28 @@ sudo ls -l /root/pycluster-initial-sysop.txt
 ```
 
 That file contains the one-time generated `SYSOP` password for first web-based operator login.
+
+## Retention and Cleanup
+
+pyCluster supports scheduled age-based cleanup for:
+
+- spots
+- messages
+- bulletins
+
+The scheduler is installed as:
+
+- `pycluster-retention.timer`
+
+You can manage retention from the System Operator web UI or run cleanup manually through the UI action.
+
+## Log Rotation
+
+The deploy scripts install logrotate coverage for:
+
+- `/var/log/pycluster/authfail.log`
+
+That policy rotates weekly, keeps compressed history, and prevents the auth-failure log from growing without bound on long-running nodes.
 
 ## Default Ports
 

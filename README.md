@@ -20,6 +20,7 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 - supports node linking with profile-aware behavior for legacy cluster families
 - ships with deployment tooling for systemd-based Linux hosts
 - integrates with fail2ban for login-abuse protection
+- supports age-based cleanup for spots, messages, and bulletins
 - maintains local CTY data with optional automatic refresh from Country Files
 
 ## Where pyCluster Improves on Legacy Cluster Software
@@ -36,6 +37,7 @@ Key improvements:
 - per-user access matrix for telnet and web
 - integrated audit and security visibility
 - structured auth-failure logging with fail2ban support
+- age-based retention controls with daily cleanup
 - bundled and refreshable CTY data instead of relying on stale host copies
 - Linux-first deployment with systemd tooling
 
@@ -75,12 +77,49 @@ Operator-facing browser console.
 
 ## 🚀 Quick Start
 
+Get the code with SSH:
+
+```bash
+git clone git@github.com:AI3I/pyCluster.git
+cd pyCluster
+```
+
+Or with HTTPS:
+
+```bash
+git clone https://github.com/AI3I/pyCluster.git
+cd pyCluster
+```
+
+Update an existing checkout:
+
+```bash
+git pull --ff-only
+```
+
+Run locally for development:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
 pycluster --config ./config/pycluster.toml serve
+```
+
+Deploy on a supported Linux host:
+
+```bash
+sudo ./deploy/install.sh
+sudo ./deploy/doctor.sh
+```
+
+Upgrade an existing deployment:
+
+```bash
+git pull --ff-only
+sudo ./deploy/upgrade.sh
+sudo ./deploy/doctor.sh
 ```
 
 Default listeners:
@@ -134,6 +173,7 @@ Installed services:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-cty-refresh.timer`
+- `pycluster-retention.timer`
 
 ## 📦 Hardware Requirements
 
@@ -164,7 +204,12 @@ pyCluster supports:
 - per-user access controls for telnet and web
 - structured auth-failure logging
 - shipped `fail2ban` filters and jails
+- imported exact-IP blocks from DXSpider `badip.local`
 - sysop visibility for recent auth failures and current bans
+
+Auth-failure log retention:
+
+- shipped logrotate policy for `/var/log/pycluster/authfail.log`
 
 ## 🌍 CTY Data
 
@@ -180,11 +225,24 @@ Automatic refresh:
 
 - `pycluster-cty-refresh.timer`
 
+## 🧹 Retention and Cleanup
+
+pyCluster can automatically prune older operational data.
+
+- spots, messages, and bulletins can be retained for configurable day counts
+- the System Operator web UI exposes:
+  - `Enable age-based cleanup`
+  - per-category day values
+  - `Run Cleanup Now`
+- scheduled cleanup runs daily through:
+  - `pycluster-retention.timer`
+
 ## 📚 Documentation
 
 - [User Manual](docs/user-manual.md)
 - [Administration Manual](docs/administration-manual.md)
 - [Installation](docs/installation.md)
+- [Migration](docs/migration.md)
 - [Configuration](docs/configuration.md)
 - [Feature Highlights](docs/feature-highlights.md)
 - [Telnet Commands](docs/telnet-commands.md)
@@ -198,26 +256,14 @@ Automatic refresh:
 - [Roadmap](docs/pycluster-roadmap.md)
 - [Project History](docs/pycluster-project-history.md)
 
-## 📝 What’s Still Worth Adding
-
-The documentation is in solid shape now, but two follow-on docs would still add value:
-
-- `Troubleshooting`
-  - symptom-to-cause guidance for startup, peer links, auth failures, CTY issues, and reverse proxy/TLS
-- `Migration`
-  - once `migrate.sh` is built, document DXSpider-to-pyCluster migration as a first-class workflow
-
-## 🧪 Developer Notes
-
-This repo also contains compatibility research and parity artifacts gathered from live DXSpider environments. Those are useful for implementation work, but they are secondary to the user/operator docs above.
-
 ## 🙏 Credits
 
-pyCluster is created and led by John D. Lewis, AI3I.
+pyCluster is created and led by John D. Lewis, AI3I with help from ChatGPT OpenAI Codex and Anthropic Claude AI.
 
 Special thanks for advice, assistance, consideration and testing:
 
 - Eric Tichansky, NO3M
+- Howard Leadmon, WB3FFV
 - Joe Reed, N9JR
 
 ## 🤝 Contributing
