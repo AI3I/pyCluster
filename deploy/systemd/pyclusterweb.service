@@ -9,7 +9,7 @@ User=pycluster
 Group=pycluster
 WorkingDirectory=/home/pycluster/pyCluster
 Environment=PYTHONPATH=src
-ExecStart=/usr/bin/python3 -m pycluster.cli --config config/pycluster.toml serve-public
+ExecStart=/usr/local/bin/pycluster-python -m pycluster.cli --config config/pycluster.toml serve-public
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGINT
