@@ -1,6 +1,6 @@
 # Telnet Commands
 
-pyCluster keeps a DX-style telnet interface, but aims to make the output more readable than many legacy clusters.
+pyCluster keeps a DX-style telnet interface, but tries to make it more teachable and more readable than many legacy cluster systems.
 
 ## Login Model
 
@@ -9,78 +9,42 @@ pyCluster keeps a DX-style telnet interface, but aims to make the output more re
 - node-classified records skip password prompts for node-to-node use
 - sysop sessions get the `#` prompt
 
-## Common User Commands
+## Discovery First
 
-### Spot Viewing
+Start here on a live node:
 
-Examples:
+```text
+help
+show/commands
+show/shortcuts
+apropos route
+```
+
+Those commands are privilege-aware, so ordinary users are not flooded with sysop-only actions.
+
+## Everyday Commands
+
+Most users will spend their time in a small subset of the command surface:
 
 ```text
 sh/dx 10
-sh/dx K3AJ exact
-sh/dx by WW5L
-sh/dx on 40m
-sh/dx info RTTY
-```
-
-### Station/Profile
-
-Examples:
-
-```text
+show/messages
+send K3AJ Hello from pyCluster
 set/name John Lewis
 set/qth Western Pennsylvania
 set/qra FN00FS
-set/email dxcluster@example.net
 set/homenode AI3I-16
 set/password mynewpass
-unset/password
-```
-
-### Session Preferences
-
-Examples:
-
-```text
-set/echo
-unset/echo
-set/beep
-unset/beep
-set/language de
 set/page 20
 set/nowrap
-unset/nowrap
-```
-
-### Filters and Personal Lists
-
-Examples:
-
-```text
-accept/spots 20m
-reject/spots FT8
-clear/spots
-set/buddy K3AJ
-show/buddy
-unset/buddy K3AJ
-```
-
-### Messages and Traffic
-
-Examples:
-
-```text
-send K3AJ Hello from pyCluster
-read 12
-reply 12 Copy, thanks
-show/messages
+show/users
+show/node
+show/links
 ```
 
 ## Operator Commands
 
-Privileged actions live under `sysop/*`.
-
-Examples:
+Privileged actions live under `sysop/*`:
 
 ```text
 sysop/users
@@ -89,43 +53,22 @@ sysop/showuser AI3I
 sysop/password AI3I newpass
 sysop/clearpassword AI3I
 sysop/user AI3I qth Western Pennsylvania
-sysop/user AI3I node_family dxspider
 sysop/privilege AI3I sysop
 sysop/access AI3I
 sysop/setaccess AI3I web login on
-sysop/connect N9JR-2 dxspider://dx.n9jr.com:7300?login=AI3I-16&client=N9JR-2
-sysop/disconnect N9JR-2
 sysop/audit
+sysop/services
+sysop/restart telnet
 ```
 
-## Discovery Commands
+## Full Command Reference
 
-Examples:
+For the full documented command surface, grouped by family, see:
 
-```text
-help
-apropos route
-show/commands
-show/shortcuts
-```
-
-## Operator Visibility Commands
-
-Examples:
-
-```text
-show/links
-show/node
-show/users
-show/connect
-show/log
-show/proto
-show/protoalerts
-show/protohistory
-```
+- [Telnet Command Reference](telnet-command-reference.md)
 
 ## Notes
 
-- command compatibility exists for many DXSpider-style names
-- not every recognized command is fully implemented
-- pyCluster tries to return explicit, human-readable responses when a command is accepted but not implemented
+- pyCluster recognizes many DXSpider-style command names for compatibility
+- the documented reference focuses on implemented, operator-meaningful behavior
+- some compatibility names may still return a clear not-implemented response instead of legacy behavior
