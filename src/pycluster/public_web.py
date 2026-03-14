@@ -213,7 +213,10 @@ class PublicWebServer:
     async def stop(self) -> None:
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
+            try:
+                await asyncio.wait_for(self._server.wait_closed(), timeout=1.0)
+            except (asyncio.TimeoutError, ConnectionError, OSError):
+                pass
         writers = list(self._ws_writers)
         self._ws_writers.clear()
         for writer in writers:
