@@ -8,7 +8,7 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 
 - Telnet-first DX cluster workflow with modernized operator output
 - Public web UI for users and a dedicated web console for system operators
-- SQLite persistence, CTY refresh tooling, and `fail2ban` integration
+- SQLite persistence, CTY refresh tooling, and fail2ban integration
 - Validated deploy path across modern Debian-family and EL-family Linux
 
 ## 🧭 What pyCluster Does
@@ -18,8 +18,8 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 - provides a System Operator web console for runtime, protocol, user, and peer management
 - stores spots, messages, and user preferences in SQLite
 - supports node linking with profile-aware behavior for legacy cluster families
-- ships with deployment tooling for `systemd`-based Linux hosts
-- integrates with `fail2ban` for login-abuse protection
+- ships with deployment tooling for systemd-based Linux hosts
+- integrates with fail2ban for login-abuse protection
 - maintains local CTY data with optional automatic refresh from Country Files
 
 ## Where pyCluster Improves on Legacy Cluster Software
@@ -35,9 +35,9 @@ Key improvements:
 - clearer link and protocol visibility
 - per-user access matrix for telnet and web
 - integrated audit and security visibility
-- structured auth-failure logging with `fail2ban` support
+- structured auth-failure logging with fail2ban support
 - bundled and refreshable CTY data instead of relying on stale host copies
-- Linux-first deployment with `systemd` tooling
+- Linux-first deployment with systemd tooling
 
 ## 📌 Current Status
 
@@ -85,13 +85,13 @@ pycluster --config ./config/pycluster.toml serve
 
 Default listeners:
 
-- telnet: `0.0.0.0:7300`
-- sysop web: `127.0.0.1:8080`
-- public web: `127.0.0.1:8081`
+- telnet: 0.0.0.0:7300
+- sysop web: 127.0.0.1:8080
+- public web: 127.0.0.1:8081
 
 ## 🛠️ Deployment
 
-Production deployment is handled through the checked-in `deploy/` scripts and `systemd` units.
+Production deployment is handled through the checked-in `deploy/` scripts and systemd units.
 
 Validated deployment targets:
 
@@ -153,7 +153,7 @@ Recommended small production node:
 Notes:
 
 - SQLite works well at this scale
-- reverse proxy, `fail2ban`, and package upgrades are more comfortable with 2 GB RAM
+- reverse proxy, fail2ban, and package upgrades are more comfortable with 2 GB RAM
 - very small EL-family hosts may temporarily need swap during package operations
 
 ## 🔐 Security
