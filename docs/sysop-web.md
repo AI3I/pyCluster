@@ -1,92 +1,433 @@
 # System Operator Web
 
-The System Operator web console is the browser-based control surface for node operations.
+The System Operator web console is the browser-based control surface for a pyCluster node.
 
 Default local URL:
 
 - `http://127.0.0.1:8080/sysop/`
 
-## What It Covers
-
-- node presentation and MOTD
-- users and access matrix
-- peer and link management
-- protocol summary, history, and policy drops
-- runtime stats
-- audit trail
-- security view for failed logins and fail2ban bans
+This UI is meant to be the day-to-day operator workspace, not just a diagnostics page.
 
 ## Login
 
 Use a local callsign that has:
 
 - a configured password
-- `System Operator` access
+- `System Operator` access on this node
 
-## Main Areas
+The login page gives explicit feedback for:
 
-### Node
+- bad password
+- blocked callsign
+- web login denied by policy
 
-Manage:
+## Global Layout
 
-- node call and alias
-- owner name
-- QTH and locator
-- MOTD
-- support contact
-- branding and public presentation
+The console is organized into these main views:
 
-### Users
+- `Node Settings`
+- `Users`
+- `Peers and Links`
+- `Protocol Health`
+- `Operator Tools`
+- `Telemetry`
 
-Manage:
+The left sidebar also includes:
 
-- local users
-- blocked users
-- system operators
-- per-user telnet/web access
-- posting permissions
-- password set/clear
+- `At A Glance`
+
+The masthead includes:
+
+- current operator session state
+- `Refresh Console`
+- theme toggle
+
+## Node Settings
+
+This view controls local node identity and welcome-flow presentation.
+
+### Main Fields
+
+- `Node Call / SSID`
+- `Node Alias`
+- `Owner Name (QRA)`
+- `Location (QTH)`
+- `Grid Square`
+- `Telnet Ports`
+- `Node Brand`
+- `Welcome Title`
+- `Website URL`
+- `Support Contact`
+
+### Long-Text Fields
+
+- `Welcome Body`
+- `MOTD`
+- `Login Tip`
+
+### Behavior Flags
+
+- `Show node status after MOTD`
+- `Require telnet passwords for users`
+
+### Main Action
+
+- `Save Node Settings`
+
+This section controls:
+
+- telnet welcome flow
+- node presentation shown to users
+- branding and contact metadata used by the public-facing web experience
+
+## Users
+
+The `Users` view is split into several operational sections.
+
+### System Operators
+
+Shows local sysops and where they are active.
+
+Columns:
+
+- `Callsign`
+- `Name`
+- `Email`
+- `Telnet`
+- `Web`
+
+Active sessions are shown as:
+
+- `now`
+
+Recent activity is shown relatively, for example:
+
+- `19h ago`
+
+### User Details
+
+This is the main user editor.
+
+Fields:
+
+- `Callsign`
+- `Access Level`
+- `Name (QRA)`
+- `Location (QTH)`
+- `Grid Square`
+- `Email`
+- `Password`
+- `Home Node`
+- `Notes / Block Reason`
+
+Actions:
+
+- `New User`
+- `Save User`
+- `Set Password`
+- `Remove User`
+
+Password behavior:
+
+- normal password text sets or changes the password
+- entering `CLEAR` and then `Set Password` clears it
+
+Access levels:
+
+- `Non-Authenticated`
+- `Authenticated`
+- `System Operator`
+- `Blocked`
+
+If `Blocked` is selected:
+
+- login is blocked for the base callsign and matching SSIDs
+- the notes field also serves as the block reason
+
+### Advanced Node Login
+
+Collapsed advanced section for node-to-node login identity.
+
+Field:
+
+- `Cluster Node Family`
+
+Options:
+
+- `Not a cluster peer`
+- `pyCluster`
+- `DXSpider`
+- `DxNet`
+- `AR-Cluster`
+- `CLX`
+
+This should only be used for cluster-peer records, not ordinary human users.
+
+### Access Matrix
+
+Per-user policy matrix.
+
+Channels:
+
+- `TELNET`
+- `WEB`
+
+Capabilities:
+
+- `Login`
+- `Spots`
+- `Chat`
+- `Announce`
+- `WX`
+- `WCY`
+- `WWV`
+
+Actions:
+
+- `Add All`
+- `Remove All`
+
+This is the operational source of truth for where a user may log in and what they may post.
+
+### Blocked Users
+
+Separate full-width table for blocked local users.
+
+Shows:
+
+- callsign
+- access
 - home node
-- notes or block reason
+- block reason
+- blocked time
 
-### Peers and Links
+Blocked users are intentionally not mixed into the ordinary local-user list.
 
-Manage:
+### Local Users
 
-- dial-out peer definitions
-- transport address
-- cluster family
-- retry behavior
-- optional peer password
-- live connect/disconnect state
+Full-width table of ordinary local users who are not sysops and are not blocked.
 
-### Protocol Health
+This section is meant to be the normal operating user view.
 
-Shows:
+## Peers and Links
 
-- protocol summary
-- policy drops
-- protocol history
-- thresholds and acknowledgements
+This view manages node-link peers and shows live link state.
 
-### Telemetry
+### Peer Editor
 
-Shows:
+Main fields:
 
-- at-a-glance stats
-- runtime stats
-- recent audit
-- security events
+- `Peer Name`
+- `Transport Address`
+- `Cluster Family`
+- `Peer Password (Optional)`
+- `Retry Automatically`
 
-## Security View
+Peer password note:
 
-The security section shows:
+- some peer operators require a password for node-to-node login
+- the password is optional
+- it should be coordinated with the remote peer operator
 
-- recent auth failures
-- current fail2ban bans
+### Roles
 
-This complements, but does not replace:
+Peer rows distinguish:
 
-- local callsign blocking
-- fail2ban enforcement
-- reverse-proxy and firewall controls
+- `Dial-out`
+- `Accepted`
+
+Meaning:
+
+- `Dial-out`: this node initiates the connection and can retry it
+- `Accepted`: the remote node connects inbound, so no local DSN or retry is used
+
+### Main Actions
+
+- `New Peer`
+- `Save Peer`
+- `Connect`
+- `Disconnect`
+- `Reset Policy Drops`
+
+### Peer Table
+
+Columns:
+
+- `Peer`
+- `Role`
+- `Status`
+- `Family`
+- `Traffic`
+- `Policy Drops`
+- `Health`
+
+This view is intended to make peer operations understandable without dropping into raw counters or logs.
+
+## Protocol Health
+
+This view focuses on peer state, alerting, and protocol history.
+
+### Threshold Fields
+
+- `Stale Minutes`
+- `Flap Score`
+- `Flap Window Seconds`
+- `History Limit`
+
+### Main Actions
+
+- `Save Thresholds`
+- `Reload History`
+- `Reset Proto History`
+
+### Summary Cards
+
+- `Tracked Peers`
+- `Healthy`
+- `Alerts`
+- `Acknowledged`
+
+### Main Tables
+
+#### Protocol Summary
+
+Columns:
+
+- `Peer`
+- `Health`
+- `Age`
+- `Changes`
+- `Flap`
+- `Last Event`
+
+#### Policy Drops
+
+Columns:
+
+- `Peer`
+- `Total`
+- `Loop Drops`
+- `Reasons`
+
+#### Protocol History
+
+Columns:
+
+- `Peer`
+- `When`
+- `Key`
+- `From`
+- `To`
+
+This area is the main operator view for peer health and protocol instability.
+
+## Operator Tools
+
+This view is for authenticated operator posting.
+
+### Spot Fields
+
+- `DX Call`
+- `Frequency kHz`
+- `Spot Info`
+
+### Message Fields
+
+- `Announce Scope`
+- `Message / Bulletin Text`
+
+### Actions
+
+- `Post Spot`
+- `Chat`
+- `Announce`
+- `WCY`
+- `WWV`
+- `WX`
+
+This uses the current logged-in sysop identity.
+
+## Telemetry
+
+This view groups runtime visibility and operational history.
+
+### Runtime Stats
+
+Cards:
+
+- `Node`
+- `Uptime`
+- `Stored Spots`
+- `Telnet Sessions`
+- `Web Sessions`
+
+### Recent Spots
+
+Columns:
+
+- `Freq`
+- `DX`
+- `When`
+- `Spotter`
+- `Info`
+
+### Recent Audit
+
+Includes:
+
+- category filter
+- reload button
+
+Categories currently exposed:
+
+- `System Operator`
+- `User`
+- `Config`
+- `Control`
+- `Connect`
+- `Disconnect`
+
+### Security
+
+Includes:
+
+- `Reload Security`
+- `Recent Auth Failures`
+- `Current Bans`
+
+Recent auth failures show:
+
+- when
+- channel
+- IP
+- callsign
+- reason
+
+Current bans show:
+
+- `fail2ban` jail
+- IP
+
+This area is the main operator-facing view for login abuse and automatic bans.
+
+## Operational Notes
+
+- the console is meant to reduce the need for direct database edits or log-tail-only operations
+- most actions write to the same underlying state used by the telnet command surface
+- the UI tries to show actual operator intent instead of raw internal values where possible
+
+## Relationship to Telnet
+
+The sysop web console does not replace telnet. It complements it.
+
+Use the web console for:
+
+- structured editing
+- runtime visibility
+- peer and user management
+
+Use telnet when you want:
+
+- command-line workflows
+- quick operator actions
+- traditional cluster interaction
