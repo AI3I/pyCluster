@@ -624,6 +624,7 @@ class PublicWebServer:
         peer_rows: list[dict[str, object]] = []
         links: list[list[str]] = []
         desired_rows: dict[str, dict[str, object]] = {}
+        seen_calls: set[str] = {self.config.node.node_call}
         if self.link_desired_peers_fn:
             try:
                 desired = await self.link_desired_peers_fn()
@@ -670,11 +671,12 @@ class PublicWebServer:
                         }
                     )
                     links.append([self.config.node.node_call, name])
+                    seen_calls.add(name)
             except Exception:
                 peer_rows = []
                 links = []
         for name, row in desired_rows.items():
-            if any(str(peer.get("call")) == name for peer in peer_rows):
+            if name in seen_calls:
                 continue
             ptag = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
             family = str(node_cfg.get(f"proto.peer.{ptag}.pc18.family", "")).strip().lower()
@@ -701,6 +703,50 @@ class PublicWebServer:
             )
             if connected:
                 links.append([self.config.node.node_call, name])
+            seen_calls.add(name)
+        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        try:
+            registry = await self.store.list_user_registry(limit=1000)
+        except Exception:
+            registry = []
+        for row in registry:
+            call = str(row["call"] or "").strip().upper()
+            if not call or call in seen_calls or call == self.config.node.node_call.upper():
+                continue
+            family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
+            if family not in {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}:
+                continue
+            ptag = re.sub(r"[^a-z0-9_.-]", "_", call.lower())
+            version = str(node_cfg.get(f"proto.peer.{ptag}.pc18.summary", "")).strip()
+            last_pc_type = str(node_cfg.get(f"proto.peer.{ptag}.last_pc_type", "")).strip().upper()
+            try:
+                last_epoch = int(str(node_cfg.get(f"proto.peer.{ptag}.last_epoch", "")).strip() or "0")
+            except ValueError:
+                last_epoch = 0
+            try:
+                last_login_epoch = int(row["last_login_epoch"] or 0)
+            except Exception:
+                last_login_epoch = 0
+            connected = last_epoch > 0 and (now_epoch - last_epoch) <= 600
+            if not connected and last_login_epoch > 0 and (now_epoch - last_login_epoch) <= 600:
+                connected = True
+            peer_rows.append(
+                {
+                    "call": call,
+                    "entity": "",
+                    "lat": 0.0,
+                    "lon": 0.0,
+                    "family": family,
+                    "version": version,
+                    "connected": connected,
+                    "desired": False,
+                    "last_pc_type": last_pc_type,
+                    "inbound": True,
+                }
+            )
+            if connected:
+                links.append([self.config.node.node_call, call])
+            seen_calls.add(call)
         return {"nodes": nodes + peer_rows, "links": links, "home": self.config.node.node_call}
 
     async def _api_solar(self) -> tuple[dict[str, object], int]:
