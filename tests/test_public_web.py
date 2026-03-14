@@ -144,6 +144,8 @@ def test_public_web_nodes_and_network_use_local_state(tmp_path) -> None:
         now = int(datetime.now(timezone.utc).timestamp())
         await store.set_user_pref(cfg.node.node_call, "forward_lat", "40.4406", now)
         await store.set_user_pref(cfg.node.node_call, "forward_lon", "-79.9959", now)
+        await store.upsert_user_registry("AI3I-16", now, display_name="DXSpider peer")
+        await store.set_user_pref("AI3I-16", "node_family", "dxspider", now)
 
         async def _stats():
             return {"W3LPL-2": {"rx_ok": 1}}
@@ -160,6 +162,7 @@ def test_public_web_nodes_and_network_use_local_state(tmp_path) -> None:
             net = json.loads(body.decode("utf-8"))
             assert net["home"] == "AI3I-15"
             assert any(node["call"] == "W3LPL-2" for node in net["nodes"])
+            assert any(node["call"] == "AI3I-16" and node["inbound"] is True for node in net["nodes"])
         finally:
             await store.close()
 
