@@ -8,9 +8,9 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 
 - public web UI: https://pycluster.ai3i.net
 - public telnet listeners:
-  - `pycluster.ai3i.net:7300`
-  - `pycluster.ai3i.net:7373`
-  - `pycluster.ai3i.net:8000`
+  - [pycluster.ai3i.net:7300](telnet://pycluster.ai3i.net:7300)
+  - [pycluster.ai3i.net:7373](telnet://pycluster.ai3i.net:7373)
+  - [pycluster.ai3i.net:8000](telnet://pycluster.ai3i.net:8000)
 
 ## ✨ Highlights
 
