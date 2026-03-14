@@ -832,8 +832,9 @@ class TelnetClusterServer:
         return delivered
 
     async def _readline(self, reader: asyncio.StreamReader) -> str | None:
+        timeout = float(self.config.telnet.idle_timeout_seconds or 0)
         try:
-            raw = await asyncio.wait_for(reader.readline(), timeout=self.config.telnet.idle_timeout_seconds)
+            raw = await (asyncio.wait_for(reader.readline(), timeout=timeout) if timeout > 0 else reader.readline())
         except asyncio.TimeoutError:
             return None
         if not raw:
@@ -844,9 +845,10 @@ class TelnetClusterServer:
 
     async def _read_password(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> str | None:
         chars: list[str] = []
+        timeout = float(self.config.telnet.idle_timeout_seconds or 0)
         while True:
             try:
-                raw = await asyncio.wait_for(reader.read(1), timeout=self.config.telnet.idle_timeout_seconds)
+                raw = await (asyncio.wait_for(reader.read(1), timeout=timeout) if timeout > 0 else reader.read(1))
             except asyncio.TimeoutError:
                 return None
             if not raw:

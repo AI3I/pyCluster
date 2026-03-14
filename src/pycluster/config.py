@@ -11,7 +11,7 @@ class TelnetConfig:
     port: int = 7300
     ports: tuple[int, ...] = ()
     max_clients: int = 100
-    idle_timeout_seconds: int = 900
+    idle_timeout_seconds: int = 0
     max_line_length: int = 512
 
 
