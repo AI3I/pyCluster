@@ -1716,7 +1716,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="actions" style="margin:8px 0 12px">
               <button id="securityReload" title="Reload recent login failures and current fail2ban bans.">Reload Security</button>
             </div>
-            <div class="proto-grid">
+            <div class="users-columns">
               <section>
                 <h3>Recent Auth Failures</h3>
                 <div class="tablewrap">
