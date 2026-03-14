@@ -36,7 +36,7 @@ System Operator access exists in two places:
 Sysop telnet sessions use:
 
 ```text
-AI3I-16#
+N0CALL-1#
 ```
 
 System Operator web login requires:
@@ -47,10 +47,10 @@ System Operator web login requires:
 Typical privileged telnet session:
 
 ```text
-login: AI3I
+login: N0CALL
 password:
-Welcome to pyCluster on AI3I-16
-AI3I-16#
+Welcome to pyCluster on N0CALL-1
+N0CALL-1#
 ```
 
 The `#` prompt is the main visual indicator that the session is privileged.
@@ -121,13 +121,13 @@ Useful telnet commands:
 ```text
 sysop/users
 sysop/sysops
-sysop/showuser AI3I
-sysop/password AI3I newpass
-sysop/clearpassword AI3I
-sysop/privilege AI3I sysop
-sysop/blocklogin AI3I on
-sysop/access AI3I
-sysop/setaccess AI3I web login on
+sysop/showuser N0CALL
+sysop/password N0CALL newpass
+sysop/clearpassword N0CALL
+sysop/privilege N0CALL sysop
+sysop/blocklogin N0CALL on
+sysop/access N0CALL
+sysop/setaccess N0CALL web login on
 ```
 
 Use telnet for these actions when:

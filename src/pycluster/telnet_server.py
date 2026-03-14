@@ -961,7 +961,7 @@ class TelnetClusterServer:
     async def _cmd_show_version(self) -> str:
         return (
             f"pyCluster version {__version__}\r\n"
-            "Maintainer: John D. Lewis (AI3I) | https://github.com/AI3I/pyCluster | ChatGPT OpenAI Codex\r\n"
+            "Project: https://github.com/AI3I/pyCluster\r\n"
         )
 
     async def _cmd_show_dx(self, _call: str, arg: str | None) -> str:

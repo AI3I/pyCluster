@@ -1200,7 +1200,7 @@ class SpotStore:
                 str(int(r["registered_epoch"] or 0)),
                 str(int(r["updated_epoch"] or 0)),
             ]
-            esc = [f"\"{v.replace('\"', '\"\"')}\"" for v in vals]
+            esc = ['"' + v.replace('"', '""') + '"' for v in vals]
             out.append(",".join(esc) + "\n")
         path.write_text("".join(out), encoding="utf-8")
         return len(rows)

@@ -12,6 +12,12 @@ PYCLUSTER_CTY_REFRESH_TIMER_NAME="${PYCLUSTER_CTY_REFRESH_TIMER_NAME:-pycluster-
 PYCLUSTER_SYSTEMD_DIR="${PYCLUSTER_SYSTEMD_DIR:-/etc/systemd/system}"
 PYCLUSTER_CONFIG_SRC="${PYCLUSTER_CONFIG_SRC:-config/pycluster.toml}"
 PYCLUSTER_CONFIG_DEST="${PYCLUSTER_CONFIG_DEST:-$PYCLUSTER_APP_DIR/config/pycluster.toml}"
+PYCLUSTER_PKG_AUTO_INSTALL="${PYCLUSTER_PKG_AUTO_INSTALL:-1}"
+PYCLUSTER_PYTHON_LINK="${PYCLUSTER_PYTHON_LINK:-/usr/local/bin/pycluster-python}"
+PYCLUSTER_FAIL2BAN_DIR="${PYCLUSTER_FAIL2BAN_DIR:-/etc/fail2ban}"
+PYCLUSTER_SYSOP_BOOTSTRAP_NOTE="${PYCLUSTER_SYSOP_BOOTSTRAP_NOTE:-/root/pycluster-initial-sysop.txt}"
+PYCLUSTER_TMP_SWAPFILE="${PYCLUSTER_TMP_SWAPFILE:-/swapfile-pycluster}"
+PYCLUSTER_TMP_SWAP_MB="${PYCLUSTER_TMP_SWAP_MB:-1024}"
 
 repo_root() {
   local src
@@ -29,6 +35,164 @@ log() {
 die() {
   printf '[pycluster] ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+os_release_value() {
+  local key="$1"
+  [ -r /etc/os-release ] || return 1
+  awk -F= -v key="$key" '$1 == key {gsub(/^"/, "", $2); gsub(/"$/, "", $2); print $2}' /etc/os-release
+}
+
+os_id() {
+  os_release_value ID
+}
+
+os_like() {
+  os_release_value ID_LIKE
+}
+
+pkg_manager() {
+  if command -v apt-get >/dev/null 2>&1; then
+    printf 'apt'
+    return
+  fi
+  if command -v dnf >/dev/null 2>&1; then
+    printf 'dnf'
+    return
+  fi
+  if command -v yum >/dev/null 2>&1; then
+    printf 'yum'
+    return
+  fi
+  return 1
+}
+
+mem_total_mb() {
+  awk '/MemTotal:/ {printf "%d\n", $2 / 1024}' /proc/meminfo 2>/dev/null || printf '0\n'
+}
+
+swap_total_mb() {
+  awk '/SwapTotal:/ {printf "%d\n", $2 / 1024}' /proc/meminfo 2>/dev/null || printf '0\n'
+}
+
+maybe_enable_temp_swap() {
+  local mem_mb swap_mb
+  mem_mb="$(mem_total_mb)"
+  swap_mb="$(swap_total_mb)"
+  if [ "${mem_mb:-0}" -ge 1400 ] || [ "${swap_mb:-0}" -gt 0 ]; then
+    return 0
+  fi
+  if [ -e "$PYCLUSTER_TMP_SWAPFILE" ]; then
+    return 0
+  fi
+  if ! command -v swapon >/dev/null 2>&1 || ! command -v mkswap >/dev/null 2>&1; then
+    return 0
+  fi
+  log "enabling temporary swap (${PYCLUSTER_TMP_SWAP_MB}MB) for package installation"
+  if command -v fallocate >/dev/null 2>&1; then
+    fallocate -l "${PYCLUSTER_TMP_SWAP_MB}M" "$PYCLUSTER_TMP_SWAPFILE"
+  else
+    dd if=/dev/zero of="$PYCLUSTER_TMP_SWAPFILE" bs=1M count="$PYCLUSTER_TMP_SWAP_MB" status=none
+  fi
+  chmod 600 "$PYCLUSTER_TMP_SWAPFILE"
+  mkswap "$PYCLUSTER_TMP_SWAPFILE" >/dev/null
+  swapon "$PYCLUSTER_TMP_SWAPFILE"
+}
+
+disable_temp_swap() {
+  if [ -e "$PYCLUSTER_TMP_SWAPFILE" ]; then
+    swapoff "$PYCLUSTER_TMP_SWAPFILE" >/dev/null 2>&1 || true
+    rm -f "$PYCLUSTER_TMP_SWAPFILE"
+  fi
+}
+
+install_packages() {
+  [ "$PYCLUSTER_PKG_AUTO_INSTALL" = "1" ] || return 0
+  [ "$#" -gt 0 ] || return 0
+  local mgr
+  mgr="$(pkg_manager)" || die "no supported package manager found"
+  case "$mgr" in
+    apt)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y "$@"
+      ;;
+    dnf)
+      maybe_enable_temp_swap
+      if ! dnf install -y --setopt=install_weak_deps=False "$@"; then
+        disable_temp_swap
+        return 1
+      fi
+      disable_temp_swap
+      ;;
+    yum)
+      maybe_enable_temp_swap
+      if ! yum install -y "$@"; then
+        disable_temp_swap
+        return 1
+      fi
+      disable_temp_swap
+      ;;
+  esac
+}
+
+ensure_base_packages() {
+  local mgr
+  mgr="$(pkg_manager)" || die "no supported package manager found"
+  case "$mgr" in
+    apt)
+      install_packages rsync python3 ca-certificates curl git
+      ;;
+    dnf|yum)
+      install_packages rsync python3 ca-certificates curl git policycoreutils
+      ;;
+  esac
+}
+
+python_version_ok() {
+  local bin="$1"
+  [ -x "$bin" ] || return 1
+  "$bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+selected_python_bin() {
+  local bin
+  for bin in \
+    /usr/bin/python3.13 \
+    /usr/bin/python3.12 \
+    /usr/bin/python3.11 \
+    /usr/local/bin/python3.13 \
+    /usr/local/bin/python3.12 \
+    /usr/local/bin/python3.11 \
+    /usr/bin/python3
+  do
+    if python_version_ok "$bin"; then
+      printf '%s' "$bin"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ensure_supported_python() {
+  local mgr current
+  if current="$(selected_python_bin)"; then
+    ln -sf "$current" "$PYCLUSTER_PYTHON_LINK"
+    return 0
+  fi
+
+  mgr="$(pkg_manager)" || die "no supported package manager found"
+  case "$mgr" in
+    apt)
+      die "Python 3.11+ is required; install a newer Python runtime on this host"
+      ;;
+    dnf|yum)
+      install_packages python3.12 || install_packages python3.11
+      ;;
+  esac
+
+  current="$(selected_python_bin)" || die "unable to locate Python 3.11+ after package install"
+  ln -sf "$current" "$PYCLUSTER_PYTHON_LINK"
 }
 
 require_root() {
@@ -56,6 +220,22 @@ ensure_layout() {
   install -d -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR/data"
   install -d -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR/logs"
   install -d -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR/config"
+  install -d -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0750 /var/log/pycluster
+  touch /var/log/pycluster/authfail.log
+  chown "$PYCLUSTER_USER:$PYCLUSTER_GROUP" /var/log/pycluster/authfail.log
+  chmod 0640 /var/log/pycluster/authfail.log
+}
+
+ensure_runtime_ownership() {
+  if [ -d "$PYCLUSTER_APP_DIR" ]; then
+    chown -R "$PYCLUSTER_USER:$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR"
+  fi
+}
+
+ensure_selinux_contexts() {
+  if command -v restorecon >/dev/null 2>&1; then
+    restorecon -RF "$PYCLUSTER_HOME" >/dev/null 2>&1 || true
+  fi
 }
 
 sync_tree() {
@@ -106,6 +286,29 @@ web_service_is_active() {
   systemctl is-active --quiet "$PYCLUSTER_WEB_SERVICE_NAME"
 }
 
+wait_for_systemd_active() {
+  local unit="$1"
+  local timeout="${2:-30}"
+  local start now state
+  start="$(date +%s)"
+  while true; do
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    case "$state" in
+      active)
+        return 0
+        ;;
+      failed|inactive|deactivating)
+        return 1
+        ;;
+    esac
+    now="$(date +%s)"
+    if [ $((now - start)) -ge "$timeout" ]; then
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 restart_service_hard() {
   if service_is_active; then
     systemctl kill -s SIGKILL "$PYCLUSTER_SERVICE_NAME" || true
@@ -142,10 +345,70 @@ stop_service() {
 
 refresh_cty_best_effort() {
   local cmd
-  cmd=(/usr/bin/python3 "$PYCLUSTER_APP_DIR/scripts/update_cty.py" --config "$PYCLUSTER_CONFIG_DEST")
+  cmd=("$PYCLUSTER_PYTHON_LINK" "$PYCLUSTER_APP_DIR/scripts/update_cty.py" --config "$PYCLUSTER_CONFIG_DEST")
   if cd "$PYCLUSTER_APP_DIR" && runuser -u "$PYCLUSTER_USER" -- "${cmd[@]}"; then
     log "CTY.DAT refresh succeeded"
   else
     log "CTY.DAT refresh skipped or failed; keeping bundled copy"
+  fi
+}
+
+install_or_refresh_fail2ban() {
+  local root
+  root="$(repo_root)"
+  install -d -m 0755 "$PYCLUSTER_FAIL2BAN_DIR/filter.d" "$PYCLUSTER_FAIL2BAN_DIR/jail.d"
+  install -o root -g root -m 0644 \
+    "$root/deploy/fail2ban/filter.d/pycluster-auth-core.conf" \
+    "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-core.conf"
+  install -o root -g root -m 0644 \
+    "$root/deploy/fail2ban/filter.d/pycluster-auth-web.conf" \
+    "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-web.conf"
+  install -o root -g root -m 0644 \
+    "$root/deploy/fail2ban/jail.d/pycluster-core.local" \
+    "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-core.local"
+  install -o root -g root -m 0644 \
+    "$root/deploy/fail2ban/jail.d/pycluster-web.local" \
+    "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-web.local"
+  cat >"$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-disable-defaults.local" <<'EOF'
+[sshd]
+enabled = false
+EOF
+}
+
+ensure_fail2ban_packages() {
+  local mgr
+  mgr="$(pkg_manager)" || die "no supported package manager found"
+  case "$mgr" in
+    apt)
+      install_packages fail2ban
+      ;;
+    dnf|yum)
+      if [ "$(os_id)" != "fedora" ]; then
+        install_packages epel-release || true
+      fi
+      install_packages fail2ban
+      ;;
+  esac
+}
+
+enable_fail2ban_service() {
+  if systemctl list-unit-files fail2ban.service >/dev/null 2>&1; then
+    systemctl enable fail2ban >/dev/null 2>&1 || true
+    systemctl restart fail2ban
+  fi
+}
+
+bootstrap_sysop_account() {
+  if (
+    cd "$PYCLUSTER_APP_DIR" &&
+    PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/bootstrap_sysop.py \
+      --config "$PYCLUSTER_CONFIG_DEST" \
+      --output "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE"
+  ); then
+    ensure_runtime_ownership
+    chmod 0600 "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE" >/dev/null 2>&1 || true
+    log "SYSOP bootstrap note available at $PYCLUSTER_SYSOP_BOOTSTRAP_NOTE"
+  else
+    die "failed to seed SYSOP bootstrap account"
   fi
 }

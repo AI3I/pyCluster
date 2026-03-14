@@ -42,8 +42,8 @@ pyCluster is usable today as a single-node cluster with web and telnet access, p
 
 Primary human and compatibility interface.
 
-- user prompt: `AI3I-16> `
-- sysop prompt: `AI3I-16# `
+- user prompt: `N0CALL-1> `
+- sysop prompt: `N0CALL-1# `
 - DX-style command surface with `show/*`, `set/*`, `unset/*`, aliases, and `sysop/*`
 
 ### Public Web UI
@@ -86,6 +86,28 @@ Default listeners:
 
 Production deployment is handled through the checked-in `deploy/` scripts and `systemd` units.
 
+Validated deployment targets:
+
+- Debian 12 and 13
+- Ubuntu 24.04 LTS and 25.10
+- Fedora 42 and 43 with SELinux enforcing
+- CentOS Stream 9 and 10 with SELinux enforcing
+- AlmaLinux 8, 9, and 10 with SELinux enforcing
+- Rocky Linux 8, 9, and 10 with SELinux enforcing
+
+Deployment notes:
+
+- `install.sh`, `upgrade.sh`, `repair.sh`, and `uninstall.sh` have been validated on the distributions above
+- EL-family installs on very small `1 GB` hosts may require temporary swap during package installation; the deploy scripts now handle that automatically
+- RHEL support is expected to track the validated EL-family path, but has not yet been tested on a subscription-backed Red Hat host
+- Oracle Linux is likely to work as an EL-family target, but has not yet been directly validated
+- Raspberry Pi OS / Raspbian is not yet validated, though `64-bit` Debian-family images are the most likely to work cleanly
+- Older baselines should not be attempted:
+  - Debian 11
+  - Ubuntu 22.04 LTS
+  - CentOS 7 / RHEL 7 / Oracle Linux 7 and below
+- pyCluster requires Python `3.11+`, so older distro baselines without a current Python runtime are out of scope for the supported deployment path
+
 Typical install:
 
 ```bash
@@ -105,6 +127,27 @@ Installed services:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-cty-refresh.timer`
+
+## Hardware Requirements
+
+Minimum practical deployment:
+
+- `1 vCPU`
+- `1 GB RAM`
+- `10 GB` storage
+- persistent network connectivity
+
+Recommended small production node:
+
+- `2 vCPU`
+- `2 GB RAM`
+- `20 GB` SSD-backed storage
+
+Notes:
+
+- SQLite works well at this scale
+- reverse proxy, `fail2ban`, and package upgrades are more comfortable with `2 GB RAM`
+- very small EL-family hosts may temporarily need swap during package operations
 
 ## Security
 
@@ -132,6 +175,8 @@ Automatic refresh:
 
 ## Documentation
 
+- [User Manual](docs/user-manual.md)
+- [Administration Manual](docs/administration-manual.md)
 - [Installation](docs/installation.md)
 - [Configuration](docs/configuration.md)
 - [Feature Highlights](docs/feature-highlights.md)
@@ -149,6 +194,15 @@ Automatic refresh:
 ## Developer Notes
 
 This repo also contains compatibility research and parity artifacts gathered from live DXSpider environments. Those are useful for implementation work, but they are secondary to the user/operator docs above.
+
+## Credits
+
+pyCluster is created and led by `John D. Lewis, AI3I`.
+
+Special thanks for consideration, assistance, and advice:
+
+- `Joe Reed, N9JR`
+- `Eric Tichansky, NO3M`
 
 ## Contributing
 

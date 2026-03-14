@@ -1354,14 +1354,14 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <section>
               <h3 id="userEditorTitle">User Details</h3>
               <div class="form-grid">
-                <div class="field"><label for="user_call" title="Local callsign record to create or edit on this node.">Callsign</label><input id="user_call" placeholder="AI3I" title="Use the base callsign or an SSID variant for the exact local record you want to manage."></div>
+                <div class="field"><label for="user_call" title="Local callsign record to create or edit on this node.">Callsign</label><input id="user_call" placeholder="N0CALL" title="Use the base callsign or an SSID variant for the exact local record you want to manage."></div>
                 <div class="field"><label for="user_privilege" title="Access level on this node. Blocked prevents logins for this callsign and its SSIDs. System Operator grants access to the System Operator console and sysop commands.">Access Level</label><select id="user_privilege" title="Choose Authenticated for ordinary local accounts, Non-Authenticated for local users without password-based authentication, Blocked to prevent logins for this callsign and its SSIDs, or System Operator for privileged operators on this node."><option value="">Non-Authenticated</option><option value="user">Authenticated</option><option value="sysop">System Operator</option><option value="blocked">Blocked</option></select></div>
                 <div class="field"><label for="user_name" title="Operator name shown in local account details for this callsign.">Name (QRA)</label><input id="user_name" placeholder="Operator name" title="Friendly operator name stored for this local callsign record."></div>
                 <div class="field"><label for="user_qth" title="Operator location for this local callsign record.">Location (QTH)</label><input id="user_qth" placeholder="Location" title="Human-readable location used for local operator details on this node."></div>
-                <div class="field"><label for="user_grid" title="Grid square for this local user record.">Grid Square</label><input id="user_grid" placeholder="FN00FS" title="Maidenhead grid square for this local user record."></div>
+                <div class="field"><label for="user_grid" title="Grid square for this local user record.">Grid Square</label><input id="user_grid" placeholder="FN31PR" title="Maidenhead grid square for this local user record."></div>
                 <div class="field"><label for="user_email" title="Optional contact email for this local callsign record.">Email</label><input id="user_email" placeholder="operator@example.org" title="Optional contact address used for local account details and future federation/contact features."></div>
                 <div class="field"><label for="user_password" title="Change or set the local password for this callsign. Enter CLEAR to remove it.">Password</label><input id="user_password" type="password" placeholder="Change/Set or CLEAR to clear" title="Set or change the local password for this callsign. Enter CLEAR and then Set Password to remove it."></div>
-                <div class="field"><label for="user_home_node" title="Authoritative home node for this callsign. This maps to set/homenode.">Home Node</label><input id="user_home_node" placeholder="AI3I-15" title="The home node is the source of truth for this callsign and will be used by future federation features."></div>
+                <div class="field"><label for="user_home_node" title="Authoritative home node for this callsign. This maps to set/homenode.">Home Node</label><input id="user_home_node" placeholder="N0CALL-1" title="The home node is the source of truth for this callsign and will be used by future federation features."></div>
                 <div class="field span2"><label for="user_block_reason" title="Short operator notes for this local user. If Access Level is Blocked, this text is also shown as the block reason.">Notes / Block Reason</label><input id="user_block_reason" maxlength="80" placeholder="General notes or a block reason" title="Keep this brief. It can hold general notes for the local user, and if Access Level is Blocked it will also be shown as the block reason."></div>
               </div>
               <div class="actions" style="margin-top:12px">
@@ -1442,7 +1442,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <div class="form-grid">
             <div class="field"><label for="peer" title="Optional filter applied to policy-drop and protocol-history views.">Peer Filter</label><input id="peer" placeholder="Peer name" title="Enter part of a peer name to narrow protocol and policy-drop views."></div>
             <div class="field"><label for="peername" title="Logical name for the peer you want to manage.">Peer Name</label><input id="peername" placeholder="Peer name" title="Used for connect, disconnect, and profile-change actions."></div>
-            <div class="field"><label for="peerdsn" title="Transport address used to open the link to this peer.">Transport Address</label><input id="peerdsn" placeholder="dxspider://host:7300?login=AI3I-16&client=N9JR-2" title="This is the connection method, not the cluster family. Use an explicit transport such as dxspider://host:7300?login=LOCALCALL&client=PEERCALL or tcp://host:7300. Bare host:port values are not accepted. Leave this blank only for an accepted/listen-only peer."></div>
+            <div class="field"><label for="peerdsn" title="Transport address used to open the link to this peer.">Transport Address</label><input id="peerdsn" placeholder="dxspider://host:7300?login=LOCALNODE-1&client=PEERNODE-1" title="This is the connection method, not the cluster family. Use an explicit transport such as dxspider://host:7300?login=LOCALCALL&client=PEERCALL or tcp://host:7300. Bare host:port values are not accepted. Leave this blank only for an accepted/listen-only peer."></div>
             <div class="field"><label for="peerprof" title="Cluster family/profile used once the link is established.">Cluster Family</label><input id="peerprof" placeholder="dxspider | dxnet | arcluster | clx" title="This is the peer behavior family, not the transport. For example: family dxspider with transport dxspider://host:7300?login=LOCALCALL&client=PEERCALL."></div>
             <div class="field"><label for="peerpass" title="Optional. Use this only when the remote peer is configured to require a node password.">Peer Password (Optional)</label><input id="peerpass" name="peer_secret" type="text" placeholder="Only if the peer requires it" title="Optional. If the remote peer is configured to require a node password, set it here. pyCluster stores it in the transport DSN as a password parameter." autocomplete="off" autocapitalize="off" autocorrect="off" data-lpignore="true" data-1p-ignore="true" spellcheck="false"><div class="subtle">Some system operators from peers may require a password; please coordinate with your peer operator.</div></div>
             <div class="field">
@@ -1534,7 +1534,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         </header>
         <div class="body">
           <div class="form-grid">
-            <div class="field"><label for="dx" title="DX callsign for a manually posted spot.">DX Call</label><input id="dx" placeholder="AI3I" title="Destination or DX station being spotted."></div>
+            <div class="field"><label for="dx" title="DX callsign for a manually posted spot.">DX Call</label><input id="dx" placeholder="K1ABC" title="Destination or DX station being spotted."></div>
             <div class="field"><label for="freq" title="Frequency in kilohertz for a manual spot.">Frequency kHz</label><input id="freq" placeholder="14074.0" title="Use kilohertz, for example 14074.0 or 18100.0."></div>
             <div class="field"><label for="info" title="Comment, mode, or context for the manual spot. Supported modes include CW, WSPR, RTTY, FT8, FT4, FT2, JS8, JT9, JT65, Q65, MSK144, FSK441, MFSK, OLIVIA, DOMINO, THOR, HELL, ROS, VARA, PACTOR, WINMOR, ARDOP, PSK, FAX, SSTV, ATV, SSB, AM, FM, and DATA. Activity keywords include RARE, EME, SAT, WWFF, POTA, SOTA, IOTA, BOTA, and GMA.">Spot Info</label><input id="info" placeholder="FT8, split up 2, POTA" title="Supported modes include CW, WSPR, RTTY, FT8, FT4, FT2, JS8, JT9, JT65, Q65, MSK144, FSK441, MFSK, OLIVIA, DOMINO, THOR, HELL, ROS, VARA, PACTOR, WINMOR, ARDOP, PSK, FAX, SSTV, ATV, SSB, AM, FM, and DATA. Activity keywords include RARE, EME, SAT, WWFF, POTA, SOTA, IOTA, BOTA, and GMA."></div>
             <div class="field"><label for="scope" title="Distribution scope for announce messages only.">Announce Scope</label><input id="scope" placeholder="LOCAL | FULL | SYSOP" title="Used only for announce. WCY, WWV, WX, and chat are always local-category posts here."></div>
@@ -1960,9 +1960,9 @@ function setPeerRows(peers) {
       if (errText.startsWith('unsupported transport scheme: ')) {
         errText = `Unsupported peer address format. Use dxspider://host:7300?login=LOCALCALL&client=PEERCALL or tcp://host:7300.`;
       } else if (errText === 'dxspider dsn requires ?login=CALL') {
-        errText = 'DXSpider transport requires a login callsign, for example ?login=AI3I-16.';
+        errText = 'DXSpider transport requires a login callsign, for example ?login=LOCALNODE-1.';
       } else if (errText === 'dxspider dsn requires ?client=PEERCALL') {
-        errText = 'DXSpider transport requires the remote node callsign, for example ?client=N9JR-2.';
+        errText = 'DXSpider transport requires the remote node callsign, for example ?client=PEERNODE-1.';
       }
       err = `<div class="mini">${esc(errText)}</div>`;
     }
@@ -2534,7 +2534,7 @@ byId('deleteUser').onclick = async () => {
   try {
     const call = byId('user_call').value.trim();
     const r = await j('/api/users/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
-    if (r && r.ok) clearUserForm(webCall || 'AI3I');
+    if (r && r.ok) clearUserForm(webCall || '');
     say(r && r.ok ? 'User record removed.' : 'Removing user failed.', !!(r && r.ok));
     await load();
   } catch (err) {

@@ -74,7 +74,7 @@ Common `sh/dx` examples:
 
 ```text
 sh/dx 10
-sh/dx K3AJ exact
+sh/dx K9JR exact
 sh/dx by WW5L
 sh/dx on 40m
 sh/dx on 7000/7300
@@ -352,9 +352,9 @@ If you are onboarding a new user:
 help
 show/commands
 sh/dx 10
-set/name John Lewis
-set/qth Western Pennsylvania
-set/qra FN00FS
+set/name Example Operator
+set/qth Example City
+set/qra FN31PR
 set/password mynewpass
 show/station
 show/node
@@ -366,9 +366,9 @@ If you are onboarding a sysop:
 help
 show/commands
 sysop/users
-sysop/showuser AI3I
-sysop/access AI3I
-sysop/setaccess AI3I web login on
+sysop/showuser N0CALL
+sysop/access N0CALL
+sysop/setaccess N0CALL web login on
 show/links
 show/proto
 sysop/audit

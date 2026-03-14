@@ -15,7 +15,16 @@ disable_service
 stop_service
 rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_SERVICE_NAME"
 rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_WEB_SERVICE_NAME"
+rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_CTY_REFRESH_SERVICE_NAME"
+rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_CTY_REFRESH_TIMER_NAME"
+rm -f "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-core.conf"
+rm -f "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-web.conf"
+rm -f "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-core.local"
+rm -f "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-web.local"
+rm -f "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-disable-defaults.local"
+rm -f "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE"
 systemctl daemon-reload
+systemctl restart fail2ban >/dev/null 2>&1 || true
 
 if [ -d "$PYCLUSTER_APP_DIR" ]; then
   if [ "$KEEP_DATA" = "1" ] || [ "$KEEP_CONFIG" = "1" ]; then

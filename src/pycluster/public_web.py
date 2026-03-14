@@ -707,7 +707,7 @@ class PublicWebServer:
         try:
             req = urllib.request.Request(
                 "https://www.hamqsl.com/solarxml.php",
-                headers={"User-Agent": f"pyCluster/1.0.0 (+{self.config.node.website_url or 'https://github.com/AI3I/pyCluster'})"},
+                headers={"User-Agent": f"pyCluster/{__version__} (+{self.config.node.website_url or 'https://github.com/AI3I/pyCluster'})"},
             )
             with urllib.request.urlopen(req, timeout=10) as r:
                 xml_bytes = r.read()

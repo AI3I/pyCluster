@@ -1,11 +1,11 @@
 [node]
-node_call = "AI3I-16"
-node_alias = "AI3I"
-owner_name = "John Lewis"
-qth = "Western Pennsylvania"
-node_locator = "FN00FS"
-motd = "Welcome to pyCluster on AI3I-16"
-support_contact = "dxcluster@ai3i.net"
+node_call = "N0CALL-1"
+node_alias = "pyCluster"
+owner_name = "Example Operator"
+qth = "Example City"
+node_locator = "FN31PR"
+motd = "Welcome to pyCluster on N0CALL-1"
+support_contact = "sysop@example.org"
 website_url = "https://github.com/AI3I/pyCluster"
 
 [telnet]

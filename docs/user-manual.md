@@ -30,10 +30,10 @@ For cluster-peer/node records:
 Typical successful telnet session:
 
 ```text
-login: AI3I
+login: N0CALL
 password:
-Welcome to pyCluster on AI3I-16
-AI3I-16>
+Welcome to pyCluster on N0CALL-1
+N0CALL-1>
 ```
 
 If this is your first telnet login and no password exists yet, pyCluster will stop and require password creation before continuing.
@@ -59,7 +59,7 @@ Useful examples:
 
 ```text
 sh/dx 10
-sh/dx K3AJ exact
+sh/dx K9JR exact
 sh/dx by WW5L
 sh/dx on 40m
 sh/dx info RTTY
@@ -70,8 +70,8 @@ Meaning:
 
 - `sh/dx 10`
   - show the latest 10 spots
-- `sh/dx K3AJ exact`
-  - show spots specifically for `K3AJ`
+- `sh/dx K9JR exact`
+  - show spots specifically for `K9JR`
 - `sh/dx by WW5L`
   - show spots made by `WW5L`
 - `sh/dx on 40m`
@@ -97,11 +97,11 @@ Users can maintain their own station/profile details.
 Common commands:
 
 ```text
-set/name John Lewis
-set/qth Western Pennsylvania
-set/qra FN00FS
+set/name Example Operator
+set/qth Example City
+set/qra FN31PR
 set/email john@example.net
-set/homenode AI3I-16
+set/homenode N0CALL-1
 set/password mynewpass
 ```
 
@@ -129,7 +129,7 @@ After changing your details, it is normal to verify them with:
 
 ```text
 show/station
-show/registered AI3I
+show/registered N0CALL
 ```
 
 ## 4. Session Preferences
@@ -165,11 +165,11 @@ pyCluster supports message-style and bulletin-style traffic.
 Examples:
 
 ```text
-send K3AJ Hello from pyCluster
-msg K3AJ Hello from pyCluster
+send NO3M Hello from pyCluster
+msg NO3M Hello from pyCluster
 read 12
 reply 12 Copy, thanks
-talk K3AJ Good evening
+talk K9JR Good evening
 announce Club meeting tonight
 ```
 
@@ -229,8 +229,8 @@ Filters are useful when:
 Buddy list examples:
 
 ```text
-set/buddy K3AJ
-unset/buddy K3AJ
+set/buddy NO3M
+unset/buddy NO3M
 show/buddy
 ```
 

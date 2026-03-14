@@ -11,7 +11,7 @@ How pyCluster opens the connection.
 Examples:
 
 - `tcp://host:port`
-- `dxspider://host:port?login=AI3I-16&client=N9JR-2`
+- `dxspider://host:port?login=LOCALNODE-1&client=PEERNODE-1`
 - `kiss:///dev/ttyUSB0?baud=9600`
 - `ax25://DESTCALL?source=MYCALL&via=DIGI1,DIGI2`
 
@@ -52,13 +52,13 @@ These do not require:
 ## DXSpider DSN Example
 
 ```text
-dxspider://dx.n9jr.com:7300?login=AI3I-16&client=N9JR-2
+dxspider://example.net:7300?login=LOCALNODE-1&client=PEERNODE-1
 ```
 
 If the remote peer requires a password:
 
 ```text
-dxspider://dx.n9jr.com:7300?login=AI3I-16&client=N9JR-2&password=secret
+dxspider://example.net:7300?login=LOCALNODE-1&client=PEERNODE-1&password=secret
 ```
 
 ## Operator Views
