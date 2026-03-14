@@ -9,6 +9,7 @@ Typical production services:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-cty-refresh.timer`
+- `pycluster-retention.timer`
 
 Validated operational environments so far:
 
@@ -16,6 +17,8 @@ Validated operational environments so far:
 - Ubuntu 24.04 LTS and 25.10
 - Fedora 42 and 43 with SELinux enforcing
 - CentOS Stream 9 and 10 with SELinux enforcing
+- AlmaLinux 8, 9, and 10 with SELinux enforcing
+- Rocky Linux 8, 9, and 10 with SELinux enforcing
 
 Operational stance:
 
@@ -54,6 +57,24 @@ Supported operational scripts:
 - SELinux state, when available
 - SYSOP bootstrap note presence
 - public branding response
+
+## Retention Operations
+
+pyCluster supports automatic age-based cleanup for:
+
+- spots
+- messages
+- bulletins
+
+Operationally, that means:
+
+- retention can be enabled or disabled from the System Operator web UI
+- the UI stores separate day counts for spots, messages, and bulletins
+- cleanup can be run immediately from the UI with `Run Cleanup Now`
+- scheduled cleanup runs daily through:
+  - `pycluster-retention.timer`
+
+The node settings UI also reports the last cleanup run and the last removal counts.
 
 ## Backups
 
@@ -100,6 +121,20 @@ Relevant repo paths:
 - `deploy/fail2ban/filter.d/pycluster-auth-web.conf`
 - `deploy/fail2ban/jail.d/pycluster-core.local`
 - `deploy/fail2ban/jail.d/pycluster-web.local`
+
+Legacy migration integration:
+
+- exact IP entries imported from DXSpider `badip.local` are written to:
+  - `config/fail2ban-badip.local`
+- deploy and migration runs reconcile that file into the active fail2ban-managed pyCluster block set
+
+### Log Rotation
+
+pyCluster deploys logrotate coverage for:
+
+- `/var/log/pycluster/authfail.log`
+
+That keeps the auth-failure log from growing without bound on long-running systems.
 
 ### Sysop Security View
 

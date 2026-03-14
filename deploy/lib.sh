@@ -9,12 +9,17 @@ PYCLUSTER_SERVICE_NAME="${PYCLUSTER_SERVICE_NAME:-pycluster.service}"
 PYCLUSTER_WEB_SERVICE_NAME="${PYCLUSTER_WEB_SERVICE_NAME:-pyclusterweb.service}"
 PYCLUSTER_CTY_REFRESH_SERVICE_NAME="${PYCLUSTER_CTY_REFRESH_SERVICE_NAME:-pycluster-cty-refresh.service}"
 PYCLUSTER_CTY_REFRESH_TIMER_NAME="${PYCLUSTER_CTY_REFRESH_TIMER_NAME:-pycluster-cty-refresh.timer}"
+PYCLUSTER_RETENTION_SERVICE_NAME="${PYCLUSTER_RETENTION_SERVICE_NAME:-pycluster-retention.service}"
+PYCLUSTER_RETENTION_TIMER_NAME="${PYCLUSTER_RETENTION_TIMER_NAME:-pycluster-retention.timer}"
 PYCLUSTER_SYSTEMD_DIR="${PYCLUSTER_SYSTEMD_DIR:-/etc/systemd/system}"
 PYCLUSTER_CONFIG_SRC="${PYCLUSTER_CONFIG_SRC:-config/pycluster.toml}"
 PYCLUSTER_CONFIG_DEST="${PYCLUSTER_CONFIG_DEST:-$PYCLUSTER_APP_DIR/config/pycluster.toml}"
 PYCLUSTER_PKG_AUTO_INSTALL="${PYCLUSTER_PKG_AUTO_INSTALL:-1}"
 PYCLUSTER_PYTHON_LINK="${PYCLUSTER_PYTHON_LINK:-/usr/local/bin/pycluster-python}"
 PYCLUSTER_FAIL2BAN_DIR="${PYCLUSTER_FAIL2BAN_DIR:-/etc/fail2ban}"
+PYCLUSTER_LOGROTATE_DIR="${PYCLUSTER_LOGROTATE_DIR:-/etc/logrotate.d}"
+PYCLUSTER_FAIL2BAN_BADIP_LIST="${PYCLUSTER_FAIL2BAN_BADIP_LIST:-$PYCLUSTER_APP_DIR/config/fail2ban-badip.local}"
+PYCLUSTER_FAIL2BAN_BADIP_STATE="${PYCLUSTER_FAIL2BAN_BADIP_STATE:-$PYCLUSTER_APP_DIR/data/fail2ban-badip-applied.txt}"
 PYCLUSTER_SYSOP_BOOTSTRAP_NOTE="${PYCLUSTER_SYSOP_BOOTSTRAP_NOTE:-/root/pycluster-initial-sysop.txt}"
 PYCLUSTER_TMP_SWAPFILE="${PYCLUSTER_TMP_SWAPFILE:-/swapfile-pycluster}"
 PYCLUSTER_TMP_SWAP_MB="${PYCLUSTER_TMP_SWAP_MB:-1024}"
@@ -247,6 +252,9 @@ sync_tree() {
     --exclude '.pytest_cache/' \
     --exclude '__pycache__/' \
     --exclude '*.pyc' \
+    --exclude 'config/' \
+    --exclude 'data/' \
+    --exclude 'logs/' \
     "$root"/ "$PYCLUSTER_APP_DIR"/
   chown -R "$PYCLUSTER_USER:$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR"
 }
@@ -275,6 +283,12 @@ install_or_refresh_service() {
   install -o root -g root -m 0644 \
     "$root/deploy/systemd/pycluster-cty-refresh.timer" \
     "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_CTY_REFRESH_TIMER_NAME"
+  install -o root -g root -m 0644 \
+    "$root/deploy/systemd/pycluster-retention.service" \
+    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_RETENTION_SERVICE_NAME"
+  install -o root -g root -m 0644 \
+    "$root/deploy/systemd/pycluster-retention.timer" \
+    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_RETENTION_TIMER_NAME"
   systemctl daemon-reload
 }
 
@@ -329,18 +343,21 @@ enable_service() {
   systemctl enable "$PYCLUSTER_SERVICE_NAME" >/dev/null
   systemctl enable "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" >/dev/null
+  systemctl enable --now "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null
 }
 
 disable_service() {
   systemctl disable "$PYCLUSTER_SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl disable "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl disable --now "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl disable --now "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
 }
 
 stop_service() {
   systemctl stop "$PYCLUSTER_SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl stop "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
 }
 
 refresh_cty_best_effort() {
@@ -373,6 +390,53 @@ install_or_refresh_fail2ban() {
 [sshd]
 enabled = false
 EOF
+}
+
+install_or_refresh_logrotate() {
+  local root
+  root="$(repo_root)"
+  install -d -m 0755 "$PYCLUSTER_LOGROTATE_DIR"
+  install -o root -g root -m 0644 \
+    "$root/deploy/logrotate/pycluster" \
+    "$PYCLUSTER_LOGROTATE_DIR/pycluster"
+}
+
+apply_imported_fail2ban_badips() {
+  local client current prev tmp entry jail
+  client="/usr/bin/fail2ban-client"
+  if [ ! -x "$client" ]; then
+    return 0
+  fi
+  if ! systemctl list-unit-files fail2ban.service >/dev/null 2>&1; then
+    return 0
+  fi
+  install -d -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR/data"
+  tmp="$(mktemp)"
+  if [ -f "$PYCLUSTER_FAIL2BAN_BADIP_LIST" ]; then
+    grep -v '^[[:space:]]*#' "$PYCLUSTER_FAIL2BAN_BADIP_LIST" | sed '/^[[:space:]]*$/d' | sort -u >"$tmp" || true
+  else
+    : >"$tmp"
+  fi
+  if [ -f "$PYCLUSTER_FAIL2BAN_BADIP_STATE" ]; then
+    prev="$(mktemp)"
+    sort -u "$PYCLUSTER_FAIL2BAN_BADIP_STATE" >"$prev" || true
+  else
+    prev="$(mktemp)"
+    : >"$prev"
+  fi
+  for entry in $(comm -23 "$prev" "$tmp"); do
+    for jail in pycluster-core-auth pycluster-web-auth; do
+      "$client" set "$jail" unbanip "$entry" >/dev/null 2>&1 || true
+    done
+  done
+  for entry in $(comm -13 "$prev" "$tmp"); do
+    for jail in pycluster-core-auth pycluster-web-auth; do
+      "$client" set "$jail" banip "$entry" >/dev/null 2>&1 || true
+    done
+  done
+  install -d -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" "$(dirname "$PYCLUSTER_FAIL2BAN_BADIP_STATE")"
+  install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$tmp" "$PYCLUSTER_FAIL2BAN_BADIP_STATE"
+  rm -f "$tmp" "$prev"
 }
 
 ensure_fail2ban_packages() {

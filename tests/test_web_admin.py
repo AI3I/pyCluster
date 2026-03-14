@@ -445,6 +445,129 @@ def test_web_admin_callsign_login_requires_sysop_for_admin_endpoints(tmp_path) -
     asyncio.run(run())
 
 
+def test_web_admin_logout_revokes_sysop_token(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_logout.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            await store.set_user_pref("K1SYS", "password", "pw2", now)
+            await store.upsert_user_registry("K1SYS", now, privilege="sysop")
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "K1SYS", "password": "pw2"}).encode("utf-8"),
+            )
+            assert code == 200
+            tok = json.loads(body.decode("utf-8"))["token"]
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/logout",
+                headers={"X-Web-Token": tok},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
+
+            code, _, _ = await _http_request(
+                srv,
+                "GET",
+                "/api/stats",
+                headers={"X-Web-Token": tok},
+            )
+            assert code == 401
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_sysop_bootstrap_login_accepts_sysop_pseudocall(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_sysop_bootstrap.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            await store.set_user_pref("SYSOP", "password", "pw-sysop", now)
+            await store.upsert_user_registry("SYSOP", now, privilege="sysop")
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "SYSOP", "password": "pw-sysop"}).encode("utf-8"),
+            )
+            assert code == 200
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["call"] == "SYSOP"
+            assert payload["sysop"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_maintenance_cleanup_runs_when_enabled(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_cleanup.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        old_epoch = now - 40 * 86400
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            await store.set_user_pref(cfg.node.node_call, "retention.enabled", "on", now)
+            await store.set_user_pref(cfg.node.node_call, "retention.spots_days", "30", now)
+            await store.add_spot(
+                Spot(
+                    freq_khz=14074.0,
+                    dx_call="K1OLD",
+                    epoch=old_epoch,
+                    info="FT8",
+                    spotter="N0CALL",
+                    source_node="N2WQ-1",
+                    raw="",
+                )
+            )
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/maintenance/cleanup",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 200
+            resp = json.loads(body.decode("utf-8"))
+            assert resp["ok"] is True
+            assert resp["removed"]["spots"] == 1
+            assert await store.count_spots() == 0
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_peer_desired.db")
