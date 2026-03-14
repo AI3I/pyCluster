@@ -197,12 +197,12 @@ This repo also contains compatibility research and parity artifacts gathered fro
 
 ## Credits
 
-pyCluster is created and led by `John D. Lewis, AI3I`.
+pyCluster is created and led by John D. Lewis, AI3I.
 
 Special thanks for consideration, assistance, and advice:
 
-- `Joe Reed, N9JR`
-- `Eric Tichansky, NO3M`
+- Eric Tichansky, NO3M
+- Joe Reed, N9JR
 
 ## Contributing
 
