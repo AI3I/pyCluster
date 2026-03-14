@@ -1,0 +1,12 @@
+[Unit]
+Description=pyCluster CTY.DAT refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pycluster
+Group=pycluster
+WorkingDirectory=/home/pycluster/pyCluster
+ExecStart=/usr/bin/python3 /home/pycluster/pyCluster/scripts/update_cty.py --config /home/pycluster/pyCluster/config/pycluster.toml
+
