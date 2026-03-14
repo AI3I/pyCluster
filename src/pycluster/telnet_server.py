@@ -586,7 +586,10 @@ class TelnetClusterServer:
         for srv in self._servers:
             srv.close()
         for srv in self._servers:
-            await srv.wait_closed()
+            try:
+                await asyncio.wait_for(srv.wait_closed(), timeout=1.0)
+            except (asyncio.TimeoutError, ConnectionError, OSError):
+                pass
         self._servers = []
         self._server = None
         session_ids = list(self._sessions.keys())
@@ -606,7 +609,10 @@ class TelnetClusterServer:
                 pass
             try:
                 sess.writer.close()
-                await sess.writer.wait_closed()
+                try:
+                    await asyncio.wait_for(sess.writer.wait_closed(), timeout=1.0)
+                except (asyncio.TimeoutError, ConnectionError, OSError):
+                    pass
             except Exception:
                 pass
             self._sessions.pop(sid, None)

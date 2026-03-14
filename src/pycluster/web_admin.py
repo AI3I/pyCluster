@@ -209,7 +209,10 @@ class WebAdminServer:
     async def stop(self) -> None:
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
+            try:
+                await asyncio.wait_for(self._server.wait_closed(), timeout=1.0)
+            except (asyncio.TimeoutError, ConnectionError, OSError):
+                pass
 
     async def _write_response(
         self,
@@ -1551,20 +1554,20 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <div class="form-grid">
             <div class="field"><label for="peer" title="Optional filter applied to policy-drop and protocol-history views.">Peer Filter</label><input id="peer" placeholder="Peer name" title="Enter part of a peer name to narrow protocol and policy-drop views."></div>
             <div class="field"><label for="peername" title="Logical name for the peer you want to manage.">Peer Name</label><input id="peername" placeholder="Peer name" title="Used for connect, disconnect, and profile-change actions."></div>
-            <div class="field"><label for="peerdsn" title="Transport address used to open the link to this peer.">Transport Address</label><input id="peerdsn" placeholder="dxspider://host:7300?login=LOCALNODE-1&client=PEERNODE-1" title="This is the connection method, not the cluster family. Use an explicit transport such as dxspider://host:7300?login=LOCALCALL&client=PEERCALL or tcp://host:7300. Bare host:port values are not accepted. Leave this blank only for an accepted/listen-only peer."></div>
+            <div class="field"><label for="peerdsn" title="Transport address used to open the link to this peer.">Transport Address</label><input id="peerdsn" placeholder="dxspider://host:7300?login=LOCALNODE-1&client=PEERNODE-1" title="This is the connection method, not the cluster family. Use an explicit transport such as dxspider://host:7300?login=LOCALCALL&client=PEERCALL or tcp://host:7300. Bare host:port values are not accepted. Leave this blank only for an inbound peer."></div>
             <div class="field"><label for="peerprof" title="Cluster family/profile used once the link is established.">Cluster Family</label><input id="peerprof" placeholder="dxspider | dxnet | arcluster | clx" title="This is the peer behavior family, not the transport. For example: family dxspider with transport dxspider://host:7300?login=LOCALCALL&client=PEERCALL."></div>
             <div class="field"><label for="peerpass" title="Optional. Use this only when the remote peer is configured to require a node password.">Peer Password (Optional)</label><input id="peerpass" name="peer_secret" type="text" placeholder="Only if the peer requires it" title="Optional. If the remote peer is configured to require a node password, set it here. pyCluster stores it in the transport DSN as a password parameter." autocomplete="off" autocapitalize="off" autocorrect="off" data-lpignore="true" data-1p-ignore="true" spellcheck="false"><div class="subtle">Some system operators from peers may require a password; please coordinate with your peer operator.</div></div>
             <div class="field">
-              <label for="peerretry" title="When enabled, pyCluster will keep trying to re-establish this saved dial-out peer.">Retry Automatically</label>
-              <div class="checkrow" title="Dial-out peers retry with exponential backoff from 5 seconds up to 5 minutes. Accepted peers connect inbound on their own and do not use local retry.">
+              <label for="peerretry" title="When enabled, pyCluster will keep trying to re-establish this saved outbound peer.">Retry Automatically</label>
+              <div class="checkrow" title="Outbound peers retry with exponential backoff from 5 seconds up to 5 minutes. Inbound peers connect on their own and do not use local retry.">
                 <input id="peerretry" type="checkbox" checked>
-                <label for="peerretry">Reconnect this dial-out peer automatically</label>
+                <label for="peerretry">Reconnect this outbound peer automatically</label>
               </div>
-              <div class="subtle" id="peerRetryHint" style="margin-top:6px">Dial-out peers retry with backoff from 5s to 5m. Accepted peers connect to us and do not require a DSN transport address or use local retry.</div>
+              <div class="subtle" id="peerRetryHint" style="margin-top:6px">Outbound peers retry with backoff from 5s to 5m. Inbound peers connect to us and do not require a DSN transport address or use local retry.</div>
             </div>
           </div>
           <div class="actions" style="margin-top:12px">
-            <button id="newPeer" title="Clear the editor and create a new dial-out peer definition.">New Peer</button>
+            <button id="newPeer" title="Clear the editor and create a new outbound peer definition.">New Peer</button>
             <button id="peerSave" title="Save this outbound peer target without opening the link immediately.">Save Peer</button>
             <button id="pconnect" title="Create an outbound node-link connection to the selected peer DSN.">Connect</button>
             <button class="warn" id="pdisconnect" title="Disconnect the selected live peer session.">Disconnect</button>
@@ -2024,7 +2027,7 @@ function fillPeerForm(peer) {
   byId('peerprof').disabled = !editable;
   byId('peerpass').disabled = !editable;
   byId('peerretry').disabled = !!data.inbound && !data.desired;
-  const roleText = data.inbound ? 'Accepted peers connect to us and do not require a DSN transport address or use local retry.' : 'Dial-out peers are initiated by this node and can retry automatically.';
+  const roleText = data.inbound ? 'Inbound peers connect to us and do not require a DSN transport address or use local retry.' : 'Outbound peers are initiated by this node and can retry automatically.';
   setText('peerRetryHint', roleText + ' Backoff runs from 5s up to 5m.');
   setText('peerEditorTitle', selectedPeerName ? `Editing ${selectedPeerName}` : 'Peers and Links');
 }
@@ -2039,7 +2042,7 @@ function clearPeerForm() {
   byId('peerprof').disabled = false;
   byId('peerpass').disabled = false;
   byId('peerretry').disabled = false;
-  setText('peerRetryHint', 'Dial-out peers retry with backoff from 5s to 5m. Accepted peers connect to us and do not require a DSN transport address or use local retry.');
+  setText('peerRetryHint', 'Outbound peers retry with backoff from 5s to 5m. Inbound peers connect to us and do not require a DSN transport address or use local retry.');
   setText('peerEditorTitle', 'Peers and Links');
 }
 function bindSelectablePeerRows(body, rows) {
@@ -2067,13 +2070,13 @@ function setPeerRows(peers) {
     return;
   }
   body.innerHTML = peers.map((peer) => {
-    const direction = peer.inbound ? 'Accepted' : 'Dial-out';
+    const direction = peer.inbound ? 'Inbound' : 'Outbound';
     const frames = `${peer.parsed_frames || 0} in / ${peer.sent_frames || 0} out`;
     const rxTypes = summarizeTypes(peer.rx_by_type);
     const txTypes = summarizeTypes(peer.tx_by_type);
     const proto = peer.proto ? `${peer.proto.health || 'unknown'}${peer.proto.age_min >= 0 ? `, ${peer.proto.age_min}m` : ''}` : 'unknown';
     const status = peer.connected === false ? 'Disconnected' : 'Connected';
-    const statusMeta = peer.connected === false ? (peer.inbound ? 'waiting for remote node' : 'waiting for dial-out link') : `${direction} • active`;
+    const statusMeta = peer.connected === false ? (peer.inbound ? 'waiting for remote node' : 'waiting for outbound link') : `${direction} • active`;
     const desired = peer.desired ? '<div class="mini">configured peer</div>' : '';
     const reconnect = peer.inbound ? 'no local retry' : (peer.reconnect_enabled ? 'auto retry' : 'manual retry');
     const retry = peer.inbound ? 'n/a' : (peer.next_retry_epoch ? `next ${fmtEpoch(peer.next_retry_epoch)}` : 'ready');
@@ -2097,7 +2100,7 @@ function setPeerRows(peers) {
       <td><span class="tag">${peer.profile || 'dxspider'}</span><div class="mini">${esc(reconnect)}</div></td>
       <td>${frames}<div class="mini">rx ${esc(rxTypes)}</div><div class="mini">tx ${esc(txTypes)}</div></td>
       <td>${peer.policy_dropped || 0}</td>
-      <td>${healthBadge(peer.proto && peer.proto.health)} <div class="mini">${esc(healthText)}</div><div class="mini">${peer.inbound ? 'accepted link' : `retry ${esc(String(peer.retry_count || 0))} • ${esc(retry)}`}</div>${err}</td>
+      <td>${healthBadge(peer.proto && peer.proto.health)} <div class="mini">${esc(healthText)}</div><div class="mini">${peer.inbound ? 'inbound link' : `retry ${esc(String(peer.retry_count || 0))} • ${esc(retry)}`}</div>${err}</td>
     </tr>`;
   }).join('');
   bindSelectablePeerRows(body, peers);
@@ -2713,7 +2716,7 @@ byId('peerSave').onclick = async () => {
 };
 byId('newPeer').onclick = () => {
   clearPeerForm();
-  say('Ready to create a new dial-out peer.');
+  say('Ready to create a new outbound peer.');
 };
 byId('pdisconnect').onclick = async () => {
   const peer = byId('peername').value.trim();

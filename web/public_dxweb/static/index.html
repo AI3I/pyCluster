@@ -3913,7 +3913,7 @@ function renderClusterPage() {
         })
         .forEach(n => {
           const isPyCluster = String(n.family || '').toLowerCase() === 'pycluster';
-          const role = n.inbound ? 'Accepted' : 'Dial-out';
+          const role = n.inbound ? 'Inbound' : 'Outbound';
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td style="font-weight:700;color:${isPyCluster ? '#58a6ff' : 'var(--accent)'}">${esc(n.call || '—')}</td>

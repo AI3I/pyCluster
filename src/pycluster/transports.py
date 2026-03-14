@@ -152,6 +152,12 @@ def parse_transport_dsn(dsn: str) -> TransportSpec:
 
     raise ValueError(f"unsupported transport scheme: {scheme}")
 
+async def _wait_closed_with_timeout(waiter, timeout: float = 1.0) -> None:
+    try:
+        await asyncio.wait_for(waiter, timeout=timeout)
+    except (asyncio.TimeoutError, ConnectionError, OSError):
+        return
+
 
 @dataclass(slots=True)
 class _TcpConnection:
@@ -171,7 +177,7 @@ class _TcpConnection:
 
     async def close(self) -> None:
         self.writer.close()
-        await self.writer.wait_closed()
+        await _wait_closed_with_timeout(self.writer.wait_closed())
 
 
 class _TcpListener:
@@ -185,7 +191,7 @@ class _TcpListener:
 
     async def close(self) -> None:
         self._server.close()
-        await self._server.wait_closed()
+        await _wait_closed_with_timeout(self._server.wait_closed())
 
 
 class _DxSpiderTelnetConnection:
@@ -343,7 +349,7 @@ class _DxSpiderTelnetConnection:
             return
         self._closed = True
         self._writer.close()
-        await self._writer.wait_closed()
+        await _wait_closed_with_timeout(self._writer.wait_closed())
 
 
 class DxSpiderInboundConnection:
@@ -401,7 +407,7 @@ class DxSpiderInboundConnection:
             return
         self._closed = True
         self._writer.close()
-        await self._writer.wait_closed()
+        await _wait_closed_with_timeout(self._writer.wait_closed())
 
 
 class _SocketLineConnection:
