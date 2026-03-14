@@ -1703,12 +1703,24 @@ let webAccess   = {};
 let webProfile  = {};
 let opBusyCount = 0;
 
+function activateMainPage(page) {
+  const target = String(page || 'spots');
+  document.querySelectorAll('.page-tab').forEach(t => t.classList.toggle('active', t.dataset.page === target));
+  document.querySelectorAll('.page-content').forEach(p => p.classList.toggle('active', p.id === `page-${target}`));
+  currentPage = target;
+  if (currentPage === 'spots' && mapVisible) setTimeout(() => map.invalidateSize(), 10);
+  if (currentPage === 'stats') renderStatsPage();
+  if (currentPage === 'propagation') renderPropPage();
+  if (currentPage === 'cluster') renderClusterPage();
+}
+
 function activateSidebarPanel(panel) {
   document.querySelectorAll('.sb-tab').forEach(t => t.classList.toggle('active', t.dataset.panel === panel));
   document.querySelectorAll('.sb-panel').forEach(p => p.classList.toggle('active', p.id === `sb-panel-${panel}`));
 }
 
 function openOperateLogin() {
+  activateMainPage('spots');
   activateSidebarPanel('operate');
   const callEl = document.getElementById('op-call');
   if (callEl) {
@@ -1802,9 +1814,9 @@ function updateFooterUser() {
   const first = firstProfileName(webProfile);
   const qth = String(webProfile?.qth || '').trim();
   const greeting = first
-    ? `Nice to see you, ${first} (${webCall})`
-    : `Nice to see you, ${webCall}`;
-  const suffix = qth ? ` from ${qth}` : '';
+    ? `Welcome back, ${first} (${webCall})`
+    : `Welcome back, ${webCall}`;
+  const suffix = qth ? ` in ${qth}` : '';
   el.innerHTML = `<span class="footer-user-line"><span class="footer-user-val">${esc(greeting + suffix)}</span><span class="footer-sep">•</span><button id="footer-edit-profile" class="footer-user-edit" type="button">Edit Profile</button><span class="footer-sep">•</span><button id="footer-logout" class="footer-user-edit" type="button">Log Out</button></span>`;
   document.getElementById('footer-edit-profile')?.addEventListener('click', openProfileModal);
   document.getElementById('footer-logout')?.addEventListener('click', logoutOperator);
