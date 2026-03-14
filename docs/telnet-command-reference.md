@@ -334,15 +334,15 @@ These commands require sysop privilege and are hidden from ordinary command list
 | `sysop/deleteuser <call>` | Delete a user record. |
 | `sysop/privilege <call> <level>` | Set privilege level. |
 | `sysop/homenode <call> <node>` | Set another user’s home node. |
-| `sysop/blocklogin <call> <on|off>` | Block or unblock login for a callsign and its SSIDs/base call. |
+| `sysop/blocklogin <call> <on\|off>` | Block or unblock login for a callsign and its SSIDs/base call. |
 | `sysop/showuser <call>` | Show a focused user record view. |
 | `sysop/users` | Show local users. |
 | `sysop/sysops` | Show system operators. |
 | `sysop/access <call>` | Show a per-user channel/capability access matrix. |
-| `sysop/setaccess <call> <channel|all> <capability|all> <on|off>` | Change user access policy. |
+| `sysop/setaccess <call> <channel\|all> <capability\|all> <on\|off>` | Change user access policy. |
 | `sysop/audit [category] [limit]` | Show recent operator audit events. |
 | `sysop/services` | Show service-level state exposed by the core app. |
-| `sysop/restart <telnet|sysopweb|all>` | Restart telnet and/or sysop-web listeners inside the running app. |
+| `sysop/restart <telnet\|sysopweb\|all>` | Restart telnet and/or sysop-web listeners inside the running app. |
 
 ## Practical Starting Set
 
