@@ -23,6 +23,11 @@ _AUTHFAIL_RE = re.compile(
 )
 
 
+def _is_valid_admin_record_call(call: str) -> bool:
+    raw = str(call or "").strip().upper()
+    return raw == "SYSOP" or is_valid_call(raw)
+
+
 class WebAdminServer:
     def __init__(
         self,
@@ -85,6 +90,11 @@ class WebAdminServer:
         return data
 
     def _node_presentation_json(self, data: dict[str, str]) -> dict[str, object]:
+        def _to_int(v: str | object, default: int = 0) -> int:
+            try:
+                return int(str(v or "").strip())
+            except Exception:
+                return default
         return {
             "node_call": str(data.get("node_call", "")).strip(),
             "node_alias": str(data.get("node_alias", "")).strip(),
@@ -101,6 +111,12 @@ class WebAdminServer:
             "website_url": str(data.get("website_url", "")).strip(),
             "motd": str(data.get("motd", "")).rstrip(),
             "telnet_ports": str(data.get("telnet_ports", "")).strip(),
+            "retention_enabled": str(data.get("retention.enabled", "on")).strip().lower() in {"1", "on", "yes", "true"},
+            "retention_spots_days": max(1, min(3650, _to_int(data.get("retention.spots_days"), 30))),
+            "retention_messages_days": max(1, min(3650, _to_int(data.get("retention.messages_days"), 90))),
+            "retention_bulletins_days": max(1, min(3650, _to_int(data.get("retention.bulletins_days"), 30))),
+            "retention_last_run_epoch": _to_int(data.get("retention.last_run_epoch"), 0),
+            "retention_last_result": str(data.get("retention.last_result", "")).strip(),
         }
 
     async def _user_registry_json(self, row) -> dict[str, object]:
@@ -252,6 +268,14 @@ class WebAdminServer:
         exp = int(time.time()) + max(300, ttl_seconds)
         self._web_sessions[tok] = (call.upper(), exp, bool(is_sysop))
         return tok, exp
+
+    def _revoke_web_token(self, headers: dict[str, str]) -> None:
+        tok = headers.get("x-web-token", "").strip()
+        auth = headers.get("authorization", "").strip()
+        if not tok and auth.lower().startswith("bearer "):
+            tok = auth[7:].strip()
+        if tok:
+            self._web_sessions.pop(tok, None)
 
     def _web_call_from_headers(self, headers: dict[str, str]) -> str | None:
         self._cleanup_web_sessions()
@@ -831,6 +855,25 @@ html.light .sidebar-panel{ box-shadow:0 10px 24px rgba(17,24,39,.06); }
 .sidebar-metric strong{
   font-size:22px;
 }
+.sidebar-heading{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.node-badge{
+  display:inline-block;
+  font-size:16px;
+  font-weight:900;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:#ffde8a;
+  text-shadow:0 0 10px rgba(255,212,111,.35), 0 0 18px rgba(255,212,111,.18);
+}
+html.light .node-badge{
+  color:#8a5f00;
+  text-shadow:0 0 8px rgba(166,118,0,.18);
+}
 .panel{
   background:var(--panel);
   border:1px solid var(--line);
@@ -946,6 +989,58 @@ input,textarea,select{
   border:1px solid var(--input-border);
   background:var(--input-bg);
   color:var(--text);
+}
+select{
+  appearance:none;
+  -webkit-appearance:none;
+  -moz-appearance:none;
+  display:block;
+  box-sizing:border-box;
+  min-width:0;
+  height:44px;
+  min-height:44px;
+  line-height:1.2;
+  padding-right:38px;
+  background-color:var(--input-bg);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px);
+  background-size:6px 6px, 6px 6px;
+  background-repeat:no-repeat;
+}
+select::-ms-expand{
+  display:none;
+}
+.select-shell{
+  position:relative;
+}
+.select-shell::after{
+  content:"";
+  position:absolute;
+  right:14px;
+  top:50%;
+  width:8px;
+  height:8px;
+  border-right:2px solid var(--muted);
+  border-bottom:2px solid var(--muted);
+  transform:translateY(-60%) rotate(45deg);
+  pointer-events:none;
+}
+.select-shell select{
+  background-image:none !important;
+}
+select option{
+  color:#111827;
+  background:#ffffff;
+}
+#user_privilege,
+#user_node_family{
+  height:44px;
+  min-height:44px;
+  line-height:1.2;
 }
 #peerpass{
   display:block;
@@ -1253,11 +1348,12 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
       <h1>&#128225; pyCluster System Operator Console</h1>
       <p>Private system operator workspace for node settings, peer links, protocol health, and live cluster operations.</p>
     </div>
-    <div class="mast-actions">
+      <div class="mast-actions">
       <div class="statusline" id="who">System Operator session ready.</div>
       <div class="actions">
         <button class="secondary" id="reload" title="Reload all live admin views from the backend APIs.">Refresh Console</button>
         <button id="themeToggle" class="themebtn" title="Switch between the dark and light theme families used by the public dxcluster.ai3i.net UI.">Toggle Theme</button>
+        <button class="secondary" id="logout" title="End the current System Operator web session.">Log Out</button>
       </div>
     </div>
   </section>
@@ -1265,7 +1361,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   <div class="workspace">
     <aside class="sidebar">
       <section class="sidebar-panel">
-        <header><h2>Navigate</h2></header>
+        <header><div class="sidebar-heading"><h2>Navigate</h2><span class="node-badge" id="navNodeBadge">-</span></div></header>
         <div class="body">
           <nav class="sidebar-nav">
             <a href="#node" data-view="node" class="active"><strong>Node Settings</strong><span>Branding</span></a>
@@ -1281,10 +1377,9 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <header><h2>At A Glance</h2></header>
         <div class="body">
           <div class="sidebar-metrics">
-            <div class="sidebar-metric"><label>Node</label><strong id="navNode">-</strong></div>
-            <div class="sidebar-metric"><label>Telnet</label><strong id="navTelnet">-</strong></div>
             <div class="sidebar-metric"><label>Uptime</label><strong id="navUptime">-</strong></div>
             <div class="sidebar-metric"><label>Spots</label><strong id="navSpots">-</strong></div>
+            <div class="sidebar-metric"><label>Telnet</label><strong id="navTelnet">-</strong></div>
             <div class="sidebar-metric"><label>Web</label><strong id="navWeb">-</strong></div>
           </div>
         </div>
@@ -1327,8 +1422,22 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <label for="require_password">Require telnet passwords for users</label>
             </div>
           </div>
+          <div class="form-grid" style="margin-top:12px">
+            <div class="field">
+              <label for="retention_enabled" title="When enabled, pyCluster runs age-based cleanup daily using the day counts below.">Automatic Cleanup</label>
+              <div class="checkrow attention" title="Enable daily retention cleanup for spots, messages, and bulletins.">
+                <input id="retention_enabled" type="checkbox" checked>
+                <label for="retention_enabled">Enable age-based cleanup</label>
+              </div>
+            </div>
+            <div class="field"><label for="retention_spots_days" title="Keep DX spots for this many days before purging old rows.">Keep Spots For (days)</label><input id="retention_spots_days" type="number" min="1" max="3650" value="30" title="Older spots are removed during the daily cleanup run."></div>
+            <div class="field"><label for="retention_messages_days" title="Keep private messages for this many days before purging old rows.">Keep Messages For (days)</label><input id="retention_messages_days" type="number" min="1" max="3650" value="90" title="Older messages are removed during the daily cleanup run."></div>
+            <div class="field"><label for="retention_bulletins_days" title="Keep bulletins for this many days before purging old rows.">Keep Bulletins For (days)</label><input id="retention_bulletins_days" type="number" min="1" max="3650" value="30" title="Older bulletins are removed during the daily cleanup run."></div>
+          </div>
+          <div class="subtle" id="retentionStatus" style="margin-top:8px">Automatic cleanup is disabled.</div>
           <div class="actions" style="margin-top:12px">
             <button id="saveNode" title="Persist these telnet presentation settings for this node.">Save Node Settings</button>
+            <button class="secondary" id="runCleanup" title="Run the current age-based cleanup settings immediately.">Run Cleanup Now</button>
           </div>
         </div>
       </section>
@@ -1355,7 +1464,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <h3 id="userEditorTitle">User Details</h3>
               <div class="form-grid">
                 <div class="field"><label for="user_call" title="Local callsign record to create or edit on this node.">Callsign</label><input id="user_call" placeholder="N0CALL" title="Use the base callsign or an SSID variant for the exact local record you want to manage."></div>
-                <div class="field"><label for="user_privilege" title="Access level on this node. Blocked prevents logins for this callsign and its SSIDs. System Operator grants access to the System Operator console and sysop commands.">Access Level</label><select id="user_privilege" title="Choose Authenticated for ordinary local accounts, Non-Authenticated for local users without password-based authentication, Blocked to prevent logins for this callsign and its SSIDs, or System Operator for privileged operators on this node."><option value="">Non-Authenticated</option><option value="user">Authenticated</option><option value="sysop">System Operator</option><option value="blocked">Blocked</option></select></div>
+                <div class="field"><label for="user_privilege" title="Access level on this node. Blocked prevents logins for this callsign and its SSIDs. System Operator grants access to the System Operator console and sysop commands.">Access Level</label><div class="select-shell"><select id="user_privilege" title="Choose Authenticated for ordinary local accounts, Non-Authenticated for local users without password-based authentication, Blocked to prevent logins for this callsign and its SSIDs, or System Operator for privileged operators on this node."><option value="">Non-Authenticated</option><option value="user">Authenticated</option><option value="sysop">System Operator</option><option value="blocked">Blocked</option></select></div></div>
                 <div class="field"><label for="user_name" title="Operator name shown in local account details for this callsign.">Name (QRA)</label><input id="user_name" placeholder="Operator name" title="Friendly operator name stored for this local callsign record."></div>
                 <div class="field"><label for="user_qth" title="Operator location for this local callsign record.">Location (QTH)</label><input id="user_qth" placeholder="Location" title="Human-readable location used for local operator details on this node."></div>
                 <div class="field"><label for="user_grid" title="Grid square for this local user record.">Grid Square</label><input id="user_grid" placeholder="FN31PR" title="Maidenhead grid square for this local user record."></div>
@@ -1373,7 +1482,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <details style="margin-top:12px">
                 <summary class="subtle" style="cursor:pointer">Advanced Node Login (Only for Cluster Peers)</summary>
                 <div class="form-grid one" style="margin-top:12px">
-                  <div class="field"><label for="user_node_family" title="Use this only for node-to-node records. It controls trusted cluster-peer login behavior and password bypass.">Cluster Node Family</label><select id="user_node_family" title="Leave this unset for normal people. Set a cluster node family only for sysop-managed node records such as DXSpider, DxNet, AR-Cluster, CLX, or pyCluster."><option value="">Not a cluster peer</option><option value="pycluster">pyCluster</option><option value="dxspider">DXSpider</option><option value="dxnet">DxNet</option><option value="arcluster">AR-Cluster</option><option value="clx">CLX</option></select></div>
+                <div class="field"><label for="user_node_family" title="Use this only for node-to-node records. It controls trusted cluster-peer login behavior and password bypass.">Cluster Node Family</label><div class="select-shell"><select id="user_node_family" title="Leave this unset for normal people. Set a cluster node family only for sysop-managed node records such as DXSpider, DxNet, AR-Cluster, CLX, or pyCluster."><option value="">Not a cluster peer</option><option value="pycluster">pyCluster</option><option value="dxspider">DXSpider</option><option value="dxnet">DxNet</option><option value="arcluster">AR-Cluster</option><option value="clx">CLX</option></select></div></div>
                 </div>
               </details>
             </section>
@@ -1563,7 +1672,6 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <section>
             <h3>Runtime Stats</h3>
             <div class="metric-grid">
-              <div class="metric"><label>Node</label><strong id="statNode">-</strong></div>
               <div class="metric"><label>Uptime</label><strong id="statUptime">-</strong></div>
               <div class="metric"><label>Stored Spots</label><strong id="statSpots">-</strong></div>
               <div class="metric"><label>Telnet Sessions</label><strong id="statSessions">-</strong></div>
@@ -1801,6 +1909,11 @@ function clearWebSession() {
   webIsSysop = false;
   sessionStorage.removeItem(SYSOP_SESSION_KEY);
   setConsoleVisible(false);
+  const callEl = byId('call');
+  const passEl = byId('pass');
+  if (callEl) callEl.disabled = false;
+  if (passEl) passEl.disabled = false;
+  if (passEl) passEl.value = '';
 }
 function persistWebSession() {
   if (!webTok || !webCall || !webIsSysop) {
@@ -1828,6 +1941,16 @@ function restoreWebSession() {
     clearWebSession();
     return false;
   }
+}
+async function logoutSysop() {
+  try {
+    if (webTok) {
+      await jw('/api/auth/logout', {method:'POST', skipAuthReset:true});
+    }
+  } catch {}
+  clearWebSession();
+  sayLogin('');
+  say('System Operator session ended.');
 }
 function fmtUptime(sec) {
   sec = Number(sec || 0);
@@ -2272,6 +2395,22 @@ function fillNodeForm(data) {
   });
   byId('show_status_after_login').checked = !!data.show_status_after_login;
   byId('require_password').checked = !!data.require_password;
+  byId('retention_enabled').checked = !!data.retention_enabled;
+  if (data.retention_spots_days !== undefined) byId('retention_spots_days').value = data.retention_spots_days;
+  if (data.retention_messages_days !== undefined) byId('retention_messages_days').value = data.retention_messages_days;
+  if (data.retention_bulletins_days !== undefined) byId('retention_bulletins_days').value = data.retention_bulletins_days;
+  const lastRun = Number(data.retention_last_run_epoch || 0);
+  let status = byId('retention_enabled').checked ? 'Automatic cleanup is enabled.' : 'Automatic cleanup is disabled.';
+  if (lastRun > 0) {
+    status += ` Last run: ${fmtEpoch(lastRun)}.`;
+  }
+  if (data.retention_last_result) {
+    try {
+      const parsed = JSON.parse(data.retention_last_result);
+      status += ` Removed ${Number(parsed.spots || 0)} spots, ${Number(parsed.messages || 0)} messages, ${Number(parsed.bulletins || 0)} bulletins.`;
+    } catch {}
+  }
+  setText('retentionStatus', status);
 }
 async function load() {
   const peer = encodeURIComponent(byId('peer').value.trim());
@@ -2315,12 +2454,11 @@ async function load() {
 
   if (statsRes.status === 'fulfilled') {
     const stats = statsRes.value || {};
-    setText('navNode', stats.node || '-');
+    setText('navNodeBadge', stats.node || '-');
     setText('navUptime', fmtUptime(stats.uptime_seconds || 0));
     setText('navSpots', String(stats.spots || 0));
     setText('navTelnet', String(stats.sessions || 0));
     setText('navWeb', String(stats.web_sessions || 0));
-    setText('statNode', stats.node || '-');
     setText('statSessions', String(stats.sessions || 0));
     setText('statWebSessions', String(stats.web_sessions || 0));
     setText('statSpots', String(stats.spots || 0));
@@ -2391,6 +2529,9 @@ byId('themeToggle').onclick = () => {
   const current = document.documentElement.classList.contains('light') ? 'light' : 'dark';
   applyTheme(current === 'light' ? 'dark' : 'light');
 };
+byId('logout').onclick = async () => {
+  await logoutSysop();
+};
 byId('login').onclick = async () => {
   try {
     sayLogin('');
@@ -2451,12 +2592,22 @@ byId('saveNode').onclick = async () => {
     login_tip: byId('login_tip').value.trim(),
     show_status_after_login: byId('show_status_after_login').checked,
     require_password: byId('require_password').checked,
+    retention_enabled: byId('retention_enabled').checked,
+    retention_spots_days: parseInt(byId('retention_spots_days').value.trim(), 10) || 30,
+    retention_messages_days: parseInt(byId('retention_messages_days').value.trim(), 10) || 90,
+    retention_bulletins_days: parseInt(byId('retention_bulletins_days').value.trim(), 10) || 30,
     support_contact: byId('support_contact').value.trim(),
     website_url: byId('website_url').value.trim(),
     motd: byId('motd').value
   };
   const r = await j('/api/node/presentation', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
   say(r && r.ok ? 'Node settings saved.' : 'Saving node settings failed.', !!(r && r.ok));
+  await load();
+};
+byId('runCleanup').onclick = async () => {
+  const r = await j('/api/maintenance/cleanup', {method:'POST'});
+  const removed = r && r.removed ? r.removed : {};
+  say(`Cleanup removed ${Number(removed.spots || 0)} spots, ${Number(removed.messages || 0)} messages, ${Number(removed.bulletins || 0)} bulletins.`, !!(r && r.ok));
   await load();
 };
 byId('userSearch').onclick = async () => {
@@ -2688,10 +2839,12 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
                 payload = self._parse_json_body(body)
-                call = normalize_call(str(payload.get("call", "")).strip())
+                raw_call = str(payload.get("call", "")).strip()
+                special_sysop = raw_call.upper() == "SYSOP"
+                call = "SYSOP" if special_sysop else normalize_call(raw_call)
                 base_call = call.split("-", 1)[0]
                 password = str(payload.get("password", ""))
-                if not is_valid_call(call):
+                if not special_sysop and not is_valid_call(call):
                     self._log_auth_failure(writer, headers, "sysop-web", call, "invalid_callsign")
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
@@ -2724,6 +2877,14 @@ if (restoreWebSession()) {
                     200,
                     self._json({"ok": True, "call": call, "token": token, "expires_epoch": exp, "sysop": is_sysop}),
                 )
+                return
+
+            if path == "/api/auth/logout":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                self._revoke_web_token(headers)
+                await self._write_response(writer, 200, self._json({"ok": True}))
                 return
 
             if path == "/api/stats":
@@ -2796,6 +2957,10 @@ if (restoreWebSession()) {
                         "login_tip": "",
                         "show_status_after_login": "off",
                         "require_password": "on",
+                        "retention_enabled": "on",
+                        "retention_spots_days": "30",
+                        "retention_messages_days": "90",
+                        "retention_bulletins_days": "30",
                         "support_contact": "",
                         "website_url": "",
                         "motd": "",
@@ -2803,8 +2968,14 @@ if (restoreWebSession()) {
                     for key in fields:
                         if key not in payload:
                             continue
-                        if key in {"show_status_after_login", "require_password"}:
+                        if key in {"show_status_after_login", "require_password", "retention_enabled"}:
                             val = "on" if bool(payload.get(key, False)) else "off"
+                        elif key in {"retention_spots_days", "retention_messages_days", "retention_bulletins_days"}:
+                            try:
+                                val = str(max(1, min(3650, int(payload.get(key, fields[key])))))
+                            except Exception:
+                                await self._write_response(writer, 400, self._json({"error": f"invalid {key}"}))
+                                return
                         elif key == "telnet_ports":
                             try:
                                 ports = parse_telnet_ports(payload.get(key, ""), fallback=self.config.telnet.port)
@@ -2826,6 +2997,41 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 200, self._json({"ok": True, **self._node_presentation_json(await self._node_presentation())}))
                     return
                 await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                return
+
+            if path == "/api/maintenance/cleanup":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                node_cfg = await self.store.list_user_prefs(self.config.node.node_call)
+                now = int(time.time())
+                enabled = str(node_cfg.get("retention.enabled", "")).strip().lower() in {"1", "on", "yes", "true"}
+                if not enabled:
+                    await self._write_response(writer, 400, self._json({"error": "automatic cleanup is disabled"}))
+                    return
+                def _to_int(v: str | object, default: int) -> int:
+                    try:
+                        return max(1, min(3650, int(str(v or "").strip())))
+                    except Exception:
+                        return default
+                removed = await self.store.apply_retention(
+                    now,
+                    spots_days=_to_int(node_cfg.get("retention.spots_days"), 30),
+                    messages_days=_to_int(node_cfg.get("retention.messages_days"), 90),
+                    bulletins_days=_to_int(node_cfg.get("retention.bulletins_days"), 30),
+                )
+                await self.store.set_user_pref(self.config.node.node_call, "retention.last_run_epoch", str(now), now)
+                await self.store.set_user_pref(
+                    self.config.node.node_call,
+                    "retention.last_result",
+                    json.dumps(removed, separators=(",", ":"), ensure_ascii=True),
+                    now,
+                )
+                self._audit("control", f"{self._authorized_call(headers)} ran retention cleanup spots={removed.get('spots', 0)} messages={removed.get('messages', 0)} bulletins={removed.get('bulletins', 0)}")
+                await self._write_response(writer, 200, self._json({"ok": True, "removed": removed}))
                 return
 
             if path == "/api/users":
@@ -2886,7 +3092,7 @@ if (restoreWebSession()) {
                     call = normalize_call(str(payload.get("call", "")).strip())
                     original_base = original_call.split("-", 1)[0] if original_call else ""
                     base_call = call.split("-", 1)[0]
-                    if not is_valid_call(call):
+                    if not _is_valid_admin_record_call(call):
                         await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                         return
                     privilege = str(payload.get("privilege", "")).strip().lower()
@@ -2995,7 +3201,7 @@ if (restoreWebSession()) {
                     return
                 payload = self._parse_json_body(body)
                 call = normalize_call(str(payload.get("call", "")).strip())
-                if not is_valid_call(call):
+                if not _is_valid_admin_record_call(call):
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 removed = await self.store.delete_user_registry(call)
@@ -3013,7 +3219,7 @@ if (restoreWebSession()) {
                 payload = self._parse_json_body(body)
                 call = normalize_call(str(payload.get("call", "")).strip())
                 password = str(payload.get("password", ""))
-                if not is_valid_call(call):
+                if not _is_valid_admin_record_call(call):
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 if not password.strip():
@@ -3042,7 +3248,7 @@ if (restoreWebSession()) {
                     return
                 payload = self._parse_json_body(body)
                 call = normalize_call(str(payload.get("call", "")).strip())
-                if not is_valid_call(call):
+                if not _is_valid_admin_record_call(call):
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 removed = await self.store.delete_user_pref(call, "password")

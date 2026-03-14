@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily pyCluster retention cleanup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+Unit=pycluster-retention.service
+
+[Install]
+WantedBy=timers.target

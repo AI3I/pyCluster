@@ -202,6 +202,38 @@ def test_store_spot_dedupe_across_different_spotters(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_store_apply_retention_prunes_old_rows(tmp_path: Path) -> None:
+    async def run() -> None:
+        db = tmp_path / "retention.db"
+        store = SpotStore(str(db))
+        try:
+            old_epoch = 1770000000
+            new_epoch = old_epoch + 40 * 86400
+            await store.add_spot(parse_spot_record(f"14074.0^K1OLD^{old_epoch}^FT8^N0CALL^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42"))
+            await store.add_spot(parse_spot_record(f"14075.0^K1NEW^{new_epoch}^FT8^N0CALL^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42"))
+            await store.add_message("N0A", "N0B", old_epoch, "old message")
+            await store.add_message("N0A", "N0B", new_epoch, "new message")
+            await store.add_bulletin("announce", "N0A", "FULL", old_epoch, "old bulletin")
+            await store.add_bulletin("announce", "N0A", "FULL", new_epoch, "new bulletin")
+
+            removed = await store.apply_retention(
+                new_epoch,
+                spots_days=30,
+                messages_days=30,
+                bulletins_days=30,
+            )
+            assert removed == {"spots": 1, "messages": 1, "bulletins": 1}
+            assert await store.count_spots() == 1
+            msgs = await store.list_messages("N0B", limit=10)
+            assert len(msgs) == 1 and msgs[0]["body"] == "new message"
+            bulls = await store.list_bulletins("announce", limit=10)
+            assert len(bulls) == 1 and bulls[0]["body"] == "new bulletin"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_store_buddy_entries_round_trip(tmp_path: Path) -> None:
     async def run() -> None:
         db = tmp_path / "test.db"

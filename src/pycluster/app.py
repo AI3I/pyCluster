@@ -24,6 +24,13 @@ _DXSPIDER_PC19_VERSION = "5457"
 _PEER_PREF_PREFIX = "peer.outbound."
 _RECONNECT_BASE_SECS = 5
 _RECONNECT_MAX_SECS = 300
+_PROTO_FLAP_KEYS = {
+    "pc18.software",
+    "pc18.proto",
+    "pc18.family",
+    "pc18.summary",
+    "pc24.flag",
+}
 
 
 class ClusterApp:
@@ -417,11 +424,14 @@ class ClusterApp:
         last_change_epoch = _to_int(cfg.get(pfx + "last_change_epoch"), 0)
         flap_window_secs = max(5, min(86400, _to_int(cfg.get("proto.threshold.flap_window_secs"), 300)))
         any_changed = False
+        flap_relevant_changed = False
         changed_events: list[dict[str, object]] = []
         for key, value in values.items():
             prev = cfg.get(pfx + key)
             if prev is not None and prev != value:
                 any_changed = True
+                if key in _PROTO_FLAP_KEYS:
+                    flap_relevant_changed = True
                 kname = key.replace(".", "_")
                 per_key = _to_int(cfg.get(pfx + f"change.{kname}"), 0) + 1
                 await self.store.set_user_pref(
@@ -446,14 +456,15 @@ class ClusterApp:
             )
         if any_changed:
             change_count += 1
-            # Consider changes within configurable window as instability/flapping.
-            if last_change_epoch > 0 and now - last_change_epoch <= flap_window_secs:
-                flap_score += 1
-            else:
-                flap_score = max(0, flap_score - 1)
             await self.store.set_user_pref(self.config.node.node_call, pfx + "change_count", str(change_count), now)
-            await self.store.set_user_pref(self.config.node.node_call, pfx + "flap_score", str(flap_score), now)
-            await self.store.set_user_pref(self.config.node.node_call, pfx + "last_change_epoch", str(now), now)
+            if flap_relevant_changed:
+                # Consider only stable protocol-state changes as flapping.
+                if last_change_epoch > 0 and now - last_change_epoch <= flap_window_secs:
+                    flap_score += 1
+                else:
+                    flap_score = max(0, flap_score - 1)
+                await self.store.set_user_pref(self.config.node.node_call, pfx + "flap_score", str(flap_score), now)
+                await self.store.set_user_pref(self.config.node.node_call, pfx + "last_change_epoch", str(now), now)
             raw_hist = cfg.get(pfx + "history", "[]")
             try:
                 hist_obj = json.loads(raw_hist)

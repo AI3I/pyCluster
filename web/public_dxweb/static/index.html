@@ -467,6 +467,26 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
   padding:0;
 }
 .footer-user-edit:hover { color:var(--accent); }
+.footer-user-login {
+  color:#fecaca;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  animation:footerLoginPulse 1.8s ease-in-out infinite;
+}
+.footer-user-login:hover {
+  color:#fca5a5;
+}
+@keyframes footerLoginPulse {
+  0%, 100% {
+    color:#fecaca;
+    text-shadow:0 0 0 rgba(239,68,68,0);
+  }
+  50% {
+    color:#ef4444;
+    text-shadow:0 0 10px rgba(239,68,68,.45), 0 0 18px rgba(239,68,68,.2);
+  }
+}
 #footer a { color:var(--text-spotter); text-decoration:none; }
 #footer a:hover { color:var(--accent); }
 .footer-telnet { display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
@@ -1683,6 +1703,20 @@ let webAccess   = {};
 let webProfile  = {};
 let opBusyCount = 0;
 
+function activateSidebarPanel(panel) {
+  document.querySelectorAll('.sb-tab').forEach(t => t.classList.toggle('active', t.dataset.panel === panel));
+  document.querySelectorAll('.sb-panel').forEach(p => p.classList.toggle('active', p.id === `sb-panel-${panel}`));
+}
+
+function openOperateLogin() {
+  activateSidebarPanel('operate');
+  const callEl = document.getElementById('op-call');
+  if (callEl) {
+    callEl.focus();
+    callEl.select();
+  }
+}
+
 function opSetStatus(msg, ok=true) {
   const el = document.getElementById('op-status');
   if (!el) return;
@@ -1761,7 +1795,8 @@ function updateFooterUser() {
   const el = document.getElementById('footer-user');
   if (!el) return;
   if (!(webToken && webCall)) {
-    el.innerHTML = '<span class="footer-user-line"><span class="footer-user-label">Web login:</span><span class="footer-user-off">Offline</span></span>';
+    el.innerHTML = '<span class="footer-user-line"><button id="footer-login" class="footer-user-edit footer-user-login" type="button">Log In</button></span>';
+    document.getElementById('footer-login')?.addEventListener('click', openOperateLogin);
     return;
   }
   const first = firstProfileName(webProfile);
@@ -1770,8 +1805,9 @@ function updateFooterUser() {
     ? `Nice to see you, ${first} (${webCall})`
     : `Nice to see you, ${webCall}`;
   const suffix = qth ? ` from ${qth}` : '';
-  el.innerHTML = `<span class="footer-user-line"><span class="footer-user-val">${esc(greeting + suffix)}</span><span class="footer-sep">•</span><button id="footer-edit-profile" class="footer-user-edit" type="button">Edit Profile</button></span>`;
+  el.innerHTML = `<span class="footer-user-line"><span class="footer-user-val">${esc(greeting + suffix)}</span><span class="footer-sep">•</span><button id="footer-edit-profile" class="footer-user-edit" type="button">Edit Profile</button><span class="footer-sep">•</span><button id="footer-logout" class="footer-user-edit" type="button">Log Out</button></span>`;
   document.getElementById('footer-edit-profile')?.addEventListener('click', openProfileModal);
+  document.getElementById('footer-logout')?.addEventListener('click', logoutOperator);
 }
 
 function setProfileStatus(msg, cls='') {
@@ -2203,8 +2239,8 @@ function updateGreyLine() {
     const tLat  = Math.atan2(-Math.cos(dR), Math.tan(subLatR)) * 180/Math.PI;
     pts.push([Math.max(-89, Math.min(89, tLat)), lng]);
   }
-  // Close polygon through the night pole
-  const pole = sub.lat >= 0 ? -89.9 : 89.9;
+  // Close through the opposite pole so the filled mask stays on the night side.
+  const pole = sub.lat >= 0 ? 89.9 : -89.9;
   pts.push([pole, 180]);
   pts.push([pole, -180]);
   greyLineLayer = L.polygon(pts, {
@@ -2432,10 +2468,7 @@ function renderHistoryChart() {
 // ── Sidebar tabs
 document.querySelectorAll('.sb-tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.sb-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.sb-panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById('sb-panel-' + tab.dataset.panel).classList.add('active');
+    activateSidebarPanel(tab.dataset.panel);
   });
 });
 
