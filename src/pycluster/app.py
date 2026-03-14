@@ -15,6 +15,7 @@ from .node_link import NodeLinkEngine
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc24Message, Pc50Message, Pc51Message, Pc61Message, Pc93Message, WirePcFrame
 from .store import SpotStore
 from .telnet_server import TelnetClusterServer
+from .transports import DxSpiderInboundConnection, dxspider_compat_pc18
 from .public_web import PublicWebServer
 from .web_admin import WebAdminServer
 
@@ -57,6 +58,7 @@ class ClusterApp:
             on_bulletin_fn=self._relay_bulletin_to_links,
             on_spot_fn=self._relay_spot_to_links,
             on_sessions_changed_fn=self._sync_legacy_user_roster,
+            on_node_login_fn=self.accept_inbound_node_login,
         )
         self.web = WebAdminServer(
             config=config,
@@ -257,6 +259,30 @@ class ClusterApp:
             await self._forget_peer_target(name)
         self._legacy_dxspider_peers.discard(name)
         return await self.node_link.disconnect_peer(name)
+
+    async def accept_inbound_node_login(
+        self,
+        call: str,
+        peer_name: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        initial_lines: list[str] | None = None,
+    ) -> bool:
+        profile = (await self.store.get_user_pref(call, "node_family") or "dxspider").strip().lower() or "dxspider"
+        conn = DxSpiderInboundConnection(call, reader, writer, initial_lines=initial_lines)
+        await self.node_link.accept_inbound(call, conn, profile=profile)
+        await conn.send_line(dxspider_compat_pc18())
+        await conn.send_line("PC20^")
+        if profile == "dxspider":
+            self._legacy_dxspider_peers.add(call)
+            try:
+                await self._send_legacy_init_config(call)
+            except KeyError:
+                self._legacy_dxspider_peers.discard(call)
+                LOG.info("legacy inbound init skipped for disconnected peer=%s", call)
+                return False
+        LOG.info("accepted inbound node login call=%s peer=%s", call, peer_name)
+        return True
 
     async def start(self, *, with_public_web: bool = True) -> None:
         self._node_ingest_stop.clear()

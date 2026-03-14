@@ -95,6 +95,26 @@ class NodeLinkEngine:
         await self._trace(name, "connect", dsn)
         asyncio.create_task(self._peer_reader(peer), name=f"node-link-reader-{name}")
 
+    async def accept_inbound(self, name: str, conn: LinkConnection, profile: str = "dxspider") -> None:
+        now = int(datetime.now(timezone.utc).timestamp())
+        peer = LinkPeer(
+            name=name,
+            conn=conn,
+            inbound=True,
+            profile=normalize_profile(profile),
+            connected_epoch=now,
+        )
+        async with self._lock:
+            old = self._peers.pop(name, None)
+            self._peers[name] = peer
+        if old is not None:
+            try:
+                await old.conn.close()
+            except Exception:
+                pass
+        await self._trace(name, "accept", "inbound")
+        asyncio.create_task(self._peer_reader(peer), name=f"node-link-reader-{name}")
+
     async def set_peer_profile(self, peer_name: str, profile: str) -> bool:
         p = normalize_profile(profile)
         async with self._lock:

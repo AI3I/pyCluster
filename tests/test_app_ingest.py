@@ -15,11 +15,18 @@ from pycluster.telnet_server import Session
 class _DummyWriter:
     def __init__(self) -> None:
         self.buffer = bytearray()
+        self.closed = False
 
     def write(self, b: bytes) -> None:
         self.buffer.extend(b)
 
     async def drain(self) -> None:
+        return
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
         return
 
 
@@ -123,6 +130,40 @@ def test_connect_peer_sends_legacy_dxspider_init_frames(tmp_path) -> None:
             assert sent[0][1].payload_fields == ["1", node_call, "0", "5457", "H1", ""]
             assert sent[1][1].payload_fields == [node_call, "AI3I - 1", "H1", ""]
             assert sent[2][1].payload_fields == [""]
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_accept_inbound_node_login_sends_legacy_banner_and_init(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "accept_inbound.db")
+        app = ClusterApp(_mk_config(db))
+        accepted: list[tuple[str, str]] = []
+        legacy_init: list[str] = []
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref("AI3I-16", "node_family", "dxspider", now)
+
+            async def _accept(name: str, _conn, profile: str = "dxspider") -> None:
+                accepted.append((name, profile))
+
+            async def _legacy(peer: str) -> None:
+                legacy_init.append(peer)
+
+            app.node_link.accept_inbound = _accept  # type: ignore[method-assign]
+            app._send_legacy_init_config = _legacy  # type: ignore[method-assign]
+
+            writer = _DummyWriter()
+            ok = await app.accept_inbound_node_login("AI3I-16", "AI3I-15", asyncio.StreamReader(), writer)  # type: ignore[arg-type]
+
+            text = writer.buffer.decode("utf-8", errors="replace")
+            assert ok is True
+            assert accepted == [("AI3I-16", "dxspider")]
+            assert legacy_init == ["AI3I-16"]
+            assert "PC18^DXSpider Version: 1.57 Build: 46 Git: pyCluster/" in text
+            assert "PC20^" in text
         finally:
             await app.store.close()
 

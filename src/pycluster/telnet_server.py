@@ -157,6 +157,8 @@ class TelnetClusterServer:
         on_bulletin_fn: Callable[[str, str, str, str], Awaitable[None]] | None = None,
         on_spot_fn: Callable[[Spot], Awaitable[None]] | None = None,
         on_sessions_changed_fn: Callable[[], Awaitable[None]] | None = None,
+        on_node_login_fn: Callable[[str, str, asyncio.StreamReader, asyncio.StreamWriter, list[str] | None], Awaitable[bool]]
+        | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -179,6 +181,7 @@ class TelnetClusterServer:
         self._on_bulletin_fn = on_bulletin_fn
         self._on_spot_fn = on_spot_fn
         self._on_sessions_changed_fn = on_sessions_changed_fn
+        self._on_node_login_fn = on_node_login_fn
         self._filters: dict[str, dict[str, dict[str, list[FilterRule]]]] = {}
         self._events: list[EventLogEntry] = []
         self._users: set[str] = set()
@@ -6410,6 +6413,7 @@ class TelnetClusterServer:
             peer = writer.get_extra_info("peername")
             self._session_seq += 1
             session_id = self._session_seq
+            handoff = False
 
             try:
                 await self._write(writer, "login: ")
@@ -6483,6 +6487,12 @@ class TelnetClusterServer:
                 login_epoch = int(datetime.now(timezone.utc).timestamp())
                 await self.store.record_login(call, login_epoch, str(peer))
 
+                if node_family:
+                    bridged = await self._bridge_node_login(call, reader, writer)
+                    if bridged:
+                        handoff = True
+                        return
+
                 self._sessions[session_id] = Session(call=call, writer=writer, connected_at=datetime.now(timezone.utc))
                 await self._apply_prefs_to_session(self._sessions[session_id])
                 await self._load_filters_for_call(call)
@@ -6515,8 +6525,34 @@ class TelnetClusterServer:
                 self._sessions.pop(session_id, None)
                 if self._on_sessions_changed_fn:
                     await self._on_sessions_changed_fn()
-                try:
-                    writer.close()
-                    await writer.wait_closed()
-                except Exception:
-                    pass
+                if not handoff:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
+    async def _bridge_node_login(
+        self,
+        call: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> bool:
+        await self._write(writer, f"Hello {call}\r\n")
+        await self._write(writer, await self._prompt(call))
+        first = await self._readline(reader)
+        if first is None:
+            return True
+        line = first.strip()
+        client_match = re.fullmatch(r"client\s+(\S+)\s+telnet", line, re.IGNORECASE)
+        if line.startswith("PC"):
+            if self._on_node_login_fn:
+                return await self._on_node_login_fn(call, call, reader, writer, [line])
+            return False
+        if client_match:
+            peer_name = client_match.group(1).upper()
+            if self._on_node_login_fn:
+                return await self._on_node_login_fn(call, peer_name, reader, writer, None)
+            return False
+        await self._write(writer, "Node login requires a cluster client handshake.\r\n")
+        return False
