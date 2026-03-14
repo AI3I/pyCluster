@@ -17,7 +17,7 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 - Telnet-first DX cluster workflow with modernized operator output
 - Public web UI for users and a dedicated web console for system operators
 - SQLite persistence, CTY refresh tooling, and fail2ban integration
-- Validated deploy path across modern Debian-family and EL-family Linux
+- Validated deploy path across modern Debian, Ubuntu, Fedora, and Red Hat-family Linux
 
 ## 🧭 What pyCluster Does
 
@@ -152,10 +152,10 @@ Validated deployment targets:
 Deployment notes:
 
 - `install.sh`, `upgrade.sh`, `repair.sh`, and `uninstall.sh` have been validated on the distributions above
-- EL-family installs on very small 1 GB hosts may require temporary swap during package installation; the deploy scripts now handle that automatically
-- RHEL support is expected to track the validated EL-family path, but has not yet been tested on a subscription-backed Red Hat host
-- Oracle Linux is likely to work as an EL-family target, but has not yet been directly validated
-- Raspberry Pi OS / Raspbian is not yet validated, though 64-bit Debian-family images are the most likely to work cleanly
+- Fedora, CentOS Stream, AlmaLinux, and Rocky Linux installs on very small 1 GB hosts may require temporary swap during package installation; the deploy scripts now handle that automatically
+- RHEL support is expected to track the validated Fedora, CentOS Stream, AlmaLinux, and Rocky Linux path, but has not yet been tested on a subscription-backed Red Hat host
+- Oracle Linux is likely to work as a Red Hat-family target, but has not yet been directly validated
+- Raspberry Pi OS / Raspbian is not yet validated, though 64-bit Debian- or Ubuntu-style images are the most likely to work cleanly
 - Older baselines should not be attempted:
   - Debian 11
   - Ubuntu 22.04 LTS
@@ -202,7 +202,7 @@ Notes:
 
 - SQLite works well at this scale
 - reverse proxy, fail2ban, and package upgrades are more comfortable with 2 GB RAM
-- very small EL-family hosts may temporarily need swap during package operations
+- very small Fedora or Red Hat-family hosts may temporarily need swap during package operations
 
 ## 🔐 Security
 
