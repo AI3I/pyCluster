@@ -15,6 +15,23 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 - integrates with `fail2ban` for login-abuse protection
 - maintains local CTY data with optional automatic refresh from Country Files
 
+## Where pyCluster Improves on Legacy Cluster Software
+
+pyCluster is not just trying to mimic old command names. It is trying to keep the parts of legacy cluster software that matter while improving the parts that usually feel neglected.
+
+Key improvements:
+
+- cleaner telnet output and more human-readable replies
+- explicit operator command namespace with `sysop/*`
+- public web UI for normal users
+- System Operator web console for runtime and policy management
+- clearer link and protocol visibility
+- per-user access matrix for telnet and web
+- integrated audit and security visibility
+- structured auth-failure logging with `fail2ban` support
+- bundled and refreshable CTY data instead of relying on stale host copies
+- Linux-first deployment with `systemd` tooling
+
 ## Current Status
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
@@ -117,11 +134,14 @@ Automatic refresh:
 
 - [Installation](docs/installation.md)
 - [Configuration](docs/configuration.md)
+- [Feature Highlights](docs/feature-highlights.md)
 - [Telnet Commands](docs/telnet-commands.md)
 - [System Operator Web](docs/sysop-web.md)
 - [Public Web UI](docs/public-web.md)
 - [Node Linking](docs/node-linking.md)
 - [Security](docs/security.md)
+- [Operations](docs/operations.md)
+- [Architecture](docs/architecture.md)
 - [Roadmap](docs/pycluster-roadmap.md)
 - [Project History](docs/pycluster-project-history.md)
 
