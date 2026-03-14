@@ -4,7 +4,14 @@ pyCluster is a modern DX cluster core written in Python.
 
 It keeps the familiar telnet-style operator experience, adds a public web UI and a System Operator web console, and remains compatible with legacy cluster ecosystems such as DXSpider-family node links.
 
-## What pyCluster Does
+## ✨ Highlights
+
+- Telnet-first DX cluster workflow with modernized operator output
+- Public web UI for users and a dedicated web console for system operators
+- SQLite persistence, CTY refresh tooling, and `fail2ban` integration
+- Validated deploy path across modern Debian-family and EL-family Linux
+
+## 🧭 What pyCluster Does
 
 - serves DX-style telnet access for users and operators
 - provides a public web UI for viewing and posting cluster traffic
@@ -32,11 +39,11 @@ Key improvements:
 - bundled and refreshable CTY data instead of relying on stale host copies
 - Linux-first deployment with `systemd` tooling
 
-## Current Status
+## 📌 Current Status
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-## Interfaces
+## 🖥️ Interfaces
 
 ### Telnet
 
@@ -66,7 +73,7 @@ Operator-facing browser console.
 - protocol health and policy drops
 - audit and security views
 
-## Quick Start
+## 🚀 Quick Start
 
 ```bash
 python3 -m venv .venv
@@ -82,7 +89,7 @@ Default listeners:
 - sysop web: `127.0.0.1:8080`
 - public web: `127.0.0.1:8081`
 
-## Deployment
+## 🛠️ Deployment
 
 Production deployment is handled through the checked-in `deploy/` scripts and `systemd` units.
 
@@ -98,15 +105,15 @@ Validated deployment targets:
 Deployment notes:
 
 - `install.sh`, `upgrade.sh`, `repair.sh`, and `uninstall.sh` have been validated on the distributions above
-- EL-family installs on very small `1 GB` hosts may require temporary swap during package installation; the deploy scripts now handle that automatically
+- EL-family installs on very small 1 GB hosts may require temporary swap during package installation; the deploy scripts now handle that automatically
 - RHEL support is expected to track the validated EL-family path, but has not yet been tested on a subscription-backed Red Hat host
 - Oracle Linux is likely to work as an EL-family target, but has not yet been directly validated
-- Raspberry Pi OS / Raspbian is not yet validated, though `64-bit` Debian-family images are the most likely to work cleanly
+- Raspberry Pi OS / Raspbian is not yet validated, though 64-bit Debian-family images are the most likely to work cleanly
 - Older baselines should not be attempted:
   - Debian 11
   - Ubuntu 22.04 LTS
   - CentOS 7 / RHEL 7 / Oracle Linux 7 and below
-- pyCluster requires Python `3.11+`, so older distro baselines without a current Python runtime are out of scope for the supported deployment path
+- pyCluster requires Python 3.11+, so older distro baselines without a current Python runtime are out of scope for the supported deployment path
 
 Typical install:
 
@@ -128,28 +135,28 @@ Installed services:
 - `pyclusterweb.service`
 - `pycluster-cty-refresh.timer`
 
-## Hardware Requirements
+## 📦 Hardware Requirements
 
 Minimum practical deployment:
 
-- `1 vCPU`
-- `1 GB RAM`
-- `10 GB` storage
+- 1 vCPU
+- 1 GB RAM
+- 10 GB storage
 - persistent network connectivity
 
 Recommended small production node:
 
-- `2 vCPU`
-- `2 GB RAM`
-- `20 GB` SSD-backed storage
+- 2 vCPU
+- 2 GB RAM
+- 20 GB SSD-backed storage
 
 Notes:
 
 - SQLite works well at this scale
-- reverse proxy, `fail2ban`, and package upgrades are more comfortable with `2 GB RAM`
+- reverse proxy, `fail2ban`, and package upgrades are more comfortable with 2 GB RAM
 - very small EL-family hosts may temporarily need swap during package operations
 
-## Security
+## 🔐 Security
 
 pyCluster supports:
 
@@ -159,7 +166,7 @@ pyCluster supports:
 - shipped `fail2ban` filters and jails
 - sysop visibility for recent auth failures and current bans
 
-## CTY Data
+## 🌍 CTY Data
 
 pyCluster ships with a bundled `cty.dat`, and install/upgrade perform a best-effort refresh from Country Files.
 
@@ -173,7 +180,7 @@ Automatic refresh:
 
 - `pycluster-cty-refresh.timer`
 
-## Documentation
+## 📚 Documentation
 
 - [User Manual](docs/user-manual.md)
 - [Administration Manual](docs/administration-manual.md)
@@ -191,11 +198,20 @@ Automatic refresh:
 - [Roadmap](docs/pycluster-roadmap.md)
 - [Project History](docs/pycluster-project-history.md)
 
-## Developer Notes
+## 📝 What’s Still Worth Adding
+
+The documentation is in solid shape now, but two follow-on docs would still add value:
+
+- `Troubleshooting`
+  - symptom-to-cause guidance for startup, peer links, auth failures, CTY issues, and reverse proxy/TLS
+- `Migration`
+  - once `migrate.sh` is built, document DXSpider-to-pyCluster migration as a first-class workflow
+
+## 🧪 Developer Notes
 
 This repo also contains compatibility research and parity artifacts gathered from live DXSpider environments. Those are useful for implementation work, but they are secondary to the user/operator docs above.
 
-## Credits
+## 🙏 Credits
 
 pyCluster is created and led by John D. Lewis, AI3I.
 
@@ -204,10 +220,10 @@ Special thanks for advice, assistance, consideration and testing:
 - Eric Tichansky, NO3M
 - Joe Reed, N9JR
 
-## Contributing
+## 🤝 Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Change Log
+## 🕒 Change Log
 
 See [CHANGELOG.md](CHANGELOG.md).
