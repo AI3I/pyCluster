@@ -1,0 +1,3 @@
+# Check every 10 minutes to see if node is connected, and if not, start a connect job 
+#
+0,10,20,30,40,50 * * * * start_connect('wb3ffv-2') unless connected('wb3ffv-2')

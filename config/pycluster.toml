@@ -1,0 +1,31 @@
+[node]
+node_call = "AI3I-16"
+node_alias = "AI3I"
+owner_name = "John Lewis"
+qth = "Western Pennsylvania"
+node_locator = "FN00FS"
+motd = "Welcome to pyCluster on AI3I-16"
+support_contact = "dxcluster@ai3i.net"
+website_url = "https://github.com/AI3I/pyCluster"
+
+[telnet]
+host = "0.0.0.0"
+port = 7300
+max_clients = 150
+idle_timeout_seconds = 900
+max_line_length = 512
+
+[web]
+host = "127.0.0.1"
+port = 8080
+admin_token = ""
+
+[public_web]
+enabled = true
+host = "127.0.0.1"
+port = 8081
+static_dir = "./web/public_dxweb/static"
+cty_dat_path = "./fixtures/live/dxspider/cty.dat"
+
+[store]
+sqlite_path = "./data/pycluster.db"

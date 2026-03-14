@@ -1,0 +1,11 @@
+[pycluster-web-auth]
+enabled = false
+backend = auto
+filter = pycluster-auth-web
+logpath = /var/log/pycluster/authfail.log
+maxretry = 5
+findtime = 10m
+bantime = 30m
+bantime.increment = true
+bantime.factor = 2
+port = http,https

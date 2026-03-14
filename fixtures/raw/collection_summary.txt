@@ -1,0 +1,7 @@
+collector_version=1
+host=root@64.24.4.188
+collected_utc=2026-03-01T03:33:03Z
+   2417 /home/jdlewis/dxcluster-compat/fixtures/raw/spots/latest_spots.dat
+   8942 /home/jdlewis/dxcluster-compat/fixtures/raw/log/latest_log.dat
+  16664 /home/jdlewis/dxcluster-compat/fixtures/raw/debug/latest_debug.dat
+  28023 total

@@ -1,0 +1,30 @@
+{
+  "input": "fixtures/normalized/pc_frames.json",
+  "total": 15977,
+  "parsed": 15977,
+  "unparsed": 0,
+  "parse_rate": 1.0,
+  "structural_failures": 0,
+  "roundtrip_failures": 0,
+  "by_type": {
+    "PC92": 12926,
+    "PC61": 1831,
+    "PC11": 698,
+    "PC24": 327,
+    "PC51": 82,
+    "PC93": 79,
+    "PC50": 24,
+    "PC73": 4,
+    "PC23": 2,
+    "PC17": 1,
+    "PC18": 1,
+    "PC22": 1,
+    "PC41": 1
+  },
+  "failures_by_type": {},
+  "checked_types": [
+    "PC61",
+    "PC92",
+    "PC93"
+  ]
+}

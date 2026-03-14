@@ -1,0 +1,20 @@
+[Unit]
+Description=pyCluster public web service
+After=network-online.target pycluster.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pycluster
+Group=pycluster
+WorkingDirectory=/home/pycluster/pyCluster
+Environment=PYTHONPATH=src
+ExecStart=/usr/bin/python3 -m pycluster.cli --config config/pycluster.toml serve-public
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=5
+SendSIGKILL=yes
+
+[Install]
+WantedBy=multi-user.target

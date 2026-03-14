@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly pyCluster CTY.DAT refresh
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=2h
+Unit=pycluster-cty-refresh.service
+
+[Install]
+WantedBy=timers.target

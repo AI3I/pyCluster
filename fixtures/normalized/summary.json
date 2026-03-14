@@ -1,0 +1,28 @@
+{
+  "generated_utc": "2026-03-01T03:33:06.742574+00:00",
+  "counts": {
+    "spots": 2417,
+    "spots_daily_rows": 2853,
+    "log_events": 8942,
+    "debug_protocol_frames": 15977,
+    "debug_other_lines": 687,
+    "wcy_records": 4,
+    "wwv_records": 2,
+    "command_files": 284
+  },
+  "pc_type_counts": {
+    "PC92": 12926,
+    "PC61": 1831,
+    "PC11": 698,
+    "PC24": 327,
+    "PC51": 82,
+    "PC93": 79,
+    "PC50": 24,
+    "PC73": 4,
+    "PC23": 2,
+    "PC17": 1,
+    "PC18": 1,
+    "PC22": 1,
+    "PC41": 1
+  }
+}

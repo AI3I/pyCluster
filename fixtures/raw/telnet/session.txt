@@ -1,0 +1,29 @@
+Trying 127.0.0.1...
+Connected to 127.0.0.1.
+Escape character is '^]'.
+login: N0CALL
+Hello Tomasz, this is AI3I-15 in Western Pennsylvania
+running DXSpider V1.55 build 0.203
+================================================================================
+ 
+Hello, and welcome to DX Cluster node AI3I-15, running DX Spider version 1.55!
+ 
+Connections may be made directly to dxc.ai3i.net or dxcluster.ai3i.net via TCP
+ports 7373, 7300 and 8000!  Web access may be coming in the future.
+ 
+Direct inquiries regarding this DX Cluster may be sent to dxcluster@ai3i.net.
+ 
+================================================================================
+Cluster: 100 nodes, 1 local / 965 total users  Max users 965  Uptime 0 00:04
+N0CALL de AI3I-15  1-Mar-2026 0333Z dxspider >
+show/version
+DX Spider Cluster version 1.55 (build 0.203 git: 448838ed[r]) on Linux
+Copyright (c) 1998-2026 Dirk Koopman G1TLH
+N0CALL de AI3I-15  1-Mar-2026 0333Z dxspider >
+DX de XE1TS:      1851.4  XE1RCS                                     0333Z DL80
+show/dx 3
+  1851.4  XE1RCS       1-Mar-2026 0333Z                               <XE1TS>
+  1824.7  W3LL         1-Mar-2026 0332Z  LSB                          <K4FTO>
+  7088.3  K6UFO        1-Mar-2026 0332Z  RTTY                         <N0AJN>
+N0CALL de AI3I-15  1-Mar-2026 0333Z dxspider >
+Connection closed by foreign host.
