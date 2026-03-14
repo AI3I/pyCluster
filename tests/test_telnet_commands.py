@@ -115,6 +115,44 @@ def test_sysop_prompt_uses_hash_suffix(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_bridge_node_login_promotes_client_handshake(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "bridge_node_login.db")
+        cfg = _mk_config(db)
+        cfg.node.node_call = "AI3I-15"
+        store = SpotStore(db)
+        seen: list[tuple[str, str, list[str] | None]] = []
+        try:
+            async def _node_login(
+                call: str,
+                peer_name: str,
+                _reader: asyncio.StreamReader,
+                _writer,
+                initial_lines: list[str] | None,
+            ) -> bool:
+                seen.append((call, peer_name, initial_lines))
+                return True
+
+            srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), on_node_login_fn=_node_login)
+            writer = _DummyWriter()
+
+            async def _fake_readline(_reader: asyncio.StreamReader) -> str | None:
+                return "client AI3I-15 telnet"
+
+            srv._readline = _fake_readline  # type: ignore[method-assign]
+            ok = await srv._bridge_node_login("AI3I-16", asyncio.StreamReader(), writer)  # type: ignore[arg-type]
+
+            text = writer.buffer.decode("utf-8", errors="replace")
+            assert ok is True
+            assert seen == [("AI3I-16", "AI3I-15", None)]
+            assert "Hello AI3I-16" in text
+            assert "AI3I-15> " in text
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_welcome_block_uses_node_presentation_settings(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "welcome.db")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass
 import socket
 from typing import Any, Awaitable, Callable, Protocol
@@ -26,6 +27,15 @@ class LinkListener(Protocol):
     def listen_port(self) -> int | None: ...
 
     async def close(self) -> None: ...
+
+
+def dxspider_compat_pc18(proto: str = "5457") -> str:
+    software = (
+        f"DXSpider Version: {DXSPIDER_COMPAT_VERSION} "
+        f"Build: {DXSPIDER_COMPAT_BUILD} "
+        f"Git: pyCluster/{__version__} pc9x"
+    )
+    return f"PC18^{software}^{proto}^"
 
 
 @dataclass(slots=True)
@@ -254,12 +264,7 @@ class _DxSpiderTelnetConnection:
             if len(fields) >= 3 and fields[2].isdigit():
                 proto = fields[2]
                 break
-        software = (
-            f"DXSpider Version: {DXSPIDER_COMPAT_VERSION} "
-            f"Build: {DXSPIDER_COMPAT_BUILD} "
-            f"Git: pyCluster/{__version__} pc9x"
-        )
-        return f"PC18^{software}^{proto}^"
+        return dxspider_compat_pc18(proto)
 
     async def handshake(self, login: str, client: str, password: str = "", timeout: float = 10.0) -> None:
         deadline = asyncio.get_running_loop().time() + max(1.0, timeout)
@@ -307,6 +312,64 @@ class _DxSpiderTelnetConnection:
             await self.send_line(f"client {client} telnet")
 
     async def readline(self) -> str | None:
+        while True:
+            nl = self._buf.find(b"\n")
+            if nl >= 0:
+                raw = bytes(self._buf[:nl])
+                del self._buf[: nl + 1]
+                line = raw.decode("utf-8", errors="replace").rstrip("\r")
+                if not line:
+                    continue
+                if not line.startswith("PC"):
+                    continue
+                return line
+            chunk = await self._read_chunk()
+            if not chunk:
+                if not self._buf:
+                    return None
+                tail = self._buf.decode("utf-8", errors="replace").rstrip("\r")
+                self._buf.clear()
+                if tail.startswith("PC"):
+                    return tail
+                return None
+            self._buf.extend(chunk)
+
+    async def send_line(self, line: str) -> None:
+        self._writer.write((line + "\r\n").encode("utf-8", errors="replace"))
+        await self._writer.drain()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._writer.close()
+        await self._writer.wait_closed()
+
+
+class DxSpiderInboundConnection:
+    def __init__(
+        self,
+        name: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        initial_lines: list[str] | None = None,
+    ) -> None:
+        self.name = name
+        self._reader = reader
+        self._writer = writer
+        self._buf = bytearray()
+        self._pending = deque(initial_lines or [])
+        self._closed = False
+
+    async def _read_chunk(self) -> bytes:
+        raw = await self._reader.read(1024)
+        if not raw:
+            return b""
+        return _DxSpiderTelnetConnection._strip_telnet(raw)
+
+    async def readline(self) -> str | None:
+        if self._pending:
+            return self._pending.popleft()
         while True:
             nl = self._buf.find(b"\n")
             if nl >= 0:
