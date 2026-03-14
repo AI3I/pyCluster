@@ -46,6 +46,7 @@ class NodeLinkEngine:
         self._lock = asyncio.Lock()
         self._frame_queue: asyncio.Queue[tuple[str, WirePcFrame, object | None]] = asyncio.Queue(maxsize=10000)
         self._trace_hook: Callable[[str, str, str], Awaitable[None]] | None = None
+        self._reader_tasks: set[asyncio.Task[None]] = set()
 
     def set_trace_hook(self, hook: Callable[[str, str, str], Awaitable[None]] | None) -> None:
         self._trace_hook = hook
@@ -73,9 +74,18 @@ class NodeLinkEngine:
 
         for p in peers:
             try:
-                await p.conn.close()
+                await asyncio.wait_for(p.conn.close(), timeout=1.0)
             except Exception:
                 pass
+        tasks = list(self._reader_tasks)
+        self._reader_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            try:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=2.0)
+            except asyncio.TimeoutError:
+                LOG.warning("timed out waiting for node-link reader tasks to stop")
 
     async def connect(self, name: str, host: str, port: int) -> None:
         await self.connect_dsn(name, f"tcp://{host}:{port}")
@@ -93,7 +103,7 @@ class NodeLinkEngine:
         async with self._lock:
             self._peers[name] = peer
         await self._trace(name, "connect", dsn)
-        asyncio.create_task(self._peer_reader(peer), name=f"node-link-reader-{name}")
+        self._track_reader_task(asyncio.create_task(self._peer_reader(peer), name=f"node-link-reader-{name}"))
 
     async def accept_inbound(self, name: str, conn: LinkConnection, profile: str = "dxspider") -> None:
         now = int(datetime.now(timezone.utc).timestamp())
@@ -109,11 +119,15 @@ class NodeLinkEngine:
             self._peers[name] = peer
         if old is not None:
             try:
-                await old.conn.close()
+                await asyncio.wait_for(old.conn.close(), timeout=1.0)
             except Exception:
                 pass
         await self._trace(name, "accept", "inbound")
-        asyncio.create_task(self._peer_reader(peer), name=f"node-link-reader-{name}")
+        self._track_reader_task(asyncio.create_task(self._peer_reader(peer), name=f"node-link-reader-{name}"))
+
+    def _track_reader_task(self, task: asyncio.Task[None]) -> None:
+        self._reader_tasks.add(task)
+        task.add_done_callback(self._reader_tasks.discard)
 
     async def set_peer_profile(self, peer_name: str, profile: str) -> bool:
         p = normalize_profile(profile)
@@ -131,7 +145,7 @@ class NodeLinkEngine:
             return False
         await self._trace(peer_name, "disconnect", "requested")
         try:
-            await peer.conn.close()
+            await asyncio.wait_for(peer.conn.close(), timeout=1.0)
         except Exception:
             pass
         return True
@@ -242,7 +256,7 @@ class NodeLinkEngine:
                 self._peers.pop(peer.name, None)
             await self._trace(peer.name, "disconnect", "eof")
             try:
-                await conn.close()
+                await asyncio.wait_for(conn.close(), timeout=1.0)
             except Exception:
                 pass
 
@@ -286,7 +300,7 @@ class NodeLinkEngine:
                 async with self._lock:
                     self._peers.pop(peer.name, None)
             try:
-                await peer.conn.close()
+                await asyncio.wait_for(peer.conn.close(), timeout=1.0)
             except Exception:
                 pass
 

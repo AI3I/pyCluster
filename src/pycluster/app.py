@@ -1024,6 +1024,12 @@ async def serve_forever(config: AppConfig) -> None:
         await stop_event.wait()
     finally:
         await app.stop()
+        current = asyncio.current_task()
+        pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def serve_core_forever(config: AppConfig) -> None:
@@ -1047,6 +1053,12 @@ async def serve_core_forever(config: AppConfig) -> None:
         await stop_event.wait()
     finally:
         await app.stop()
+        current = asyncio.current_task()
+        pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def serve_public_forever(config: AppConfig) -> None:
