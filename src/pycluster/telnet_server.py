@@ -122,6 +122,7 @@ class TelnetClusterServer:
         "sysop/audit",
         "sysop/services",
         "sysop/restart",
+        "sysop/setprompt",
         "show/startup",
         "shutdown",
         "spoof",
@@ -193,6 +194,8 @@ class TelnetClusterServer:
                 self._cty_loaded = True
             except Exception as exc:
                 LOG.warning("telnet cty load failed from %s: %s", cty_path, exc)
+
+    _LOGIN_CALL_SANITIZE_RE = re.compile(r"[^A-Z0-9/-]+")
 
     async def active_ports(self) -> tuple[int, ...]:
         ports: list[int] = []
@@ -363,6 +366,12 @@ class TelnetClusterServer:
         if not raw:
             return "-"
         return re.sub(r"[^A-Z0-9/-]+", "_", raw)
+
+    def _sanitize_login_call(self, raw_call: str | None) -> str:
+        if not raw_call:
+            return ""
+        sanitized = self._LOGIN_CALL_SANITIZE_RE.sub("", raw_call.upper())
+        return sanitized.strip()
 
     def _log_auth_failure(self, channel: str, peer, call: str, reason: str) -> None:
         log_auth_failure(LOG, channel, self._peer_host(peer), self._auth_log_call(call), reason)
@@ -909,7 +918,29 @@ class TelnetClusterServer:
     async def _prompt(self, call: str) -> str:
         node = await self._node_text("node_call")
         suffix = "# " if await self._privilege_level_for(call) >= 2 else "> "
-        return f"{node}{suffix}"
+        template = await self._prompt_template()
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        return self._render_prompt(template, node, suffix, timestamp)
+
+    async def _prompt_template(self) -> str:
+        data = await self._node_presentation()
+        template = data.get("prompt_template")
+        if template:
+            return str(template)
+        return self.config.node.prompt_template
+
+    def _render_prompt(self, template: str, node: str, suffix: str, timestamp: str) -> str:
+        tokens = {
+            "node": node,
+            "suffix": suffix,
+            "timestamp": timestamp,
+        }
+
+        class _PromptTokens(dict[str, str]):
+            def __missing__(_self, key: str) -> str:
+                return ""
+
+        return template.format_map(_PromptTokens(tokens))
 
     async def _node_presentation(self) -> dict[str, str]:
         data = node_presentation_defaults(self.config.node)
@@ -1065,23 +1096,106 @@ class TelnetClusterServer:
     async def _cmd_show_commands(self, call: str, arg: str | None) -> str:
         reg = self._build_registry()
         needle = (arg or "").strip().lower()
-        all_cmds = sorted(set(reg.keys()) | set(self._top_level_canonical_tokens()))
-        cmds = [c for c in all_cmds if await self._command_visible_for(call, c)]
-        if needle:
-            nneedle = self._normalize_cmd_token(needle)
-            cmds = [
-                c
-                for c in cmds
-                if needle in c or (nneedle and self._normalize_cmd_token(c).find(nneedle) >= 0)
-            ]
-        if not cmds:
-            return f"commands: no matches for {needle}\r\n" if needle else "commands: (none)\r\n"
+        top_cmds = sorted(set(self._top_level_canonical_tokens()))
+        grouped = self._canonical_grouped_keys(reg)
+        visible_top = [c for c in top_cmds if await self._command_visible_for(call, c)]
+        visible_grouped = [c for c in sorted(grouped) if await self._command_visible_for(call, c)]
+
+        lines: list[str] = []
+        rows: list[tuple[str, str]] = []
         page = await self._page_size_for(call)
+
+        group = self._resolve_group_token(needle) if needle else None
+        if group:
+            rows = [(cmd, self._command_summary(cmd)) for cmd in visible_grouped if cmd.startswith(group + "/")]
+            title = f"{group.upper()} commands ({len(rows)}):"
+        else:
+            all_cmds = visible_top + visible_grouped
+            if needle:
+                nneedle = self._normalize_cmd_token(needle)
+                rows = [
+                    (cmd, self._command_summary(cmd))
+                    for cmd in all_cmds
+                    if needle in cmd or (nneedle and self._normalize_cmd_token(cmd).find(nneedle) >= 0)
+                ]
+            else:
+                rows = [(cmd, self._command_summary(cmd)) for cmd in visible_top]
+            title = f"Commands ({len(rows)}):"
+
+        if not rows:
+            return f"commands: no matches for {needle}\r\n" if needle else "commands: (none)\r\n"
         if page > 0:
-            cmds = cmds[:page]
-        lines = [f"commands ({len(cmds)}):"]
-        lines.extend(f"  {c}" for c in cmds)
+            rows = rows[:page]
+        width = min(24, max(len(cmd) for cmd, _desc in rows))
+        lines.append(title)
+        for cmd, desc in rows:
+            lines.append(f"  {cmd.ljust(width)}  {desc}")
         return await self._format_console_lines(call, lines)
+
+    def _command_summary(self, cmd: str) -> str:
+        top_map = {
+            "help": "Show the operator help overview.",
+            "commands": "List commands or a command family.",
+            "apropos": "Search commands by keyword.",
+            "status": "Show current operator session status.",
+            "uptime": "Show node uptime.",
+            "who": "List connected users.",
+            "chat": "Send a chat-style message.",
+            "join": "Join a chat or bulletin group.",
+            "leave": "Leave a chat or bulletin group.",
+            "directory": "Show external cluster directory sources.",
+            "dbavail": "Show local database availability.",
+            "dbshow": "Inspect local database records.",
+            "catchup": "Enable recent DX catch-up on login.",
+            "uncatchup": "Disable recent DX catch-up on login.",
+            "bye": "Disconnect from the cluster.",
+            "quit": "Disconnect from the cluster.",
+            "exit": "Disconnect from the cluster.",
+        }
+        if "/" not in cmd:
+            return top_map.get(cmd, "Top-level command.")
+        group, sub = cmd.split("/", 1)
+        special = {
+            "qra": "Show or set grid square details.",
+            "qth": "Show or set location details.",
+            "name": "Show or set operator name details.",
+            "homenode": "Show or set the local home-node preference.",
+            "sun": "Show solar status for the current location.",
+            "grayline": "Show grayline timing for the current location.",
+            "moon": "Show moon phase data for the current location.",
+            "muf": "Show the current MUF estimate from WWV data.",
+            "usdb": "Show or update local USDB entries.",
+            "wm7d": "Show WM7D gateway configuration status.",
+            "commands": "List commands in a family or by keyword.",
+            "shortcuts": "Show command shortcuts and abbreviations.",
+            "setprompt": "Set the login prompt template.",
+        }
+        if sub in special:
+            return special[sub]
+        group_desc = {
+            "show": "Display operator-visible data or status.",
+            "set": "Enable or change a stored preference.",
+            "unset": "Disable or clear a stored preference.",
+            "accept": "Allow an incoming policy item.",
+            "reject": "Reject an incoming policy item.",
+            "clear": "Clear stored state or counters.",
+            "load": "Load or reload local data.",
+            "stat": "Show runtime or database statistics.",
+            "create": "Create a local record.",
+            "delete": "Delete a local record.",
+            "forward": "Manage forwarding and gateway details.",
+            "get": "Fetch or request external data.",
+            "sysop": "Run a System Operator command.",
+        }
+        base = group_desc.get(group, "Command.")
+        label = sub.replace("_", " ").replace("-", " ").upper() if sub in {"qra", "qth", "wcy", "wwv", "wx"} else sub.replace("_", " ").replace("-", " ")
+        if group == "show":
+            return f"Display {label}."
+        if group == "set":
+            return f"Set {label}."
+        if group == "unset":
+            return f"Unset {label}."
+        return base
 
     async def _cmd_show_shortcuts(self, call: str, arg: str | None) -> str:
         reg = self._build_registry()
@@ -1754,7 +1868,7 @@ class TelnetClusterServer:
         if port:
             lines.append(f"  Port: {port}")
         if not host and not port:
-            lines.append("  Endpoint: (not configured)")
+            lines.append("  Endpoint: not configured on this node")
         return await self._format_console_lines(call, lines)
 
     async def _show_named_map(self, call: str, arg: str | None, cmd: str, name: str) -> str:
@@ -1863,34 +1977,87 @@ class TelnetClusterServer:
     async def _cmd_show_dupwwv_direct(self, call: str, arg: str | None) -> str:
         return await self._show_session_pref(call, arg, "show/dupwwv", "dup_wwv", "off")
 
-    async def _coords_for(self, call: str) -> tuple[float, float] | None:
+    async def _coords_context_for(self, call: str) -> tuple[tuple[float, float], str] | None:
         prefs = await self._load_prefs_for_call(call)
         lat_s = (prefs.get("forward_lat") or "").strip()
         lon_s = (prefs.get("forward_lon") or "").strip()
-        if not lat_s or not lon_s:
+        if lat_s and lon_s:
+            try:
+                lat = float(lat_s)
+                lon = float(lon_s)
+            except ValueError:
+                lat = lon = None  # type: ignore[assignment]
+            if lat is not None and lon is not None and -90 <= lat <= 90 and -180 <= lon <= 180:
+                return (lat, lon), "forward latitude/longitude"
+
+        locator = (prefs.get("qra") or "").strip().upper()
+        if not locator:
+            reg = await self.store.get_user_registry(call)
+            locator = str(reg["qra"] or "").strip().upper() if reg else ""
+        if locator:
+            coords = self._locator_to_coords(locator)
+            if coords is not None:
+                return coords, f"QRA {locator}"
+
+        node_prefs = node_presentation_defaults(self.config.node)
+        node_prefs.update(await self.store.list_user_prefs(self.config.node.node_call))
+        node_locator = str(node_prefs.get("node_locator", self.config.node.node_locator)).strip().upper()
+        if node_locator:
+            coords = self._locator_to_coords(node_locator)
+            if coords is not None:
+                return coords, f"node grid square {node_locator}"
+        return None
+
+    async def _coords_for(self, call: str) -> tuple[float, float] | None:
+        info = await self._coords_context_for(call)
+        if info is None:
             return None
+        return info[0]
+
+    def _locator_to_coords(self, locator: str) -> tuple[float, float] | None:
+        txt = re.sub(r"[^A-Z0-9]", "", str(locator or "").strip().upper())
+        if len(txt) < 4 or len(txt) % 2 != 0:
+            return None
+        txt = txt[:8]
+        lon = -180.0
+        lat = -90.0
+        lon_step = 20.0
+        lat_step = 10.0
         try:
-            lat = float(lat_s)
-            lon = float(lon_s)
-        except ValueError:
+            lon += (ord(txt[0]) - ord("A")) * lon_step
+            lat += (ord(txt[1]) - ord("A")) * lat_step
+            lon_step /= 10.0
+            lat_step /= 10.0
+            lon += int(txt[2]) * lon_step
+            lat += int(txt[3]) * lat_step
+            if len(txt) >= 6:
+                lon_step /= 24.0
+                lat_step /= 24.0
+                lon += (ord(txt[4]) - ord("A")) * lon_step
+                lat += (ord(txt[5]) - ord("A")) * lat_step
+            if len(txt) >= 8:
+                lon_step /= 10.0
+                lat_step /= 10.0
+                lon += int(txt[6]) * lon_step
+                lat += int(txt[7]) * lat_step
+        except (TypeError, ValueError):
             return None
-        if lat < -90 or lat > 90 or lon < -180 or lon > 180:
-            return None
-        return lat, lon
+        return lat + lat_step / 2.0, lon + lon_step / 2.0
 
     def _solar_hour(self, now: datetime, lon: float) -> float:
         return (now.hour + now.minute / 60.0 + now.second / 3600.0 + lon / 15.0) % 24.0
 
     async def _cmd_show_sun(self, call: str) -> str:
-        coords = await self._coords_for(call)
-        if not coords:
-            return "Sun: set forward/latlong first.\r\n"
-        lat, lon = coords
+        info = await self._coords_context_for(call)
+        if not info:
+            return "Sun: set your grid square or forward/latlong first.\r\n"
+        (lat, lon), source = info
         now = datetime.now(timezone.utc)
         sh = self._solar_hour(now, lon)
         phase = "day" if 6.0 <= sh < 18.0 else "night"
         lines = [
             "Sun status:",
+            f"  Reference: {source}",
             f"  Latitude: {lat:.4f}",
             f"  Longitude: {lon:.4f}",
             f"  Solar Hour: {sh:.2f}",
@@ -1899,10 +2066,10 @@ class TelnetClusterServer:
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_grayline(self, call: str) -> str:
-        coords = await self._coords_for(call)
-        if not coords:
-            return "Grayline: set forward/latlong first.\r\n"
-        lat, lon = coords
+        info = await self._coords_context_for(call)
+        if not info:
+            return "Grayline: set your grid square or forward/latlong first.\r\n"
+        (lat, lon), source = info
         now = datetime.now(timezone.utc)
         sh = self._solar_hour(now, lon)
         # Approximate transitions at 06:00 and 18:00 local solar time.
@@ -1914,6 +2081,7 @@ class TelnetClusterServer:
             nxt = f"sunset in {to_sunset:.2f}h"
         lines = [
             "Grayline status:",
+            f"  Reference: {source}",
             f"  Latitude: {lat:.4f}",
             f"  Longitude: {lon:.4f}",
             f"  Next Event: {nxt}",
@@ -1921,10 +2089,10 @@ class TelnetClusterServer:
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_moon(self, call: str) -> str:
-        coords = await self._coords_for(call)
-        if not coords:
-            return "Moon: set forward/latlong first.\r\n"
-        lat, lon = coords
+        info = await self._coords_context_for(call)
+        if not info:
+            return "Moon: set your grid square or forward/latlong first.\r\n"
+        (lat, lon), source = info
         now_epoch = datetime.now(timezone.utc).timestamp()
         # Reference new moon near J2000: 2000-01-06 18:14 UTC.
         synodic = 29.53058867
@@ -1933,6 +2101,7 @@ class TelnetClusterServer:
         illum = 0.5 * (1 - math.cos(2 * math.pi * phase))
         lines = [
             "Moon status:",
+            f"  Reference: {source}",
             f"  Latitude: {lat:.4f}",
             f"  Longitude: {lon:.4f}",
             f"  Age: {age:.2f} days",
@@ -1950,7 +2119,7 @@ class TelnetClusterServer:
                 sfi = int(m.group(1))
                 break
         if sfi is None:
-            return "MUF: no recent WWV SFI data.\r\n"
+            return "MUF estimate unavailable: no recent WWV SFI data has been received.\r\n"
         muf_3000 = 8.0 + 0.12 * sfi
         lines = [
             "MUF estimate:",
@@ -2999,7 +3168,7 @@ class TelnetClusterServer:
                 target = tok
         rows = await self.store.list_usdb_entries(target)
         if not rows:
-            return f"No USDB entries for {target}.\r\n"
+            return f"USDB has no entries stored locally for {target}.\r\n"
         items = list(rows.items())
         if not arg:
             page = await self._page_size_for(call)
@@ -3310,11 +3479,17 @@ class TelnetClusterServer:
             value = str(n)
         if name in {"qra", "qth", "location", "name", "sys_location", "sys_qra"}:
             value = value[:128]
+        if name in {"qra", "sys_qra"}:
+            value = value.upper()
         s.vars[name] = value
         await self._persist_pref(call, name, value)
         self._log_event("set", f"{call} {name}={value}")
         if name == "password":
             return f"Password updated for {call}.\r\n"
+        if name == "qra":
+            return f"QRA set to {value} for {call}.\r\n"
+        if name == "sys_qra":
+            return f"System QRA set to {value} for {call}.\r\n"
         label = name.replace("_", " ")
         return f"{label.capitalize()} set to {value} for {call}.\r\n"
 
@@ -3757,6 +3932,20 @@ class TelnetClusterServer:
         what = "all capabilities" if capability in {"all", "a", "*"} else capability
         state_text = "enabled" if state == "on" else "disabled"
         return f"{what} {state_text} for {target} on {scope}.\r\n"
+
+    async def _cmd_sysop_setprompt(self, call: str, arg: str | None) -> str:
+        denied = await self._require_privilege(call, 2, "sysop/setprompt")
+        if denied:
+            return denied
+        template = (arg or "").strip()
+        if not template:
+            return "Usage: sysop/setprompt <prompt template>\r\n"
+        if len(template) > 256:
+            return "Prompt template must be 256 characters or fewer.\r\n"
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.set_user_pref(self.config.node.node_call, "prompt_template", template, now)
+        self._log_event("sysop", f"{call} sysop/setprompt template={template}")
+        return "Prompt template updated.\r\n"
 
     async def _cmd_sysop_services(self, call: str, _arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/services")
@@ -6071,6 +6260,8 @@ class TelnetClusterServer:
         registry = self._build_registry()
         if not group or sub is None:
             return True, "?\r\n"
+        if not sub:
+            return True, await self._cmd_show_commands(call, group)
 
         key = self._resolve_subcommand(group, sub, registry)
         if not key:
@@ -6202,6 +6393,7 @@ class TelnetClusterServer:
             "sysop/sysops": self._cmd_sysop_sysops,
             "sysop/access": self._cmd_sysop_access,
             "sysop/setaccess": self._cmd_sysop_setaccess,
+            "sysop/setprompt": self._cmd_sysop_setprompt,
             "sysop/audit": self._cmd_sysop_audit,
             "sysop/services": self._cmd_sysop_services,
             "sysop/restart": self._cmd_sysop_restart,
@@ -6429,9 +6621,9 @@ class TelnetClusterServer:
                     await writer.wait_closed()
                     return
 
-                call = raw_call.upper()
-                if not is_valid_call(call):
-                    self._log_auth_failure("telnet", peer, raw_call, "invalid_callsign")
+                call = self._sanitize_login_call(raw_call)
+                if not call or not is_valid_call(call):
+                    self._log_auth_failure("telnet", peer, call or raw_call, "invalid_callsign")
                     await self._write(writer, "Invalid callsign\r\n")
                     writer.close()
                     await writer.wait_closed()
