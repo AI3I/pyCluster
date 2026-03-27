@@ -2651,7 +2651,12 @@ function closeSpotModal() {
 
 // ================================================================ Table
 function fmtTime(iso) { try { return new Date(iso).toISOString().substring(11,16); } catch { return ''; } }
-function fmtFreq(khz) { return khz>=1000?(khz/1000).toFixed(3).replace(/\.?0+$/,''):khz.toFixed(1); }
+function fmtFreq(khz) {
+  if (!Number.isFinite(khz)) return '';
+  const mhz = khz / 1000;
+  const truncated = Math.floor(mhz * 1000 + Number.EPSILON) / 1000;
+  return truncated.toFixed(3);
+}
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 const BAND_RANGES = [
   [0.1357,0.479,'LF/MF'],[1.8,2.0,'160m'],

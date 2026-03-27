@@ -47,6 +47,7 @@ class NodeConfig:
     require_password: bool = True
     support_contact: str = ""
     website_url: str = ""
+    prompt_template: str = "{node}{suffix}[{timestamp}] "
 
 
 @dataclass(slots=True)
@@ -78,6 +79,7 @@ def node_presentation_defaults(node: NodeConfig) -> dict[str, str]:
         "require_password": "on" if node.require_password else "off",
         "support_contact": node.support_contact,
         "website_url": node.website_url,
+        "prompt_template": node.prompt_template,
         "motd": node.motd,
     }
 

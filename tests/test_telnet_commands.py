@@ -88,9 +88,11 @@ def test_prompt_uses_configured_node_call_only(tmp_path) -> None:
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         try:
-            assert await srv._prompt("N0CALL") == "AI3I-15> "
+            prompt = await srv._prompt("N0CALL")
+            assert prompt.startswith("AI3I-15> [") and prompt.endswith(" UTC] ")
             await store.set_user_pref(cfg.node.node_call, "node_call", "AI3I-7", int(datetime.now(timezone.utc).timestamp()))
-            assert await srv._prompt("N0CALL") == "AI3I-7> "
+            prompt = await srv._prompt("N0CALL")
+            assert prompt.startswith("AI3I-7> [") and prompt.endswith(" UTC] ")
         finally:
             await store.close()
 
@@ -107,8 +109,10 @@ def test_sysop_prompt_uses_hash_suffix(tmp_path) -> None:
         try:
             now = int(datetime.now(timezone.utc).timestamp())
             await store.upsert_user_registry("AI3I", now, privilege="sysop")
-            assert await srv._prompt("AI3I") == "AI3I-16# "
-            assert await srv._prompt("N0CALL") == "AI3I-16> "
+            prompt_sysop = await srv._prompt("AI3I")
+            assert prompt_sysop.startswith("AI3I-16# [") and prompt_sysop.endswith(" UTC] ")
+            prompt_user = await srv._prompt("N0CALL")
+            assert prompt_user.startswith("AI3I-16> [") and prompt_user.endswith(" UTC] ")
         finally:
             await store.close()
 
@@ -1846,7 +1850,7 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             assert "QRA for N0CALL: (none)" in out
 
             _, out = await srv._execute_command("N0CALL", "set/qra FN42")
-            assert "Qra set to FN42 for N0CALL." in out
+            assert "QRA set to FN42 for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "show/qra")
             assert "QRA for N0CALL: FN42" in out
 
@@ -1863,8 +1867,15 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/commands route")
             assert "show/route" in out
             assert "accept/route" in out
+            _, out = await srv._execute_command("N0CALL", "show/commands set")
+            assert "SET commands" in out
+            assert "set/qra" in out
+            assert "set/homenode" in out
+            _, out = await srv._execute_command("N0CALL", "set")
+            assert "SET commands" in out
             _, out = await srv._execute_command("N0CALL", "commands startup")
-            assert "set/startup" in out
+            assert "startup" in out
+            assert "Unset startup." in out or "Set startup." in out
             _, out = await srv._execute_command("N0CALL", "show/commands sendconf")
             assert "send_config" not in out
             now = int(datetime.now(timezone.utc).timestamp())
@@ -1876,18 +1887,14 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             assert "show=" in out and "set=" in out and "stat=" in out
 
             _, out = await srv._execute_command("N0CALL", "show/sun")
-            assert "set forward/latlong first" in out
-            _, out = await srv._execute_command("N0CALL", "forward/latlong 42 -71")
-            assert "Forward latitude/longitude set to" in out
-            _, out = await srv._execute_command("N0CALL", "show/sun")
-            assert "Solar Hour:" in out and "Phase:" in out
+            assert "Reference: QRA FN42" in out and "Solar Hour:" in out and "Phase:" in out
             _, out = await srv._execute_command("N0CALL", "show/grayline")
-            assert "Grayline status:" in out and ("sunrise in" in out or "sunset in" in out)
+            assert "Reference: QRA FN42" in out and "Grayline status:" in out and ("sunrise in" in out or "sunset in" in out)
             _, out = await srv._execute_command("N0CALL", "show/moon")
-            assert "Age:" in out and "Illumination:" in out
+            assert "Reference: QRA FN42" in out and "Age:" in out and "Illumination:" in out
 
             _, out = await srv._execute_command("N0CALL", "show/muf")
-            assert "no recent WWV SFI data" in out
+            assert "MUF estimate unavailable" in out
             await srv._execute_command("N0CALL", "wwv SFI=150 A=6 K=2")
             _, out = await srv._execute_command("N0CALL", "show/muf")
             assert "SFI: 150" in out and "Estimated MUF3000:" in out
@@ -2302,7 +2309,7 @@ def test_set_unset_and_extended_group_families(tmp_path) -> None:
             assert "talk=off" in out
 
             _, out = await srv._execute_command("N0CALL", "set/qra FN42")
-            assert "qra=FN42" in out
+            assert "QRA set to FN42 for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "show/station")
             assert "qra=FN42" in out
 
@@ -3350,7 +3357,7 @@ def test_usdb_commands_persist_across_server_instances(tmp_path) -> None:
             assert "state: MA" in out
             assert "county: Middlesex" in out
             _, out = await srv1._execute_command("N0CALL", "show/station")
-            assert "usdb.state=MA" in out
+            assert "USDB state: MA" in out
         finally:
             await store1.close()
 
