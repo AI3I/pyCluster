@@ -10,6 +10,7 @@ import re
 import signal
 
 from .config import AppConfig
+from .maidenhead import extract_locator
 from .models import Spot, is_valid_call, normalize_call
 from .node_link import NodeLinkEngine
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc24Message, Pc50Message, Pc51Message, Pc61Message, Pc93Message, WirePcFrame
@@ -25,6 +26,7 @@ _DXSPIDER_PC19_VERSION = "5457"
 _PEER_PREF_PREFIX = "peer.outbound."
 _RECONNECT_BASE_SECS = 5
 _RECONNECT_MAX_SECS = 300
+_PEER_HEARTBEAT_SECS = 60
 _PROTO_FLAP_KEYS = {
     "pc18.software",
     "pc18.proto",
@@ -35,10 +37,11 @@ _PROTO_FLAP_KEYS = {
 
 
 class ClusterApp:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, config_path: str | None = None) -> None:
         self.config = config
         self.started_at = datetime.now(timezone.utc)
         self.store = SpotStore(config.store.sqlite_path)
+        strings_path = str(Path(config_path).with_name("strings.toml")) if config_path else None
         self.node_link = NodeLinkEngine()
         self.node_link.set_trace_hook(self._trace_protocol_line)
         self._legacy_dxspider_peers: set[str] = set()
@@ -59,6 +62,7 @@ class ClusterApp:
             on_spot_fn=self._relay_spot_to_links,
             on_sessions_changed_fn=self._sync_legacy_user_roster,
             on_node_login_fn=self.accept_inbound_node_login,
+            strings_path=strings_path,
         )
         self.web = WebAdminServer(
             config=config,
@@ -82,6 +86,7 @@ class ClusterApp:
             telnet_rebind_fn=self.telnet.rebind_listeners,
             event_log_fn=self.telnet.record_event,
             audit_rows_fn=self.telnet.audit_rows,
+            config_path=config_path,
         )
         self.public_web = PublicWebServer(
             config=config,
@@ -99,6 +104,7 @@ class ClusterApp:
         )
         self._node_ingest_task: asyncio.Task[None] | None = None
         self._peer_reconnect_task: asyncio.Task[None] | None = None
+        self._peer_heartbeat_task: asyncio.Task[None] | None = None
         self._node_ingest_stop = asyncio.Event()
         self._proto_trace_lock = asyncio.Lock()
         self._public_web_started = False
@@ -164,7 +170,8 @@ class ClusterApp:
     async def connect_peer(self, name: str, dsn: str, profile: str = "dxspider", persist: bool = True) -> None:
         if persist:
             await self._persist_peer_target(name, dsn, profile=profile, reconnect=True)
-        await self.node_link.connect_dsn(name, dsn, profile=profile)
+        wire_profile = "spider" if dsn.strip().lower().startswith("dxspider://") and profile == "dxspider" else profile
+        await self.node_link.connect_dsn(name, dsn, profile=wire_profile)
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_connect_epoch"), str(now), now)
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "retry_count"), "0", now)
@@ -294,6 +301,7 @@ class ClusterApp:
             self._public_web_started = True
         self._node_ingest_task = asyncio.create_task(self._node_ingest_loop(), name="node-link-ingest")
         self._peer_reconnect_task = asyncio.create_task(self._peer_reconnect_loop(), name="node-link-reconnect")
+        self._peer_heartbeat_task = asyncio.create_task(self._peer_heartbeat_loop(), name="node-link-heartbeat")
 
     async def stop(self) -> None:
         self._node_ingest_stop.set()
@@ -304,6 +312,13 @@ class ClusterApp:
             except asyncio.CancelledError:
                 pass
             self._peer_reconnect_task = None
+        if self._peer_heartbeat_task:
+            self._peer_heartbeat_task.cancel()
+            try:
+                await self._peer_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._peer_heartbeat_task = None
         if self._node_ingest_task:
             self._node_ingest_task.cancel()
             try:
@@ -383,6 +398,53 @@ class ClusterApp:
                 )
                 LOG.warning("peer reconnect failed peer=%s next_retry=%ss err=%s", name, delay, exc)
 
+    async def _peer_heartbeat_loop(self) -> None:
+        while not self._node_ingest_stop.is_set():
+            try:
+                await self.heartbeat_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception("peer heartbeat loop failed")
+            try:
+                await asyncio.wait_for(self._node_ingest_stop.wait(), timeout=_PEER_HEARTBEAT_SECS)
+            except asyncio.TimeoutError:
+                pass
+
+    async def heartbeat_once(self) -> int:
+        sent = 0
+        stats = await self.node_link.stats()
+        for name, row in stats.items():
+            profile = str(row.get("profile", "dxspider")).strip().lower()
+            if profile != "dxspider":
+                continue
+            if bool(row.get("inbound")):
+                continue
+            try:
+                await self.node_link.send(name, WirePcFrame("PC20", [""]))
+            except KeyError:
+                continue
+            except (ConnectionError, OSError):
+                LOG.info("peer heartbeat skipped for disconnected peer=%s", name)
+                continue
+            sent += 1
+        return sent
+
+    def _classify_pc93_bulletin(self, sender: str, text: str) -> tuple[str, str, str]:
+        category = "chat"
+        scope = "LOCAL"
+        body = text
+        m = _PC93_PREFIX_RE.match(text)
+        if m:
+            return m.group(1).strip().lower(), m.group(2).strip().upper(), (m.group(3) or "").strip() or text
+        sender_u = normalize_call(sender)
+        body_u = text.upper()
+        if sender_u == "DK0WCY" or ("SPOTS=" in body_u and "EXPK=" in body_u):
+            category = "wcy"
+        elif sender_u == "WWV" or re.search(r"\bSFI\s*=\s*\d+\b", body_u):
+            category = "wwv"
+        return category, scope, body
+
     async def _send_legacy_init_config(self, peer_name: str) -> None:
         node_call = self.config.node.node_call.upper()
         await self.node_link.send(
@@ -416,6 +478,9 @@ class ClusterApp:
             except KeyError:
                 self._legacy_dxspider_peers.discard(peer_name)
                 LOG.info("legacy pc16 sync skipped for disconnected peer=%s", peer_name)
+            except (ConnectionError, OSError):
+                self._legacy_dxspider_peers.discard(peer_name)
+                LOG.info("legacy pc16 sync dropped disconnected peer=%s", peer_name)
             except Exception:
                 LOG.exception("legacy pc16 sync failed peer=%s", peer_name)
 
@@ -600,6 +665,21 @@ class ClusterApp:
                     "pc51.value": (msg.value or "").strip(),
                 },
             )
+            if (
+                normalize_call(msg.to_call) == normalize_call(self.config.node.node_call)
+                and (msg.value or "").strip() == "1"
+            ):
+                await self.node_link.send(
+                    peer_name,
+                    WirePcFrame(
+                        "PC51",
+                        Pc51Message(
+                            to_call=normalize_call(msg.from_call),
+                            from_call=normalize_call(msg.to_call),
+                            value="0",
+                        ).to_fields(),
+                    ),
+                )
             return
 
         if frame.pc_type == "PC11":
@@ -656,6 +736,7 @@ class ClusterApp:
             inserted = await self.store.add_spot(spot)
             if inserted:
                 await self.telnet.publish_spot(spot)
+                await self._relay_spot_to_links(spot, exclude_peer=peer_name)
             return
 
         if frame.pc_type == "PC61":
@@ -702,6 +783,7 @@ class ClusterApp:
             inserted = await self.store.add_spot(spot)
             if inserted:
                 await self.telnet.publish_spot(spot)
+                await self._relay_spot_to_links(spot, exclude_peer=peer_name)
             return
 
         if frame.pc_type == "PC93":
@@ -713,20 +795,13 @@ class ClusterApp:
             if f"[via:{self.config.node.node_call}]" in text:
                 await self.node_link.mark_policy_drop(peer_name, "ingest_pc93_loop")
                 return
-            category = "chat"
-            scope = "LOCAL"
-            body = text
-            m = _PC93_PREFIX_RE.match(text)
-            if m:
-                category = m.group(1).strip().lower()
-                scope = m.group(2).strip().upper()
-                body = (m.group(3) or "").strip() or text
-            if not await self._ingest_peer_enabled(peer_name, category):
-                await self.node_link.mark_policy_drop(peer_name, f"ingest_{category}_disabled")
-                return
             sender = normalize_call(msg.origin_call) if msg.origin_call else normalize_call(peer_name)
             if not is_valid_call(sender):
                 sender = normalize_call(peer_name)
+            category, scope, body = self._classify_pc93_bulletin(sender, text)
+            if not await self._ingest_peer_enabled(peer_name, category):
+                await self.node_link.mark_policy_drop(peer_name, f"ingest_{category}_disabled")
+                return
             now = int(datetime.now(timezone.utc).timestamp())
             await self.store.add_bulletin(category, sender, scope, now, body)
             if category == "chat":
@@ -925,13 +1000,14 @@ class ClusterApp:
         frame = WirePcFrame("PC93", msg.to_fields())
         await self._broadcast_with_policy(sender, category, frame)
 
-    async def _relay_spot_to_links(self, spot: Spot) -> None:
+    async def _relay_spot_to_links(self, spot: Spot, exclude_peer: str | None = None) -> None:
         sender = normalize_call(spot.spotter)
         if not await self._routepc19_enabled(sender):
             return
         if not await self._relay_category_enabled(sender, "spots"):
             return
         dt = datetime.fromtimestamp(spot.epoch, tz=timezone.utc)
+        source_node = normalize_call(spot.source_node) if spot.source_node else normalize_call(self.config.node.node_call)
         pc61 = Pc61Message(
             freq_khz=f"{spot.freq_khz:.1f}",
             dx_call=spot.dx_call,
@@ -939,7 +1015,7 @@ class ClusterApp:
             time_token=dt.strftime("%H%MZ"),
             info=spot.info,
             spotter=sender,
-            source_node=self.config.node.node_call,
+            source_node=source_node,
             ip="127.0.0.1",
             hops_token="H1",
             trailer="~",
@@ -954,13 +1030,15 @@ class ClusterApp:
                 dt.strftime("%H%MZ"),
                 spot.info or " ",
                 sender,
-                self.config.node.node_call,
+                source_node,
                 "H1",
                 "~",
             ],
         )
         names = await self.node_link.peer_names()
         for name in names:
+            if exclude_peer and normalize_call(name) == normalize_call(exclude_peer):
+                continue
             if not await self._route_filter_allows_peer(sender, name):
                 await self.node_link.mark_policy_drop(name, "route_filter")
                 continue
@@ -994,17 +1072,14 @@ class ClusterApp:
         base = Path(self.config.store.sqlite_path).resolve().parent.parent / "logs" / "proto" / ts.strftime("%Y")
         path = base / f"{ts.timetuple().tm_yday:03d}.log"
 
-        def _append() -> None:
+        async with self._proto_trace_lock:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
 
-        async with self._proto_trace_lock:
-            await asyncio.to_thread(_append)
 
-
-async def serve_forever(config: AppConfig) -> None:
-    app = ClusterApp(config)
+async def serve_forever(config: AppConfig, config_path: str | None = None) -> None:
+    app = ClusterApp(config, config_path=config_path)
     await app.start()
     logging.getLogger(__name__).info("pyCluster started")
 
@@ -1032,8 +1107,8 @@ async def serve_forever(config: AppConfig) -> None:
             await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def serve_core_forever(config: AppConfig) -> None:
-    app = ClusterApp(config)
+async def serve_core_forever(config: AppConfig, config_path: str | None = None) -> None:
+    app = ClusterApp(config, config_path=config_path)
     await app.start(with_public_web=False)
     logging.getLogger(__name__).info("pyCluster core started")
 

@@ -973,6 +973,37 @@ class SpotStore:
             self._conn.commit()
             return True
 
+    async def rename_call_namespace(self, old_call: str, new_call: str) -> bool:
+        old_c = old_call.strip().upper()
+        new_c = new_call.strip().upper()
+        if not old_c or not new_c or old_c == new_c:
+            return False
+        tables = (
+            "user_prefs",
+            "filter_rules",
+            "buddy_entries",
+            "usdb_entries",
+            "user_vars",
+            "user_startup_commands",
+        )
+        async with self._lock:
+            has_old = False
+            for table in tables:
+                row = self._conn.execute(f"SELECT 1 FROM {table} WHERE call = ? LIMIT 1", (old_c,)).fetchone()
+                if row is not None:
+                    has_old = True
+                    break
+            if not has_old:
+                return False
+            for table in tables:
+                clash = self._conn.execute(f"SELECT 1 FROM {table} WHERE call = ? LIMIT 1", (new_c,)).fetchone()
+                if clash is not None:
+                    raise ValueError(f"target callsign already exists in {table}")
+            for table in tables:
+                self._conn.execute(f"UPDATE {table} SET call = ? WHERE call = ?", (new_c, old_c))
+            self._conn.commit()
+            return True
+
     async def delete_user_registry(self, call: str) -> int:
         c = call.strip().upper()
         if not c:

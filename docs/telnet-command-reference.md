@@ -36,7 +36,7 @@ It also supports direct commands such as:
 | Command | Purpose |
 |---|---|
 | `help` | Show the main telnet help screen with examples and operator-aware sections. |
-| `show/commands [term]` | List available commands, optionally filtered by text. |
+| `show/commands [term]` | List available commands, grouped by family, optionally filtered by family or text. |
 | `show/shortcuts [term]` | Show useful abbreviations and direct aliases. |
 | `show/apropos <term>` | Search commands by keyword. |
 | `ping` | Quick liveness check. |
@@ -101,6 +101,7 @@ sh/dx day 2
 | `set/passphrase <text>` | Set a passphrase field. |
 | `unset/passphrase` | Clear passphrase field. |
 | `set/page <n>` | Set pagination length. |
+| `sysop/setprompt <template>` | Set the node telnet prompt template. |
 | `set/language <code>` | Set language preference. |
 | `set/echo` / `unset/echo` | Enable or disable echo preference. |
 | `set/here` / `unset/here` | Enable or disable `here` preference. |
@@ -343,6 +344,19 @@ These commands require sysop privilege and are hidden from ordinary command list
 | `sysop/audit [category] [limit]` | Show recent operator audit events. |
 | `sysop/services` | Show service-level state exposed by the core app. |
 | `sysop/restart <telnet\|sysopweb\|all>` | Restart telnet and/or sysop-web listeners inside the running app. |
+
+Prompt template tokens:
+
+- `{timestamp}`
+- `{node}`
+- `{callsign}`
+- `{suffix}`
+
+Default access note:
+
+- `Non-Authenticated` users may log in, but DX spot posting and announce posting are off by default until a sysop changes access level or applies an explicit `sysop/setaccess` override.
+
+Solar/sky views use the operator's stored QRA when available and fall back to the node grid square.
 
 ## Practical Starting Set
 

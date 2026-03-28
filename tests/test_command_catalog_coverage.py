@@ -63,7 +63,6 @@ PROBE_OVERRIDES: dict[str, str] = {
     "kill": "kill all",
     "leave": "leave dx",
     "merge": "merge show/time",
-    "mrtg": "mrtg users",
     "msg": "msg all coverage message",
     "read": "read 1",
     "reply": "reply 1 coverage reply",

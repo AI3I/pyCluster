@@ -319,7 +319,8 @@ tbody tr.new-spot  { animation:flash .8s ease-out; }
 td { padding:5px 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
 td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .time-cell    { font-family:'Courier New',monospace; font-size:.82rem; color:var(--text-time); letter-spacing:.03em; }
-.freq-cell    { font-family:'Courier New',monospace; font-size:.86rem; color:var(--text-mono); font-weight:600; }
+.freq-cell    { font-family:'Courier New',monospace; font-size:.86rem; color:var(--text-mono); font-weight:600; text-align:right; }
+.freq-head    { text-align:right; }
 .call-link    { color:var(--accent); text-decoration:none; font-weight:700; font-size:.86rem; letter-spacing:.02em; }
 .call-link:hover { text-decoration:underline; }
 .call-spotter { color:var(--text-spotter); font-weight:500; font-size:.82rem; text-decoration:none; }
@@ -979,7 +980,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
             <thead><tr>
               <th data-sort="time" class="sortable">UTC <span class="si"></span></th>
               <th>Band</th>
-              <th data-sort="freq" class="sortable">MHz <span class="si"></span></th>
+              <th data-sort="freq" class="sortable freq-head">Frequency <span class="si"></span></th>
               <th>Mode</th>
               <th data-sort="dx_call" class="sortable">DX Call <span class="si"></span></th>
               <th>DX Entity</th>
@@ -2610,7 +2611,7 @@ function showSpotModal(spot) {
   document.getElementById('sm-entity').textContent  = entityFlag(spot.dx_entity)+(spot.dx_entity||'—');
   document.getElementById('sm-cont').textContent    = spot.dx_continent||'—';
   document.getElementById('sm-cqz').textContent     = spot.dx_cqz||'—';
-  document.getElementById('sm-freq').textContent    = `${fmtFreq(spot.freq)} MHz · ${spot.band||'?'}`;
+  document.getElementById('sm-freq').textContent    = `${fmtFreq(spot.freq)} kHz · ${spot.band||'?'}`;
   document.getElementById('sm-mode').textContent    = spot.mode||'—';
   document.getElementById('sm-spotter').textContent = spot.spotter;
   const cmtEl = document.getElementById('sm-comment');
@@ -2653,9 +2654,8 @@ function closeSpotModal() {
 function fmtTime(iso) { try { return new Date(iso).toISOString().substring(11,16); } catch { return ''; } }
 function fmtFreq(khz) {
   if (!Number.isFinite(khz)) return '';
-  const mhz = khz / 1000;
-  const truncated = Math.floor(mhz * 1000 + Number.EPSILON) / 1000;
-  return truncated.toFixed(3);
+  const truncated = Math.floor(khz * 10 + Number.EPSILON) / 10;
+  return truncated.toFixed(1);
 }
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 const BAND_RANGES = [
@@ -2689,7 +2689,7 @@ function buildRow(spot) {
   const opacity= Math.max(0.38, 1-(Math.min(ageMin,60)/60)*0.62);
   const bandPill = band
     ? `<span class="band-pill" style="color:${col};border:1px solid ${col}44;background:${col}1a">${band}</span>`
-    : `<span class="band-pill" style="color:#666;border:1px solid #66666644;background:#6666661a;font-size:.65rem">${fmtFreq(spot.freq)}M</span>`;
+    : `<span class="band-pill" style="color:#666;border:1px solid #66666644;background:#6666661a;font-size:.65rem">${fmtFreq(spot.freq)} kHz</span>`;
   const tr = document.createElement('tr');
   tr.dataset.id = spot.id;
   tr.style.setProperty('--bc', col);
@@ -2881,7 +2881,7 @@ function showToast(spot) {
   div.innerHTML = `
     <div class="t-call">${spot.dx_call}${spot.activity?`<span class="act-badge act-${spot.activity}" style="margin-left:6px">${spot.activity}</span>`:''}
     </div>
-    <div class="t-sub">${spot.dx_entity||'—'} &bull; ${(spot.freq/1000).toFixed(3)} MHz ${spot.band}${spot.mode?' '+spot.mode:''}</div>
+    <div class="t-sub">${spot.dx_entity||'—'} &bull; ${fmtFreq(spot.freq)} kHz ${spot.band}${spot.mode?' '+spot.mode:''}</div>
     <div class="t-sub" style="color:var(--text-dim)">via ${spot.spotter}</div>`;
   div.addEventListener('click', () => {
     div.classList.add('texiting');
@@ -3430,7 +3430,7 @@ function checkWatchlist(spot) {
       <div class="t-call">⭐ ${spot.dx_call}
         <span style="font-size:0.60rem;color:var(--text-secondary);font-weight:400;margin-left:6px">${matched.type}: ${matched.value}</span>
       </div>
-      <div class="t-sub">${spot.dx_entity||'—'} · ${(spot.freq/1000).toFixed(3)} MHz ${spot.band}${spot.mode?' '+spot.mode:''}</div>
+      <div class="t-sub">${spot.dx_entity||'—'} · ${fmtFreq(spot.freq)} kHz ${spot.band}${spot.mode?' '+spot.mode:''}</div>
       <div class="t-sub" style="color:var(--text-dim)">via ${spot.spotter}</div>`;
     div.addEventListener('click', () => {
       div.classList.add('texiting');
@@ -3651,11 +3651,11 @@ async function loadSfiChart() {
 // ================================================================ CSV export
 function exportCSV() {
   const spots = filteredSpots();
-  const header = ['UTC','Band','MHz','Mode','DX Call','DX Entity','CQ Zone','Spotter','Spotter Entity','Comment'];
+  const header = ['UTC','Band','Frequency','Mode','DX Call','DX Entity','CQ Zone','Spotter','Spotter Entity','Comment'];
   const rows = spots.map(s => [
     new Date(s.time).toISOString().replace('T',' ').substring(0,19),
     s.band||'',
-    s.freq ? (s.freq/1000).toFixed(3) : '',
+    s.freq ? fmtFreq(s.freq) : '',
     s.mode||'',
     s.dx_call||'',
     s.dx_entity||'',

@@ -22,6 +22,7 @@ install_or_refresh_logrotate
 enable_service
 refresh_cty_best_effort
 bootstrap_sysop_account
+show_sysop_bootstrap_note
 restart_service_hard
 restart_web_service_hard
 enable_fail2ban_service

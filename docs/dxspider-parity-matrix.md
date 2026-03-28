@@ -4,8 +4,8 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 
 ## Summary
 
-- Total catalog commands: 277
-- Complete: 277
+- Total catalog commands: 271
+- Complete: 271
 - Partial: 0
 - Missing: 0
 
@@ -25,7 +25,7 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | Command | Status | Resolved | Note |
 |---|---|---|---|
 
-## Complete (277)
+## Complete (271)
 
 | Command | Status | Resolved | Note |
 |---|---|---|---|
@@ -94,7 +94,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `load/swop` | `complete` | `load/swop` |  |
 | `load/usdb` | `complete` | `load/usdb` |  |
 | `merge` | `complete` | `merge` |  |
-| `mrtg` | `complete` | `mrtg` |  |
 | `msg` | `complete` | `msg` |  |
 | `pc` | `complete` | `pc` |  |
 | `ping` | `complete` | `ping` |  |
@@ -113,8 +112,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `send` | `complete` | `send` |  |
 | `send_config` | `complete` | `send_config` |  |
 | `set/address` | `complete` | `set/address` |  |
-| `set/agwengine` | `complete` | `set/agwengine` |  |
-| `set/agwmonitor` | `complete` | `set/agwmonitor` |  |
 | `set/announce` | `complete` | `set/announce` |  |
 | `set/anntalk` | `complete` | `set/anntalk` |  |
 | `set/arcluster` | `complete` | `set/arcluster` |  |
@@ -124,7 +121,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `set/badword` | `complete` | `set/badword` |  |
 | `set/bbs` | `complete` | `set/bbs` |  |
 | `set/beep` | `complete` | `set/beep` |  |
-| `set/believe` | `complete` | `set/believe` |  |
 | `set/buddy` | `complete` | `set/buddy` |  |
 | `set/clx` | `complete` | `set/clx` |  |
 | `set/debug` | `complete` | `set/debug` |  |
@@ -135,7 +131,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `set/dxnet` | `complete` | `set/dxnet` |  |
 | `set/echo` | `complete` | `set/echo` |  |
 | `set/email` | `complete` | `set/email` |  |
-| `set/gtk` | `complete` | `set/gtk` |  |
 | `set/here` | `complete` | `set/here` |  |
 | `set/homebbs` | `complete` | `set/homebbs` |  |
 | `set/homenode` | `complete` | `set/homenode` |  |
@@ -162,7 +157,7 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `set/routepc19` | `complete` | `set/routepc19` |  |
 | `set/send_dbg` | `complete` | `set/senddbg` |  |
 | `set/sendpc16` | `complete` | `set/sendpc16` |  |
-| `set/spider` | `complete` | `set/spider` |  |
+| `set/dxspider` | `complete` | `set/dxspider` |  |
 | `set/startup` | `complete` | `set/startup` |  |
 | `set/sys_location` | `complete` | `set/syslocation` |  |
 | `set/sys_qra` | `complete` | `set/sysqra` |  |
@@ -172,7 +167,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `set/uservar` | `complete` | `set/uservar` |  |
 | `set/usstate` | `complete` | `set/usstate` |  |
 | `set/var` | `complete` | `set/var` |  |
-| `set/ve7cc` | `complete` | `set/ve7cc` |  |
 | `set/wantpc16` | `complete` | `set/wantpc16` |  |
 | `set/wantpc9x` | `complete` | `set/wantpc9x` |  |
 | `set/wcy` | `complete` | `set/wcy` |  |
@@ -260,8 +254,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `talk` | `complete` | `talk` |  |
 | `type` | `complete` | `type` |  |
 | `uncatchup` | `complete` | `uncatchup` |  |
-| `unset/agwengine` | `complete` | `unset/agwengine` |  |
-| `unset/agwmonitor` | `complete` | `unset/agwmonitor` |  |
 | `unset/announce` | `complete` | `unset/announce` |  |
 | `unset/anntalk` | `complete` | `unset/anntalk` |  |
 | `unset/baddx` | `complete` | `unset/baddx` |  |
@@ -269,7 +261,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `unset/badspotter` | `complete` | `unset/badspotter` |  |
 | `unset/badword` | `complete` | `unset/badword` |  |
 | `unset/beep` | `complete` | `unset/beep` |  |
-| `unset/believe` | `complete` | `unset/believe` |  |
 | `unset/buddy` | `complete` | `unset/buddy` |  |
 | `unset/debug` | `complete` | `unset/debug` |  |
 | `unset/dx` | `complete` | `unset/dx` |  |
@@ -278,7 +269,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `unset/dxitu` | `complete` | `unset/dxitu` |  |
 | `unset/echo` | `complete` | `unset/echo` |  |
 | `unset/email` | `complete` | `unset/email` |  |
-| `unset/gtk` | `complete` | `unset/gtk` |  |
 | `unset/here` | `complete` | `unset/here` |  |
 | `unset/hops` | `complete` | `unset/hops` |  |
 | `unset/isolate` | `complete` | `unset/isolate` |  |
@@ -296,7 +286,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `unset/startup` | `complete` | `unset/startup` |  |
 | `unset/talk` | `complete` | `unset/talk` |  |
 | `unset/usstate` | `complete` | `unset/usstate` |  |
-| `unset/ve7cc` | `complete` | `unset/ve7cc` |  |
 | `unset/wantpc16` | `complete` | `unset/wantpc16` |  |
 | `unset/wantpc9x` | `complete` | `unset/wantpc9x` |  |
 | `unset/wcy` | `complete` | `unset/wcy` |  |
@@ -308,4 +297,3 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `wx` | `complete` | `wx` |  |
 
 ## Prioritized Next Work
-

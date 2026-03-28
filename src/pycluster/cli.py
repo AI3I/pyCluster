@@ -92,12 +92,12 @@ def main() -> None:
 
     if args.cmd == "serve":
         cfg = load_config(args.config)
-        asyncio.run(serve_forever(cfg))
+        asyncio.run(serve_forever(cfg, config_path=args.config))
         return
 
     if args.cmd == "serve-core":
         cfg = load_config(args.config)
-        asyncio.run(serve_core_forever(cfg))
+        asyncio.run(serve_core_forever(cfg, config_path=args.config))
         return
 
     if args.cmd == "serve-public":
