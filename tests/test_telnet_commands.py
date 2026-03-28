@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import pytest
 
+from pycluster.auth import is_password_hash, verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.ctydat import load_cty, lookup
 from pycluster.models import Spot
@@ -80,6 +81,95 @@ def test_dispatch_show_and_aliases(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_show_commands_uses_hot_reloaded_strings_catalog(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "strings_cmd.db")
+        cfg = _mk_config(db)
+        strings_path = tmp_path / "strings.toml"
+        strings_path.write_text(
+            "[commands.show.sections]\nshow = \"Inspect commands:\"\n\n[commands.summary]\nshow_wcy = \"Read WCY bulletins from the catalog.\"\n",
+            encoding="utf-8",
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), strings_path=str(strings_path))
+        try:
+            _, out = await srv._execute_command("N0CALL", "show/commands")
+            assert "Inspect commands:" in out
+            assert "Read WCY bulletins from the catalog." in out
+
+            strings_path.write_text(
+                "[commands.show.sections]\nshow = \"Display commands:\"\n\n[commands.summary]\nshow_wcy = \"WCY from reloaded catalog.\"\n",
+                encoding="utf-8",
+            )
+            _, out = await srv._execute_command("N0CALL", "show/commands")
+            assert "Display commands:" in out
+            assert "WCY from reloaded catalog." in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_wcy_and_wwv_use_template_catalog(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "strings_events.db")
+        cfg = _mk_config(db)
+        strings_path = tmp_path / "strings.toml"
+        strings_path.write_text(
+            "[show.wcy]\nheader = \"WCY TABLE\"\nempty = \"No WCY bulletins stored.\"\n\n[show.wwv]\nheader = \"WWV TABLE\"\nempty = \"No WWV bulletins stored.\"\n",
+            encoding="utf-8",
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), strings_path=str(strings_path))
+        try:
+            _, out = await srv._execute_command("N0CALL", "show/wcy")
+            assert "No WCY bulletins stored." in out
+            _, out = await srv._execute_command("N0CALL", "show/wwv")
+            assert "No WWV bulletins stored." in out
+
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_bulletin("wcy", "DK0WCY", "LOCAL", now, "SFI=120 A=4 K=2 spots=33 expk=3 aurora=LOW xray=QUIET storm=NONE")
+            await store.add_bulletin("wwv", "WWV", "LOCAL", now, "SFI=121 A=5 K=3 Solar flux rising slowly")
+            _, out = await srv._execute_command("N0CALL", "show/wcy")
+            assert out.startswith("WCY TABLE\r\n")
+            _, out = await srv._execute_command("N0CALL", "show/wwv")
+            assert out.startswith("WWV TABLE\r\n")
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_welcome_block_uses_template_catalog(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "strings_welcome.db")
+        cfg = _mk_config(db)
+        cfg.node.node_call = "AI3I-15"
+        cfg.node.qth = "Western Pennsylvania"
+        cfg.node.welcome_title = "Welcome"
+        cfg.node.website_url = "https://example.org"
+        cfg.node.support_contact = "ops@example.org"
+        strings_path = tmp_path / "strings.toml"
+        strings_path.write_text(
+            "[welcome.greeting]\nnamed = \"Hello {call} from {title}.\"\n\n[welcome]\nconnected = \"Connected to {node_call} in {qth}.\"\nstatus = \"Status: {local_users} users, uptime {uptime}\"\nwebsite = \"Site: {website}\"\ncontact = \"Help: {support}\"\n\n[welcome.motd]\ndivider = \"----\"\n",
+            encoding="utf-8",
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), strings_path=str(strings_path))
+        try:
+            out = await srv._welcome_block("N0CALL")
+            assert "Hello N0CALL from Welcome." in out
+            assert "Connected to AI3I-15 in Western Pennsylvania." in out
+            assert "Site: https://example.org" in out
+            assert "Help: ops@example.org" in out
+            assert "Status: 0 users, uptime" in out
+            assert "----" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_prompt_uses_configured_node_call_only(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "prompt.db")
@@ -89,10 +179,10 @@ def test_prompt_uses_configured_node_call_only(tmp_path) -> None:
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         try:
             prompt = await srv._prompt("N0CALL")
-            assert prompt.startswith("AI3I-15> [") and prompt.endswith(" UTC] ")
+            assert prompt.startswith("[") and "] AI3I-15> " in prompt and prompt.endswith("> ")
             await store.set_user_pref(cfg.node.node_call, "node_call", "AI3I-7", int(datetime.now(timezone.utc).timestamp()))
             prompt = await srv._prompt("N0CALL")
-            assert prompt.startswith("AI3I-7> [") and prompt.endswith(" UTC] ")
+            assert prompt.startswith("[") and "] AI3I-15> " in prompt and prompt.endswith("> ")
         finally:
             await store.close()
 
@@ -110,9 +200,26 @@ def test_sysop_prompt_uses_hash_suffix(tmp_path) -> None:
             now = int(datetime.now(timezone.utc).timestamp())
             await store.upsert_user_registry("AI3I", now, privilege="sysop")
             prompt_sysop = await srv._prompt("AI3I")
-            assert prompt_sysop.startswith("AI3I-16# [") and prompt_sysop.endswith(" UTC] ")
+            assert prompt_sysop.startswith("[") and "] AI3I-16# " in prompt_sysop and prompt_sysop.endswith("# ")
             prompt_user = await srv._prompt("N0CALL")
-            assert prompt_user.startswith("AI3I-16> [") and prompt_user.endswith(" UTC] ")
+            assert prompt_user.startswith("[") and "] AI3I-16> " in prompt_user and prompt_user.endswith("> ")
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_prompt_supports_callsign_token(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "prompt_callsign.db")
+        cfg = _mk_config(db)
+        cfg.node.node_call = "AI3I-15"
+        cfg.node.prompt_template = "[{timestamp}] {callsign}@{node}{suffix}"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            prompt = await srv._prompt("K1ABC")
+            assert "] K1ABC@AI3I-15> " in prompt
         finally:
             await store.close()
 
@@ -825,6 +932,39 @@ def test_show_proto_flapping_health(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_show_proto_ignores_expired_flap_scores(tmp_path) -> None:
+    async def _stats():
+        return {
+            "peer1": {"parsed_frames": 1, "sent_frames": 1, "dropped_frames": 0, "policy_dropped": 0, "profile": "spider", "inbound": False},
+        }
+
+    async def run() -> None:
+        db = str(tmp_path / "show_proto_expired_flap.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        old = now - 900
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.pc24.call", "K1ABC", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.pc24.flag", "1", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.flap_score", "5", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.change_count", "9", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.last_epoch", str(now), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.last_change_epoch", str(old), now)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), link_stats_fn=_stats)
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            _, out = await srv._execute_command("N0CALL", "show/proto")
+            assert "health=ok" in out
+            assert "changes=9 flap=5" in out
+
+            _, out = await srv._execute_command("N0CALL", "stat/proto")
+            assert "Protocol summary: peers=1 known=1 ok=1 degraded=0 flapping=0 stale=0 unknown=0" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_show_proto_history_flag(tmp_path) -> None:
     async def _stats():
         return {
@@ -988,6 +1128,7 @@ def test_show_and_stat_protoalerts(tmp_path) -> None:
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.pc24.flag", "1", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.flap_score", "9", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.last_epoch", str(now), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.last_change_epoch", str(now), now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer3.pc24.call", "K3ABC", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer3.pc24.flag", "1", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer3.last_epoch", str(old), now)
@@ -1099,6 +1240,7 @@ def test_proto_threshold_commands_and_show(tmp_path) -> None:
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.pc24.flag", "1", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.flap_score", "4", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.last_epoch", str(now), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.last_change_epoch", str(now), now)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), link_stats_fn=_stats)
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
@@ -1174,6 +1316,7 @@ def test_show_proto_thresholds_can_be_set_via_set_var(tmp_path) -> None:
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.pc24.flag", "1", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.flap_score", "4", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.last_epoch", str(now), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.last_change_epoch", str(now), now)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), link_stats_fn=_stats)
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
@@ -1390,6 +1533,32 @@ def test_show_dx_supports_exact_prefix_spotter_and_day_filters(tmp_path) -> None
     asyncio.run(run())
 
 
+def test_publish_spot_and_show_dx_strip_ssid_in_display_only(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "spot_display_strip_ssid.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(call="N0CALL", writer=writer, connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            spot = Spot(21351.0, "CY0S", now, "ssb", "W7XE-11", "WA9PIE-2", "")
+            await srv.publish_spot(spot)
+            live = bytes(writer.buffer).decode("utf-8", "replace")
+            assert "DX de W7XE:" in live
+            assert "W7XE-11" not in live
+
+            await store.add_spot(spot)
+            _, out = await srv._execute_command("N0CALL", "show/dx 1")
+            assert "<W7XE>" in out
+            assert "W7XE-11" not in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_show_dx_wildcard_and_show_dxcc_alias_match_same_spots(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "show_dxcc_alias.db")
@@ -1549,6 +1718,8 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
             connected_at=datetime.now(timezone.utc),
         )
         try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, privilege="user")
             _, out = await srv._execute_command("N0CALL", "msg K1ABC hello there")
             assert "Message #" in out and "delivered to 1 session(s)." in out
             assert b"MSG#" in bytes(w2.buffer)
@@ -1808,6 +1979,8 @@ def test_show_contest_satellite_and_425(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             from pycluster.models import parse_spot_record
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, privilege="user")
 
             await store.add_spot(
                 parse_spot_record("145990.0^AO-91^1772335320^SAT FM^N0CALL^226^226^N2WQ-1^8^5^7^4^^^127.0.0.1")
@@ -1904,6 +2077,53 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_dxspider_shorthand_slash_forms_and_muf_history(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "shorthand_slash_forms.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(
+            call="N0CALL",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_spot(Spot(24915.0, "K1ABC", now, "FT8", "N0CALL", "N2WQ-1", ""))
+            await store.add_spot(Spot(14074.0, "W1AW", now, "FT8", "N0CALL", "N2WQ-1", ""))
+            await store.add_bulletin("wcy", "DK0WCY", "LOCAL", now, "SFI=162 A=16 K=4 spots=121 expk=0 aurora=act xray=act storm=no")
+            await store.add_bulletin("wwv", "WWV", "LOCAL", now, "SFI=150 A=6 K=2 No Storms -> No Storms")
+            await store.add_bulletin("wwv", "WWV", "LOCAL", now - 3600, "SFI=145 A=5 K=1 Quiet")
+
+            _, out = await srv._execute_command("N0CALL", "sh/dx/1 on 12m")
+            assert "K1ABC" in out
+            assert "W1AW" not in out
+
+            _, out = await srv._execute_command("N0CALL", "sh/wcy/1")
+            assert "Date        Hour   SFI   A   K Exp.K" in out
+            assert "DK0WCY" in out
+
+            _, out = await srv._execute_command("N0CALL", "sh/wwv/2")
+            assert "Date        Hour   SFI   A   K Forecast" in out
+            assert "No Storms -> No Storms" in out
+            assert "Quiet" in out
+
+            _, out = await srv._execute_command("N0CALL", "sh/muf 2")
+            assert "Date        Hour   SFI   A   K MUF3000" in out
+            assert "150" in out
+            assert "145" in out
+
+            _, out = await srv._execute_command("N0CALL", "sh/muf/2 l")
+            assert "Date        Hour   SFI   A   K MUF3000 Forecast" in out
+            assert "No Storms -> No Storms" in out
+            assert "<WWV>" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_help_and_nowrap_behavior(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "help_nowrap.db")
@@ -1956,10 +2176,10 @@ def test_dup_controls_and_clear_dupefile(tmp_path) -> None:
         )
         try:
             _, out = await srv._execute_command("N0CALL", "set/dupspots")
-            assert "Dup spots set to on for N0CALL." in out
+            assert "Duplicate Spots set to on for N0CALL." in out
             assert await store.spot_dupe_enabled() is True
             _, out = await srv._execute_command("N0CALL", "set/dupann")
-            assert "Dup ann set to on for N0CALL." in out
+            assert "Duplicate Ann set to on for N0CALL." in out
 
             _, out = await srv._execute_command("N0CALL", "show/dupspots")
             assert "dup_spots=on" in out
@@ -2208,6 +2428,8 @@ def test_misc_top_level_and_bulletin_commands(tmp_path) -> None:
             connected_at=datetime.now(timezone.utc),
         )
         try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, privilege="user")
             _, out = await srv._execute_command("N0CALL", "ping K1ABC")
             assert "PONG K1ABC" in out
 
@@ -2394,9 +2616,6 @@ def test_top_level_compat_batch_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", f"send_config {cfg_out}")
             assert "Configuration snapshot written to" in out
             assert Path(cfg_out).exists()
-            _, out = await srv._execute_command("N0CALL", "mrtg users")
-            assert "uptime=" in out
-            assert cfg.node.node_call in out
             _, out = await srv._execute_command("N0CALL", "pc")
             assert "pc: supported=" in out
             _, out = await srv._execute_command("N0CALL", "pc 24")
@@ -2418,7 +2637,7 @@ def test_top_level_compat_batch_commands(tmp_path) -> None:
             assert "rcmd=SH/DX 5" in out
 
             _, out = await srv._execute_command("N0CALL", "privilege")
-            assert "Privilege for N0CALL set to" in out
+            assert "Access level for N0CALL: sysop" in out
 
             _, out = await srv._execute_command("N0CALL", "save")
             assert "Saved " in out
@@ -2496,36 +2715,6 @@ def test_db_compat_commands(tmp_path) -> None:
             await store.close()
 
     asyncio.run(run())
-
-
-def test_mrtg_metrics_and_agwrestart_counter(tmp_path) -> None:
-    async def run() -> None:
-        db = str(tmp_path / "mrtg_metrics.db")
-        cfg = _mk_config(db)
-        store = SpotStore(db)
-        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
-        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
-        try:
-            now = int(datetime.now(timezone.utc).timestamp())
-            await store.set_user_pref("N0CALL", "privilege", "sysop", now)
-            await store.add_message("K1ABC", "N0CALL", now, "hello")
-
-            _, out = await srv._execute_command("N0CALL", "mrtg unread")
-            lines = [ln for ln in out.splitlines() if ln.strip()]
-            assert len(lines) >= 4
-            assert lines[0] == "MRTG export:"
-            assert any("Value: 1" in ln for ln in lines)
-            assert any(f"Node: {cfg.node.node_call}" in ln for ln in lines)
-
-            _, out = await srv._execute_command("N0CALL", "agwrestart")
-            assert "(count 1)." in out
-            _, out = await srv._execute_command("N0CALL", "agwrestart")
-            assert "(count 2)." in out
-        finally:
-            await store.close()
-
-    asyncio.run(run())
-
 
 def test_dbremove_granular_tables(tmp_path) -> None:
     async def run() -> None:
@@ -2960,6 +3149,8 @@ def test_dx_command_posts_and_show_shorthand_still_works(tmp_path) -> None:
             connected_at=datetime.now(timezone.utc),
         )
         try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, privilege="user")
             _, out = await srv._execute_command("N0CALL", "dx 14074.0 K1ABC FT8 test")
             assert "dx posted 14074.0 K1ABC" in out
             assert await store.count_spots() == 1
@@ -3567,7 +3758,9 @@ def test_sysop_namespace_handles_user_management(tmp_path) -> None:
             assert "sysop/password K1ABC" in out
             assert "sysop/blocklogin K1ABC on" in out
 
-            assert await store.get_user_pref("K1ABC", "password") == "supersecret"
+            saved = await store.get_user_pref("K1ABC", "password")
+            assert is_password_hash(saved)
+            assert verify_password("supersecret", saved)
             assert await store.get_user_pref("K1ABC", "blocked_login") == "on"
 
             _, out = await srv._execute_command("AI3I", "sysop/clearpassword K1ABC")
@@ -3760,6 +3953,43 @@ def test_telnet_login_denied_when_telnet_access_disabled(tmp_path) -> None:
             await writer.wait_closed()
         finally:
             await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_non_authenticated_users_are_read_only_by_default(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "default_access_template.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(
+            call="AI3I",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        srv._sessions[2] = Session(
+            call="K1ABC",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I", now, privilege="sysop")
+            await store.upsert_user_registry("K1ABC", now, privilege="")
+
+            _, out = await srv._execute_command("AI3I", "sysop/access K1ABC")
+            assert "Login channels: T W" in out
+            assert "spots" in out and "off" in out
+            assert "announce" in out and "off" in out
+
+            _, out = await srv._execute_command("K1ABC", "dx 14074.0 N0TST test")
+            assert "dx: not allowed via telnet" in out
+
+            _, out = await srv._execute_command("K1ABC", "announce full hello")
+            assert "announce: not allowed via telnet" in out
+        finally:
             await store.close()
 
     asyncio.run(run())
@@ -4166,7 +4396,9 @@ def test_telnet_first_login_forces_password_creation(tmp_path) -> None:
             hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
             assert b"Password set for N0CALL." in hello
             assert b"Welcome" in hello
-            assert await store.get_user_pref("N0CALL", "password") == "pw1"
+            saved = await store.get_user_pref("N0CALL", "password")
+            assert is_password_hash(saved)
+            assert verify_password("pw1", saved)
             w1.close()
             await w1.wait_closed()
 

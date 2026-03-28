@@ -6,7 +6,7 @@ import pytest
 
 from pycluster.app import ClusterApp
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
-from pycluster.node_link import NodeLinkEngine
+from pycluster.node_link import LinkPeer, NodeLinkEngine
 from pycluster.protocol import WirePcFrame, parse_wire_pc_frame, serialize_wire_pc_frame
 
 
@@ -135,6 +135,28 @@ def test_node_link_remote_disconnect_cleans_up_inbound_peer() -> None:
     asyncio.run(run())
 
 
+def test_node_link_send_failure_drops_dead_peer() -> None:
+    class _FailingConn:
+        async def send_line(self, _line: str) -> None:
+            raise ConnectionResetError("Connection lost")
+
+        async def close(self) -> None:
+            return
+
+    async def run() -> None:
+        engine = NodeLinkEngine()
+        engine._peers["peer1"] = LinkPeer(
+            name="peer1",
+            conn=_FailingConn(),
+            inbound=False,
+        )
+        with pytest.raises(ConnectionResetError):
+            await engine.send("peer1", WirePcFrame("PC20", [""]))
+        assert await engine.peer_names() == []
+
+    asyncio.run(run())
+
+
 def test_node_link_broadcast_multi_peer_respects_profile_tx_policy() -> None:
     async def run() -> None:
         listener = NodeLinkEngine()
@@ -247,13 +269,13 @@ def test_app_protocol_trace_writes_rx_tx_lines(tmp_path) -> None:
         try:
             await app._trace_protocol_line("PEER1", "tx", "PC11^14074.0^N0TST^11-Mar-2026^1900Z^test^AI3I^AI3I-16^H1^~")
             await app._trace_protocol_line("PEER1", "rx", "PC51^AI3I-16^AI3I-15^1^")
-            path = tmp_path / "logs" / "proto" / datetime.now(timezone.utc).strftime("%Y") / f"{datetime.now(timezone.utc).timetuple().tm_yday:03d}.log"
+            path = tmp_path.parent / "logs" / "proto" / datetime.now(timezone.utc).strftime("%Y") / f"{datetime.now(timezone.utc).timetuple().tm_yday:03d}.log"
             assert path.exists()
             text = path.read_text(encoding="utf-8")
             assert "PEER1 tx PC11^14074.0^N0TST" in text
             assert "PEER1 rx PC51^AI3I-16^AI3I-15^1^" in text
         finally:
-            await app.store.close()
+            await app.stop()
 
     from datetime import datetime, timezone
 

@@ -33,7 +33,7 @@ def dxspider_compat_pc18(proto: str = "5457") -> str:
     software = (
         f"DXSpider Version: {DXSPIDER_COMPAT_VERSION} "
         f"Build: {DXSPIDER_COMPAT_BUILD} "
-        f"Git: pyCluster/{__version__} pc9x"
+        f"Git: pyCluster/{__version__}"
     )
     return f"PC18^{software}^{proto}^"
 

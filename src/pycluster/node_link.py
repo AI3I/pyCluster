@@ -164,7 +164,19 @@ class NodeLinkEngine:
 
         text = serialize_wire_pc_frame(frame)
         await self._trace(peer_name, "tx", text)
-        await peer.conn.send_line(text)
+        try:
+            await peer.conn.send_line(text)
+        except (ConnectionError, OSError) as exc:
+            async with self._lock:
+                current = self._peers.get(peer_name)
+                if current is peer:
+                    self._peers.pop(peer_name, None)
+            await self._trace(peer_name, "disconnect", f"tx_error {exc}")
+            try:
+                await asyncio.wait_for(peer.conn.close(), timeout=1.0)
+            except Exception:
+                pass
+            raise
         peer.sent_frames += 1
         peer.last_tx_epoch = int(datetime.now(timezone.utc).timestamp())
         peer.last_pc_type = frame.pc_type

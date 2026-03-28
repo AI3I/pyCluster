@@ -7,6 +7,7 @@ import secrets
 import string
 from pathlib import Path
 
+from pycluster.auth import hash_password
 from pycluster.config import load_config
 from pycluster.store import SpotStore
 
@@ -52,7 +53,7 @@ async def _run(config_path: str, output_path: str) -> int:
             privilege="sysop",
         )
         password = _random_password(16)
-        await store.set_user_pref("SYSOP", "password", password, now)
+        await store.set_user_pref("SYSOP", "password", hash_password(password), now)
     finally:
         await store.close()
 

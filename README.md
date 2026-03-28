@@ -169,7 +169,7 @@ sudo ./deploy/install.sh
 sudo ./deploy/doctor.sh
 ```
 
-<mark><strong>Initial System Operator web access uses the <code>SYSOP</code> account. The generated 16-character bootstrap password is written to <code>/root/pycluster-initial-sysop.txt</code>.</strong></mark>
+<mark><strong>Initial System Operator web access uses the <code>SYSOP</code> account. The generated bootstrap password is printed prominently by the installer, written to <code>/root/pycluster-initial-sysop.txt</code>, and interactive installs pause for explicit acknowledgement so the credentials are not missed.</strong></mark>
 
 Typical upgrade:
 

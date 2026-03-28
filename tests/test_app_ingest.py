@@ -331,12 +331,17 @@ def test_ingest_pc24_pc50_pc51_record_proto_state(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_proto_state.db")
         app = ClusterApp(_mk_config(db))
+        sent: list[tuple[str, WirePcFrame]] = []
         try:
+            async def _send(peer: str, frame: WirePcFrame) -> None:
+                sent.append((peer, frame))
+
+            app.node_link.send = _send  # type: ignore[method-assign]
             m24 = Pc24Message.from_fields(["OH8X", "1", "H29", ""])
             await app._handle_node_link_item("PEER1", WirePcFrame("PC24", m24.to_fields()), m24)
             m50 = Pc50Message.from_fields(["W3LPL", "63", "H97", ""])
             await app._handle_node_link_item("PEER1", WirePcFrame("PC50", m50.to_fields()), m50)
-            m51 = Pc51Message.from_fields(["AI3I-15", "WB3FFV-2", "1", ""])
+            m51 = Pc51Message.from_fields([app.config.node.node_call, "WB3FFV-2", "1", ""])
             await app._handle_node_link_item("PEER1", WirePcFrame("PC51", m51.to_fields()), m51)
             # Toggle a protocol value twice to exercise transition/flap counters.
             m24b = Pc24Message.from_fields(["OH8X", "0", "H29", ""])
@@ -349,7 +354,7 @@ def test_ingest_pc24_pc50_pc51_record_proto_state(tmp_path) -> None:
             assert prefs.get("proto.peer.peer1.pc24.flag") == "1"
             assert prefs.get("proto.peer.peer1.pc50.call") == "W3LPL"
             assert prefs.get("proto.peer.peer1.pc50.count") == "63"
-            assert prefs.get("proto.peer.peer1.pc51.to") == "AI3I-15"
+            assert prefs.get("proto.peer.peer1.pc51.to") == app.config.node.node_call
             assert prefs.get("proto.peer.peer1.pc51.from") == "WB3FFV-2"
             assert prefs.get("proto.peer.peer1.pc51.value") == "1"
             assert int(prefs.get("proto.peer.peer1.last_epoch", "0")) > 0
@@ -361,6 +366,12 @@ def test_ingest_pc24_pc50_pc51_record_proto_state(tmp_path) -> None:
             assert isinstance(hist, list)
             assert len(hist) >= 2
             assert any(str(ev.get("key", "")) == "pc24.flag" for ev in hist if isinstance(ev, dict))
+            assert sent == [
+                    (
+                        "PEER1",
+                        WirePcFrame("PC51", ["WB3FFV-2", app.config.node.node_call, "0", ""]),
+                    )
+                ]
         finally:
             await app.store.close()
 
@@ -618,6 +629,8 @@ def test_outbound_bulletin_relay_with_category_prefix(tmp_path) -> None:
         app.node_link.send = _send  # type: ignore[method-assign]
         app.telnet._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.upsert_user_registry("N0CALL", now, privilege="user")
             await app.telnet._execute_command("N0CALL", "set/routepc19")
             await app.telnet._execute_command("N0CALL", "announce full test relay")
             await app.telnet._execute_command("N0CALL", "wcy A=8 K=2")
@@ -664,6 +677,62 @@ def test_legacy_pc16_sync_tracks_active_calls(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_legacy_pc16_sync_drops_dead_peer_without_traceback(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "legacy_pc16_dead_peer.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            async def _peer_names():
+                return ["peer1"]
+
+            async def _send(_peer, _frame):
+                raise ConnectionResetError("Connection lost")
+
+            app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            app._legacy_dxspider_peers.add("peer1")
+
+            await app._sync_legacy_user_roster()
+
+            assert "peer1" not in app._legacy_dxspider_peers
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_dxspider_heartbeat_sends_pc20_and_ignores_dead_peers(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "dxspider_heartbeat.db")
+        app = ClusterApp(_mk_config(db))
+        sent = []
+        try:
+            async def _stats():
+                return {
+                    "peer1": {"profile": "dxspider", "inbound": False},
+                    "peer2": {"profile": "arcluster", "inbound": False},
+                    "peer3": {"profile": "dxspider", "inbound": False},
+                    "peer4": {"profile": "dxspider", "inbound": True},
+                }
+
+            async def _send(peer, frame):
+                if peer == "peer3":
+                    raise ConnectionResetError("Connection lost")
+                sent.append((peer, frame.pc_type, list(frame.payload_fields)))
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+
+            count = await app.heartbeat_once()
+
+            assert count == 1
+            assert sent == [("peer1", "PC20", [""])]
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_legacy_dxspider_peer_uses_pc11_for_spot_relay(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "legacy_pc11_spot.db")
@@ -697,6 +766,49 @@ def test_legacy_dxspider_peer_uses_pc11_for_spot_relay(tmp_path) -> None:
             await app.store.close()
 
     asyncio.run(run())
+
+
+def test_inbound_pc61_spot_relays_to_other_peers_but_not_origin(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "inbound_pc61_relay.db")
+        app = ClusterApp(_mk_config(db))
+        captured = []
+        try:
+            async def _peer_names():
+                return ["PEER1", "PEER2"]
+
+            async def _send(peer, frame):
+                captured.append((peer, frame))
+
+            app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            app._legacy_dxspider_peers.add("PEER2")
+
+            msg = Pc61Message(
+                freq_khz="14074.0",
+                dx_call="W1AW",
+                date_token="28-Mar-2026",
+                time_token="2046Z",
+                info="FT8",
+                spotter="N9XYZ",
+                source_node="REMOTE1",
+                ip="127.0.0.1",
+                hops_token="H1",
+                trailer="~",
+            )
+            await app._handle_node_link_item("PEER1", WirePcFrame("PC61", msg.to_fields()), msg)
+
+            assert [peer for peer, _ in captured] == ["PEER2"]
+            frame = captured[0][1]
+            assert frame.pc_type == "PC11"
+            assert frame.payload_fields[1] == "W1AW"
+            assert frame.payload_fields[5] == "N9XYZ"
+            assert frame.payload_fields[6] == "REMOTE1"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
 
 
 def test_outbound_relay_category_policy(tmp_path) -> None:
@@ -770,6 +882,8 @@ def test_outbound_spot_relay_respects_policy(tmp_path) -> None:
         app.node_link.send = _send  # type: ignore[method-assign]
         app.telnet._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.upsert_user_registry("N0CALL", now, privilege="user")
             await app.telnet._execute_command("N0CALL", "dx 14074.0 K1ABC test1")
             assert any(f.pc_type == "PC61" for f in captured)
 
@@ -863,6 +977,7 @@ def test_peer_category_policy_only_blocks_specific_category(tmp_path) -> None:
         app.telnet._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.upsert_user_registry("N0CALL", now, privilege="user")
             await app.store.set_user_pref("N0CALL", "routepc19", "on", now)
             await app.store.set_user_pref("N0CALL", "relay.peer.peer2.spots", "off", now)
 
@@ -1343,6 +1458,7 @@ def test_app_wire_multi_peer_mixed_chat_and_spot_policies(tmp_path) -> None:
             peer1, peer2 = peers
 
             now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.upsert_user_registry("N0CALL", now, privilege="user")
             await app.store.set_user_pref("N0CALL", "routepc19", "on", now)
             await app.store.set_user_pref("N0CALL", f"relay.peer.{peer2.lower()}.chat", "off", now)
             await app.store.set_user_pref("N0CALL", f"relay.peer.{peer1.lower()}.spots", "off", now)
@@ -1428,7 +1544,7 @@ def test_app_wire_proto_state_burst_records_peer_history(tmp_path) -> None:
 
             await remote.send("uplink", WirePcFrame("PC24", ["OH8X", "1", "H29", ""]))
             await remote.send("uplink", WirePcFrame("PC50", ["W3LPL", "63", "H97", ""]))
-            await remote.send("uplink", WirePcFrame("PC51", ["AI3I-15", "WB3FFV-2", "1", ""]))
+            await remote.send("uplink", WirePcFrame("PC51", [cfg.node.node_call, "WB3FFV-2", "1", ""]))
             await remote.send("uplink", WirePcFrame("PC24", ["OH8X", "0", "H29", ""]))
             await remote.send("uplink", WirePcFrame("PC24", ["OH8X", "1", "H29", ""]))
 
@@ -1441,7 +1557,7 @@ def test_app_wire_proto_state_burst_records_peer_history(tmp_path) -> None:
             assert prefs.get(f"proto.peer.{tag}.pc24.flag") == "1"
             assert prefs.get(f"proto.peer.{tag}.pc50.call") == "W3LPL"
             assert prefs.get(f"proto.peer.{tag}.pc50.count") == "63"
-            assert prefs.get(f"proto.peer.{tag}.pc51.to") == "AI3I-15"
+            assert prefs.get(f"proto.peer.{tag}.pc51.to") == cfg.node.node_call
             assert prefs.get(f"proto.peer.{tag}.pc51.from") == "WB3FFV-2"
             assert prefs.get(f"proto.peer.{tag}.pc51.value") == "1"
             assert int(prefs.get(f"proto.peer.{tag}.flap_score", "0")) >= 1
@@ -1456,6 +1572,7 @@ def test_app_wire_proto_state_burst_records_peer_history(tmp_path) -> None:
             assert sum(int(st.get("rx_by_type", {}).get("PC24", 0)) for st in inbound) >= 3
             assert sum(int(st.get("rx_by_type", {}).get("PC50", 0)) for st in inbound) >= 1
             assert sum(int(st.get("rx_by_type", {}).get("PC51", 0)) for st in inbound) >= 1
+            assert sum(int(st.get("tx_by_type", {}).get("PC51", 0)) for st in inbound) >= 1
         finally:
             await remote.stop()
             await app.stop()

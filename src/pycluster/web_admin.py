@@ -11,8 +11,12 @@ import subprocess
 import time
 from urllib.parse import parse_qs, urlparse
 
-from .config import AppConfig, node_presentation_defaults, parse_telnet_ports
+from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, default_access_allowed
+from .auth import hash_password, is_password_hash, verify_password
+from .config import AppConfig, node_presentation_defaults, parse_telnet_ports, save_config
 from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
+from .geocode import estimate_location_from_locator, resolve_location_to_coords
+from .maidenhead import coords_to_locator, extract_locator
 from .models import Spot, is_valid_call, normalize_call
 from .store import SpotStore
 
@@ -21,6 +25,24 @@ LOG = logging.getLogger(__name__)
 _AUTHFAIL_RE = re.compile(
     r"^(?P<when>\S+\s+\S+)\s+\w+\s+AUTHFAIL channel=(?P<channel>[a-z-]+)\s+ip=(?P<ip>\S+)\s+call=(?P<call>\S+)\s+reason=(?P<reason>[a-z_]+)$"
 )
+_CONFIG_AUTH_NODE_FIELDS = {
+    "node_call",
+    "node_alias",
+    "owner_name",
+    "qth",
+    "node_locator",
+    "branding_name",
+    "welcome_title",
+    "welcome_body",
+    "login_tip",
+    "show_status_after_login",
+    "require_password",
+    "support_contact",
+    "website_url",
+    "motd",
+    "prompt_template",
+    "telnet_ports",
+}
 
 
 def _is_valid_admin_record_call(call: str) -> bool:
@@ -52,6 +74,7 @@ class WebAdminServer:
         telnet_rebind_fn=None,
         event_log_fn=None,
         audit_rows_fn=None,
+        config_path: str | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -74,6 +97,7 @@ class WebAdminServer:
         self.telnet_rebind_fn = telnet_rebind_fn
         self.event_log_fn = event_log_fn
         self.audit_rows_fn = audit_rows_fn
+        self.config_path = str(config_path).strip() if config_path else ""
         self._web_sessions: dict[str, tuple[str, int, bool]] = {}
         self._server: asyncio.AbstractServer | None = None
 
@@ -86,7 +110,10 @@ class WebAdminServer:
 
     async def _node_presentation(self) -> dict[str, str]:
         data = node_presentation_defaults(self.config.node)
-        data.update(await self.store.list_user_prefs(self.config.node.node_call))
+        prefs = await self.store.list_user_prefs(self.config.node.node_call)
+        for key in _CONFIG_AUTH_NODE_FIELDS:
+            prefs.pop(key, None)
+        data.update(prefs)
         return data
 
     def _node_presentation_json(self, data: dict[str, str]) -> dict[str, object]:
@@ -110,7 +137,11 @@ class WebAdminServer:
             "support_contact": str(data.get("support_contact", "")).strip(),
             "website_url": str(data.get("website_url", "")).strip(),
             "motd": str(data.get("motd", "")).rstrip(),
-            "telnet_ports": str(data.get("telnet_ports", "")).strip(),
+            "prompt_template": str(data.get("prompt_template", "")).strip(),
+            "telnet_ports": (
+                str(data.get("telnet_ports", "")).strip()
+                or ",".join(str(p) for p in (self.config.telnet.ports or (self.config.telnet.port,)))
+            ),
             "retention_enabled": str(data.get("retention.enabled", "on")).strip().lower() in {"1", "on", "yes", "true"},
             "retention_spots_days": max(1, min(3650, _to_int(data.get("retention.spots_days"), 30))),
             "retention_messages_days": max(1, min(3650, _to_int(data.get("retention.messages_days"), 90))),
@@ -329,8 +360,21 @@ class WebAdminServer:
     def _access_pref_key(self, channel: str, capability: str) -> str:
         return f"access.{channel}.{capability}"
 
-    def _access_default(self, channel: str, capability: str) -> bool:
-        return True
+    async def _access_subject(self, call: str) -> tuple[str, bool]:
+        target = call.upper()
+        base = target.split("-", 1)[0]
+        blocked_login = False
+        privilege = ""
+        for candidate in (target, base):
+            raw_block = await self.store.get_user_pref(candidate, "blocked_login")
+            if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
+                blocked_login = True
+            row = await self.store.get_user_registry(candidate)
+            if row and not privilege:
+                privilege = str(row["privilege"] or "").strip().lower()
+            if not privilege:
+                privilege = str(await self.store.get_user_pref(candidate, "privilege") or "").strip().lower()
+        return privilege, blocked_login
 
     async def _access_allowed(self, call: str, channel: str, capability: str) -> bool:
         target = call.upper()
@@ -340,13 +384,14 @@ class WebAdminServer:
             if raw is None or str(raw).strip() == "":
                 continue
             return self._is_on_value(str(raw))
-        return self._access_default(channel, capability)
+        privilege, blocked_login = await self._access_subject(call)
+        return default_access_allowed(privilege, blocked_login, channel, capability)
 
     def _access_channels(self) -> tuple[str, str]:
-        return ("telnet", "web")
+        return ACCESS_CHANNELS  # type: ignore[return-value]
 
     def _access_capabilities(self) -> tuple[str, str, str, str, str, str, str]:
-        return ("login", "spots", "chat", "announce", "wx", "wcy", "wwv")
+        return ACCESS_CAPABILITIES  # type: ignore[return-value]
 
     async def _access_snapshot(self, call: str) -> dict[str, dict[str, bool]]:
         out: dict[str, dict[str, bool]] = {}
@@ -561,11 +606,16 @@ class WebAdminServer:
         thresholds = self._proto_thresholds(node_cfg)
         known = any(state[k] for k in ("pc24_call", "pc24_flag", "pc50_call", "pc50_count", "pc51_to", "pc51_from", "pc51_value"))
         health = "unknown"
+        last_change_epoch = _to_int(state["last_change_epoch"], 0)
+        flap_active = (
+            last_change_epoch > 0
+            and now_epoch - last_change_epoch <= thresholds["flap_window_secs"]
+        )
         if known:
             health = "ok"
             if state["pc51_value"] and str(state["pc51_value"]).lower() in {"0", "off", "down", "fail"}:
                 health = "degraded"
-            if _to_int(state["flap_score"], 0) >= thresholds["flap_score"]:
+            if flap_active and _to_int(state["flap_score"], 0) >= thresholds["flap_score"]:
                 health = "flapping"
         last_epoch = _to_int(state["last_epoch"], 0)
         age_min = ((now_epoch - last_epoch) // 60) if last_epoch > 0 else -1
@@ -597,7 +647,8 @@ class WebAdminServer:
             "last_pc_type": state["last_pc_type"],
             "change_count": _to_int(state["change_count"], 0),
             "flap_score": _to_int(state["flap_score"], 0),
-            "last_change_epoch": _to_int(state["last_change_epoch"], 0),
+            "last_change_epoch": last_change_epoch,
+            "flap_active": flap_active,
             "history_count": len(hist),
             "last_event": last_event,
             "pc24": {"call": state["pc24_call"], "flag": state["pc24_flag"]},
@@ -1409,6 +1460,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="field"><label for="welcome_title" title="First line shown to a telnet user after successful login.">Welcome Title</label><input id="welcome_title" placeholder="Short welcome line" title="Keep this short and warm; it is prepended to the connecting callsign."></div>
             <div class="field"><label for="website_url" title="Optional URL shown in the telnet welcome block and useful for directing operators to documentation or a public site.">Website URL</label><input id="website_url" placeholder="https://example.org" title="Shown as a reference URL in the login welcome text if set."></div>
             <div class="field"><label for="support_contact" title="Contact string displayed to operators who need help with the node.">Support Contact</label><input id="support_contact" placeholder="support@example.org" title="Email address or other support contact shown in the telnet welcome block."></div>
+            <div class="field"><label for="prompt_template" title="Prompt format shown to telnet operators. Available tokens: {timestamp}, {node}, {callsign}, {suffix}.">Prompt Template</label><input id="prompt_template" placeholder="[{timestamp}] {node}{suffix}" title="Use {timestamp}, {node}, {callsign}, and {suffix}. Example: [{timestamp}] {node}{suffix}"></div>
           </div>
           <div class="form-grid one" style="margin-top:12px">
             <div class="field"><label for="welcome_body" title="Main human-facing introduction shown after login and before the MOTD.">Welcome Body</label><textarea id="welcome_body" placeholder="Short human introduction shown after login." title="Use this for a friendly introduction, operating notes, or local node character."></textarea></div>
@@ -2260,12 +2312,7 @@ function clearUserForm(defaultCall='') {
   byId('user_block_reason').value = '';
   byId('user_node_family').value = '';
   byId('user_password').value = '';
-  ['telnet','web'].forEach((channel) => {
-    ['login','spots','chat','announce','wx','wcy','wwv'].forEach((capability) => {
-      const el = byId(`access_${channel}_${capability}`);
-      if (el) el.checked = true;
-    });
-  });
+  applyPrivilegeDefaults('');
   setText('userEditorTitle', 'User Details');
   setText('saveUser', 'Save User');
   byId('deleteUser').disabled = true;
@@ -2347,6 +2394,25 @@ function setAccessMatrixAll(enabled) {
     });
   });
 }
+function setAccessCapability(channel, capability, enabled) {
+  const el = byId(`access_${channel}_${capability}`);
+  if (el) el.checked = !!enabled;
+}
+function applyPrivilegeDefaults(privilege) {
+  const level = String(privilege || '').trim().toLowerCase();
+  if (level === 'blocked') {
+    setAccessMatrixAll(false);
+    return;
+  }
+  if (level === '') {
+    setAccessMatrixAll(false);
+    ['telnet','web'].forEach((channel) => setAccessCapability(channel, 'login', true));
+    return;
+  }
+  if (level === 'user' || level === 'sysop') {
+    setAccessMatrixAll(true);
+  }
+}
 function setUserRows(payload) {
   setRegistryRows('userRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No local users match this filter.');
 }
@@ -2393,7 +2459,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
 }
 function fillNodeForm(data) {
   if (!data) return;
-  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','motd'].forEach((key) => {
+  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','motd','prompt_template'].forEach((key) => {
     if (byId(key) && data[key] !== undefined) byId(key).value = data[key];
   });
   byId('show_status_after_login').checked = !!data.show_status_after_login;
@@ -2582,30 +2648,37 @@ byId('login').onclick = async () => {
   }
 };
 byId('saveNode').onclick = async () => {
-  const payload = {
-    branding_name: byId('branding_name').value.trim(),
-    node_call: byId('node_call').value.trim(),
-    node_alias: byId('node_alias').value.trim(),
-    owner_name: byId('owner_name').value.trim(),
-    qth: byId('qth').value.trim(),
-    node_locator: byId('node_locator').value.trim().toUpperCase(),
-    telnet_ports: byId('telnet_ports').value.trim(),
-    welcome_title: byId('welcome_title').value.trim(),
-    welcome_body: byId('welcome_body').value,
-    login_tip: byId('login_tip').value.trim(),
-    show_status_after_login: byId('show_status_after_login').checked,
-    require_password: byId('require_password').checked,
-    retention_enabled: byId('retention_enabled').checked,
-    retention_spots_days: parseInt(byId('retention_spots_days').value.trim(), 10) || 30,
-    retention_messages_days: parseInt(byId('retention_messages_days').value.trim(), 10) || 90,
-    retention_bulletins_days: parseInt(byId('retention_bulletins_days').value.trim(), 10) || 30,
-    support_contact: byId('support_contact').value.trim(),
-    website_url: byId('website_url').value.trim(),
-    motd: byId('motd').value
-  };
-  const r = await j('/api/node/presentation', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-  say(r && r.ok ? 'Node settings saved.' : 'Saving node settings failed.', !!(r && r.ok));
-  await load();
+  try {
+    await runButtonAction('saveNode', async () => {
+      const payload = {
+        branding_name: byId('branding_name').value.trim(),
+        node_call: byId('node_call').value.trim(),
+        node_alias: byId('node_alias').value.trim(),
+        owner_name: byId('owner_name').value.trim(),
+        qth: byId('qth').value.trim(),
+        node_locator: byId('node_locator').value.trim().toUpperCase(),
+        telnet_ports: byId('telnet_ports').value.trim(),
+        welcome_title: byId('welcome_title').value.trim(),
+        welcome_body: byId('welcome_body').value,
+        login_tip: byId('login_tip').value.trim(),
+        show_status_after_login: byId('show_status_after_login').checked,
+        require_password: byId('require_password').checked,
+        retention_enabled: byId('retention_enabled').checked,
+        retention_spots_days: parseInt(byId('retention_spots_days').value.trim(), 10) || 30,
+        retention_messages_days: parseInt(byId('retention_messages_days').value.trim(), 10) || 90,
+        retention_bulletins_days: parseInt(byId('retention_bulletins_days').value.trim(), 10) || 30,
+        support_contact: byId('support_contact').value.trim(),
+        website_url: byId('website_url').value.trim(),
+        motd: byId('motd').value,
+        prompt_template: byId('prompt_template').value.trim()
+      };
+      const r = await j('/api/node/presentation', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+      say(r && r.ok ? 'Node settings saved.' : 'Saving node settings failed.', !!(r && r.ok));
+      await load();
+    });
+  } catch (err) {
+    say('Saving node settings failed: ' + errText(err), false);
+  }
 };
 byId('runCleanup').onclick = async () => {
   const r = await j('/api/maintenance/cleanup', {method:'POST'});
@@ -2620,6 +2693,13 @@ byId('userSearch').onclick = async () => {
 byId('newUser').onclick = async () => {
   clearUserForm('');
   say('Ready to add a new local callsign.');
+};
+byId('user_privilege').onchange = () => {
+  const level = byId('user_privilege').value.trim();
+  applyPrivilegeDefaults(level);
+  if (level === '') say('Non-Authenticated selected. Login remains allowed; posting stays disabled by default.');
+  else if (level === 'blocked') say('Blocked selected. Cleared telnet and web access in the current form.');
+  else say('Authenticated access defaults applied in the current form.');
 };
 byId('userPrev').onclick = async () => {
   userOffset = Math.max(0, userOffset - USER_PAGE_SIZE);
@@ -2866,12 +2946,14 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 401, self._json({"error": "web login not allowed"}))
                     return
                 expected = await self.store.get_user_pref(call, "password")
-                if expected is not None and str(expected).strip() and password != str(expected):
+                if expected is not None and str(expected).strip() and not verify_password(password, str(expected)):
                     self._log_auth_failure(writer, headers, "sysop-web", call, "bad_password")
                     await self._write_response(writer, 401, self._json({"error": "login failed"}))
                     return
                 has_real_password = expected is not None and bool(str(expected).strip())
-                is_sysop = has_real_password and password == str(expected) and await self._admin_privileged_call(call)
+                is_sysop = has_real_password and verify_password(password, str(expected)) and await self._admin_privileged_call(call)
+                if has_real_password and not is_password_hash(str(expected)) and verify_password(password, str(expected)):
+                    await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
                 token, exp = self._issue_web_token(call, is_sysop=is_sysop)
                 await self.store.record_login(call, int(time.time()), "sysop-web")
                 self._audit("sysop", f"{call} logged in to System Operator web")
@@ -2967,12 +3049,19 @@ if (restoreWebSession()) {
                         "support_contact": "",
                         "website_url": "",
                         "motd": "",
+                        "prompt_template": "",
                     }
+                    old_node_call = self.config.node.node_call
+                    cfg_updates: dict[str, object] = {}
+                    telnet_ports_value: tuple[int, ...] | None = None
                     for key in fields:
                         if key not in payload:
                             continue
                         if key in {"show_status_after_login", "require_password", "retention_enabled"}:
-                            val = "on" if bool(payload.get(key, False)) else "off"
+                            flag = bool(payload.get(key, False))
+                            val = "on" if flag else "off"
+                            if key in _CONFIG_AUTH_NODE_FIELDS:
+                                cfg_updates[key] = flag
                         elif key in {"retention_spots_days", "retention_messages_days", "retention_bulletins_days"}:
                             try:
                                 val = str(max(1, min(3650, int(payload.get(key, fields[key])))))
@@ -2986,13 +3075,48 @@ if (restoreWebSession()) {
                                 await self._write_response(writer, 400, self._json({"error": "invalid telnet_ports"}))
                                 return
                             val = ",".join(str(p) for p in ports)
+                            telnet_ports_value = tuple(ports)
+                            cfg_updates[key] = tuple(ports)
                         else:
                             val = str(payload.get(key, "")).strip()
-                        await self.store.set_user_pref(self.config.node.node_call, key, val, now)
+                            if key in {"node_call", "node_alias", "node_locator"}:
+                                val = val.upper()
+                            if key == "prompt_template" and len(val) > 256:
+                                await self._write_response(writer, 400, self._json({"error": "prompt_template too long"}))
+                                return
+                            if key in _CONFIG_AUTH_NODE_FIELDS:
+                                cfg_updates[key] = val
+                        if key not in _CONFIG_AUTH_NODE_FIELDS:
+                            await self.store.set_user_pref(self.config.node.node_call, key, val, now)
+                    if cfg_updates:
+                        if "node_call" in cfg_updates:
+                            new_node_call = str(cfg_updates["node_call"]).strip().upper()
+                            if not new_node_call:
+                                await self._write_response(writer, 400, self._json({"error": "node_call is required"}))
+                                return
+                            if new_node_call != old_node_call:
+                                await self.store.rename_call_namespace(old_node_call, new_node_call)
+                                await self.store.rename_user_registry(old_node_call, new_node_call, now)
+                                self.config.node.node_call = new_node_call
+                        for key, value in cfg_updates.items():
+                            if key == "telnet_ports":
+                                ports = tuple(int(p) for p in value)
+                                self.config.telnet.ports = ports
+                                if ports:
+                                    self.config.telnet.port = ports[0]
+                                continue
+                            if hasattr(self.config.node, key):
+                                setattr(self.config.node, key, value)
+                        if self.config_path:
+                            try:
+                                save_config(self.config_path, self.config)
+                            except Exception as exc:
+                                await self._write_response(writer, 500, self._json({"error": f"config save failed: {exc}"}))
+                                return
                     self._audit("config", f"{self._authorized_call(headers)} updated node presentation settings")
                     if "telnet_ports" in payload and self.telnet_rebind_fn:
                         try:
-                            ports = parse_telnet_ports(payload.get("telnet_ports", ""), fallback=self.config.telnet.port)
+                            ports = telnet_ports_value or parse_telnet_ports(payload.get("telnet_ports", ""), fallback=self.config.telnet.port)
                             await self.telnet_rebind_fn(tuple(ports))
                         except Exception as exc:
                             await self._write_response(writer, 500, self._json({"error": f"telnet rebind failed: {exc}"}))
@@ -3108,6 +3232,16 @@ if (restoreWebSession()) {
                         await self._write_response(writer, 400, self._json({"error": "invalid privilege"}))
                         return
                     now = int(time.time())
+                    qth = str(payload.get("qth", "")).strip()
+                    qra = str(payload.get("qra", "")).strip().upper()
+                    if qth:
+                        coords = resolve_location_to_coords(qth)
+                        if coords is not None:
+                            qra = coords_to_locator(*coords)
+                    elif qra:
+                        qra = extract_locator(qra)
+                        if qra:
+                            qth = estimate_location_from_locator(qra).strip()
                     if original_call and original_call != call:
                         try:
                             renamed = await self.store.rename_user_registry(original_call, call, now)
@@ -3117,6 +3251,9 @@ if (restoreWebSession()) {
                         if not renamed:
                             await self._write_response(writer, 400, self._json({"error": "original callsign not found"}))
                             return
+                        moved_password = await self.store.get_user_pref(call, "password")
+                        if moved_password is not None and str(moved_password).strip() and not is_password_hash(str(moved_password)):
+                            await self.store.set_user_pref(call, "password", hash_password(str(moved_password)), now)
                     access_payload = payload.get("access")
                     await self.store.upsert_user_registry(
                         call,
@@ -3124,8 +3261,8 @@ if (restoreWebSession()) {
                         display_name=str(payload.get("display_name", "")).strip(),
                         home_node=str(payload.get("home_node", "")).strip().upper(),
                         address=str(payload.get("address", "")).strip(),
-                        qth=str(payload.get("qth", "")).strip(),
-                        qra=str(payload.get("qra", "")).strip(),
+                        qth=qth,
+                        qra=qra,
                         email=str(payload.get("email", "")).strip(),
                         privilege=privilege,
                     )
@@ -3229,7 +3366,7 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 400, self._json({"error": "password is required"}))
                     return
                 now = int(time.time())
-                await self.store.set_user_pref(call, "password", password, now)
+                await self.store.set_user_pref(call, "password", hash_password(password), now)
                 row = await self.store.get_user_registry(call)
                 if row is None:
                     await self.store.upsert_user_registry(call, now)

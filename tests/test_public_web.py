@@ -4,8 +4,10 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import logging
+from pathlib import Path
 
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
+from pycluster import __version__
 from pycluster.models import Spot
 from pycluster.public_web import PublicWebServer
 from pycluster.store import SpotStore
@@ -73,6 +75,30 @@ async def _http_request_ex(
             k, v = ln.split(":", 1)
             headers[k.strip().lower()] = v.strip()
     return code, headers, body
+
+
+def test_public_web_spot_payload_strips_ssid_in_display_only(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_spot_display.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_spot(Spot(21351.0, "CY0S", now, "ssb", "W7XE-11", "WA9PIE-2", ""))
+            code, _headers, body = await _http_request(srv, "/api/spots?limit=5")
+            assert code == 200
+            payload = json.loads(body.decode("utf-8"))
+            assert payload[0]["spotter"] == "W7XE"
+
+            code, _headers, body = await _http_request(srv, "/api/leaderboard?hours=24")
+            assert code == 200
+            board = json.loads(body.decode("utf-8"))
+            assert board["spotters"][0]["call"] == "W7XE"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
 
 
 
@@ -173,15 +199,14 @@ def test_public_web_branding_uses_node_settings(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_branding.db")
         cfg = _mk_config(db)
+        cfg.node.node_alias = "AI3I"
+        cfg.node.branding_name = "pyCluster"
+        cfg.node.qth = "Western Pennsylvania"
+        cfg.node.node_locator = "FN00FS"
+        cfg.node.support_contact = "dxcluster@ai3i.net"
+        cfg.node.website_url = "https://github.com/AI3I/pyCluster"
+        cfg.telnet.ports = (7300, 7373, 8000)
         store = SpotStore(db)
-        now = int(datetime.now(timezone.utc).timestamp())
-        await store.set_user_pref(cfg.node.node_call, "node_alias", "AI3I", now)
-        await store.set_user_pref(cfg.node.node_call, "branding_name", "pyCluster", now)
-        await store.set_user_pref(cfg.node.node_call, "qth", "Western Pennsylvania", now)
-        await store.set_user_pref(cfg.node.node_call, "node_locator", "FN00FS", now)
-        await store.set_user_pref(cfg.node.node_call, "support_contact", "dxcluster@ai3i.net", now)
-        await store.set_user_pref(cfg.node.node_call, "website_url", "https://github.com/AI3I/pyCluster", now)
-        await store.set_user_pref(cfg.node.node_call, "telnet_ports", "7300,7373,8000", now)
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
         try:
             code, _, body = await _http_request(srv, "/api/public/branding")
@@ -193,7 +218,7 @@ def test_public_web_branding_uses_node_settings(tmp_path) -> None:
             assert data["telnet_ports"] == "7300,7373,8000"
             assert data["support_contact"] == "dxcluster@ai3i.net"
             assert data["footer_secondary"].startswith("Western Pennsylvania • FN00FS")
-            assert data["software_version"] == "pyCluster 1.0.0"
+            assert data["software_version"] == f"pyCluster {__version__}"
             assert "Western Pennsylvania" in data["page_title"]
         finally:
             await store.close()
@@ -220,6 +245,13 @@ def test_public_web_detects_ft2_and_park_activity(tmp_path) -> None:
             await store.close()
 
     asyncio.run(run())
+
+
+def test_public_dxweb_frequency_formatter_preserves_100hz_resolution() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert "function fmtFreq(khz)" in text
+    assert "Math.floor(khz * 10 + Number.EPSILON) / 10" in text
+    assert "return truncated.toFixed(1);" in text
 
 
 def test_public_web_login_failure_logs_structured_authfail(tmp_path, caplog) -> None:
@@ -426,6 +458,67 @@ def test_public_web_access_policy_controls_login_and_posting(tmp_path) -> None:
                 {"Content-Type": "application/json", "X-Web-Token": token},
             )
             assert code == 403
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_non_authenticated_users_are_read_only_by_default(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_access_default.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            token = json.loads(body.decode("utf-8"))["token"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/spot",
+                json.dumps({"freq_khz": 14074.0, "dx_call": "N0TST", "info": "blocked"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "spot posting not allowed via web"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_blocked_login_is_denied(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_blocked_login.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "blocked_login", "on", now)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "login blocked"
         finally:
             await store.close()
 

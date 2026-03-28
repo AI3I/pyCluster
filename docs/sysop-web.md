@@ -139,6 +139,13 @@ Access levels:
 - `System Operator`
 - `Blocked`
 
+Default behavior by level:
+
+- `Non-Authenticated`: login allowed, but spot and announce posting are off by default until access is explicitly granted
+- `Authenticated`: normal login and posting access
+- `System Operator`: sysop login plus full administrative access
+- `Blocked`: login denied for the base callsign and matching SSIDs
+
 If `Blocked` is selected:
 
 - login is blocked for the base callsign and matching SSIDs
@@ -188,6 +195,8 @@ Actions:
 - `Remove All`
 
 This is the operational source of truth for where a user may log in and what they may post.
+
+Explicit access-matrix overrides take precedence over the default behavior implied by the selected access level.
 
 ### Blocked Users
 
@@ -365,7 +374,7 @@ Cards:
 
 Columns:
 
-- `Freq`
+- `Frequency`
 - `DX`
 - `When`
 - `Spotter`
