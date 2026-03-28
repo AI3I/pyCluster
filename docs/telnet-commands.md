@@ -9,6 +9,23 @@ pyCluster keeps a DX-style telnet interface, but tries to make it more teachable
 - node-classified records skip password prompts for node-to-node use
 - sysop sessions get the `#` prompt
 
+## Prompt Templates
+
+The prompt is configurable through `node.prompt_template` and `sysop/setprompt`.
+
+Available tokens:
+
+- `{timestamp}`
+- `{node}`
+- `{callsign}`
+- `{suffix}`
+
+Example:
+
+```text
+[{timestamp}] {node}{suffix}
+```
+
 ## Discovery First
 
 Start here on a live node:
@@ -19,6 +36,8 @@ show/commands
 show/shortcuts
 apropos route
 ```
+
+`show/commands` lists real commands grouped by family. Use `show/commands set` or `show/commands route` to narrow the list.
 
 Those commands are privilege-aware, so ordinary users are not flooded with sysop-only actions.
 
@@ -40,7 +59,12 @@ set/nowrap
 show/users
 show/node
 show/links
+show/sun
+show/grayline
+show/moon
 ```
+
+Solar views use stored QRA/grid information when available. If no grid is known, the node grid square is used as a fallback.
 
 ## Operator Commands
 
@@ -59,7 +83,10 @@ sysop/setaccess N0CALL web login on
 sysop/audit
 sysop/services
 sysop/restart telnet
+sysop/setprompt [{timestamp}] {node}{suffix}
 ```
+
+By default, `Non-Authenticated` users may log in but cannot post DX spots or announces until access is raised or overridden with `sysop/setaccess`.
 
 ## Full Command Reference
 
@@ -71,4 +98,4 @@ For the full documented command surface, grouped by family, see:
 
 - pyCluster recognizes many DXSpider-style command names for compatibility
 - the documented reference focuses on implemented, operator-meaningful behavior
-- some compatibility names may still return a clear not-implemented response instead of legacy behavior
+- obsolete compatibility names such as `mrtg`, `gtk`, and `ve7cc` are no longer part of the active command surface

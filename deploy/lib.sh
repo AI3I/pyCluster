@@ -268,6 +268,18 @@ install_config_if_missing() {
   fi
 }
 
+install_optional_config_if_missing() {
+  local relative_src="$1"
+  local dest_name="$2"
+  local root dest
+  root="$(repo_root)"
+  dest="$(dirname "$PYCLUSTER_CONFIG_DEST")/$dest_name"
+  if [ ! -f "$dest" ] && [ -f "$root/$relative_src" ]; then
+    install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 \
+      "$root/$relative_src" "$dest"
+  fi
+}
+
 install_or_refresh_service() {
   local root
   root="$(repo_root)"
@@ -474,5 +486,53 @@ bootstrap_sysop_account() {
     log "SYSOP bootstrap note available at $PYCLUSTER_SYSOP_BOOTSTRAP_NOTE"
   else
     die "failed to seed SYSOP bootstrap account"
+  fi
+}
+
+run_upgrade_1_0_1() {
+  local root strings_template
+  root="$(repo_root)"
+  strings_template="$root/config/strings.toml"
+  (
+    cd "$PYCLUSTER_APP_DIR" &&
+    PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/upgrade_1_0_1.py \
+      --config "$PYCLUSTER_CONFIG_DEST" \
+      --strings-template "$strings_template"
+  )
+  ensure_runtime_ownership
+}
+
+show_sysop_bootstrap_note() {
+  if [ ! -f "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE" ]; then
+    log "SYSOP bootstrap note not found at $PYCLUSTER_SYSOP_BOOTSTRAP_NOTE"
+    return
+  fi
+
+  printf '\n'
+  printf '################################################################################\n'
+  printf '#                                                                              #\n'
+  printf '#   READ THIS NOW: INITIAL SYSOP CREDENTIALS ARE PRINTED BELOW                 #\n'
+  printf '#                                                                              #\n'
+  printf '#   SAVE THESE CREDENTIALS BEFORE YOU LEAVE THIS INSTALLER                     #\n'
+  printf '#                                                                              #\n'
+  printf '################################################################################\n'
+  printf '\n'
+  printf '========================================================================\n'
+  printf ' pyCluster Initial System Operator Credentials\n'
+  printf '========================================================================\n'
+  cat "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE"
+  printf '\n'
+  printf 'ACTION REQUIRED: review and save this file before continuing:\n'
+  printf 'Backup file: %s\n' "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE"
+  printf 'Suggested command: cat %s\n' "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE"
+  printf '========================================================================\n'
+  printf '\n'
+  if [ -t 0 ]; then
+    local ack=""
+    while [ "$ack" != "READ" ]; do
+      printf 'Type READ after you have reviewed and saved the bootstrap credentials: '
+      IFS= read -r ack
+    done
+    printf '\n'
   fi
 }

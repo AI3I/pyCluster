@@ -4,7 +4,7 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 
 - Top-level commands: 58
 - Grouped command families: 12
-- Total callable entries: 277
+- Total callable entries: 271
 
 ## Top-Level
 
@@ -42,7 +42,6 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `leave`
 - `links`
 - `merge`
-- `mrtg`
 - `msg`
 - `pc`
 - `ping`
@@ -127,11 +126,9 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `reject/wcy`
 - `reject/wwv`
 
-## set/* (66)
+## set/* (63)
 
 - `set/address`
-- `set/agwengine`
-- `set/agwmonitor`
 - `set/announce`
 - `set/anntalk`
 - `set/arcluster`
@@ -141,7 +138,6 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `set/badword`
 - `set/bbs`
 - `set/beep`
-- `set/believe`
 - `set/buddy`
 - `set/clx`
 - `set/debug`
@@ -152,7 +148,6 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `set/dxnet`
 - `set/echo`
 - `set/email`
-- `set/gtk`
 - `set/here`
 - `set/homebbs`
 - `set/homenode`
@@ -179,7 +174,6 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `set/routepc19`
 - `set/send_dbg`
 - `set/sendpc16`
-- `set/spider`
 - `set/startup`
 - `set/sys_location`
 - `set/sys_qra`
@@ -189,7 +183,6 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `set/uservar`
 - `set/usstate`
 - `set/var`
-- `set/ve7cc`
 - `set/wantpc16`
 - `set/wantpc9x`
 - `set/wcy`
@@ -277,10 +270,8 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `stat/user`
 - `stat/userconfig`
 
-## unset/* (42)
+## unset/* (39)
 
-- `unset/agwengine`
-- `unset/agwmonitor`
 - `unset/announce`
 - `unset/anntalk`
 - `unset/baddx`
@@ -288,7 +279,6 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `unset/badspotter`
 - `unset/badword`
 - `unset/beep`
-- `unset/believe`
 - `unset/buddy`
 - `unset/debug`
 - `unset/dx`
@@ -297,7 +287,6 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `unset/dxitu`
 - `unset/echo`
 - `unset/email`
-- `unset/gtk`
 - `unset/here`
 - `unset/hops`
 - `unset/isolate`
@@ -315,7 +304,6 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `unset/startup`
 - `unset/talk`
 - `unset/usstate`
-- `unset/ve7cc`
 - `unset/wantpc16`
 - `unset/wantpc9x`
 - `unset/wcy`

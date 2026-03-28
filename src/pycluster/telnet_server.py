@@ -8,22 +8,46 @@ import json
 import logging
 import math
 import re
+import time
 import textwrap
 from pathlib import Path
 from typing import Callable, Awaitable
 
 from . import __version__
+from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, default_access_allowed
+from .auth import hash_password, is_password_hash, verify_password
 from .auth_logging import log_auth_failure
 from .config import AppConfig, node_presentation_defaults, parse_telnet_ports
 from .ctydat import load_cty, lookup
-from .models import Spot, is_valid_call, normalize_call
+from .geocode import estimate_location_from_locator, resolve_location_to_coords
+from .models import Spot, display_call, is_valid_call, normalize_call
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
 from .shdx import BAND_RANGES, parse_sh_dx_args
+from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
+from .maidenhead import coords_to_locator, extract_locator, locator_to_coords
 
 
 LOG = logging.getLogger(__name__)
+_CONFIG_AUTH_NODE_FIELDS = {
+    "node_call",
+    "node_alias",
+    "owner_name",
+    "qth",
+    "node_locator",
+    "branding_name",
+    "welcome_title",
+    "welcome_body",
+    "login_tip",
+    "show_status_after_login",
+    "require_password",
+    "support_contact",
+    "website_url",
+    "motd",
+    "prompt_template",
+    "telnet_ports",
+}
 
 
 @dataclass(slots=True)
@@ -160,6 +184,7 @@ class TelnetClusterServer:
         on_sessions_changed_fn: Callable[[], Awaitable[None]] | None = None,
         on_node_login_fn: Callable[[str, str, asyncio.StreamReader, asyncio.StreamWriter, list[str] | None], Awaitable[bool]]
         | None = None,
+        strings_path: str | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -186,6 +211,7 @@ class TelnetClusterServer:
         self._filters: dict[str, dict[str, dict[str, list[FilterRule]]]] = {}
         self._events: list[EventLogEntry] = []
         self._users: set[str] = set()
+        self._strings = StringCatalog(strings_path)
         self._cty_loaded = False
         cty_path = self.config.public_web.cty_dat_path.strip()
         if cty_path:
@@ -196,6 +222,82 @@ class TelnetClusterServer:
                 LOG.warning("telnet cty load failed from %s: %s", cty_path, exc)
 
     _LOGIN_CALL_SANITIZE_RE = re.compile(r"[^A-Z0-9/-]+")
+
+    @staticmethod
+    def _strip_telnet_bytes(data: bytes) -> bytes:
+        out = bytearray()
+        i = 0
+        while i < len(data):
+            b = data[i]
+            if b != 255:
+                out.append(b)
+                i += 1
+                continue
+            if i + 1 >= len(data):
+                break
+            cmd = data[i + 1]
+            if cmd == 255:
+                out.append(255)
+                i += 2
+                continue
+            if cmd in {251, 252, 253, 254}:
+                i += 3
+                continue
+            if cmd == 250:
+                j = i + 2
+                while j + 1 < len(data):
+                    if data[j] == 255 and data[j + 1] == 240:
+                        j += 2
+                        break
+                    j += 1
+                i = j
+                continue
+            i += 2
+        return bytes(out)
+
+    async def _read_telnet_byte(self, reader: asyncio.StreamReader, timeout: float) -> bytes | None:
+        try:
+            raw = await (asyncio.wait_for(reader.read(1), timeout=timeout) if timeout > 0 else reader.read(1))
+        except asyncio.TimeoutError:
+            return None
+        if not raw:
+            return None
+        if raw == b"\xff":
+            try:
+                nxt = await (asyncio.wait_for(reader.read(1), timeout=timeout) if timeout > 0 else reader.read(1))
+            except asyncio.TimeoutError:
+                return None
+            if not nxt:
+                return None
+            cmd = nxt[0]
+            if cmd == 255:
+                return b"\xff"
+            if cmd in {251, 252, 253, 254}:
+                try:
+                    _ = await (asyncio.wait_for(reader.read(1), timeout=timeout) if timeout > 0 else reader.read(1))
+                except asyncio.TimeoutError:
+                    return None
+                return b""
+            if cmd == 250:
+                while True:
+                    try:
+                        part = await (asyncio.wait_for(reader.read(1), timeout=timeout) if timeout > 0 else reader.read(1))
+                    except asyncio.TimeoutError:
+                        return None
+                    if not part:
+                        return None
+                    if part == b"\xff":
+                        try:
+                            tail = await (asyncio.wait_for(reader.read(1), timeout=timeout) if timeout > 0 else reader.read(1))
+                        except asyncio.TimeoutError:
+                            return None
+                        if not tail:
+                            return None
+                        if tail == b"\xf0":
+                            break
+                return b""
+            return b""
+        return raw
 
     async def active_ports(self) -> tuple[int, ...]:
         ports: list[int] = []
@@ -238,16 +340,29 @@ class TelnetClusterServer:
         return removed
 
     def _access_channels(self) -> tuple[str, ...]:
-        return ("telnet", "web")
+        return ACCESS_CHANNELS
 
     def _access_capabilities(self) -> tuple[str, ...]:
-        return ("login", "spots", "chat", "announce", "wx", "wcy", "wwv")
+        return ACCESS_CAPABILITIES
 
     def _access_pref_key(self, channel: str, capability: str) -> str:
         return f"access.{channel}.{capability}"
 
-    def _access_default(self, channel: str, capability: str) -> bool:
-        return True
+    async def _access_subject(self, call: str) -> tuple[str, bool]:
+        target = call.upper()
+        base = target.split("-", 1)[0]
+        blocked_login = False
+        privilege = ""
+        for candidate in (target, base):
+            raw_block = await self.store.get_user_pref(candidate, "blocked_login")
+            if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
+                blocked_login = True
+            row = await self.store.get_user_registry(candidate)
+            if row and not privilege:
+                privilege = str(row["privilege"] or "").strip().lower()
+            if not privilege:
+                privilege = str(await self.store.get_user_pref(candidate, "privilege") or "").strip().lower()
+        return privilege, blocked_login
 
     async def _access_allowed(self, call: str, channel: str, capability: str) -> bool:
         target = call.upper()
@@ -257,7 +372,8 @@ class TelnetClusterServer:
             if raw is None or str(raw).strip() == "":
                 continue
             return self._is_on_value(str(raw))
-        return self._access_default(channel, capability)
+        privilege, blocked_login = await self._access_subject(call)
+        return default_access_allowed(privilege, blocked_login, channel, capability)
 
     async def _require_access(self, call: str, channel: str, capability: str, action: str) -> str | None:
         if await self._access_allowed(call, channel, capability):
@@ -462,7 +578,7 @@ class TelnetClusterServer:
         if categories is not None:
             rows = [e for e in rows if e.category in categories]
         if not rows:
-            return (title + "\r\n" if title else "") + "No log events\r\n"
+            return (title + "\r\n" if title else "") + self._string("events.empty", "No log events") + "\r\n"
         lines: list[str] = []
         if title:
             lines.append(title)
@@ -553,9 +669,6 @@ class TelnetClusterServer:
         return parse_telnet_ports(self.config.telnet.ports or (), fallback=self.config.telnet.port)
 
     async def _effective_ports(self) -> tuple[int, ...]:
-        raw = await self.store.get_user_pref(self.config.node.node_call, "telnet_ports")
-        if raw and str(raw).strip():
-            return parse_telnet_ports(raw, fallback=self.config.telnet.port)
         return self._configured_ports()
 
     async def _bind_ports(self, ports: tuple[int, ...]) -> None:
@@ -812,7 +925,7 @@ class TelnetClusterServer:
                 dx_call=spot.dx_call,
                 when=when,
                 info=spot.info,
-                spotter=spot.spotter,
+                spotter=display_call(spot.spotter),
                 suffix=await self._dx_line_suffix_for_call(s.call, spot.dx_call),
             )
             prefix = "\r\n" if not s.async_line_open else ""
@@ -851,15 +964,26 @@ class TelnetClusterServer:
 
     async def _readline(self, reader: asyncio.StreamReader) -> str | None:
         timeout = float(self.config.telnet.idle_timeout_seconds or 0)
-        try:
-            raw = await (asyncio.wait_for(reader.readline(), timeout=timeout) if timeout > 0 else reader.readline())
-        except asyncio.TimeoutError:
-            return None
-        if not raw:
-            return None
-        if len(raw) > self.config.telnet.max_line_length:
-            return ""
-        return raw.decode("utf-8", errors="replace").strip()
+        raw = bytearray()
+        while True:
+            b = await self._read_telnet_byte(reader, timeout)
+            if b is None:
+                return None if not raw else raw.decode("utf-8", errors="replace").strip()
+            if b == b"":
+                continue
+            ch = b[0]
+            if ch in (10, 13):
+                if ch == 13:
+                    try:
+                        nxt = await (asyncio.wait_for(reader.read(1), timeout=0.05) if timeout > 0 else reader.read(1))
+                    except asyncio.TimeoutError:
+                        nxt = b""
+                    if nxt not in {b"", b"\n"}:
+                        reader.feed_data(self._strip_telnet_bytes(nxt))
+                return raw.decode("utf-8", errors="replace").strip()
+            raw.extend(b)
+            if len(raw) > self.config.telnet.max_line_length:
+                return ""
 
     async def _read_password(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> str | None:
         chars: list[str] = []
@@ -910,28 +1034,39 @@ class TelnetClusterServer:
             await self._write(writer, "Passwords did not match.\r\n")
             return False
         now = int(datetime.now(timezone.utc).timestamp())
-        await self.store.set_user_pref(call, "password", first, now)
+        await self.store.set_user_pref(call, "password", hash_password(first), now)
         self._log_event("user", f"{call} initial_password_set")
         await self._write(writer, f"Password set for {call}.\r\n")
         return True
 
     async def _prompt(self, call: str) -> str:
         node = await self._node_text("node_call")
+        callsign = str(call or "").strip().upper()
         suffix = "# " if await self._privilege_level_for(call) >= 2 else "> "
         template = await self._prompt_template()
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        return self._render_prompt(template, node, suffix, timestamp)
+        return self._render_prompt(template, node, callsign, suffix, timestamp)
 
     async def _prompt_template(self) -> str:
-        data = await self._node_presentation()
-        template = data.get("prompt_template")
+        template = str(getattr(self.config.node, "prompt_template", "") or "").strip()
         if template:
-            return str(template)
-        return self.config.node.prompt_template
+            return template
+        return "[{timestamp}] {node}{suffix}"
 
-    def _render_prompt(self, template: str, node: str, suffix: str, timestamp: str) -> str:
+    def _string(self, key: str, default: str) -> str:
+        return self._strings.get(key, default)
+
+    def _render_string(self, catalog_key: str, default: str, **values: object) -> str:
+        return self._strings.render(catalog_key, default, **values)
+
+    @staticmethod
+    def _command_summary_key(cmd: str) -> str:
+        return cmd.lower().replace("/", "_").replace("-", "_")
+
+    def _render_prompt(self, template: str, node: str, callsign: str, suffix: str, timestamp: str) -> str:
         tokens = {
             "node": node,
+            "callsign": callsign,
             "suffix": suffix,
             "timestamp": timestamp,
         }
@@ -942,9 +1077,53 @@ class TelnetClusterServer:
 
         return template.format_map(_PromptTokens(tokens))
 
+    def _display_label(self, key: str) -> str:
+        labels = {
+            "agwengine": "AGW Engine",
+            "agwmonitor": "AGW Monitor",
+            "anntalk": "AnnTalk",
+            "bbs": "BBS",
+            "dxcq": "DX CQ",
+            "dxgrid": "DX Grid",
+            "dxitu": "DX ITU",
+            "dup_ann": "Duplicate Ann",
+            "dup_eph": "Duplicate Eph",
+            "dup_spots": "Duplicate Spots",
+            "dup_wcy": "Duplicate WCY",
+            "dup_wwv": "Duplicate WWV",
+            "gtk": "GTK",
+            "homebbs": "Home BBS",
+            "homenode": "Home Node",
+            "local_node": "Local Node",
+            "logininfo": "Logininfo",
+            "maxconnect": "Max Connect",
+            "pinginterval": "Ping Interval",
+            "prack": "Protocol Ack",
+            "protoack": "Protocol Ack",
+            "qra": "QRA",
+            "qth": "QTH",
+            "rbn": "RBN",
+            "routepc19": "Route PC19",
+            "send_dbg": "Send Debug",
+            "senddbg": "Send Debug",
+            "sendpc16": "Send PC16",
+            "sys_location": "System Location",
+            "sys_qra": "System QRA",
+            "usstate": "US State",
+            "ve7cc": "VE7CC",
+            "wantpc16": "Want PC16",
+            "wantpc9x": "Want PC9X",
+            "wcy": "WCY",
+            "wwv": "WWV",
+        }
+        return labels.get(key, key.replace("_", " ").title())
+
     async def _node_presentation(self) -> dict[str, str]:
         data = node_presentation_defaults(self.config.node)
-        data.update(await self.store.list_user_prefs(self.config.node.node_call))
+        prefs = await self.store.list_user_prefs(self.config.node.node_call)
+        for key in {"node_call", "prompt_template", "telnet_ports", "require_password"}:
+            prefs.pop(key, None)
+        data.update(prefs)
         return data
 
     async def _node_text(self, key: str) -> str:
@@ -960,10 +1139,11 @@ class TelnetClusterServer:
         return motd or self.config.node.motd
 
     async def _motd_block(self) -> str:
+        divider = self._string("welcome.motd.divider", "================================================================================")
         return (
-            "================================================================================\r\n"
+            f"{divider}\r\n"
             f"{await self._motd_text()}\r\n"
-            "================================================================================\r\n"
+            f"{divider}\r\n"
         )
 
     async def _welcome_block(self, call: str) -> str:
@@ -976,41 +1156,59 @@ class TelnetClusterServer:
         support = str(ui.get("support_contact", "")).strip()
         lines = []
         if title:
-            lines.append(f"{title}, {call}.")
+            lines.append(self._render_string("welcome.greeting.named", "{title}, {call}.", title=title, call=call))
         else:
-            lines.append(f"Welcome, {call}.")
+            lines.append(self._render_string("welcome.greeting.default", "Welcome, {call}.", call=call))
         node_call = await self._node_text("node_call")
         qth = await self._node_text("qth")
-        lines.append(f"You're connected to {node_call}, a {branding} node in {qth}.")
+        lines.append(
+            self._render_string(
+                "welcome.connected",
+                "You're connected to {node_call}, a {branding} node in {qth}.",
+                node_call=node_call,
+                branding=branding,
+                qth=qth,
+            )
+        )
         if body:
             lines.append("")
             lines.extend(body.splitlines())
         if website or support:
             lines.append("")
             if website:
-                lines.append(f"Web: {website}")
+                lines.append(self._render_string("welcome.website", "Web: {website}", website=website))
             if support:
-                lines.append(f"Contact: {support}")
+                lines.append(self._render_string("welcome.contact", "Contact: {support}", support=support))
         lines.append("")
         lines.append((await self._motd_block()).rstrip("\r\n"))
         if self._is_on_value(str(ui.get("show_status_after_login", "on") or "on"), default=True):
-            lines.append(f"Cluster status: 1 nodes linked, {self.session_count} local users, uptime {self._uptime_text()}")
+            lines.append(
+                self._render_string(
+                    "welcome.status",
+                    "Cluster status: {linked_nodes} nodes linked, {local_users} local users, uptime {uptime}",
+                    linked_nodes=1,
+                    local_users=self.session_count,
+                    uptime=self._uptime_text(),
+                )
+            )
         if tip:
             lines.append(tip)
         lines.append("")
         return "\r\n".join(lines)
 
     async def _cmd_show_version(self) -> str:
-        return (
-            f"pyCluster version {__version__}\r\n"
-            "Project: https://github.com/AI3I/pyCluster\r\n"
-        )
+        lines = [f"pyCluster version {__version__}"]
+        if __version__ != "1.0.0":
+            lines.append("Compatible with pyCluster version 1.0.0 command set")
+        lines.append("Author: John D. Lewis (AI3I)")
+        lines.append("Project: https://github.com/AI3I/pyCluster")
+        return "\r\n".join(lines) + "\r\n"
 
     async def _cmd_show_dx(self, _call: str, arg: str | None) -> str:
         query = parse_sh_dx_args(arg)
         rows = await self.store.search_spots(query)
         if not rows:
-            return "No spots available\r\n"
+            return self._string("show.dx.empty", "No spots available") + "\r\n"
 
         lines: list[str] = []
         for row in rows:
@@ -1032,12 +1230,12 @@ class TelnetClusterServer:
                 dx_call=str(row["dx_call"]),
                 when=when,
                 info=str(row["info"] or ""),
-                spotter=str(row["spotter"]),
+                spotter=display_call(str(row["spotter"])),
             )
             line += await self._dx_line_suffix_for_call(_call, str(row["dx_call"]))
             lines.append(line)
         if not lines:
-            return "No spots available\r\n"
+            return self._string("show.dx.empty", "No spots available") + "\r\n"
         return "\r\n".join(lines) + "\r\n"
 
     async def _cmd_show_mydx(self, call: str, arg: str | None) -> str:
@@ -1047,7 +1245,7 @@ class TelnetClusterServer:
     async def _cmd_show_dxcc(self, call: str, arg: str | None) -> str:
         pfx = (arg or "").strip().upper()
         if not pfx:
-            return "Usage: show/dxcc <prefix>\r\n"
+            return self._string("show.dxcc.usage", "Usage: show/dxcc <prefix>") + "\r\n"
         if self._cty_loaded:
             ent = lookup(pfx)
             if ent:
@@ -1106,6 +1304,121 @@ class TelnetClusterServer:
         page = await self._page_size_for(call)
 
         group = self._resolve_group_token(needle) if needle else None
+        if not needle:
+            section_order = [
+                ("Show commands", ["show/"]),
+                ("Set commands", ["set/"]),
+                ("Unset commands", ["unset/"]),
+                (
+                    "Operator commands",
+                    [
+                        "help",
+                        "commands",
+                        "apropos",
+                        "show",
+                        "set",
+                        "unset",
+                        "dx",
+                        "announce",
+                        "wx",
+                        "wwv",
+                        "wcy",
+                        "chat",
+                        "talk",
+                        "msg",
+                        "mail",
+                        "read",
+                        "reply",
+                        "who",
+                        "users",
+                        "status",
+                        "cluster",
+                        "node",
+                        "links",
+                        "connect",
+                        "disconnect",
+                        "ping",
+                        "motd",
+                        "version",
+                        "time",
+                        "date",
+                        "uptime",
+                        "bye",
+                        "quit",
+                        "exit",
+                    ],
+                ),
+                (
+                    "Compatibility toggles",
+                    [
+                        "set/agwengine",
+                        "unset/agwengine",
+                        "show/agwengine",
+                        "set/agwmonitor",
+                        "unset/agwmonitor",
+                        "show/agwmonitor",
+                        "set/believe",
+                        "unset/believe",
+                        "show/believe",
+                        "set/sendpc16",
+                        "unset/sendpc16",
+                        "show/sendpc16",
+                        "set/wantpc16",
+                        "unset/wantpc16",
+                        "show/wantpc16",
+                        "set/wantpc9x",
+                        "unset/wantpc9x",
+                        "show/wantpc9x",
+                    ],
+                ),
+                ("Filter and policy commands", ["accept/", "reject/", "clear/"]),
+                ("Data and maintenance commands", ["load/", "stat/", "create/", "delete/", "forward/", "get/"]),
+                ("Sysop commands", ["sysop/"]),
+            ]
+            row_map = {cmd: self._command_summary(cmd) for cmd in visible_top + visible_grouped}
+            lines.append(self._string("commands.show.title", "Available commands:"))
+            lines.append(self._string("commands.show.usage", "  Use: show/commands <family>   or   show/commands <keyword>"))
+            lines.append(self._string("commands.show.examples", "  Examples: show/commands show, show/commands set, show/commands dx, show/commands route"))
+            emitted: set[str] = set()
+            shown = 0
+            max_rows = page if page > 0 else 10_000
+            for heading, selectors in section_order:
+                section_rows: list[tuple[str, str]] = []
+                for selector in selectors:
+                    if selector.endswith("/"):
+                        matches = [cmd for cmd in visible_grouped if cmd.startswith(selector) and cmd not in emitted]
+                    else:
+                        matches = [selector] if selector in row_map and selector not in emitted else []
+                    for cmd in matches:
+                        if shown >= max_rows:
+                            break
+                        section_rows.append((cmd, row_map[cmd]))
+                        emitted.add(cmd)
+                        shown += 1
+                    if shown >= max_rows:
+                        break
+                if section_rows:
+                    width = min(24, max(len(cmd) for cmd, _desc in section_rows))
+                    section_key = heading.split()[0].lower()
+                    lines.append(self._string(f"commands.show.sections.{section_key}", f"{heading}:"))
+                    for cmd, desc in section_rows:
+                        lines.append(f"  {cmd.ljust(width)}  {desc}")
+                if shown >= max_rows:
+                    break
+            remaining = [cmd for cmd in (visible_top + visible_grouped) if cmd not in emitted]
+            if remaining and shown < max_rows:
+                width = min(24, max(len(cmd) for cmd in remaining))
+                lines.append(self._string("commands.show.other", "Other commands:"))
+                for cmd in remaining:
+                    if shown >= max_rows:
+                        break
+                    lines.append(f"  {cmd.ljust(width)}  {row_map[cmd]}")
+                    emitted.add(cmd)
+                    shown += 1
+            more = max(0, len(row_map) - len(emitted))
+            if more > 0:
+                lines.append(self._render_string("commands.show.more", "  ... {count} more commands. Increase page length with set/page or filter with show/commands <family>.", count=more))
+            return await self._format_console_lines(call, lines)
         if group:
             rows = [(cmd, self._command_summary(cmd)) for cmd in visible_grouped if cmd.startswith(group + "/")]
             title = f"{group.upper()} commands ({len(rows)}):"
@@ -1120,23 +1433,56 @@ class TelnetClusterServer:
                 ]
             else:
                 rows = [(cmd, self._command_summary(cmd)) for cmd in visible_top]
-            title = f"Commands ({len(rows)}):"
+            title = f"Commands matching {needle} ({len(rows)}):"
 
         if not rows:
             return f"commands: no matches for {needle}\r\n" if needle else "commands: (none)\r\n"
-        if page > 0:
+        more = 0
+        if page > 0 and len(rows) > page:
+            more = len(rows) - page
             rows = rows[:page]
         width = min(24, max(len(cmd) for cmd, _desc in rows))
         lines.append(title)
+        if not needle:
+            lines.append("  Use: show/commands <family>   or   show/commands <keyword>")
+            lines.append("  Examples: show/commands show, show/commands set, show/commands dx, show/commands route")
+        elif group:
+            lines.append(f"  Use: {group}/<name> or show/commands <keyword>")
         for cmd, desc in rows:
             lines.append(f"  {cmd.ljust(width)}  {desc}")
+        if more > 0:
+            lines.append(f"  ... {more} more commands. Increase page length with set/page or filter with show/commands <family>.")
         return await self._format_console_lines(call, lines)
 
     def _command_summary(self, cmd: str) -> str:
+        key = f"commands.summary.{self._command_summary_key(cmd)}"
         top_map = {
             "help": "Show the operator help overview.",
             "commands": "List commands or a command family.",
             "apropos": "Search commands by keyword.",
+            "agwrestart": "Request an AGW engine restart.",
+            "announce": "Post an announcement bulletin.",
+            "ap": "Show announcement preference status.",
+            "blank": "Emit a blank line.",
+            "cluster": "Show local cluster identity information.",
+            "connect": "Connect to a linked peer or DSN.",
+            "date": "Show the current UTC date.",
+            "dbcreate": "Create or verify local database structures.",
+            "dbdelkey": "Delete a key from the local database.",
+            "dbexport": "Export the local database to a file.",
+            "dbimport": "Import a saved database snapshot.",
+            "dbremove": "Remove records from the local database.",
+            "dbupdate": "Refresh local database content.",
+            "debug": "Show or change debug mode.",
+            "demonstrate": "Run a safe command demonstration.",
+            "disconnect": "Disconnect from a linked peer.",
+            "do": "Run a startup-safe command alias.",
+            "dx": "Post a DX spot or show recent DX spots.",
+            "dxqsl_export": "Export DXQSL data for the current user.",
+            "dxqsl_import": "Import DXQSL data for the current user.",
+            "echo": "Echo text back to the session.",
+            "export": "Export local data to a file.",
+            "export_users": "Export registered users to CSV.",
             "status": "Show current operator session status.",
             "uptime": "Show node uptime.",
             "who": "List connected users.",
@@ -1147,62 +1493,272 @@ class TelnetClusterServer:
             "dbavail": "Show local database availability.",
             "dbshow": "Inspect local database records.",
             "catchup": "Enable recent DX catch-up on login.",
+            "init": "Reload preferences and filters into active sessions.",
+            "kill": "Disconnect one or more active sessions.",
+            "links": "Show connected peer links.",
+            "mail": "List unread and recent personal messages.",
+            "merge": "Run a startup-safe merge alias.",
+            "motd": "Show the message of the day.",
+            "msg": "Send a personal message to a user.",
+            "node": "Show node or home-node information for a callsign.",
+            "pc": "Show or set PC frame capability preferences.",
+            "ping": "Send a simple ping response.",
+            "privilege": "Show or refresh your privilege level.",
+            "rcmd": "Show or set the remote command string.",
+            "read": "Read message headers or a specific message.",
+            "reply": "Reply to a personal message.",
+            "rinit": "Reload preferences and restart telnet listeners.",
+            "run": "Run a startup-safe command alias.",
+            "save": "Persist the current session state.",
+            "send": "Send a raw or compatibility message command.",
+            "send_config": "Show or write a configuration snapshot.",
+            "shu": "Show the shutdown status summary.",
+            "shutdown": "Shut down listeners and disconnect sessions.",
+            "spoof": "Inject a test message or DX spot as sysop.",
+            "talk": "Send an immediate talk message to a user.",
+            "time": "Show the current UTC time.",
+            "type": "Run a startup-safe type alias.",
+            "users": "Show the registered user list.",
+            "version": "Show program version information.",
             "uncatchup": "Disable recent DX catch-up on login.",
+            "wcy": "Post a WCY propagation bulletin.",
+            "wwv": "Post a WWV propagation bulletin.",
+            "wx": "Post a weather bulletin.",
             "bye": "Disconnect from the cluster.",
             "quit": "Disconnect from the cluster.",
             "exit": "Disconnect from the cluster.",
         }
         if "/" not in cmd:
-            return top_map.get(cmd, "Top-level command.")
+            default = top_map.get(cmd, "Top-level command.")
+            return self._string(key, default)
         group, sub = cmd.split("/", 1)
         special = {
+            "425": "Show local 425-style DX summary output.",
+            "address": "Show or update the station mailing address.",
+            "agwengine": "Show or control AGW engine integration.",
+            "agwmonitor": "Show or control AGW monitor integration.",
+            "announce": "Show announcement delivery status.",
+            "anntalk": "Show or control announce-to-talk bridging.",
+            "apropos": "Search the command catalog by keyword.",
+            "bands": "Show the supported band plan summary.",
+            "bbs": "Show or control BBS compatibility mode.",
+            "beep": "Show or control audible alert mode.",
+            "believe": "Show or control trust mode for incoming data.",
+            "buddy": "Show or manage the buddy list.",
+            "capabilities": "Show command-family capability counts.",
+            "chat": "Show recent chat bulletins.",
+            "cluster": "Show local cluster identity and status.",
+            "cmdcache": "Show command-cache counts and shortcut totals.",
+            "configuration": "Show node, telnet, web, and database settings.",
+            "connect": "Show current peer connection status.",
+            "contest": "Show recent contest-related bulletins.",
+            "control": "Show or manage control-command availability.",
+            "date": "Show the current UTC date.",
+            "db0sdx": "Show DB0SDX gateway configuration status.",
+            "debug": "Show the current debug setting.",
+            "dupann": "Show duplicate filtering for announcements.",
+            "dupeph": "Show duplicate filtering for ephemeris data.",
+            "dupspots": "Show duplicate filtering for DX spots.",
+            "dupwcy": "Show duplicate filtering for WCY bulletins.",
+            "dupwwv": "Show duplicate filtering for WWV bulletins.",
+            "dx": "Show recent DX spots.",
+            "dxcc": "Show DXCC or entity information for a prefix or callsign.",
+            "dxcq": "Show whether CQ zone suffixes are appended to DX spots.",
+            "dxgrid": "Show whether grid data is appended to DX spots.",
+            "dxitu": "Show whether ITU zone suffixes are appended to DX spots.",
+            "dxqsl": "Show DXQSL import and export readiness.",
+            "dxstats": "Show overall DX spot statistics.",
+            "echo": "Show or control local echo mode.",
+            "email": "Show or update the station email address.",
+            "files": "Show local file and export paths.",
+            "filter": "Show current filter rules or test filter matches.",
+            "groups": "Show joined groups and group settings.",
+            "gtk": "Show or control GTK compatibility mode.",
+            "heading": "Show beam heading to a DXCC entity.",
+            "here": "Show or control HERE announcements.",
+            "hfstats": "Show HF-only DX spot statistics.",
+            "home": "Show the configured home cluster or home node.",
+            "homebbs": "Show the configured home BBS.",
             "qra": "Show or set grid square details.",
             "qth": "Show or set location details.",
             "name": "Show or set operator name details.",
             "homenode": "Show or set the local home-node preference.",
+            "hops": "Show hop-related route controls.",
+            "ik3qar": "Show IK3QAR gateway configuration status.",
+            "ingestpeer": "Show per-peer ingest policy settings.",
+            "isolate": "Show or control session isolation mode.",
+            "language": "Show the current language preference.",
+            "links": "Show connected peer links and transport state.",
+            "localnode": "Show whether local-node mode is enabled.",
+            "location": "Show or set the current location string.",
+            "lockout": "Show or control login lockout mode.",
+            "log": "Show recent command and event log entries.",
+            "logininfo": "Show or control login banner information.",
+            "mail": "Show recent message headers.",
+            "maxconnect": "Show the maximum connection limit.",
+            "motd": "Show the message of the day.",
+            "msgstatus": "Show personal message totals and unread counts.",
+            "mydx": "Show DX spots posted by your callsign.",
+            "node": "Show node and home-node information for a callsign.",
+            "notimpl": "Show commands that are still not implemented.",
+            "obscount": "Show the current obscure-count threshold.",
+            "page": "Show the current page length setting.",
+            "passphrase": "Show whether a gateway passphrase is configured.",
+            "pinginterval": "Show the current network ping interval.",
+            "privilege": "Show the current privilege level.",
+            "policy": "Show current relay and ingest policy settings.",
+            "policydrop": "Show policy drop totals and reasons by peer.",
+            "prefix": "Show recent local activity for a callsign prefix.",
+            "program": "Show pyCluster program and version information.",
+            "proto": "Show protocol health and peer status.",
+            "protoack": "Show protocol acknowledgement state by peer.",
+            "protoacks": "Show protocol acknowledgement state by peer.",
+            "protoalerts": "Show current protocol alerts and stale peers.",
+            "protoconfig": "Show protocol thresholds and tuning values.",
+            "protoevents": "Show recent protocol event history.",
+            "protohistory": "Show recorded protocol state changes.",
+            "prompt": "Show the current prompt template.",
+            "qrz": "Show the last local sighting for a callsign.",
+            "rbn": "Show whether RBN spots are enabled.",
+            "rcmd": "Show the configured remote command string.",
+            "register": "Show whether automatic registration is enabled.",
+            "registered": "Show the stored registry record for a user.",
+            "relay": "Show relay policy settings by traffic type.",
+            "relaypeer": "Show per-peer relay policy settings.",
+            "route": "Show route transport counters and peer statistics.",
+            "routepc19": "Show whether PC19 routing is enabled.",
+            "satellite": "Show satellite-related bulletins or status.",
+            "senddbg": "Show whether debug frame transmission is enabled.",
+            "sendpc16": "Show whether PC16 transmission is enabled.",
+            "startup": "Show startup-command status and saved commands.",
+            "station": "Show station profile, registry, and last-spot details.",
+            "stats": "Show runtime counts for users, spots, messages, and peers.",
             "sun": "Show solar status for the current location.",
             "grayline": "Show grayline timing for the current location.",
             "moon": "Show moon phase data for the current location.",
             "muf": "Show the current MUF estimate from WWV data.",
+            "talk": "Show whether talk messages are enabled.",
+            "time": "Show the current UTC time.",
+            "uptime": "Show uptime, start time, and current time.",
             "usdb": "Show or update local USDB entries.",
+            "users": "Show the registered user list.",
+            "usstate": "Show or set the stored US state value.",
+            "var": "Show stored user variables.",
+            "ve7cc": "Show or control VE7CC compatibility mode.",
+            "version": "Show program version information.",
+            "vhfstats": "Show VHF-only DX spot statistics.",
+            "wantpc16": "Show whether incoming PC16 frames are accepted.",
+            "wantpc9x": "Show whether incoming PC9x frames are accepted.",
             "wm7d": "Show WM7D gateway configuration status.",
+            "wcy": "Show recent WCY propagation bulletins.",
+            "wwv": "Show recent WWV propagation bulletins.",
+            "wx": "Show recent weather bulletins.",
             "commands": "List commands in a family or by keyword.",
             "shortcuts": "Show command shortcuts and abbreviations.",
             "setprompt": "Set the login prompt template.",
         }
-        if sub in special:
-            return special[sub]
-        group_desc = {
-            "show": "Display operator-visible data or status.",
-            "set": "Enable or change a stored preference.",
-            "unset": "Disable or clear a stored preference.",
-            "accept": "Allow an incoming policy item.",
-            "reject": "Reject an incoming policy item.",
-            "clear": "Clear stored state or counters.",
-            "load": "Load or reload local data.",
-            "stat": "Show runtime or database statistics.",
-            "create": "Create a local record.",
-            "delete": "Delete a local record.",
-            "forward": "Manage forwarding and gateway details.",
-            "get": "Fetch or request external data.",
-            "sysop": "Run a System Operator command.",
-        }
-        base = group_desc.get(group, "Command.")
+        cross_group = {"qra", "qth", "name", "homenode", "usdb", "setprompt"}
+        if group == "show" and sub in special:
+            return self._string(key, special[sub])
+        if sub in cross_group and sub in special:
+            return self._string(key, special[sub])
         label = sub.replace("_", " ").replace("-", " ").upper() if sub in {"qra", "qth", "wcy", "wwv", "wx"} else sub.replace("_", " ").replace("-", " ")
         if group == "show":
-            return f"Display {label}."
+            if sub.startswith("bad"):
+                default = f"Show blocked {sub[3:]} rules."
+            else:
+                default = f"Show {label}."
+            return self._string(key, default)
         if group == "set":
-            return f"Set {label}."
+            if sub.startswith("bad"):
+                default = f"Add a blocked {sub[3:]} rule."
+                return self._string(key, default)
+            if sub in {"arcluster", "clx", "dxnet", "dxspider", "nowrap", "syslocation", "sysqra", "user"}:
+                default = f"Set {label}."
+                return self._string(key, default)
+            if sub in {"announce", "talk", "wcy", "wwv", "wx", "dx", "dxcq", "dxgrid", "dxitu", "rbn"}:
+                default = f"Enable {label}."
+                return self._string(key, default)
+            if sub in {"debug", "beep", "echo", "register", "prompt", "localnode", "isolate", "lockout", "logininfo"}:
+                default = f"Turn on {label}."
+                return self._string(key, default)
+            if sub in {"relay", "relaypeer", "ingestpeer"}:
+                default = f"Set {label} policy."
+                return self._string(key, default)
+            if sub == "protothreshold":
+                return self._string(key, "Set a protocol threshold value.")
+            if sub in {"address", "email", "location", "password", "passphrase", "language", "privilege", "page", "pinginterval", "obscount", "maxconnect", "var", "uservar"}:
+                default = f"Update {label}."
+            else:
+                default = f"Set {label}."
+            return self._string(key, default)
         if group == "unset":
-            return f"Unset {label}."
-        return base
+            if sub.startswith("bad"):
+                default = f"Remove blocked {sub[3:]} rules."
+                return self._string(key, default)
+            if sub in {"arcluster", "clx", "dxnet", "nowrap"}:
+                default = f"Unset {label}."
+                return self._string(key, default)
+            if sub in {"announce", "talk", "wcy", "wwv", "wx", "dx", "dxcq", "dxgrid", "dxitu", "rbn"}:
+                default = f"Disable {label}."
+                return self._string(key, default)
+            if sub in {"debug", "beep", "echo", "register", "prompt", "localnode", "isolate", "lockout", "logininfo"}:
+                default = f"Turn off {label}."
+                return self._string(key, default)
+            if sub in {"relay", "relaypeer", "ingestpeer"}:
+                default = f"Clear {label} policy overrides."
+                return self._string(key, default)
+            if sub == "protothreshold":
+                return self._string(key, "Clear a protocol threshold override.")
+            if sub in {"password", "passphrase", "var", "uservar", "privilege"}:
+                default = f"Clear {label}."
+            else:
+                default = f"Unset {label}."
+            return self._string(key, default)
+        if group == "accept":
+            return self._string(key, f"Accept {label} filter entries.")
+        if group == "reject":
+            return self._string(key, f"Reject {label} filter entries.")
+        if group == "clear":
+            return self._string(key, f"Clear {label} state.")
+        if group == "load":
+            return self._string(key, f"Load {label} data.")
+        if group == "stat":
+            return self._string(key, f"Show {label} statistics.")
+        if group == "create":
+            return self._string(key, f"Create a {label} record.")
+        if group == "delete":
+            return self._string(key, f"Delete a {label} record.")
+        if group == "forward":
+            if sub == "latlong":
+                return self._string(key, "Set forwarding latitude and longitude.")
+            if sub == "opername":
+                return self._string(key, "Set the forwarding operator name.")
+            return self._string(key, f"Set forwarding {label} details.")
+        if group == "get":
+            return self._string(key, f"Request {label} data.")
+        if group == "sysop":
+            if sub == "setprompt":
+                default = "Set the sysop login prompt template."
+            else:
+                default = f"Run the sysop {label} command."
+            return self._string(key, default)
+        return self._string(key, "Command.")
 
     async def _cmd_show_shortcuts(self, call: str, arg: str | None) -> str:
         reg = self._build_registry()
         needle = (arg or "").strip().lower()
-        rows = [r for r in self._build_shortcut_catalog(reg) if await self._command_visible_for(call, r[0])]
+        rows = list(self._build_shortcut_catalog(reg))
         if needle:
-            rows = [r for r in rows if needle in r[0] or needle in r[1]]
+            nneedle = self._normalize_cmd_token(needle)
+            rows = [
+                r
+                for r in rows
+                if needle in r[0]
+                or needle in r[1]
+                or (nneedle and nneedle in self._normalize_cmd_token(r[0]))
+                or (nneedle and nneedle in self._normalize_cmd_token(r[1]))
+            ]
         if not rows:
             return f"shortcuts: no matches for {needle}\r\n" if needle else "shortcuts: (none)\r\n"
         page = await self._page_size_for(call)
@@ -1211,7 +1767,7 @@ class TelnetClusterServer:
         lines = [f"shortcuts ({len(rows)}):"]
         for k, v in rows:
             emphasized = self._emphasize_shortcut(k, v)
-            lines.append(f"  {k:<18} -> {v}")
+            lines.append(f"  {k:<18} => {v}")
             if emphasized and emphasized != v:
                 lines.append(f"    note: {emphasized}")
         return await self._format_console_lines(call, lines)
@@ -1240,17 +1796,17 @@ class TelnetClusterServer:
                 homenode = prefs.get("homenode", "")
                 pref_node = prefs.get("node", "")
                 return (
-                    f"User node profile: {target}\r\n"
-                    f"homebbs   : {homebbs}\r\n"
-                    f"homenode  : {homenode}\r\n"
-                    f"node      : {pref_node}\r\n"
+                    self._render_string("show.node.user_title", "User node profile: {target}", target=target) + "\r\n"
+                    + self._render_string("show.node.user_homebbs", "homebbs   : {homebbs}", homebbs=homebbs) + "\r\n"
+                    + self._render_string("show.node.user_homenode", "homenode  : {homenode}", homenode=homenode) + "\r\n"
+                    + self._render_string("show.node.user_node", "node      : {node}", node=pref_node) + "\r\n"
                 )
         lines = [
-            f"Node       : {self.config.node.node_call}",
-            f"Alias      : {self.config.node.node_alias}",
-            f"Owner      : {self.config.node.owner_name}",
-            f"QTH        : {self.config.node.qth}",
-            f"Uptime     : {self._uptime_text()}",
+            self._render_string("show.node.node", "Node       : {node_call}", node_call=self.config.node.node_call),
+            self._render_string("show.node.alias", "Alias      : {node_alias}", node_alias=self.config.node.node_alias),
+            self._render_string("show.node.owner", "Owner      : {owner_name}", owner_name=self.config.node.owner_name),
+            self._render_string("show.node.qth", "QTH        : {qth}", qth=self.config.node.qth),
+            self._render_string("show.node.uptime", "Uptime     : {uptime}", uptime=self._uptime_text()),
         ]
         if self._link_stats_fn:
             stats = await self._link_stats_fn()
@@ -1258,13 +1814,14 @@ class TelnetClusterServer:
             desired = {str(row.get("peer", "")).strip(): row for row in desired_rows if str(row.get("peer", "")).strip()}
             names = sorted(set(stats) | set(desired))
             if names:
-                lines.extend(["", "Topology", self.config.node.node_call])
+                lines.extend(["", self._string("show.node.topology", "Topology"), self._render_string("show.node.topology_root", "{node_call}", node_call=self.config.node.node_call)])
                 for idx, name in enumerate(names):
                     branch = "`- " if idx == len(names) - 1 else "|- "
                     state = "up" if name in stats else "down"
                     row = desired.get(name, {})
                     fam = str(row.get("profile") or stats.get(name, {}).get("profile") or "unknown").strip().lower()
-                    lines.append((branch + f"{name} [{state} {fam}]")[:77])
+                    rendered = self._render_string("show.node.topology_branch", "{branch}{name} [{state} {family}]", branch=branch, name=name, state=state, family=fam)
+                    lines.append(rendered[:77])
         return "\r\n".join(lines) + "\r\n"
 
     async def _cmd_show_cluster(self, _call: str, _arg: str | None) -> str:
@@ -1272,66 +1829,84 @@ class TelnetClusterServer:
         local = self.session_count
         total = local + sum(max(0, int(st.get("parsed_frames", 0))) for st in stats.values())
         max_users = max(total, local)
-        return (
-            f" {len(stats)} nodes, {local} local / {total} total users  "
-            f"Max users {max_users}  Uptime {self._uptime_text()}\r\n"
-        )
+        return self._render_string(
+            "show.cluster.line",
+            " {nodes} nodes, {local} local / {total} total users  Max users {max_users}  Uptime {uptime}",
+            nodes=len(stats),
+            local=local,
+            total=total,
+            max_users=max_users,
+            uptime=self._uptime_text(),
+        ) + "\r\n"
 
     async def _cmd_show_users(self, _call: str, _arg: str | None) -> str:
         if not self._sessions:
-            return "No users connected\r\n"
+            return self._string("show.users.empty", "No users connected") + "\r\n"
         sess = self._find_session(_call)
         sess_login = (sess.vars.get("logininfo", "off") if sess else "off").lower() in {"1", "on", "yes", "true"}
         pref_login = (await self._get_pref(_call, "logininfo") or "off").lower() in {"1", "on", "yes", "true"}
         show_logininfo = sess_login or pref_login
-        lines = ["Connected users:"]
+        lines = [self._string("show.users.title", "Connected users:")]
         for s in sorted(self._sessions.values(), key=lambda x: x.call):
             age = datetime.now(timezone.utc) - s.connected_at
             mins = int(age.total_seconds() // 60)
-            base = f"{s.call:<12} online {mins:>4}m  lang={s.language}  echo={'on' if s.echo else 'off'}"
+            base = self._render_string(
+                "show.users.line",
+                "{call:<12} online {minutes:>4}m  lang={language}  echo={echo}",
+                call=s.call,
+                minutes=mins,
+                language=s.language,
+                echo="on" if s.echo else "off",
+            )
             mc = await self._maxconnect_for_call(s.call)
             if mc > 0:
-                base += f"  maxc={mc}"
+                base += self._render_string("show.users.maxconnect", "  maxc={maxconnect}", maxconnect=mc)
             if show_logininfo:
                 row = await self.store.get_user_registry(s.call)
                 if row:
-                    base += f"  last={self._fmt_epoch_short(int(row['last_login_epoch'] or 0))}"
+                    base += self._render_string("show.users.last", "  last={last_login}", last_login=self._fmt_epoch_short(int(row["last_login_epoch"] or 0)))
             lines.append(base)
         lines = await self._apply_page_size(_call, lines, explicit_limit=False)
         return await self._format_console_lines(_call, lines)
 
     async def _cmd_show_connect(self, _call: str, _arg: str | None) -> str:
         if not self._link_stats_fn:
-            return "Node-link subsystem not attached.\r\n"
+            return self._string("show.connect.unavailable", "Node-link subsystem not attached.") + "\r\n"
         stats = await self._link_stats_fn()
         if not stats:
-            return "No outbound node links configured in this runtime.\r\n"
+            return self._string("show.connect.empty", "No outbound node links configured in this runtime.") + "\r\n"
         node_proto = await self._node_proto_map()
-        lines = ["Direct node-link sessions:"]
+        lines = [self._string("show.connect.title", "Direct node-link sessions:")]
         for name in sorted(stats):
             st = stats[name]
             _, proto_txt, _ = self._proto_state_for_peer(node_proto, name)
             direction = "inbound" if bool(st.get("inbound", False)) else "outbound"
-            lines.append(
-                f"{name:<12} {direction:<8} profile={st.get('profile', 'dxspider')} "
-                f"rx={int(st.get('parsed_frames', 0))} tx={int(st.get('sent_frames', 0))} "
-                f"dropped={int(st.get('dropped_frames', 0))} policy_drop={int(st.get('policy_dropped', 0))}"
-                f"{proto_txt}"
-            )
+            lines.append(self._render_string(
+                "show.connect.line",
+                "{peer:<12} {direction:<8} profile={profile} rx={rx} tx={tx} dropped={dropped} policy_drop={policy_drop}{proto}",
+                peer=name,
+                direction=direction,
+                profile=st.get("profile", "dxspider"),
+                rx=int(st.get("parsed_frames", 0)),
+                tx=int(st.get("sent_frames", 0)),
+                dropped=int(st.get("dropped_frames", 0)),
+                policy_drop=int(st.get("policy_dropped", 0)),
+                proto=proto_txt,
+            ))
         return await self._format_console_lines(_call, lines)
 
     async def _cmd_show_links(self, _call: str, _arg: str | None) -> str:
         if not self._link_stats_fn:
-            return "Node-link subsystem not attached.\r\n"
+            return self._string("show.links.unavailable", "Node-link subsystem not attached.") + "\r\n"
         stats = await self._link_stats_fn()
         desired_rows = await self._link_desired_peers_fn() if self._link_desired_peers_fn else []
         desired = {str(row.get("peer", "")).strip(): row for row in desired_rows if str(row.get("peer", "")).strip()}
         names = sorted(set(stats) | set(desired))
         if not names:
-            return "No direct node links configured.\r\n"
+            return self._string("show.links.empty", "No direct node links configured.") + "\r\n"
         node_proto = await self._node_proto_map()
         now = int(datetime.now(timezone.utc).timestamp())
-        lines = ["Peer         Family   State Age  RX/TX  Loop Last Version"]
+        lines = [self._string("show.links.title", "Peer         Family   State Age  RX/TX  Loop Last Version")]
         for name in names:
             st = stats.get(name, {})
             row = desired.get(name, {})
@@ -1385,9 +1960,14 @@ class TelnetClusterServer:
             f"Beep={'on' if beep else 'off'}  Language={language}  Profile={profile}"
         )
         fams = self._filters.get(target, {})
-        lines = [hdr, f"Filters for {target}"]
+        lines = [
+            self._render_string("set.language_set", "Language set to {language} for {call}.", language=language, call=target),
+            f"Profile for {target} set to {profile}.",
+            hdr,
+            f"Filters for {target}",
+        ]
         if not fams:
-            lines.append("  No filters are defined.")
+            lines.append(self._string("filters.empty", "  No filters are defined."))
             return await self._format_console_lines(call, [ln for ln in lines if ln])
         for fam in sorted(fams):
             lines.append(f"[{fam}]")
@@ -1398,22 +1978,17 @@ class TelnetClusterServer:
             merged.sort(key=lambda x: (x[0], 0 if x[1] == "reject" else 1))
             for _, action, r in merged:
                 lines.append(f"  {action}/{fam} {r.slot} {r.expr}")
-        lines.append("Preview:")
-        lines.append("  show/filter test spots <freq_khz> <dx_call> <spotter> [info]")
-        lines.append("  show/filter test route <peer>")
-        lines.append("  show/filter test <announce|wcy|wwv|wx> <sender> <text>")
-        lines.append("  add --verbose after family to include winning rule")
+        lines.append(self._string("filters.preview", "Preview:"))
+        lines.append(self._string("filters.preview_spots", "  show/filter test spots <freq_khz> <dx_call> <spotter> [info]"))
+        lines.append(self._string("filters.preview_route", "  show/filter test route <peer>"))
+        lines.append(self._string("filters.preview_text", "  show/filter test <announce|wcy|wwv|wx> <sender> <text>"))
+        lines.append(self._string("filters.preview_verbose", "  add --verbose after family to include winning rule"))
         lines = await self._apply_page_size(call, lines, explicit_limit=bool(rest_toks))
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_filter_test(self, target: str, toks: list[str]) -> str:
         if not toks:
-            return (
-                "Usage: show/filter [<call>] test "
-                "<spots [--verbose] <freq_khz> <dx_call> <spotter> [info] | "
-                "route [--verbose] <peer> | "
-                "<announce|wcy|wwv|wx> [--verbose] <sender> <text>>\r\n"
-            )
+            return self._string("filters.test_usage", "Usage: show/filter [<call>] test <spots [--verbose] <freq_khz> <dx_call> <spotter> [info] | route [--verbose] <peer> | <announce|wcy|wwv|wx> [--verbose] <sender> <text>>") + "\r\n"
         fam = toks[0].lower()
         args = toks[1:]
         verbose = False
@@ -1423,11 +1998,11 @@ class TelnetClusterServer:
         call = target.upper()
         if fam == "spots":
             if len(args) < 3:
-                return "Usage: show/filter test spots <freq_khz> <dx_call> <spotter> [info]\r\n"
+                return self._string("filters.test_spots_usage", "Usage: show/filter test spots <freq_khz> <dx_call> <spotter> [info]") + "\r\n"
             try:
                 freq = float(args[0])
             except ValueError:
-                return "Usage: show/filter test spots <freq_khz> <dx_call> <spotter> [info]\r\n"
+                return self._string("filters.test_spots_usage", "Usage: show/filter test spots <freq_khz> <dx_call> <spotter> [info]") + "\r\n"
             dx_call = args[1].upper()
             spotter = args[2].upper()
             info = " ".join(args[3:]) if len(args) > 3 else ""
@@ -1439,35 +2014,35 @@ class TelnetClusterServer:
                 lambda expr: self._spot_matches_expr(freq, dx_call, spotter, info, expr),
             )
             lines = [
-                f"Filter test for {call} (spots):",
-                f"  Decision: {'allow' if ok else 'deny'}",
-                f"  Frequency: {freq:.1f} kHz",
-                f"  DX Call: {dx_call}",
-                f"  Spotter: {spotter}",
-                f"  Info: {info or '(none)'}",
+                self._render_string("filters.test_spots_title", "Filter test for {call} (spots):", call=call),
+                self._render_string("filters.decision", "  Decision: {decision}", decision="allow" if ok else "deny"),
+                self._render_string("filters.frequency", "  Frequency: {freq:.1f} kHz", freq=freq),
+                self._render_string("filters.dx_call", "  DX Call: {dx_call}", dx_call=dx_call),
+                self._render_string("filters.spotter", "  Spotter: {spotter}", spotter=spotter),
+                self._render_string("filters.info", "  Info: {info}", info=info or "(none)"),
             ]
             if verbose and detail:
-                lines.append(f"  Winning Rule: {detail}")
+                lines.append(self._render_string("filters.winning_rule", "  Winning Rule: {detail}", detail=detail))
             return await self._format_console_lines(target, lines)
         if fam == "route":
             if len(args) != 1:
-                return "Usage: show/filter test route <peer>\r\n"
+                return self._string("filters.test_route_usage", "Usage: show/filter test route <peer>") + "\r\n"
             peer = args[0]
             if call not in self._filters:
                 await self._load_filters_for_call(call)
             f = self._filters.get(call, {}).get("route", {})
             ok, detail = self._eval_filter_family_detail(f, lambda expr: self._route_peer_matches_expr(peer, expr))
             lines = [
-                f"Filter test for {call} (route):",
-                f"  Decision: {'allow' if ok else 'deny'}",
-                f"  Peer: {peer}",
+                self._render_string("filters.test_route_title", "Filter test for {call} (route):", call=call),
+                self._render_string("filters.decision", "  Decision: {decision}", decision="allow" if ok else "deny"),
+                self._render_string("filters.peer", "  Peer: {peer}", peer=peer),
             ]
             if verbose and detail:
-                lines.append(f"  Winning Rule: {detail}")
+                lines.append(self._render_string("filters.winning_rule", "  Winning Rule: {detail}", detail=detail))
             return await self._format_console_lines(target, lines)
         if fam in {"announce", "wcy", "wwv", "wx"}:
             if len(args) < 2:
-                return f"Usage: show/filter test {fam} <sender> <text>\r\n"
+                return self._render_string("filters.test_text_usage", "Usage: show/filter test {family} <sender> <text>", family=fam) + "\r\n"
             sender = args[0].upper()
             text = " ".join(args[1:])
             if call not in self._filters:
@@ -1475,26 +2050,31 @@ class TelnetClusterServer:
             f = self._filters.get(call, {}).get(fam, {})
             ok, detail = self._eval_filter_family_detail(f, lambda expr: self._text_matches_expr(sender, text, expr))
             lines = [
-                f"Filter test for {call} ({fam}):",
-                f"  Decision: {'allow' if ok else 'deny'}",
-                f"  Sender: {sender}",
-                f"  Text: {text}",
+                self._render_string("filters.test_text_title", "Filter test for {call} ({family}):", call=call, family=fam),
+                self._render_string("filters.decision", "  Decision: {decision}", decision="allow" if ok else "deny"),
+                self._render_string("filters.sender", "  Sender: {sender}", sender=sender),
+                self._render_string("filters.text", "  Text: {text}", text=text),
             ]
             if verbose and detail:
-                lines.append(f"  Winning Rule: {detail}")
+                lines.append(self._render_string("filters.winning_rule", "  Winning Rule: {detail}", detail=detail))
             return await self._format_console_lines(target, lines)
-        return "Usage: show/filter test <spots|route|announce|wcy|wwv|wx> ...\r\n"
+        return self._string("filters.test_generic_usage", "Usage: show/filter test <spots|route|announce|wcy|wwv|wx> ...") + "\r\n"
 
     async def _cmd_show_configuration(self, _call: str, _arg: str | None) -> str:
         ports = ",".join(str(p) for p in self._configured_ports())
         lines = [
             "Node configuration:",
             f"  Node Call: {self.config.node.node_call}",
+            f"  node_call={self.config.node.node_call}",
             f"  Node Alias: {self.config.node.node_alias}",
+            f"  node_alias={self.config.node.node_alias}",
             f"  Location (QTH): {self.config.node.qth}",
+            f"  qth={self.config.node.qth}",
             f"  Telnet Listener: {self.config.telnet.host}:{self.config.telnet.port}",
+            f"  telnet={self.config.telnet.host}:{self.config.telnet.port}",
             f"  Telnet Ports: {ports}",
             f"  System Operator Web: {self.config.web.host}:{self.config.web.port}",
+            f"  web={self.config.web.host}:{self.config.web.port}",
             f"  Database: {self.config.store.sqlite_path}",
         ]
         return await self._format_console_lines(_call, lines)
@@ -1509,7 +2089,7 @@ class TelnetClusterServer:
         return await self._format_console_lines(_call, lines)
 
     async def _cmd_show_bands(self, _call: str, _arg: str | None) -> str:
-        lines = ["Band plan:"]
+        lines = [self._string("show.bands.title", "Band plan:")]
         for b in sorted(BAND_RANGES):
             lo, hi = BAND_RANGES[b]
             lines.append(f"  {b:<6} {lo:>8.1f}-{hi:<8.1f} kHz")
@@ -1528,17 +2108,17 @@ class TelnetClusterServer:
             ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc).strftime("%-d-%b-%Y %H%MZ")
             last = f"{r['dx_call']} {r['freq_khz']:.1f} {ts}"
         if scope == "hf":
-            lines = ["HF DX summary:", f"  Total: {hf}", f"  Last: {last}"]
+            lines = [self._string("show.dxstats.hf_title", "HF DX summary:"), self._render_string("show.dxstats.total", "  Total: {count}", count=hf), self._render_string("show.dxstats.last", "  Last: {last}", last=last)]
             return await self._format_console_lines(_call, lines)
         if scope == "vhf":
-            lines = ["VHF DX summary:", f"  Total: {vhf}", f"  Last: {last}"]
+            lines = [self._string("show.dxstats.vhf_title", "VHF DX summary:"), self._render_string("show.dxstats.total", "  Total: {count}", count=vhf), self._render_string("show.dxstats.last", "  Last: {last}", last=last)]
             return await self._format_console_lines(_call, lines)
         lines = [
-            "DX summary:",
-            f"  Total: {total}",
-            f"  HF: {hf}",
-            f"  VHF: {vhf}",
-            f"  Last: {last}",
+            self._string("show.dxstats.title", "DX summary:"),
+            self._render_string("show.dxstats.total", "  Total: {count}", count=total),
+            self._render_string("show.dxstats.hf", "  HF: {count}", count=hf),
+            self._render_string("show.dxstats.vhf", "  VHF: {count}", count=vhf),
+            self._render_string("show.dxstats.last", "  Last: {last}", last=last),
         ]
         return await self._format_console_lines(_call, lines)
 
@@ -1567,9 +2147,9 @@ class TelnetClusterServer:
             if len(out) >= limit:
                 break
         if not out:
-            return "No contest announcements.\r\n"
+            return self._string("show.contest.empty", "No contest announcements.") + "\r\n"
         out = await self._apply_page_size(call, out, explicit_limit=explicit)
-        return await self._format_console_lines(call, ["Contest announcements:"] + out)
+        return await self._format_console_lines(call, [self._string("show.contest.title", "Contest announcements:")] + out)
 
     async def _cmd_show_satellite(self, call: str, arg: str | None) -> str:
         explicit = bool(arg and arg.split()[0].isdigit())
@@ -1604,33 +2184,83 @@ class TelnetClusterServer:
             if len(sat) >= limit:
                 break
         if not sat:
-            return "No satellite spots.\r\n"
+            return self._string("show.satellite.empty", "No satellite spots.") + "\r\n"
         sat = await self._apply_page_size(call, sat, explicit_limit=explicit)
-        return await self._format_console_lines(call, ["Satellite spots:"] + sat)
+        return await self._format_console_lines(call, [self._string("show.satellite.title", "Satellite spots:")] + sat)
 
     async def _cmd_show_prefix(self, _call: str, arg: str | None) -> str:
         if not arg:
-            return "Usage: show/prefix <prefix>\r\n"
+            return self._string("show.prefix.usage", "Usage: show/prefix <prefix>") + "\r\n"
         p = arg.split()[0].upper()
         c = await self.store.count_spots_by_prefix(p)
-        return f"Prefix {p} has {c} local spot entr{'y' if c == 1 else 'ies'}.\r\n"
+        noun = "entry" if c == 1 else "entries"
+        return self._render_string("show.prefix.result", "Prefix {prefix} has {count} local spot {noun}.", prefix=p, count=c, noun=noun) + "\r\n"
 
     async def _cmd_show_qrz(self, _call: str, arg: str | None) -> str:
         if not arg:
-            return "Usage: show/qrz <call>\r\n"
+            return self._string("show.qrz.usage", "Usage: show/qrz <call>") + "\r\n"
         call = arg.split()[0].upper()
         row = await self.store.latest_spot_for_call(call)
         if not row:
-            return f"{call}: no local spot data.\r\n"
+            return self._render_string("show.qrz.empty", "{call}: no local spot data.", call=call) + "\r\n"
         ts = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).strftime("%-d-%b-%Y %H%MZ")
         lines = [
-            f"{call} was last spotted on {ts}.",
-            f"  Frequency: {row['freq_khz']:.1f} kHz",
-            f"  Spotter: {row['spotter']}",
-            f"  Via: {row['source_node']}",
-            f"  Comment: {row['info'] or '(none)'}",
+            self._render_string("show.qrz.title", "{call} was last spotted on {timestamp}.", call=call, timestamp=ts),
+            self._render_string("show.qrz.frequency", "  Frequency: {freq:.1f} kHz", freq=float(row["freq_khz"])),
+            self._render_string("show.qrz.spotter", "  Spotter: {spotter}", spotter=row["spotter"]),
+            self._render_string("show.qrz.via", "  Via: {source}", source=row["source_node"]),
+            self._render_string("show.qrz.comment", "  Comment: {comment}", comment=row["info"] or "(none)"),
         ]
         return await self._format_console_lines(_call, lines)
+
+    async def _cmd_show_callsign_lookup(self, actor_call: str, arg: str | None, service: str) -> str:
+        if not arg:
+            return self._render_string("show.lookup.usage", "Usage: show/{service} <call>", service=service) + "\r\n"
+        target = arg.split()[0].upper()
+        lines = [self._render_string("show.lookup.title", "{service} lookup for {target}:", service=service.upper(), target=target)]
+
+        reg = await self.store.get_user_registry(target)
+        if reg is not None:
+            name = str(reg["display_name"] or "").strip()
+            qth = str(reg["qth"] or "").strip()
+            qra = str(reg["qra"] or "").strip().upper()
+            home_node = str(reg["home_node"] or "").strip().upper()
+            email = str(reg["email"] or "").strip()
+            address = str(reg["address"] or "").strip()
+            privilege = str(reg["privilege"] or "").strip().lower() or "user"
+            if name:
+                lines.append(f"  Name: {name}")
+            if qth:
+                lines.append(f"  QTH: {qth}")
+            if qra:
+                lines.append(f"  Grid: {qra}")
+            if home_node:
+                lines.append(f"  Home Node: {home_node}")
+            if privilege:
+                lines.append(self._render_string("show.lookup.privilege", "  Privilege: {value}", value=privilege))
+            if email:
+                lines.append(self._render_string("show.lookup.email", "  Email: {value}", value=email))
+            if address:
+                lines.append(self._render_string("show.lookup.address", "  Address: {value}", value=address))
+
+        ent = lookup(target)
+        if ent is not None:
+            lines.append(self._render_string("show.lookup.dxcc", "  DXCC: {value}", value=ent.name))
+            lines.append(self._render_string("show.lookup.cq", "  CQ Zone: {value}", value=ent.cq_zone))
+            lines.append(self._render_string("show.lookup.itu", "  ITU Zone: {value}", value=ent.itu_zone))
+
+        row = await self.store.latest_spot_for_call(target)
+        if row is not None:
+            ts = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).strftime("%-d-%b-%Y %H%MZ")
+            lines.append(self._render_string("show.lookup.last_spotted", "  Last Spotted: {value}", value=ts))
+            lines.append(self._render_string("show.lookup.frequency", "  Frequency: {freq:.1f} kHz", freq=float(row["freq_khz"])))
+            lines.append(self._render_string("show.lookup.spotter", "  Spotter: {value}", value=row["spotter"]))
+            lines.append(self._render_string("show.lookup.via", "  Via: {value}", value=row["source_node"]))
+            lines.append(self._render_string("show.lookup.comment", "  Comment: {value}", value=row["info"] or "(none)"))
+
+        if len(lines) == 1:
+            return self._render_string("show.lookup.empty", "{target}: no local {service} data.", target=target, service=service) + "\r\n"
+        return await self._format_console_lines(actor_call, lines)
 
     async def _cmd_show_qra(self, call: str, arg: str | None) -> str:
         target = call.upper()
@@ -1640,30 +2270,30 @@ class TelnetClusterServer:
                 target = tok
         reg = await self.store.get_user_registry(target)
         if reg and str(reg["qra"] or "").strip():
-            return f"QRA for {target}: {reg['qra']}\r\n"
+            return f"QRA for {target}: {reg['qra']}\r\nqra={reg['qra']}\r\n"
         pref = (await self._get_pref(target, "qra") or "").strip()
         if pref:
-            return f"QRA for {target}: {pref}\r\n"
+            return f"QRA for {target}: {pref}\r\nqra={pref}\r\n"
         s = self._find_session(target)
         if s:
             qra = str(s.vars.get("qra", "")).strip()
             if qra:
-                return f"QRA for {target}: {qra}\r\n"
-        return f"QRA for {target}: (none)\r\n"
+                return f"QRA for {target}: {qra}\r\nqra={qra}\r\n"
+        return f"QRA for {target}: (none)\r\nqra=\r\n"
 
     async def _cmd_show_apropos(self, call: str, arg: str | None) -> str:
         term = (arg or "").strip().lower()
         if not term:
-            return "Usage: show/apropos <term>\r\n"
+            return self._string("show.apropos.usage", "Usage: show/apropos <term>") + "\r\n"
         commands = sorted(self._build_registry().keys())
         commands = [c for c in commands if await self._command_visible_for(call, c)]
         matches = [c for c in commands if term in c]
         if not matches:
-            return f"No commands match {term}.\r\n"
+            return self._render_string("show.apropos.empty", "No commands match {term}.", term=term) + "\r\n"
         page = await self._page_size_for(call)
         if page > 0:
             matches = matches[:page]
-        lines = [f"Commands matching {term} ({len(matches)}):"]
+        lines = [self._render_string("show.apropos.title", "Commands matching {term} ({count}):", term=term, count=len(matches))]
         lines.extend(f"  {c}" for c in matches)
         return await self._format_console_lines(call, lines)
 
@@ -1671,11 +2301,11 @@ class TelnetClusterServer:
         reg = self._build_registry()
         pending = sorted(k for k, v in reg.items() if v == self._cmd_not_implemented)
         if not pending:
-            return "Not-implemented commands: none.\r\n"
+            return self._string("show.notimpl.empty", "Not-implemented commands: none.") + "\r\n"
         page = await self._page_size_for(call)
         if page > 0:
             pending = pending[:page]
-        lines = [f"Not-implemented commands ({len(pending)}):"]
+        lines = [self._render_string("show.notimpl.title", "Not-implemented commands ({count}):", count=len(pending))]
         lines.extend(f"  {k}" for k in pending)
         return await self._format_console_lines(call, lines)
 
@@ -1688,6 +2318,7 @@ class TelnetClusterServer:
     async def _cmd_show_uptime(self, _call: str, _arg: str | None) -> str:
         now = datetime.now(timezone.utc)
         lines = [
+            f"uptime={self._uptime_text()} started={self.started_at.isoformat()} now={now.isoformat()}",
             "Uptime:",
             f"  Running: {self._uptime_text()}",
             f"  Started: {self.started_at.isoformat()}",
@@ -1724,7 +2355,30 @@ class TelnetClusterServer:
         return await self._format_console_lines(_call, lines)
 
     async def _cmd_show_heading(self, _call: str, _arg: str | None) -> str:
-        return f"{self.config.node.node_call} {self.config.node.qth}\r\n"
+        lines = [self._render_string("show.heading.origin", "{node_call} {qth}", node_call=self.config.node.node_call, qth=self.config.node.qth)]
+        target = (_arg or "").strip().upper()
+        if not target:
+            return "\r\n".join(lines) + "\r\n"
+        info = await self._coords_context_for(_call.upper())
+        if not info:
+            lines.append(self._string("show.heading.needs_reference", "Set your grid square or forward/latlong first."))
+            return "\r\n".join(lines) + "\r\n"
+        ent = lookup(target)
+        if ent is None:
+            lines.append(self._render_string("show.heading.missing", "No heading data for {target}.", target=target))
+            return "\r\n".join(lines) + "\r\n"
+        (lat1, lon1), source = info
+        lat1r = math.radians(lat1)
+        lon1r = math.radians(lon1)
+        lat2r = math.radians(ent.lat)
+        lon2r = math.radians(ent.lon)
+        dlon = lon2r - lon1r
+        y = math.sin(dlon) * math.cos(lat2r)
+        x = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon)
+        bearing = (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+        lines.append(self._render_string("show.heading.result", "Heading to {entity} ({target}): {bearing:.0f} deg", entity=ent.name, target=target, bearing=bearing))
+        lines.append(self._render_string("show.heading.reference", "Reference: {source}", source=source))
+        return "\r\n".join(lines) + "\r\n"
 
     async def _cmd_show_stats(self, call: str, _arg: str | None) -> str:
         spots = await self.store.count_spots()
@@ -1736,12 +2390,13 @@ class TelnetClusterServer:
             peers = len(stats)
             policy_drop = sum(int(st.get("policy_dropped", 0)) for st in stats.values())
         lines = [
-            "Runtime summary:",
-            f"  Users: {self.session_count}",
-            f"  Spots: {spots}",
-            f"  Messages: {total_msg} total, {unread_msg} unread",
-            f"  Peers: {peers}",
-            f"  Policy Drops: {policy_drop}",
+            self._render_string("show.stats.headline", "Users={users} Spots={spots} Messages={messages} Peers={peers} PolicyDrop={policy_drop}", users=self.session_count, spots=spots, messages=total_msg, peers=peers, policy_drop=policy_drop),
+            self._string("show.stats.title", "Runtime summary:"),
+            self._render_string("show.stats.users", "  Users: {users}", users=self.session_count),
+            self._render_string("show.stats.spots", "  Spots: {spots}", spots=spots),
+            self._render_string("show.stats.messages", "  Messages: {total} total, {unread} unread", total=total_msg, unread=unread_msg),
+            self._render_string("show.stats.peers", "  Peers: {peers}", peers=peers),
+            self._render_string("show.stats.policy_drop", "  Policy Drops: {policy_drop}", policy_drop=policy_drop),
         ]
         return await self._format_console_lines(call, lines)
 
@@ -1789,34 +2444,40 @@ class TelnetClusterServer:
             enabled = enabled_v in {"1", "on", "yes", "true"}
             lines = [f"{name} gateway status:"]
             lines.append(f"  Enabled: {'on' if enabled else 'off'}")
+            lines.append(f"  enabled={'on' if enabled else 'off'}")
             if host:
                 lines.append(f"  Host: {host}")
+                lines.append(f"  host={host}")
             if port:
                 lines.append(f"  Port: {port}")
+                lines.append(f"  port={port}")
             if not host and not port:
                 lines.append("  Endpoint: (not configured)")
             return await self._format_console_lines(call, lines)
         if name in {"talk", "announce", "wcy", "wwv", "wx", "dx", "dxcq", "dxitu", "dxgrid"}:
             val = vars_map.get(name, "on")
-            return f"{name.upper()} for {target}: {'on' if self._is_on_value(str(val), default=True) else 'off'}\r\n"
+            shown = "on" if self._is_on_value(str(val), default=True) else "off"
+            return f"{self._display_label(name)} for {target}: {shown}\r\n{name.lower()}={shown}\r\n"
         if name in {"debug", "isolate", "lockout", "register", "prompt", "local_node"}:
             val = vars_map.get(name, "off")
-            return f"{name.replace('_', ' ').title()} for {target}: {val}\r\n"
+            return f"{self._display_label(name)} for {target}: {val}\r\n{name.lower()}={val}\r\n"
         if name in {"dup_ann", "dup_eph", "dup_spots", "dup_wcy", "dup_wwv"}:
             val = vars_map.get(name, "off")
-            return f"{name.replace('_', ' ').title()} for {target}: {val}\r\n"
+            return f"{self._display_label(name)} for {target}: {val}\r\n{name.lower()}={val}\r\n"
         if name in {"qra", "station", "name", "qth", "location"}:
             val = vars_map.get(name, "")
-            return f"{name.upper()} for {target}: {val or '(none)'}\r\n"
+            return f"{self._display_label(name)} for {target}: {val or '(none)'}\r\n{name.lower()}={val}\r\n"
         if name in {"rcmd", "groups"}:
             if not vars_map:
                 return f"{name}: (none)\r\n"
             lines = []
             if name in vars_map:
                 lines.append(f"{name}: {vars_map[name]}")
+                if name == "rcmd":
+                    lines.append(f"rcmd={vars_map[name]}")
             lines.extend(f"{k}: {v}" for k, v in sorted(vars_map.items()) if k.startswith(name + "."))
             if name == "groups" and "groups.joined" in vars_map:
-                lines.append(f"groups.joined: {vars_map['groups.joined']}")
+                lines.append(f"groups.joined={vars_map['groups.joined']}")
             if not lines:
                 return f"{name}: (none)\r\n"
             lines.insert(0, f"Call: {target}")
@@ -1849,8 +2510,35 @@ class TelnetClusterServer:
         pref_map = await self._load_prefs_for_call(target)
         vars_map.update(pref_map)
         val = vars_map.get(key, default)
-        label = key.replace("_", " ").upper() if key.islower() else key.replace("_", " ")
-        return f"{label} for {target}: {val}\r\n"
+        label = "TALK" if key == "talk" else self._display_label(key)
+        return f"{label} for {target}: {val}\r\n{key.lower()}={val}\r\n"
+
+    async def _show_key_value(
+        self,
+        call: str,
+        arg: str | None,
+        cmd: str,
+        key: str,
+        *,
+        pref_key: str | None = None,
+        registry_field: str | None = None,
+        default: str = "",
+        readable_label: str | None = None,
+    ) -> str:
+        target = await self._show_named_target(call, arg, cmd)
+        value = ""
+        if registry_field:
+            row = await self.store.get_user_registry(target)
+            if row is not None:
+                value = str(row[registry_field] or "")
+        if not value:
+            vars_map = dict(self._session_vars(target))
+            pref_map = await self._load_prefs_for_call(target)
+            vars_map.update(pref_map)
+            value = str(vars_map.get(pref_key or key, default) or "")
+        label = readable_label or key.replace("_", " ").title()
+        wire_key = key.lower()
+        return f"{label} for {target}: {value or '(none)'}\r\n{wire_key}={value}\r\n"
 
     async def _show_gateway_status(self, call: str, arg: str | None, cmd: str, name: str) -> str:
         target = await self._show_named_target(call, arg, cmd)
@@ -1863,10 +2551,13 @@ class TelnetClusterServer:
         enabled = enabled_v in {"1", "on", "yes", "true"}
         lines = [f"{name} gateway status:"]
         lines.append(f"  Enabled: {'on' if enabled else 'off'}")
+        lines.append(f"  enabled={'on' if enabled else 'off'}")
         if host:
             lines.append(f"  Host: {host}")
+            lines.append(f"  host={host}")
         if port:
             lines.append(f"  Port: {port}")
+            lines.append(f"  port={port}")
         if not host and not port:
             lines.append("  Endpoint: not configured on this node")
         return await self._format_console_lines(call, lines)
@@ -1881,9 +2572,11 @@ class TelnetClusterServer:
         lines = []
         if name in vars_map:
             lines.append(f"{name}: {vars_map[name]}")
+            if name == "rcmd":
+                lines.append(f"rcmd={vars_map[name]}")
         lines.extend(f"{k}: {v}" for k, v in sorted(vars_map.items()) if k.startswith(name + "."))
         if name == "groups" and "groups.joined" in vars_map:
-            lines.append(f"groups.joined: {vars_map['groups.joined']}")
+            lines.append(f"groups.joined={vars_map['groups.joined']}")
         if not lines:
             return f"{name}: (none)\r\n"
         lines.insert(0, f"Call: {target}")
@@ -1921,7 +2614,7 @@ class TelnetClusterServer:
 
     async def _cmd_show_muf_direct(self, call: str, arg: str | None) -> str:
         target = await self._show_named_target(call, arg, "show/muf")
-        return await self._cmd_show_muf(target)
+        return await self._cmd_show_muf(target, arg)
 
     async def _cmd_show_cmdcache_direct(self, _call: str, _arg: str | None) -> str:
         reg = self._build_registry()
@@ -1937,6 +2630,7 @@ class TelnetClusterServer:
             f"  Unset: {unset_n}",
             f"  Shortcuts: {short_n}",
             "  State: warm",
+            f"  cmd_cache: commands={len(reg)} show={show_n} set={set_n} unset={unset_n} shortcuts={short_n} state=warm",
         ]
         return await self._format_console_lines(_call, lines)
 
@@ -1960,6 +2654,8 @@ class TelnetClusterServer:
         return await self._show_gateway_status(call, arg, "show/ik3qar", "ik3qar")
 
     async def _cmd_show_wm7d_direct(self, call: str, arg: str | None) -> str:
+        if arg and arg.strip():
+            return await self._cmd_show_callsign_lookup(call, arg, "wm7d")
         return await self._show_gateway_status(call, arg, "show/wm7d", "wm7d")
 
     async def _cmd_show_dupann_direct(self, call: str, arg: str | None) -> str:
@@ -1979,6 +2675,13 @@ class TelnetClusterServer:
 
     async def _coords_context_for(self, call: str) -> tuple[tuple[float, float], str] | None:
         prefs = await self._load_prefs_for_call(call)
+        locator = (prefs.get("qra") or "").strip().upper()
+        if not locator:
+            reg = await self.store.get_user_registry(call)
+            locator = str(reg["qra"] or "").strip().upper() if reg else ""
+        locator_coords = self._locator_to_coords(locator) if locator else None
+        location_text = str(prefs.get("location") or "").strip()
+        location_source = str(prefs.get("location_source") or "").strip().lower()
         lat_s = (prefs.get("forward_lat") or "").strip()
         lon_s = (prefs.get("forward_lon") or "").strip()
         if lat_s and lon_s:
@@ -1988,19 +2691,21 @@ class TelnetClusterServer:
             except ValueError:
                 lat = lon = None  # type: ignore[assignment]
             if lat is not None and lon is not None and -90 <= lat <= 90 and -180 <= lon <= 180:
+                if location_text and location_source == "user":
+                    return (lat, lon), f"location {location_text}"
+                if locator and locator_coords is not None:
+                    if abs(lat - locator_coords[0]) < 1e-3 and abs(lon - locator_coords[1]) < 1e-3:
+                        return locator_coords, f"QRA {locator}"
                 return (lat, lon), "forward latitude/longitude"
 
-        locator = (prefs.get("qra") or "").strip().upper()
-        if not locator:
-            reg = await self.store.get_user_registry(call)
-            locator = str(reg["qra"] or "").strip().upper() if reg else ""
-        if locator:
-            coords = self._locator_to_coords(locator)
-            if coords is not None:
-                return coords, f"QRA {locator}"
+        if locator and locator_coords is not None:
+            return locator_coords, f"QRA {locator}"
 
         node_prefs = node_presentation_defaults(self.config.node)
-        node_prefs.update(await self.store.list_user_prefs(self.config.node.node_call))
+        pref_map = await self.store.list_user_prefs(self.config.node.node_call)
+        for key in _CONFIG_AUTH_NODE_FIELDS:
+            pref_map.pop(key, None)
+        node_prefs.update(pref_map)
         node_locator = str(node_prefs.get("node_locator", self.config.node.node_locator)).strip().upper()
         if node_locator:
             coords = self._locator_to_coords(node_locator)
@@ -2015,34 +2720,86 @@ class TelnetClusterServer:
         return info[0]
 
     def _locator_to_coords(self, locator: str) -> tuple[float, float] | None:
-        txt = re.sub(r"[^A-Z0-9]", "", str(locator or "").strip().upper())
-        if len(txt) < 4 or len(txt) % 2 != 0:
-            return None
-        txt = txt[:8]
-        lon = -180.0
-        lat = -90.0
-        lon_step = 20.0
-        lat_step = 10.0
+        return locator_to_coords(locator)
+
+    def _resolve_location_coords(self, text: str) -> tuple[float, float] | None:
+        started = time.monotonic()
         try:
-            lon += (ord(txt[0]) - ord("A")) * lon_step
-            lat += (ord(txt[1]) - ord("A")) * lat_step
-            lon_step /= 10.0
-            lat_step /= 10.0
-            lon += int(txt[2]) * lon_step
-            lat += int(txt[3]) * lat_step
-            if len(txt) >= 6:
-                lon_step /= 24.0
-                lat_step /= 24.0
-                lon += (ord(txt[4]) - ord("A")) * lon_step
-                lat += (ord(txt[5]) - ord("A")) * lat_step
-            if len(txt) >= 8:
-                lon_step /= 10.0
-                lat_step /= 10.0
-                lon += int(txt[6]) * lon_step
-                lat += int(txt[7]) * lat_step
-        except (TypeError, ValueError):
+            coords = resolve_location_to_coords(text)
+        except Exception:
+            LOG.exception("location resolve failed call_text=%r", text)
             return None
-        return lat + lat_step / 2.0, lon + lon_step / 2.0
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        if coords is None:
+            LOG.info("location resolve miss text=%r elapsed_ms=%.1f", text, elapsed_ms)
+            return None
+        LOG.info("location resolve ok text=%r lat=%.4f lon=%.4f elapsed_ms=%.1f", text, coords[0], coords[1], elapsed_ms)
+        return coords
+
+    def _estimate_location_label(self, locator: str) -> str:
+        started = time.monotonic()
+        try:
+            label = estimate_location_from_locator(locator)
+        except Exception:
+            LOG.exception("location estimate failed locator=%r", locator)
+            return f"Grid {extract_locator(locator)}"
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        LOG.info("location estimate locator=%r label=%r elapsed_ms=%.1f", locator, label, elapsed_ms)
+        return label
+
+    async def _sync_locator_defaults(self, call: str, locator: str, *, overwrite_coords: bool = False) -> None:
+        loc = extract_locator(locator)
+        if not loc:
+            return
+        coords = locator_to_coords(loc)
+        if coords is None:
+            return
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.upsert_user_registry(call, now, qra=loc)
+        if overwrite_coords:
+            await self.store.set_user_pref(call, "forward_lat", f"{coords[0]:.4f}", now)
+            await self.store.set_user_pref(call, "forward_lon", f"{coords[1]:.4f}", now)
+            return
+        cur_lat = await self.store.get_user_pref(call, "forward_lat")
+        cur_lon = await self.store.get_user_pref(call, "forward_lon")
+        if not str(cur_lat or "").strip() and not str(cur_lon or "").strip():
+            await self.store.set_user_pref(call, "forward_lat", f"{coords[0]:.4f}", now)
+            await self.store.set_user_pref(call, "forward_lon", f"{coords[1]:.4f}", now)
+
+    async def _sync_location_defaults(self, call: str, text: str) -> str | None:
+        coords = self._resolve_location_coords(text)
+        if coords is None:
+            return None
+        lat, lon = coords
+        loc = coords_to_locator(lat, lon)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.set_user_pref(call, "qra", loc, now)
+        await self.store.set_user_pref(call, "forward_lat", f"{lat:.4f}", now)
+        await self.store.set_user_pref(call, "forward_lon", f"{lon:.4f}", now)
+        await self.store.set_user_pref(call, "location_source", "user", now)
+        await self.store.upsert_user_registry(call, now, qra=loc)
+        s = self._find_session(call)
+        if s:
+            s.vars["qra"] = loc
+            s.vars["forward_lat"] = f"{lat:.4f}"
+            s.vars["forward_lon"] = f"{lon:.4f}"
+            s.vars["location_source"] = "user"
+        return loc
+
+    async def _backfill_location_from_qra(self, call: str, locator: str) -> str | None:
+        existing = await self.store.get_user_pref(call, "location")
+        if str(existing or "").strip():
+            return None
+        label = self._estimate_location_label(locator)
+        label = label.strip() or f"Grid {extract_locator(locator)}"
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.set_user_pref(call, "location", label, now)
+        await self.store.set_user_pref(call, "location_source", "qra_estimate", now)
+        s = self._find_session(call)
+        if s:
+            s.vars["location"] = label
+            s.vars["location_source"] = "qra_estimate"
+        return label
 
     def _solar_hour(self, now: datetime, lon: float) -> float:
         return (now.hour + now.minute / 60.0 + now.second / 3600.0 + lon / 15.0) % 24.0
@@ -2050,25 +2807,25 @@ class TelnetClusterServer:
     async def _cmd_show_sun(self, call: str) -> str:
         info = await self._coords_context_for(call)
         if not info:
-            return "Sun: set your grid square or forward/latlong first.\r\n"
+            return self._string("show.sun.unavailable", "Sun: set your grid square or forward/latlong first.") + "\r\n"
         (lat, lon), source = info
         now = datetime.now(timezone.utc)
         sh = self._solar_hour(now, lon)
         phase = "day" if 6.0 <= sh < 18.0 else "night"
         lines = [
-            "Sun status:",
-            f"  Reference: {source}",
-            f"  Latitude: {lat:.4f}",
-            f"  Longitude: {lon:.4f}",
-            f"  Solar Hour: {sh:.2f}",
-            f"  Phase: {phase}",
+            self._string("show.sun.title", "Sun status:"),
+            self._render_string("show.sun.reference", "  Reference: {source}", source=source),
+            self._render_string("show.sun.latitude", "  Latitude: {lat:.4f}", lat=lat),
+            self._render_string("show.sun.longitude", "  Longitude: {lon:.4f}", lon=lon),
+            self._render_string("show.sun.solar_hour", "  Solar Hour: {hour:.2f}", hour=sh),
+            self._render_string("show.sun.phase", "  Phase: {phase}", phase=phase),
         ]
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_grayline(self, call: str) -> str:
         info = await self._coords_context_for(call)
         if not info:
-            return "Grayline: set your grid square or forward/latlong first.\r\n"
+            return self._string("show.grayline.unavailable", "Grayline: set your grid square or forward/latlong first.") + "\r\n"
         (lat, lon), source = info
         now = datetime.now(timezone.utc)
         sh = self._solar_hour(now, lon)
@@ -2080,18 +2837,18 @@ class TelnetClusterServer:
         else:
             nxt = f"sunset in {to_sunset:.2f}h"
         lines = [
-            "Grayline status:",
-            f"  Reference: {source}",
-            f"  Latitude: {lat:.4f}",
-            f"  Longitude: {lon:.4f}",
-            f"  Next Event: {nxt}",
+            self._string("show.grayline.title", "Grayline status:"),
+            self._render_string("show.grayline.reference", "  Reference: {source}", source=source),
+            self._render_string("show.grayline.latitude", "  Latitude: {lat:.4f}", lat=lat),
+            self._render_string("show.grayline.longitude", "  Longitude: {lon:.4f}", lon=lon),
+            self._render_string("show.grayline.next", "  Next Event: {event}", event=nxt),
         ]
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_moon(self, call: str) -> str:
         info = await self._coords_context_for(call)
         if not info:
-            return "Moon: set your grid square or forward/latlong first.\r\n"
+            return self._string("show.moon.unavailable", "Moon: set your grid square or forward/latlong first.") + "\r\n"
         (lat, lon), source = info
         now_epoch = datetime.now(timezone.utc).timestamp()
         # Reference new moon near J2000: 2000-01-06 18:14 UTC.
@@ -2100,45 +2857,91 @@ class TelnetClusterServer:
         phase = age / synodic
         illum = 0.5 * (1 - math.cos(2 * math.pi * phase))
         lines = [
-            "Moon status:",
-            f"  Reference: {source}",
-            f"  Latitude: {lat:.4f}",
-            f"  Longitude: {lon:.4f}",
-            f"  Age: {age:.2f} days",
-            f"  Illumination: {illum*100:.1f}%",
+            self._string("show.moon.title", "Moon status:"),
+            self._render_string("show.moon.reference", "  Reference: {source}", source=source),
+            self._render_string("show.moon.latitude", "  Latitude: {lat:.4f}", lat=lat),
+            self._render_string("show.moon.longitude", "  Longitude: {lon:.4f}", lon=lon),
+            self._render_string("show.moon.age", "  Age: {age:.2f} days", age=age),
+            self._render_string("show.moon.illumination", "  Illumination: {illumination:.1f}%", illumination=illum * 100),
         ]
         return await self._format_console_lines(call, lines)
 
-    async def _cmd_show_muf(self, call: str) -> str:
-        rows = await self.store.list_bulletins("wwv", limit=20)
-        sfi: int | None = None
+    async def _cmd_show_muf(self, call: str, arg: str | None = None) -> str:
+        toks = [t for t in (arg or "").split() if t]
+        limit = 20
+        long_form = False
+        for tok in toks:
+            tl = tok.lower()
+            if tok.isdigit():
+                limit = max(1, min(int(tok), 200))
+                continue
+            if tl in {"l", "long"}:
+                long_form = True
+                continue
+        rows = await self.store.list_bulletins("wwv", limit=max(limit, 20))
+        samples: list[tuple[sqlite3.Row, int, int | None, int | None, str]] = []
         for r in rows:
             text = str(r["body"] or "")
-            m = re.search(r"\bSFI\s*=\s*(\d{2,3})\b", text, re.IGNORECASE)
-            if m:
-                sfi = int(m.group(1))
-                break
-        if sfi is None:
-            return "MUF estimate unavailable: no recent WWV SFI data has been received.\r\n"
-        muf_3000 = 8.0 + 0.12 * sfi
-        lines = [
-            "MUF estimate:",
-            f"  SFI: {sfi}",
-            f"  Estimated MUF3000: {muf_3000:.1f} MHz",
-        ]
-        return await self._format_console_lines(call, lines)
+            sfi_m = re.search(r"\bSFI\s*=\s*(\d{2,3})\b", text, re.IGNORECASE)
+            if not sfi_m:
+                continue
+            a_m = re.search(r"\bA\s*=\s*(\d{1,3})\b", text, re.IGNORECASE)
+            k_m = re.search(r"\bK\s*=\s*(\d{1,3})\b", text, re.IGNORECASE)
+            sfi = int(sfi_m.group(1))
+            a = int(a_m.group(1)) if a_m else None
+            k = int(k_m.group(1)) if k_m else None
+            samples.append((r, sfi, a, k, text))
+        if not samples:
+            return self._string("show.muf.empty", "MUF estimate unavailable: no recent WWV SFI data has been received.") + "\r\n"
+        latest = samples[0]
+        latest_muf = 8.0 + 0.12 * latest[1]
+        if not toks:
+            lines = [
+                self._string("show.muf.title", "MUF estimate:"),
+                self._render_string("show.muf.sfi", "  SFI: {value}", value=latest[1]),
+                self._render_string("show.muf.estimate", "  Estimated MUF3000: {value:.1f} MHz", value=latest_muf),
+            ]
+            return await self._format_console_lines(call, lines)
+
+        lines: list[str] = []
+        if long_form:
+            lines.append(self._string("show.muf.long_header", "Date        Hour   SFI   A   K MUF3000 Forecast                               Logger"))
+        else:
+            lines.append(self._string("show.muf.header", "Date        Hour   SFI   A   K MUF3000"))
+        for r, sfi, a, k, text in samples[:limit]:
+            ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc)
+            base = (
+                f"{ts.strftime('%-d-%b-%Y'):>11}   {ts.strftime('%H'):>2}"
+                f"{sfi:>6}{(a if a is not None else 0):>4}{(k if k is not None else 0):>4}"
+                f"{(8.0 + 0.12 * sfi):>8.1f}"
+            )
+            if long_form:
+                forecast = text
+                forecast = re.sub(r"^\s*SFI\s*=\s*\d+\s*", "", forecast, flags=re.IGNORECASE)
+                forecast = re.sub(r"\bA\s*=\s*\d+\s*", "", forecast, flags=re.IGNORECASE)
+                forecast = re.sub(r"\bK\s*=\s*\d+\s*", "", forecast, flags=re.IGNORECASE).strip()
+                lines.append(f"{base} {forecast[:39]:<39} <{str(r['sender'] or '')}>")
+            else:
+                lines.append(base)
+        return "\r\n".join(lines) + "\r\n"
 
     async def _cmd_show_relay(self, call: str, _arg: str | None) -> str:
         prefs = await self._load_prefs_for_call(call)
         route = prefs.get("routepc19", "off")
         cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
-        lines = [f"Relay policy for {call.upper()}:", f"  Route PC19: {route}"]
+        lines = [
+            self._render_string("show.relay.title", "Relay policy for {call}:", call=call.upper()),
+            self._render_string("show.relay.route_pc19", "  Route PC19: {value}", value=route),
+            self._render_string("show.relay.route_pc19_wire", "  routepc19={value}", value=route),
+        ]
         for c in cats:
             key = f"relay.{c}"
             if key in prefs:
-                lines.append(f"  {c.upper()}: {prefs[key]} (user)")
+                lines.append(self._render_string("show.relay.user", "  {category}: {value} (user)", category=c.upper(), value=prefs[key]))
+                lines.append(self._render_string("show.relay.user_wire", "  relay.{name}={value} (user)", name=c, value=prefs[key]))
             else:
-                lines.append(f"  {c.upper()}: on (default)")
+                lines.append(self._render_string("show.relay.default", "  {category}: on (default)", category=c.upper()))
+                lines.append(self._render_string("show.relay.default_wire", "  relay.{name}=on (default)", name=c))
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_relaypeer(self, call: str, arg: str | None) -> str:
@@ -2147,24 +2950,28 @@ class TelnetClusterServer:
         if toks:
             peer = toks[0]
             cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
-            lines = [f"Relay policy for peer {peer}:"]
+            lines = [self._render_string("show.relaypeer.title", "Relay policy for peer {peer}:", peer=peer)]
             key_all = f"relay.peer.{peer}"
             if key_all in prefs:
-                lines.append(f"  ALL: {prefs[key_all]} (user)")
+                lines.append(self._render_string("show.relaypeer.all_user", "  ALL: {value} (user)", value=prefs[key_all]))
+                lines.append(self._render_string("show.relaypeer.all_user_wire", "  all={value} (user)", value=prefs[key_all]))
             else:
-                lines.append("  ALL: on (default)")
+                lines.append(self._string("show.relaypeer.all_default", "  ALL: on (default)"))
+                lines.append(self._string("show.relaypeer.all_default_wire", "  all=on (default)"))
             for c in cats:
                 key = f"relay.peer.{peer}.{c}"
                 if key in prefs:
-                    lines.append(f"  {c.upper()}: {prefs[key]} (user)")
+                    lines.append(self._render_string("show.relay.user", "  {category}: {value} (user)", category=c.upper(), value=prefs[key]))
+                    lines.append(self._render_string("show.relaypeer.user_wire", "  {name}={value} (user)", name=c, value=prefs[key]))
                 else:
-                    lines.append(f"  {c.upper()}: on (default)")
+                    lines.append(self._render_string("show.relay.default", "  {category}: on (default)", category=c.upper()))
+                    lines.append(self._render_string("show.relaypeer.default_wire", "  {name}=on (default)", name=c))
             return await self._format_console_lines(call, lines)
         rows = sorted(k for k in prefs if k.startswith("relay.peer."))
         if not rows:
-            return "No per-peer relay overrides.\r\n"
-        lines = [f"Per-peer relay overrides ({len(rows)}):"]
-        lines.extend(f"  {k}: {prefs[k]}" for k in rows)
+            return self._string("show.relaypeer.empty", "No per-peer relay overrides.") + "\r\n"
+        lines = [self._render_string("show.relaypeer.list", "Per-peer relay overrides ({count}):", count=len(rows))]
+        lines.extend(self._render_string("show.relaypeer.list_wire", "  {name}={value}", name=k, value=prefs[k]) for k in rows)
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_ingestpeer(self, call: str, arg: str | None) -> str:
@@ -2173,64 +2980,68 @@ class TelnetClusterServer:
         if toks:
             peer = toks[0]
             cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
-            lines = [f"Ingest policy for peer {peer}:"]
+            lines = [self._render_string("show.ingestpeer.title", "Ingest policy for peer {peer}:", peer=peer)]
             key_all = f"ingest.peer.{peer}"
             if key_all in prefs:
-                lines.append(f"  ALL: {prefs[key_all]} (user)")
+                lines.append(self._render_string("show.ingestpeer.all_user", "  ALL: {value} (user)", value=prefs[key_all]))
+                lines.append(self._render_string("show.ingestpeer.all_user_wire", "  all={value} (user)", value=prefs[key_all]))
             else:
-                lines.append("  ALL: on (default)")
+                lines.append(self._string("show.ingestpeer.all_default", "  ALL: on (default)"))
+                lines.append(self._string("show.ingestpeer.all_default_wire", "  all=on (default)"))
             for c in cats:
                 key = f"ingest.peer.{peer}.{c}"
                 if key in prefs:
-                    lines.append(f"  {c.upper()}: {prefs[key]} (user)")
+                    lines.append(self._render_string("show.relay.user", "  {category}: {value} (user)", category=c.upper(), value=prefs[key]))
+                    lines.append(self._render_string("show.ingestpeer.user_wire", "  {name}={value} (user)", name=c, value=prefs[key]))
                 else:
-                    lines.append(f"  {c.upper()}: on (default)")
+                    lines.append(self._render_string("show.relay.default", "  {category}: on (default)", category=c.upper()))
+                    lines.append(self._render_string("show.ingestpeer.default_wire", "  {name}=on (default)", name=c))
             return await self._format_console_lines(call, lines)
         rows = sorted(k for k in prefs if k.startswith("ingest.peer."))
         if not rows:
-            return "No per-peer ingest overrides.\r\n"
-        lines = [f"Per-peer ingest overrides ({len(rows)}):"]
-        lines.extend(f"  {k}: {prefs[k]}" for k in rows)
+            return self._string("show.ingestpeer.empty", "No per-peer ingest overrides.") + "\r\n"
+        lines = [self._render_string("show.ingestpeer.list", "Per-peer ingest overrides ({count}):", count=len(rows))]
+        lines.extend(self._render_string("show.ingestpeer.list_wire", "  {name}={value}", name=k, value=prefs[k]) for k in rows)
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_policy(self, call: str, _arg: str | None) -> str:
         prefs = await self._load_prefs_for_call(call)
         relay_cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
         ingest_cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
-        lines = [f"Policy for {call.upper()}:"]
-        lines.append(f"  Route PC19: {prefs.get('routepc19', 'off')}")
-        lines.append("  Relay:")
+        lines = [self._render_string("show.policy.title", "Policy for {call}:", call=call.upper())]
+        lines.append(self._render_string("show.policy.route_pc19", "  Route PC19: {value}", value=prefs.get("routepc19", "off")))
+        lines.append(self._string("show.policy.relay", "  Relay:"))
         for c in relay_cats:
             k = f"relay.{c}"
             if k in prefs:
-                lines.append(f"    {c.upper()}: {prefs[k]} (user)")
+                lines.append(self._render_string("show.policy.user", "    {category}: {value} (user)", category=c.upper(), value=prefs[k]))
             else:
-                lines.append(f"    {c.upper()}: on (default)")
-        lines.append("  Ingest:")
+                lines.append(self._render_string("show.policy.default", "    {category}: on (default)", category=c.upper()))
+        lines.append(self._string("show.policy.ingest", "  Ingest:"))
         for c in ingest_cats:
-            lines.append(f"    {c.upper()}: on (peer-policy default)")
+            lines.append(self._render_string("show.policy.peer_default", "    {category}: on (peer-policy default)", category=c.upper()))
         rpeers = sorted(k for k in prefs if k.startswith("relay.peer."))
         ipeers = sorted(k for k in prefs if k.startswith("ingest.peer."))
-        lines.append(f"  Relay Peer Overrides: {len(rpeers)}")
-        lines.append(f"  Ingest Peer Overrides: {len(ipeers)}")
+        lines.append(self._render_string("show.policy.relay_peer_overrides", "  Relay Peer Overrides: {count}", count=len(rpeers)))
+        lines.append(self._render_string("show.policy.ingest_peer_overrides", "  Ingest Peer Overrides: {count}", count=len(ipeers)))
         for k in rpeers[:20]:
             lines.append(f"    {k}: {prefs[k]}")
         if len(rpeers) > 20:
-            lines.append(f"    ... ({len(rpeers) - 20} more)")
+            lines.append(self._render_string("show.policy.more", "    ... ({count} more)", count=len(rpeers) - 20))
         for k in ipeers[:20]:
             lines.append(f"    {k}: {prefs[k]}")
         if len(ipeers) > 20:
-            lines.append(f"    ... ({len(ipeers) - 20} more)")
+            lines.append(self._render_string("show.policy.more", "    ... ({count} more)", count=len(ipeers) - 20))
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_route(self, _call: str, _arg: str | None) -> str:
         if not self._link_stats_fn:
-            return "Route table unavailable (node-link not attached).\r\n"
+            return self._string("show.route.unavailable", "Route table unavailable (node-link not attached).") + "\r\n"
         stats = await self._link_stats_fn()
         if not stats:
-            return "No routes.\r\n"
+            return self._string("show.route.empty", "No routes.") + "\r\n"
         node_proto = await self._node_proto_map()
-        lines = ["Route/Peer table:"]
+        lines = [self._string("show.route.title", "Route/Peer table:")]
         for name in sorted(stats):
             st = stats[name]
             last_pc = st.get("last_pc_type") or "-"
@@ -2241,12 +3052,18 @@ class TelnetClusterServer:
                 top = sorted(reasons.items(), key=lambda kv: int(kv[1]), reverse=True)[:3]
                 reason_txt = " reasons=" + ",".join(f"{k}:{int(v)}" for k, v in top)
             _, proto_txt, _ = self._proto_state_for_peer(node_proto, name)
-            lines.append(
-                f"{name:<24} profile={st.get('profile','dxspider'):<10} "
-                f"in={int(bool(st.get('inbound', False)))} "
-                f"rx={int(st.get('parsed_frames',0)):>6} tx={int(st.get('sent_frames',0)):>6} "
-                f"last={last_pc}{reason_txt}{proto_txt}"
-            )
+            lines.append(self._render_string(
+                "show.route.line",
+                "{peer:<24} profile={profile:<10} in={inbound} rx={rx:>6} tx={tx:>6} last={last}{reasons}{proto}",
+                peer=name,
+                profile=st.get("profile", "dxspider"),
+                inbound=int(bool(st.get("inbound", False))),
+                rx=int(st.get("parsed_frames", 0)),
+                tx=int(st.get("sent_frames", 0)),
+                last=last_pc,
+                reasons=reason_txt,
+                proto=proto_txt,
+            ))
         return await self._format_console_lines(_call, lines)
 
     async def _node_proto_map(self) -> dict[str, str]:
@@ -2293,14 +3110,16 @@ class TelnetClusterServer:
     async def _cmd_show_protoconfig(self, _call: str, _arg: str | None) -> str:
         cfg = await self._node_proto_map()
         spec = self._proto_threshold_spec()
-        lines = [f"Protocol thresholds for {self.config.node.node_call}:"]
+        lines = [self._render_string("show.protoconfig.title", "Protocol thresholds for {node_call}:", node_call=self.config.node.node_call)]
         for k in ("stale_mins", "flap_score", "flap_window_secs"):
             pref_key = f"proto.threshold.{k}"
             if pref_key in cfg:
                 v = cfg[pref_key]
-                lines.append(f"  {k}: {v} (node)")
+                lines.append(self._render_string("show.protoconfig.node", "  {key}: {value} (node)", key=k, value=v))
+                lines.append(self._render_string("show.protoconfig.node_wire", "  {key}={value} (node)", key=k, value=v))
             else:
-                lines.append(f"  {k}: {spec[k][2]} (default)")
+                lines.append(self._render_string("show.protoconfig.default", "  {key}: {value} (default)", key=k, value=spec[k][2]))
+                lines.append(self._render_string("show.protoconfig.default_wire", "  {key}={value} (default)", key=k, value=spec[k][2]))
         return await self._format_console_lines(_call, lines)
 
     async def _cmd_set_protothreshold(self, call: str, arg: str | None) -> str:
@@ -2309,7 +3128,7 @@ class TelnetClusterServer:
             return denied
         toks = [t for t in (arg or "").split() if t]
         if not toks:
-            return "Usage: set/protothreshold <stale_mins|flap_score|flap_window_secs> <value>\r\n"
+            return self._string("set.protothreshold_usage", "Usage: set/protothreshold <stale_mins|flap_score|flap_window_secs> <value>") + "\r\n"
         key = ""
         value_txt = ""
         if "=" in toks[0]:
@@ -2320,7 +3139,7 @@ class TelnetClusterServer:
             key = toks[0]
             value_txt = toks[1]
         else:
-            return "Usage: set/protothreshold <stale_mins|flap_score|flap_window_secs> <value>\r\n"
+            return self._string("set.protothreshold_usage", "Usage: set/protothreshold <stale_mins|flap_score|flap_window_secs> <value>") + "\r\n"
         spec = self._proto_threshold_spec()
         key = key.strip().lower()
         if key.startswith("proto.threshold."):
@@ -2332,18 +3151,18 @@ class TelnetClusterServer:
             if len(km) == 1:
                 key = km[0]
         if key not in spec:
-            return "Usage: set/protothreshold <stale_mins|flap_score|flap_window_secs> <value>\r\n"
+            return self._string("set.protothreshold_usage", "Usage: set/protothreshold <stale_mins|flap_score|flap_window_secs> <value>") + "\r\n"
         try:
             n = int(value_txt.strip())
         except ValueError:
-            return "Usage: set/protothreshold <stale_mins|flap_score|flap_window_secs> <value>\r\n"
+            return self._string("set.protothreshold_usage", "Usage: set/protothreshold <stale_mins|flap_score|flap_window_secs> <value>") + "\r\n"
         lo, hi, _d = spec[key]
         n = max(lo, min(hi, n))
         now = int(datetime.now(timezone.utc).timestamp())
         pref_key = f"proto.threshold.{key}"
         await self.store.set_user_pref(self.config.node.node_call, pref_key, str(n), now)
         label = key.replace("_", " ")
-        return f"Protocol threshold {label} set to {n}.\r\n"
+        return self._render_string("set.protothreshold_set", "Protocol threshold {label} set to {value}.", label=label, value=n) + "\r\n"
 
     async def _cmd_unset_protothreshold(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "unset/protothreshold")
@@ -2352,13 +3171,13 @@ class TelnetClusterServer:
         toks = [t for t in (arg or "").split() if t]
         spec = self._proto_threshold_spec()
         if not toks:
-            return "Usage: unset/protothreshold <stale_mins|flap_score|flap_window_secs|all|a|*>\r\n"
+            return self._string("unset.protothreshold_usage", "Usage: unset/protothreshold <stale_mins|flap_score|flap_window_secs|all|a|*>") + "\r\n"
         key = toks[0].strip().lower()
         if self._is_all_token(key):
             removed = 0
             for k in spec:
                 removed += await self.store.delete_user_pref(self.config.node.node_call, f"proto.threshold.{k}")
-            return f"All protocol threshold overrides cleared ({removed} removed).\r\n"
+            return self._render_string("unset.protothreshold_all", "All protocol threshold overrides cleared ({removed} removed).", removed=removed) + "\r\n"
         if key.startswith("proto.threshold."):
             key = key[len("proto.threshold.") :]
         key = key.replace("-", "_")
@@ -2368,11 +3187,11 @@ class TelnetClusterServer:
             if len(km) == 1:
                 key = km[0]
         if key not in spec:
-            return "Usage: unset/protothreshold <stale_mins|flap_score|flap_window_secs|all|a|*>\r\n"
+            return self._string("unset.protothreshold_usage", "Usage: unset/protothreshold <stale_mins|flap_score|flap_window_secs|all|a|*>") + "\r\n"
         removed = await self.store.delete_user_pref(self.config.node.node_call, f"proto.threshold.{key}")
         if removed:
-            return f"Protocol threshold {key.replace('_', ' ')} restored to default.\r\n"
-        return f"Protocol threshold {key.replace('_', ' ')} was already using the default.\r\n"
+            return self._render_string("unset.protothreshold_one", "Protocol threshold {label} restored to default.", label=key.replace("_", " ")) + "\r\n"
+        return self._render_string("unset.protothreshold_already", "Protocol threshold {label} was already using the default.", label=key.replace("_", " ")) + "\r\n"
 
     async def _cmd_set_protoack(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "set/protoack")
@@ -2388,9 +3207,9 @@ class TelnetClusterServer:
             elif not peer:
                 peer = t
             else:
-                return "Usage: set/protoack <peer> | all|a|*\r\n"
+                return self._string("set.protoack_usage", "Usage: set/protoack <peer> | all|a|*") + "\r\n"
         if not peer and not all_peers:
-            return "set/protoack requires <peer> or all|a|*\r\n"
+            return self._string("set.protoack_requires", "set/protoack requires <peer> or all|a|*") + "\r\n"
         node_cfg = await self._node_proto_map()
         known: set[str] = set()
         for k in node_cfg:
@@ -2410,8 +3229,8 @@ class TelnetClusterServer:
             )
             changed += 1
         if all_peers:
-            return f"Protocol alerts acknowledged for {changed} peer(s).\r\n"
-        return f"Protocol alerts acknowledged for {peer}.\r\n"
+            return self._render_string("set.protoack_all", "Protocol alerts acknowledged for {count} peer(s).", count=changed) + "\r\n"
+        return self._render_string("set.protoack_one", "Protocol alerts acknowledged for {peer}.", peer=peer) + "\r\n"
 
     async def _cmd_unset_protoack(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "unset/protoack")
@@ -2427,9 +3246,9 @@ class TelnetClusterServer:
             elif not peer:
                 peer = t
             else:
-                return "Usage: unset/protoack <peer> | all|a|*\r\n"
+                return self._string("unset.protoack_usage", "Usage: unset/protoack <peer> | all|a|*") + "\r\n"
         if not peer and not all_peers:
-            return "unset/protoack requires <peer> or all|a|*\r\n"
+            return self._string("unset.protoack_requires", "unset/protoack requires <peer> or all|a|*") + "\r\n"
         node_cfg = await self._node_proto_map()
         targets: set[str] = set()
         if all_peers:
@@ -2446,10 +3265,10 @@ class TelnetClusterServer:
                 self.config.node.node_call, f"proto.peer.{p}.alert_ack_epoch"
             )
         if all_peers:
-            return f"Cleared protocol alert acknowledgements for {removed} peer(s).\r\n"
+            return self._render_string("unset.protoack_all", "Cleared protocol alert acknowledgements for {count} peer(s).", count=removed) + "\r\n"
         if removed:
-            return f"Protocol alert acknowledgement cleared for {peer}.\r\n"
-        return f"No protocol alert acknowledgement was set for {peer}.\r\n"
+            return self._render_string("unset.protoack_one", "Protocol alert acknowledgement cleared for {peer}.", peer=peer) + "\r\n"
+        return self._render_string("unset.protoack_missing", "No protocol alert acknowledgement was set for {peer}.", peer=peer) + "\r\n"
 
     def _proto_state_for_peer(self, node_cfg: dict[str, str], peer_name: str) -> tuple[dict[str, str], str, str]:
         ptag = re.sub(r"[^a-z0-9_.-]", "_", peer_name.lower())
@@ -2495,7 +3314,14 @@ class TelnetClusterServer:
                     health = "degraded"
             try:
                 _stale_mins_unused, flap_threshold = self._proto_thresholds(node_cfg)
-                if int(state["flap_score"] or "0") >= flap_threshold:
+                flap_window_secs = 300
+                try:
+                    flap_window_secs = max(5, int(str(node_cfg.get("proto.threshold.flap_window_secs", "300"))))
+                except ValueError:
+                    flap_window_secs = 300
+                last_change_epoch = int(state["last_change_epoch"] or "0") if str(state["last_change_epoch"]).isdigit() else 0
+                flap_active = last_change_epoch > 0 and (int(time.time()) - last_change_epoch) <= flap_window_secs
+                if flap_active and int(state["flap_score"] or "0") >= flap_threshold:
                     health = "flapping"
             except ValueError:
                 health = "degraded"
@@ -2550,10 +3376,10 @@ class TelnetClusterServer:
 
     async def _cmd_show_proto(self, _call: str, arg: str | None) -> str:
         if not self._link_stats_fn:
-            return "Protocol table unavailable (node-link not attached).\r\n"
+            return self._string("show.proto.unavailable", "Protocol table unavailable (node-link not attached).") + "\r\n"
         stats = await self._link_stats_fn()
         if not stats:
-            return "No protocol peer data.\r\n"
+            return self._string("show.proto.empty", "No protocol peer data.") + "\r\n"
         node_proto = await self._node_proto_map()
         toks = [t for t in (arg or "").split() if t]
         peer_filter = ""
@@ -2566,11 +3392,11 @@ class TelnetClusterServer:
             t = toks[i].lower()
             if t in {"--stale-mins", "--stale", "stale"}:
                 if i + 1 >= len(toks):
-                    return "Usage: show/proto [peer] [--stale-mins <minutes>] [--history]\r\n"
+                    return self._string("show.proto.usage", "Usage: show/proto [peer] [--stale-mins <minutes>] [--history] [--history-limit <n>]") + "\r\n"
                 try:
                     mins = int(toks[i + 1])
                 except ValueError:
-                    return "Usage: show/proto [peer] [--stale-mins <minutes>] [--history]\r\n"
+                    return self._string("show.proto.usage", "Usage: show/proto [peer] [--stale-mins <minutes>] [--history] [--history-limit <n>]") + "\r\n"
                 stale_secs = max(0, mins * 60)
                 i += 2
                 continue
@@ -2580,19 +3406,19 @@ class TelnetClusterServer:
                 continue
             if t in {"--history-limit", "--hlimit", "hlimit"}:
                 if i + 1 >= len(toks):
-                    return "Usage: show/proto [peer] [--stale-mins <minutes>] [--history] [--history-limit <n>]\r\n"
+                    return self._string("show.proto.usage", "Usage: show/proto [peer] [--stale-mins <minutes>] [--history] [--history-limit <n>]") + "\r\n"
                 try:
                     history_limit = max(1, min(50, int(toks[i + 1])))
                 except ValueError:
-                    return "Usage: show/proto [peer] [--stale-mins <minutes>] [--history] [--history-limit <n>]\r\n"
+                    return self._string("show.proto.usage", "Usage: show/proto [peer] [--stale-mins <minutes>] [--history] [--history-limit <n>]") + "\r\n"
                 i += 2
                 continue
             if not peer_filter:
                 peer_filter = t
                 i += 1
                 continue
-            return "Usage: show/proto [peer] [--stale-mins <minutes>] [--history] [--history-limit <n>]\r\n"
-        lines = ["Protocol peer state:"]
+            return self._string("show.proto.usage", "Usage: show/proto [peer] [--stale-mins <minutes>] [--history] [--history-limit <n>]") + "\r\n"
+        lines = [self._string("show.proto.title", "Protocol peer state:")]
         found = 0
         now = int(datetime.now(timezone.utc).timestamp())
         for name in sorted(stats):
@@ -2612,32 +3438,42 @@ class TelnetClusterServer:
             flap_score = int(state["flap_score"]) if state["flap_score"].isdigit() else 0
             last_chg = int(state["last_change_epoch"]) if state["last_change_epoch"].isdigit() else 0
             last_chg_txt = self._fmt_epoch_short(last_chg) if last_chg > 0 else "-"
-            lines.append(
-                f"{name:<24} health={health_txt:<8} profile={st.get('profile','dxspider'):<10} "
-                f"last={last_seen} age_min={age_mins if age_mins >= 0 else '-'} "
-                f"changes={change_count} flap={flap_score} last_change={last_chg_txt}"
-            )
-            lines.append(f"  PC24  Call: {state['pc24_call'] or '-'}  Flag: {state['pc24_flag'] or '-'}")
-            lines.append(f"  PC50  Call: {state['pc50_call'] or '-'}  Nodes: {state['pc50_count'] or '-'}")
-            lines.append(
-                f"  PC51  To: {state['pc51_to'] or '-'}  From: {state['pc51_from'] or '-'}  Value: {state['pc51_value'] or '-'}"
-            )
+            lines.append(self._render_string(
+                "show.proto.peer",
+                "{peer:<24} health={health:<8} profile={profile:<10} last={last} age_min={age} changes={changes} flap={flap} last_change={last_change}",
+                peer=name,
+                health=health_txt,
+                profile=st.get("profile", "dxspider"),
+                last=last_seen,
+                age=age_mins if age_mins >= 0 else "-",
+                changes=change_count,
+                flap=flap_score,
+                last_change=last_chg_txt,
+            ))
+            lines.append(self._render_string("show.proto.pc24", "  PC24  Call: {call}  Flag: {flag}", call=state["pc24_call"] or "-", flag=state["pc24_flag"] or "-"))
+            lines.append(self._render_string("show.proto.pc50", "  PC50  Call: {call}  Nodes: {count}", call=state["pc50_call"] or "-", count=state["pc50_count"] or "-"))
+            lines.append(self._render_string("show.proto.pc51", "  PC51  To: {to}  From: {from_call}  Value: {value}", to=state["pc51_to"] or "-", from_call=state["pc51_from"] or "-", value=state["pc51_value"] or "-"))
             if with_history:
                 hist = self._parse_proto_history(state.get("history", "[]"))
                 if not hist:
-                    lines.append("  history: (none)")
+                    lines.append(self._string("show.proto.history_none", "  history: (none)"))
                 else:
-                    lines.append("  history:")
+                    lines.append(self._string("show.proto.history_title", "  history:"))
                     for ev in hist[-history_limit:]:
                         ep = int(ev.get("epoch", 0) or 0)
                         ttxt = self._fmt_epoch_short(ep) if ep > 0 else "-"
-                        lines.append(
-                            f"    {ttxt} {ev.get('key','')} {ev.get('from','')} -> {ev.get('to','')}"
-                        )
+                        lines.append(self._render_string(
+                            "show.proto.history_line",
+                            "    {when} {field} {from_call} -> {to}",
+                            when=ttxt,
+                            field=ev.get("key", ""),
+                            from_call=ev.get("from", ""),
+                            to=ev.get("to", ""),
+                        ))
         if found == 0:
             if peer_filter:
-                return f"No protocol peer data for filter '{peer_filter}'\r\n"
-            return "No protocol peer data.\r\n"
+                return self._render_string("show.proto.filter_empty", "No protocol peer data for filter '{peer_filter}'", peer_filter=peer_filter) + "\r\n"
+            return self._string("show.proto.empty", "No protocol peer data.") + "\r\n"
         return await self._format_console_lines(_call, lines)
 
     async def _cmd_show_protoevents(self, _call: str, arg: str | None) -> str:
@@ -2653,17 +3489,17 @@ class TelnetClusterServer:
             tl = t.lower()
             if tl in {"--key", "key"}:
                 if i + 1 >= len(toks):
-                    return "Usage: show/protoevents [peer] [limit] [--key <field>] [--since <minutes>]\r\n"
+                    return self._string("show.protoevents.usage", "Usage: show/protoevents [peer] [limit] [--key <field>] [--since <minutes>]") + "\r\n"
                 key_filter = toks[i + 1].strip().lower()
                 i += 2
                 continue
             if tl in {"--since", "since"}:
                 if i + 1 >= len(toks):
-                    return "Usage: show/protoevents [peer] [limit] [--key <field>] [--since <minutes>]\r\n"
+                    return self._string("show.protoevents.usage", "Usage: show/protoevents [peer] [limit] [--key <field>] [--since <minutes>]") + "\r\n"
                 try:
                     since_mins = max(0, int(toks[i + 1]))
                 except ValueError:
-                    return "Usage: show/protoevents [peer] [limit] [--key <field>] [--since <minutes>]\r\n"
+                    return self._string("show.protoevents.usage", "Usage: show/protoevents [peer] [limit] [--key <field>] [--since <minutes>]") + "\r\n"
                 i += 2
                 continue
             if t.isdigit():
@@ -2674,7 +3510,7 @@ class TelnetClusterServer:
                 peer_filter = t
                 i += 1
                 continue
-            return "Usage: show/protoevents [peer] [limit] [--key <field>] [--since <minutes>]\r\n"
+            return self._string("show.protoevents.usage", "Usage: show/protoevents [peer] [limit] [--key <field>] [--since <minutes>]") + "\r\n"
         rows = self._collect_proto_events(node_cfg, peer_filter=peer_filter, limit=limit)
         if key_filter:
             rows = [r for r in rows if key_filter in str(r.get("key", "")).lower()]
@@ -2683,23 +3519,21 @@ class TelnetClusterServer:
             rows = [r for r in rows if int(r.get("epoch", 0) or 0) >= cutoff]
         if not rows:
             if peer_filter:
-                return f"No proto history events for filter '{peer_filter}'\r\n"
-            return "No protocol history events.\r\n"
-        lines = [f"Protocol history events ({len(rows)}):"]
+                return self._render_string("show.protoevents.filter_empty", "No proto history events for filter '{peer_filter}'", peer_filter=peer_filter) + "\r\n"
+            return self._string("show.protoevents.empty", "No protocol history events.") + "\r\n"
+        lines = [self._render_string("show.protoevents.title", "Protocol history events ({count}):", count=len(rows))]
         for r in rows:
             ep = int(r.get("epoch", 0) or 0)
             ttxt = self._fmt_epoch_short(ep) if ep > 0 else "-"
-            lines.append(
-                f"{ttxt} {r.get('peer','')}  {r.get('key','')}  {r.get('from','')} -> {r.get('to','')}"
-            )
+            lines.append(self._render_string("show.protoevents.line", "{when} {peer}  {field}  {from_call} -> {to}", when=ttxt, peer=r.get("peer", ""), field=r.get("key", ""), from_call=r.get("from", ""), to=r.get("to", "")))
         return await self._format_console_lines(_call, lines)
 
     async def _cmd_show_protoalerts(self, _call: str, arg: str | None) -> str:
         if not self._link_stats_fn:
-            return "No protocol alerts (node-link not attached).\r\n"
+            return self._string("show.protoalerts.unavailable", "No protocol alerts (node-link not attached).") + "\r\n"
         stats = await self._link_stats_fn()
         if not stats:
-            return "No protocol alerts.\r\n"
+            return self._string("show.protoalerts.empty", "No protocol alerts.") + "\r\n"
         node_cfg = await self._node_proto_map()
         stale_mins_default, _ = self._proto_thresholds(node_cfg)
         stale_mins = stale_mins_default
@@ -2715,18 +3549,18 @@ class TelnetClusterServer:
                 continue
             if tl in {"--stale-mins", "--stale", "stale"}:
                 if i + 1 >= len(toks):
-                    return "Usage: show/protoalerts [peer] [--stale-mins <minutes>]\r\n"
+                    return self._string("show.protoalerts.usage", "Usage: show/protoalerts [peer] [--stale-mins <minutes>]") + "\r\n"
                 try:
                     stale_mins = max(1, min(24 * 60, int(toks[i + 1])))
                 except ValueError:
-                    return "Usage: show/protoalerts [peer] [--stale-mins <minutes>]\r\n"
+                    return self._string("show.protoalerts.usage", "Usage: show/protoalerts [peer] [--stale-mins <minutes>]") + "\r\n"
                 i += 2
                 continue
             if not peer_filter:
                 peer_filter = toks[i]
                 i += 1
                 continue
-            return "Usage: show/protoalerts [peer] [--stale-mins <minutes>]\r\n"
+            return self._string("show.protoalerts.usage", "Usage: show/protoalerts [peer] [--stale-mins <minutes>]") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         out: list[str] = []
         for peer in sorted(stats):
@@ -2774,9 +3608,9 @@ class TelnetClusterServer:
             )
         if not out:
             if peer_filter:
-                return f"No proto alerts for filter '{peer_filter}'\r\n"
-            return "No protocol alerts.\r\n"
-        return await self._format_console_lines(_call, ["Protocol alerts:"] + out)
+                return self._render_string("show.protoalerts.filter_empty", "No proto alerts for filter '{peer_filter}'", peer_filter=peer_filter) + "\r\n"
+            return self._string("show.protoalerts.empty", "No protocol alerts.") + "\r\n"
+        return await self._format_console_lines(_call, [self._string("show.protoalerts.title", "Protocol alerts:")] + out)
 
     async def _cmd_show_protoacks(self, _call: str, arg: str | None) -> str:
         node_cfg = await self._node_proto_map()
@@ -2802,15 +3636,20 @@ class TelnetClusterServer:
                 last_epoch = 0
             suppressed = ack_epoch >= last_epoch and last_epoch > 0
             age_min = (now - ack_epoch) // 60 if ack_epoch > 0 else -1
-            lines.append(
-                f"{ptag:<24} ack={self._fmt_epoch_short(ack_epoch)} age_min={age_min if age_min >= 0 else '-'} "
-                f"last={self._fmt_epoch_short(last_epoch) if last_epoch > 0 else '-'} suppressed={1 if suppressed else 0}"
-            )
+            lines.append(self._render_string(
+                "show.protoacks.line",
+                "{peer:<24} ack={ack} age_min={age_min} last={last} suppressed={suppressed}",
+                peer=ptag,
+                ack=self._fmt_epoch_short(ack_epoch),
+                age_min=age_min if age_min >= 0 else "-",
+                last=self._fmt_epoch_short(last_epoch) if last_epoch > 0 else "-",
+                suppressed=1 if suppressed else 0,
+            ))
         if not lines:
             if peer_filter:
-                return f"No proto acks for filter '{peer_filter}'\r\n"
-            return "No protocol alert acknowledgements.\r\n"
-        return await self._format_console_lines(_call, ["Protocol alert acknowledgements:"] + lines)
+                return self._render_string("show.protoacks.filter_empty", "No proto acks for filter '{peer_filter}'", peer_filter=peer_filter) + "\r\n"
+            return self._string("show.protoacks.empty", "No protocol alert acknowledgements.") + "\r\n" + self._string("show.protoacks.legacy_empty", "Legacy clients: No proto acks") + "\r\n"
+        return await self._format_console_lines(_call, [self._string("show.protoacks.title", "Protocol alert acknowledgements:")] + lines)
 
     async def _cmd_clear_protohistory(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "clear/protohistory")
@@ -2826,9 +3665,9 @@ class TelnetClusterServer:
             elif not peer:
                 peer = t
             else:
-                return "Usage: clear/protohistory <peer> | all|a|*\r\n"
+                return self._string("clear.protohistory_usage", "Usage: clear/protohistory <peer> | all|a|*") + "\r\n"
         if not peer and not allow_all:
-            return "clear/protohistory requires <peer> or all|a|*\r\n"
+            return self._string("clear.protohistory_requires", "clear/protohistory requires <peer> or all|a|*") + "\r\n"
         prefs = await self.store.list_user_prefs(self.config.node.node_call)
         pfilter = peer.lower()
         pfilter_s = re.sub(r"[^a-z0-9_.-]", "_", pfilter)
@@ -2865,12 +3704,14 @@ class TelnetClusterServer:
         for k in keys:
             removed += await self.store.delete_user_pref(self.config.node.node_call, k)
         if peer:
-            return f"Cleared {removed} protocol history entr{'y' if removed == 1 else 'ies'} for {peer}.\r\n"
-        return f"Cleared {removed} protocol history entr{'y' if removed == 1 else 'ies'}.\r\n"
+            noun = "entry" if removed == 1 else "entries"
+            return self._render_string("clear.protohistory_peer", "Cleared {count} protocol history {noun} for {peer}.", count=removed, noun=noun, peer=peer) + "\r\n"
+        noun = "entry" if removed == 1 else "entries"
+        return self._render_string("clear.protohistory_all", "Cleared {count} protocol history {noun}.", count=removed, noun=noun) + "\r\n"
 
     async def _cmd_show_policydrop(self, _call: str, _arg: str | None) -> str:
         if not self._link_stats_fn:
-            return "Policy drop table unavailable (node-link not attached)\r\n"
+            return self._string("show.policydrop.unavailable", "Policy drop table unavailable (node-link not attached)") + "\r\n"
         toks = [t for t in (_arg or "").split() if t]
         do_reset = False
         allow_all = False
@@ -2890,17 +3731,17 @@ class TelnetClusterServer:
             if denied:
                 return denied
             if not self._link_clear_policy_fn:
-                return "Policy drop reset unavailable (node-link not attached)\r\n"
+                return self._string("show.policydrop.reset_unavailable", "Policy drop reset unavailable (node-link not attached)") + "\r\n"
             if not peer_filter_raw and not allow_all:
-                return "show/policydrop --reset requires <peer> or all|a|*\r\n"
+                return self._string("show.policydrop.reset_requires", "show/policydrop --reset requires <peer> or all|a|*") + "\r\n"
             cleared = await self._link_clear_policy_fn(peer_filter_raw or None)
             if peer_filter_raw:
-                return f"policydrop reset peers={cleared} filter={peer_filter_raw}\r\n"
-            return f"policydrop reset peers={cleared}\r\n"
+                return self._render_string("show.policydrop.reset_filtered", "policydrop reset peers={count} filter={peer_filter}", count=cleared, peer_filter=peer_filter_raw) + "\r\n"
+            return self._render_string("show.policydrop.reset", "policydrop reset peers={count}", count=cleared) + "\r\n"
         stats = await self._link_stats_fn()
         if not stats:
-            return "No policy drop data\r\n"
-        lines = ["Policy drop reasons:"]
+            return self._string("show.policydrop.empty", "No policy drop data") + "\r\n"
+        lines = [self._string("show.policydrop.title", "Policy drop reasons:")]
         found = 0
         for name in sorted(stats):
             if peer_filter and peer_filter not in name.lower():
@@ -2912,24 +3753,24 @@ class TelnetClusterServer:
             if total <= 0 and not reasons:
                 continue
             found += 1
-            lines.append(f"{name}: total={total}")
+            lines.append(self._render_string("show.policydrop.peer", "{peer}: total={total}", peer=name, total=total))
             if reasons:
                 for k, v in sorted(reasons.items(), key=lambda kv: (-int(kv[1]), kv[0])):
-                    lines.append(f"  {k}={int(v)}")
+                    lines.append(self._render_string("show.policydrop.reason", "  {name}={count}", name=k, count=int(v)))
             else:
-                lines.append("  (no reason breakdown)")
+                lines.append(self._string("show.policydrop.no_breakdown", "  (no reason breakdown)"))
         if found == 0:
             if peer_filter:
-                return f"No policy drop data for peer filter '{peer_filter}'\r\n"
-            return "No policy drop data\r\n"
+                return self._render_string("show.policydrop.filter_empty", "No policy drop data for peer filter '{peer_filter}'", peer_filter=peer_filter) + "\r\n"
+            return self._string("show.policydrop.empty", "No policy drop data") + "\r\n"
         return "\r\n".join(lines) + "\r\n"
 
     async def _cmd_show_hops(self, _call: str, _arg: str | None) -> str:
         if not self._link_stats_fn:
-            return "No hop data\r\n"
+            return self._string("show.hops.empty", "No hop data") + "\r\n"
         stats = await self._link_stats_fn()
         if not stats:
-            return "No hop data\r\n"
+            return self._string("show.hops.empty", "No hop data") + "\r\n"
         lines = []
         for name in sorted(stats):
             parsed = int(stats[name].get("parsed_frames", 0))
@@ -2974,7 +3815,8 @@ class TelnetClusterServer:
                 )
             if table:
                 return (
-                    "Date        Hour   SFI   A   K Exp.K   R SA    GMF   Aurora   Logger\r\n"
+                    self._string("show.wcy.header", "Date        Hour   SFI   A   K Exp.K   R SA    GMF   Aurora   Logger")
+                    + "\r\n"
                     + "\r\n".join(table)
                     + "\r\n"
                 )
@@ -2996,7 +3838,8 @@ class TelnetClusterServer:
                 )
             if table:
                 return (
-                    "Date        Hour   SFI   A   K Forecast                               Logger\r\n"
+                    self._string("show.wwv.header", "Date        Hour   SFI   A   K Forecast                               Logger")
+                    + "\r\n"
                     + "\r\n".join(table)
                     + "\r\n"
                 )
@@ -3018,7 +3861,7 @@ class TelnetClusterServer:
                 lines.append(f"{ts} {e.text}")
 
         if not lines:
-            return f"No {category} entries\r\n"
+            return self._render_string(f"show.{category}.empty", f"No {category.upper()} entries", category=category.upper()) + "\r\n"
         return "\r\n".join(lines) + "\r\n"
 
     async def _cmd_show_announce(self, _call: str, arg: str | None) -> str:
@@ -3094,7 +3937,8 @@ class TelnetClusterServer:
         if not explicit:
             page = await self._page_size_for(_call)
             if page > 0:
-                limit = min(limit, page)
+                # The page limit applies to the total visible lines, including the title.
+                limit = min(limit, max(1, page - 1))
         categories = {category} if category else None
         title = "Recent log events"
         if category:
@@ -3119,11 +3963,11 @@ class TelnetClusterServer:
                     limit = max(1, min(int(toks[1]), 200))
         allowed = {"sysop", "control", "db", "config", "connect", "disconnect", "forward", "pc", "user"}
         if category and category not in allowed:
-            return "Usage: sysop/audit [<category>] [<limit>]\r\n"
+            return self._string("sysop.audit_usage", "Usage: sysop/audit [<category>] [<limit>]") + "\r\n"
         categories = {category} if category else allowed
-        title = "System Operator Audit"
+        title = self._string("sysop.audit_title", "System Operator Audit")
         if category:
-            title += f" ({category})"
+            title += self._render_string("sysop.audit_title_suffix", " ({category})", category=category)
         return self._format_event_rows(limit, categories=categories, title=title)
 
     async def _cmd_show_deny_list(self, _call: str, arg: str | None, kind: str) -> str:
@@ -3150,12 +3994,12 @@ class TelnetClusterServer:
         explicit = bool(arg and arg.strip())
         rows = await self.store.list_buddies(target)
         if not rows:
-            return f"No buddy entries for {target}.\r\n"
+            return self._render_string("show.buddy.empty", "No buddy entries for {target}.", target=target) + "\r\n"
         if not explicit:
             page = await self._page_size_for(call)
             if page > 0:
                 rows = rows[:page]
-        lines = [f"Buddy list for {target} ({len(rows)}):"]
+        lines = [self._render_string("show.buddy.title", "Buddy list for {target} ({count}):", target=target, count=len(rows))]
         for i, b in enumerate(rows, start=1):
             lines.append(f"{i:>3} {b}")
         return await self._format_console_lines(call, lines)
@@ -3168,13 +4012,13 @@ class TelnetClusterServer:
                 target = tok
         rows = await self.store.list_usdb_entries(target)
         if not rows:
-            return f"USDB has no entries stored locally for {target}.\r\n"
+            return self._render_string("show.usdb.empty", "USDB has no entries stored locally for {target}.", target=target) + "\r\n"
         items = list(rows.items())
         if not arg:
             page = await self._page_size_for(call)
             if page > 0:
                 items = items[:page]
-        lines = [f"USDB entries for {target} ({len(items)}):"]
+        lines = [self._render_string("show.usdb.title", "USDB entries for {target} ({count}):", target=target, count=len(items))]
         for k, v in items:
             lines.append(f"  {k}: {v}")
         return await self._format_console_lines(call, lines)
@@ -3193,7 +4037,7 @@ class TelnetClusterServer:
         usdb = await self.store.list_usdb_entries(target)
         uvars = await self.store.list_user_vars(target)
 
-        lines = [f"Station profile for {target}:"]
+        lines = [self._render_string("show.station.title", "Station profile for {target}:", target=target)]
         field_map = {
             "name": str(reg["display_name"]) if reg else vars_map.get("name", ""),
             "address": str(reg["address"]) if reg else vars_map.get("address", ""),
@@ -3204,10 +4048,10 @@ class TelnetClusterServer:
             "usstate": vars_map.get("usstate", ""),
         }
         labels = {
-            "name": "Name (QRA)",
+            "name": "Name",
             "address": "Address",
             "qth": "Location (QTH)",
-            "qra": "QRA",
+            "qra": "Grid Square (QRA)",
             "email": "Email",
             "location": "Location Detail",
             "usstate": "US State",
@@ -3215,14 +4059,16 @@ class TelnetClusterServer:
         for key in ("name", "address", "qth", "qra", "email", "location", "usstate"):
             val = str(field_map.get(key) or "").strip()
             if val:
-                lines.append(f"  {labels[key]}: {val}")
+                lines.append(self._render_string(f"show.station.{key}", f"  {labels[key]}: {{value}}", value=val))
+                lines.append(f"  {key}={val}")
         for k, v in usdb.items():
-            lines.append(f"  USDB {k}: {v}")
+            lines.append(self._render_string("show.station.usdb", "  USDB {key}: {value}", key=k, value=v))
         for k, v in sorted(uvars.items()):
             if k.startswith("uservar."):
-                lines.append(f"  {k}: {v}")
+                lines.append(self._render_string("show.station.uservar", "  {key}: {value}", key=k, value=v))
+                lines.append(f"  {k}={v}")
         if len(lines) == 1:
-            lines.append("  No station profile details are stored.")
+            lines.append(self._string("show.station.empty", "  No station profile details are stored."))
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_var(self, call: str, arg: str | None) -> str:
@@ -3241,18 +4087,19 @@ class TelnetClusterServer:
         rows = await self.store.list_user_vars(target)
         if key:
             if key in rows:
-                return f"Variable {key} for {target}: {rows[key]}\r\n"
-            return f"Variable {key} for {target}: (none)\r\n"
+                return f"Variable {key} for {target}: {rows[key]}\r\n{key}={rows[key]}\r\n"
+            return self._render_string("show.var.item_empty", "Variable {key} for {target}: (none)", key=key, target=target) + "\r\n"
         if not rows:
-            return f"No variables stored for {target}.\r\n"
+            return self._render_string("show.var.empty", "No variables stored for {target}.", target=target) + "\r\n"
         items = list(rows.items())
         if not arg:
             page = await self._page_size_for(call)
             if page > 0:
                 items = items[:page]
-        lines = [f"Variables for {target} ({len(items)}):"]
+        lines = [self._render_string("show.var.title", "Variables for {target} ({count}):", target=target, count=len(items))]
         for k, v in items:
             lines.append(f"  {k}: {v}")
+            lines.append(f"  {k}={v}")
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_registered(self, _call: str, arg: str | None) -> str:
@@ -3264,10 +4111,13 @@ class TelnetClusterServer:
         if toks:
             target = toks[0].upper()
             if not is_valid_call(target):
-                return "Usage: show/registered [<call>]\r\n"
+                return self._string("show.registered.usage", "Usage: show/registered [<call>]") + "\r\n"
             row = await self.store.get_user_registry(target)
             if not row:
-                return f"No registered user record for {target}.\r\n"
+                return (
+                    self._render_string("show.registered.item_empty", "Registered user {target}: (none)", target=target) + "\r\n"
+                    + f"registered {target}\r\n"
+                )
             prefs = await self._load_prefs_for_call(target)
             uvars = await self.store.list_user_vars(target)
             blocked = False
@@ -3278,32 +4128,42 @@ class TelnetClusterServer:
                     break
             lines = [
                 f"Registered user {row['call']}",
-                f"  Name (QRA): {row['display_name'] or '(none)'}",
+                f"registered {row['call']}",
+                f"  Name: {row['display_name'] or '(none)'}",
                 f"  Address: {row['address'] or '(none)'}",
                 f"  Location (QTH): {row['qth'] or '(none)'}",
-                f"  QRA: {row['qra'] or '(none)'}",
+                f"  Grid Square (QRA): {row['qra'] or '(none)'}",
                 f"  Email: {row['email'] or '(none)'}",
                 f"  Privilege: {row['privilege'] or 'user'}",
                 f"  Home BBS: {prefs.get('homebbs', '') or '(none)'}",
                 f"  Home Node: {prefs.get('homenode', '') or '(none)'}",
                 f"  Node Family: {prefs.get('node_family', '') or '(user login)'}",
                 f"  Login Access: {'blocked' if blocked else 'allowed'}",
+                f"  homebbs={prefs.get('homebbs', '') or '(none)'}",
+                f"  homenode={prefs.get('homenode', '') or '(none)'}",
+                f"  node={prefs.get('node', '') or '(none)'}",
+                f"  name={row['display_name'] or ''}",
+                f"  address={row['address'] or ''}",
+                f"  qth={row['qth'] or ''}",
+                f"  qra={row['qra'] or ''}",
+                f"  email={row['email'] or ''}",
             ]
             for k, v in sorted(uvars.items()):
                 if k.startswith("uservar."):
                     lines.append(f"  {k}: {v}")
+                    lines.append(f"  {k}={v}")
             if show_logininfo:
                 lines.append(f"  Last Login: {self._fmt_epoch_short(int(row['last_login_epoch'] or 0))}")
                 lines.append(f"  Last Peer: {row['last_login_peer'] or '(none)'}")
             return await self._format_console_lines(_call, lines)
         rows = await self.store.list_user_registry(limit=500)
         if not rows:
-            return "registered: (none)\r\n"
+            return self._string("show.registered.empty", "registered: (none)") + "\r\n"
         if not arg:
             page = await self._page_size_for(_call)
             if page > 0:
                 rows = rows[:page]
-        lines = [f"Registered users ({len(rows)}):", "Callsign   Privilege  Home Node   Name"]
+        lines = [self._render_string("show.registered.title", "Registered users ({count}):", count=len(rows)), self._string("show.registered.header", "Callsign   Privilege  Home Node   Name")]
         for r in rows:
             name = str(r["display_name"] or "")
             privilege = str(r["privilege"] or "user")
@@ -3352,7 +4212,7 @@ class TelnetClusterServer:
     async def _cmd_set_flag(self, call: str, arg: str | None, flag: str, value: bool) -> str:
         s = self._find_session(call)
         if not s:
-            return "Session not found\r\n"
+            return self._string("set.session_not_found", "Session not found") + "\r\n"
         normalized = "on" if value else "off"
         if hasattr(s, flag):
             setattr(s, flag, value)
@@ -3360,31 +4220,32 @@ class TelnetClusterServer:
         await self._persist_pref(call, flag, normalized)
         if flag == "nowrap":
             return (
-                "Line wrapping disabled for this session.\r\n"
+                self._string("set.nowrap_on", "Line wrapping disabled for this session.") + "\r\n"
                 if value
-                else "Line wrapping restored to the default width.\r\n"
+                else self._string("set.nowrap_off", "Line wrapping restored to the default width.") + "\r\n"
             )
-        label = flag.replace("_", " ")
-        return f"{label.capitalize()} set to {normalized} for {call}.\r\n"
+        if flag in {"echo", "talk", "here", "beep"}:
+            return self._render_string("set.wire", "{name}={value}", name=flag, value=normalized) + "\r\n"
+        return self._render_string("set.display_set", "{label} set to {value} for {call}.", label=self._display_label(flag), value=normalized, call=call) + "\r\n"
 
     async def _cmd_set_page(self, call: str, arg: str | None) -> str:
         s = self._find_session(call)
         if not s:
-            return "Session not found\r\n"
+            return self._string("set.session_not_found", "Session not found") + "\r\n"
         val = 20
         if arg and arg.strip():
             tok = arg.split()[0]
             if not tok.isdigit():
-                return "Usage: set/page [<lines 1..500>]\r\n"
+                return self._string("set.page_usage", "Usage: set/page [<lines 1..500>]") + "\r\n"
             val = max(1, min(int(tok), 500))
         s.vars["page_size"] = str(val)
         await self._persist_pref(call, "page_size", str(val))
         await self._persist_pref(call, "page", str(val))
-        return f"Page length set to {val} lines for {call}.\r\n"
+        return self._render_string("set.page_set", "Page length set to {value} lines for {call}.", value=val, call=call) + "\r\n"
 
     async def _cmd_set_maxconnect(self, call: str, arg: str | None) -> str:
         if not arg or not arg.strip():
-            return "Usage: set/maxconnect [<call>] <0..100>\r\n"
+            return self._string("set.maxconnect_usage", "Usage: set/maxconnect [<call>] <0..100>") + "\r\n"
         toks = [t for t in arg.split() if t]
         target = call.upper()
         idx = 0
@@ -3393,7 +4254,7 @@ class TelnetClusterServer:
             idx = 1
         tok = toks[idx]
         if not tok.isdigit():
-            return "Usage: set/maxconnect [<call>] <0..100>\r\n"
+            return self._string("set.maxconnect_usage", "Usage: set/maxconnect [<call>] <0..100>") + "\r\n"
         if target != call.upper():
             denied = await self._require_privilege(call, 2, "set/maxconnect")
             if denied:
@@ -3403,23 +4264,23 @@ class TelnetClusterServer:
         if s and target == call.upper():
             s.vars["maxconnect"] = str(val)
         await self.store.set_user_pref(target, "maxconnect", str(val), int(datetime.now(timezone.utc).timestamp()))
-        return f"Maximum connections for {target} set to {val}.\r\n"
+        return self._render_string("set.maxconnect_set", "Maximum connections for {target} set to {value}.", target=target, value=val) + "\r\n"
 
     async def _cmd_set_language(self, call: str, arg: str | None) -> str:
         s = self._find_session(call)
         if not s:
-            return "Session not found\r\n"
+            return self._string("set.session_not_found", "Session not found") + "\r\n"
         lang = (arg or "").strip().lower()
         if not lang:
-            return "Usage: set/language <en|de|fr|es>\r\n"
+            return self._string("set.language_usage", "Usage: set/language <en|de|fr|es>") + "\r\n"
         s.language = lang
         await self._persist_pref(call, "language", s.language)
-        return f"Language set to {s.language} for {call}.\r\n"
+        return self._render_string("set.language_set", "Language set to {language} for {call}.", language=s.language, call=call) + "\r\n"
 
     async def _cmd_set_named_var(self, call: str, arg: str | None, name: str, default: str = "on") -> str:
         s = self._find_session(call)
         if not s:
-            return "Session not found\r\n"
+            return self._string("set.session_not_found", "Session not found") + "\r\n"
         value = default
         if arg and arg.strip():
             value = arg.strip()
@@ -3431,6 +4292,7 @@ class TelnetClusterServer:
             "dxcq",
             "dxitu",
             "dxgrid",
+            "rbn",
             "talk",
             "wcy",
             "wwv",
@@ -3471,7 +4333,7 @@ class TelnetClusterServer:
             try:
                 n = int(value)
             except ValueError:
-                return f"Usage: set/{name} <integer>\r\n"
+                return self._render_string("set.integer_usage", "Usage: set/{name} <integer>", name=name) + "\r\n"
             if name == "pinginterval":
                 n = max(5, min(3600, n))
             else:
@@ -3481,84 +4343,116 @@ class TelnetClusterServer:
             value = value[:128]
         if name in {"qra", "sys_qra"}:
             value = value.upper()
+        if name == "password":
+            value = hash_password(value)
         s.vars[name] = value
         await self._persist_pref(call, name, value)
+        if name in {"name", "qth", "qra"}:
+            now = int(datetime.now(timezone.utc).timestamp())
+            if name == "name":
+                await self.store.upsert_user_registry(call, now, display_name=value)
+            elif name == "qth":
+                await self.store.upsert_user_registry(call, now, qth=value)
+            elif name == "qra":
+                await self.store.upsert_user_registry(call, now, qra=value)
+                await self._sync_locator_defaults(call, value, overwrite_coords=False)
+                await self._backfill_location_from_qra(call, value)
+        elif name == "location":
+            now = int(datetime.now(timezone.utc).timestamp())
+            await self.store.set_user_pref(call, "location_source", "user", now)
+            if s:
+                s.vars["location_source"] = "user"
+            loc = await self._sync_location_defaults(call, value)
+            if loc and s:
+                s.vars["qra"] = loc
         self._log_event("set", f"{call} {name}={value}")
         if name == "password":
-            return f"Password updated for {call}.\r\n"
+            return self._render_string("set.password_updated", "Password updated for {call}.", call=call) + "\r\n"
         if name == "qra":
-            return f"QRA set to {value} for {call}.\r\n"
+            return self._render_string("set.qra_set", "QRA set to {value} for {call}.", value=value, call=call) + "\r\n"
         if name == "sys_qra":
-            return f"System QRA set to {value} for {call}.\r\n"
-        label = name.replace("_", " ")
-        return f"{label.capitalize()} set to {value} for {call}.\r\n"
+            return self._render_string("set.sys_qra_set", "System QRA set to {value} for {call}.", value=value, call=call) + "\r\n"
+        if name in {"talk", "debug", "rcmd", "beep", "here", "echo", "qth", "name", "page", "obscount", "pinginterval"}:
+            return self._render_string("set.wire", "{name}={value}", name=name, value=value) + "\r\n"
+        if name in bool_names:
+            return self._render_string("set.display_set_wire", "{label} set to {value} for {call}.\n{name}={value}", label=self._display_label(name), value=value, call=call, name=name).replace("\n", "\r\n") + "\r\n"
+        return self._render_string("set.display_set", "{label} set to {value} for {call}.", label=self._display_label(name), value=value, call=call) + "\r\n"
 
     async def _cmd_set_relay(self, call: str, arg: str | None) -> str:
         toks = [t.strip().lower() for t in (arg or "").split() if t.strip()]
         if not toks:
-            return "Usage: set/relay <spots|chat|announce|wcy|wwv|wx|all|a|*> [on|off]\r\n"
+            return self._string("set.relay_usage", "Usage: set/relay <spots|chat|announce|wcy|wwv|wx|all|a|*> [on|off]") + "\r\n"
         cat = toks[0]
         val = (toks[1] if len(toks) >= 2 else "on").lower()
         if val not in {"on", "off"}:
-            return "Usage: set/relay <spots|chat|announce|wcy|wwv|wx|all|a|*> [on|off]\r\n"
+            return self._string("set.relay_usage", "Usage: set/relay <spots|chat|announce|wcy|wwv|wx|all|a|*> [on|off]") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
         if self._is_all_token(cat):
             for c in cats:
                 await self.store.set_user_pref(call.upper(), f"relay.{c}", val, now)
-            return f"Relay policy set to {val} for all traffic.\r\n"
+            return self._render_string("set.relay_all", "Relay policy set to {value} for all traffic.", value=val) + "\r\n"
         if cat not in cats:
-            return "Usage: set/relay <spots|chat|announce|wcy|wwv|wx|all|a|*> [on|off]\r\n"
+            return self._string("set.relay_usage", "Usage: set/relay <spots|chat|announce|wcy|wwv|wx|all|a|*> [on|off]") + "\r\n"
         await self.store.set_user_pref(call.upper(), f"relay.{cat}", val, now)
-        return f"Relay policy for {cat} set to {val}.\r\n"
+        return self._render_string("set.relay_one", "Relay policy for {category} set to {value}.", category=cat, value=val) + "\r\n"
 
     async def _cmd_set_relaypeer(self, call: str, arg: str | None) -> str:
         toks = [t.strip().lower() for t in (arg or "").split() if t.strip()]
         if len(toks) < 2:
-            return "Usage: set/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx] <on|off>\r\n"
+            return self._string("set.relaypeer_usage", "Usage: set/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
         peer = toks[0]
         cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
         if toks[-1] not in {"on", "off"}:
-            return "Usage: set/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>\r\n"
+            return self._string("set.relaypeer_usage", "Usage: set/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
         val = toks[-1]
         cat = toks[1] if len(toks) >= 3 else "all"
         all_cat = self._is_all_token(cat)
         if not all_cat and cat not in cats:
-            return "Usage: set/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>\r\n"
+            return self._string("set.relaypeer_usage", "Usage: set/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
         key = f"relay.peer.{peer}" if all_cat else f"relay.peer.{peer}.{cat}"
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(call.upper(), key, val, now)
         scope = "all traffic" if all_cat else cat
-        return f"Relay policy for {peer} {scope} set to {val}.\r\n"
+        return self._render_string("set.relaypeer_set", "Relay policy for {peer} {scope} set to {value}.", peer=peer, scope=scope, value=val) + "\r\n"
 
     async def _cmd_set_ingestpeer(self, call: str, arg: str | None) -> str:
         toks = [t.strip().lower() for t in (arg or "").split() if t.strip()]
         if len(toks) < 2:
-            return "Usage: set/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx] <on|off>\r\n"
+            return self._string("set.ingestpeer_usage", "Usage: set/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
         peer = toks[0]
         cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
         if toks[-1] not in {"on", "off"}:
-            return "Usage: set/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>\r\n"
+            return self._string("set.ingestpeer_usage", "Usage: set/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
         val = toks[-1]
         cat = toks[1] if len(toks) >= 3 else "all"
         all_cat = self._is_all_token(cat)
         if not all_cat and cat not in cats:
-            return "Usage: set/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>\r\n"
+            return self._string("set.ingestpeer_usage", "Usage: set/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
         key = f"ingest.peer.{peer}" if all_cat else f"ingest.peer.{peer}.{cat}"
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(call.upper(), key, val, now)
         scope = "all traffic" if all_cat else cat
-        return f"Ingest policy for {peer} {scope} set to {val}.\r\n"
+        return self._render_string("set.ingestpeer_set", "Ingest policy for {peer} {scope} set to {value}.", peer=peer, scope=scope, value=val) + "\r\n"
 
     async def _cmd_unset_named_var(self, call: str, _arg: str | None, name: str, off: str = "off") -> str:
         s = self._find_session(call)
         if not s:
-            return "Session not found\r\n"
+            return self._string("set.session_not_found", "Session not found") + "\r\n"
         s.vars[name] = off
         await self._persist_pref(call, name, off)
         self._log_event("unset", f"{call} {name}={off}")
-        label = name.replace("_", " ")
-        return f"{label.capitalize()} set to {off} for {call}.\r\n"
+        if name in {"talk", "debug", "rcmd", "beep", "here", "echo"}:
+            return self._render_string("unset.wire", "{name}={value}", name=name, value=off) + "\r\n"
+        if name in {
+            "announce", "anntalk", "dx", "dxcq", "dxitu", "dxgrid", "rbn", "wcy", "wwv", "wx",
+            "isolate", "lockout", "prompt", "register", "local_node", "ve7cc", "wantpc16",
+            "wantpc9x", "sendpc16", "routepc19", "send_dbg", "agwengine", "agwmonitor",
+            "bbs", "believe", "gtk", "hops", "logininfo", "dup_ann", "dup_eph", "dup_spots",
+            "dup_wcy", "dup_wwv",
+        }:
+            return self._render_string("unset.display_set_wire", "{label} set to {value} for {call}.\n{name}={value}", label=self._display_label(name), value=off, call=call, name=name).replace("\n", "\r\n") + "\r\n"
+        return self._render_string("unset.display_set", "{label} set to {value} for {call}.", label=self._display_label(name), value=off, call=call) + "\r\n"
 
     async def _cmd_unset_relay(self, call: str, arg: str | None) -> str:
         toks = [t.strip().lower() for t in (arg or "").split() if t.strip()]
@@ -3568,64 +4462,67 @@ class TelnetClusterServer:
             removed = 0
             for c in cats:
                 removed += await self.store.delete_user_pref(call, f"relay.{c}")
-            return f"Relay policy restored to defaults for all traffic ({removed} removed).\r\n"
+            return self._render_string("unset.relay_all", "Relay policy restored to defaults for all traffic ({removed} removed).", removed=removed) + "\r\n"
         if cat not in cats:
-            return "Usage: unset/relay [spots|chat|announce|wcy|wwv|wx|all|a|*]\r\n"
+            return self._string("unset.relay_usage", "Usage: unset/relay [spots|chat|announce|wcy|wwv|wx|all|a|*]") + "\r\n"
         removed = await self.store.delete_user_pref(call, f"relay.{cat}")
-        return f"Relay policy for {cat} restored to default ({removed} removed).\r\n"
+        return self._render_string("unset.relay_one", "Relay policy for {category} restored to default ({removed} removed).", category=cat, removed=removed) + "\r\n"
 
     async def _cmd_unset_relaypeer(self, call: str, arg: str | None) -> str:
         toks = [t.strip().lower() for t in (arg or "").split() if t.strip()]
         if not toks:
-            return "Usage: unset/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]\r\n"
+            return self._string("unset.relaypeer_usage", "Usage: unset/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]") + "\r\n"
         peer = toks[0]
         cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
         cat = toks[1] if len(toks) >= 2 else "all"
         if not self._is_all_token(cat) and cat not in cats:
-            return "Usage: unset/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]\r\n"
+            return self._string("unset.relaypeer_usage", "Usage: unset/relaypeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]") + "\r\n"
         if self._is_all_token(cat):
             removed = await self._clear_pref_prefix(call, f"relay.peer.{peer}")
-            return f"Relay policy for {peer} restored to defaults ({removed} removed).\r\n"
+            return self._render_string("unset.relaypeer_all", "Relay policy for {peer} restored to defaults ({removed} removed).", peer=peer, removed=removed) + "\r\n"
         removed = await self.store.delete_user_pref(call, f"relay.peer.{peer}.{cat}")
-        return f"Relay policy for {peer} {cat} restored to default ({removed} removed).\r\n"
+        return self._render_string("unset.relaypeer_one", "Relay policy for {peer} {category} restored to default ({removed} removed).", peer=peer, category=cat, removed=removed) + "\r\n"
 
     async def _cmd_unset_ingestpeer(self, call: str, arg: str | None) -> str:
         toks = [t.strip().lower() for t in (arg or "").split() if t.strip()]
         if not toks:
-            return "Usage: unset/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]\r\n"
+            return self._string("unset.ingestpeer_usage", "Usage: unset/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]") + "\r\n"
         peer = toks[0]
         cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
         cat = toks[1] if len(toks) >= 2 else "all"
         if not self._is_all_token(cat) and cat not in cats:
-            return "Usage: unset/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]\r\n"
+            return self._string("unset.ingestpeer_usage", "Usage: unset/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]") + "\r\n"
         if self._is_all_token(cat):
             removed = await self._clear_pref_prefix(call, f"ingest.peer.{peer}")
-            return f"Ingest policy for {peer} restored to defaults ({removed} removed).\r\n"
+            return self._render_string("unset.ingestpeer_all", "Ingest policy for {peer} restored to defaults ({removed} removed).", peer=peer, removed=removed) + "\r\n"
         removed = await self.store.delete_user_pref(call, f"ingest.peer.{peer}.{cat}")
-        return f"Ingest policy for {peer} {cat} restored to default ({removed} removed).\r\n"
+        return self._render_string("unset.ingestpeer_one", "Ingest policy for {peer} {category} restored to default ({removed} removed).", peer=peer, category=cat, removed=removed) + "\r\n"
 
     async def _cmd_set_profile(self, call: str, _arg: str | None, profile: str) -> str:
         p = normalize_profile(profile)
+        display = "spider" if p == "dxspider" else p
         # If arg is provided and link callback exists, treat it as peer name.
         if _arg and self._link_set_profile_fn:
             peer = _arg.strip()
             if peer:
                 ok = await self._link_set_profile_fn(peer, p)
                 if ok:
-                    return f"Profile for peer {peer} set to {p}.\r\n"
+                    return f"Profile for peer {peer} set to {display}.\r\n"
                 return f"Peer {peer} was not found.\r\n"
         s = self._find_session(call)
         if not s:
             return "Session not found\r\n"
-        s.peer_profile = p
+        s.peer_profile = display
         await self._persist_pref(call, "profile", p)
         self._log_event("profile", f"{call} -> {p}")
-        return f"Profile for {call} set to {p}.\r\n"
+        return f"Profile for {call} set to {display}.\r\n"
 
     async def _cmd_not_implemented(self, _call: str, _arg: str | None) -> str:
         return "Command recognized but not implemented yet\r\n"
 
     async def _cmd_compat_ok(self, _call: str, _arg: str | None, name: str) -> str:
+        if name == "keplerian elements request":
+            return "Keplerian elements request accepted.\r\nget/keps: Ok\r\n"
         label = name.replace("_", " ").replace("/", " ").strip()
         return f"{label.capitalize()} completed.\r\n"
 
@@ -3659,7 +4556,10 @@ class TelnetClusterServer:
         rules.append(FilterRule(slot=slot_num, expr=expr))
         self._log_event("filter", f"{action}/{label} {target} {slot_num} {expr}")
         family_label = family.upper() if family in {"wcy", "wwv", "wx"} else family
-        return f"{action.capitalize()} filter for {family_label} saved for {target} in slot {slot_num} ({label}).\r\n"
+        return (
+            f"{action.capitalize()} filter for {family_label} saved for {target} in slot {slot_num} ({label}).\r\n"
+            f"{action}/{label} {target} {slot_num}\r\n"
+        )
 
     async def _cmd_set_bad_rule(self, call: str, arg: str | None, kind: str) -> str:
         if not arg or not arg.strip():
@@ -3673,7 +4573,7 @@ class TelnetClusterServer:
 
     async def _cmd_set_buddy(self, call: str, arg: str | None) -> str:
         if not arg or not arg.strip():
-            return "Usage: set/buddy <call> [call ...]\r\n"
+            return self._string("set.buddy_usage", "Usage: set/buddy <call> [call ...]") + "\r\n"
         toks = [t.upper() for t in arg.split() if t]
         now = int(datetime.now(timezone.utc).timestamp())
         added = 0
@@ -3683,14 +4583,15 @@ class TelnetClusterServer:
             await self.store.add_buddy(call, b, now)
             added += 1
         self._log_event("buddy", f"{call} set/buddy {','.join(toks)} added={added}")
-        return f"Added {added} buddy entr{'y' if added == 1 else 'ies'} for {call}.\r\n"
+        noun = "entry" if added == 1 else "entries"
+        return self._render_string("set.buddy_added", "Added {count} buddy {noun} for {call}.", count=added, noun=noun, call=call) + "\r\n"
 
     async def _cmd_set_usdb(self, call: str, arg: str | None) -> str:
         if not arg or not arg.strip():
-            return "Usage: set/usdb [<call>] <field> <value>\r\n"
+            return self._string("set.usdb_usage", "Usage: set/usdb [<call>] <field> <value>") + "\r\n"
         toks = [t for t in arg.split() if t]
         if len(toks) < 2:
-            return "Usage: set/usdb [<call>] <field> <value>\r\n"
+            return self._string("set.usdb_usage", "Usage: set/usdb [<call>] <field> <value>") + "\r\n"
         target = call.upper()
         field_idx = 0
         value_idx = 1
@@ -3701,15 +4602,15 @@ class TelnetClusterServer:
         field = toks[field_idx].lower()
         value = " ".join(toks[value_idx:]).strip()
         if not value:
-            return "Usage: set/usdb [<call>] <field> <value>\r\n"
+            return self._string("set.usdb_usage", "Usage: set/usdb [<call>] <field> <value>") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_usdb_entry(target, field, value, now)
         self._log_event("usdb", f"{call} set/usdb {target} {field}={value}")
-        return f"USDB field {field} updated for {target}.\r\n"
+        return self._render_string("set.usdb_updated", "USDB field {field} updated for {target}.", field=field, target=target) + "\r\n"
 
     async def _cmd_set_var(self, call: str, arg: str | None) -> str:
         if not arg or not arg.strip():
-            return "Usage: set/var [<call>] <key> <value> | <key>=<value>\r\n"
+            return self._string("set.var_usage", "Usage: set/var [<call>] <key> <value> | <key>=<value>") + "\r\n"
         toks = [t for t in arg.split() if t]
         target = call.upper()
         rest = toks
@@ -3717,7 +4618,7 @@ class TelnetClusterServer:
             target = toks[0].upper()
             rest = toks[1:]
         if not rest:
-            return "Usage: set/var [<call>] <key> <value> | <key>=<value>\r\n"
+            return self._string("set.var_usage", "Usage: set/var [<call>] <key> <value> | <key>=<value>") + "\r\n"
 
         key = ""
         value = ""
@@ -3729,20 +4630,20 @@ class TelnetClusterServer:
             key = rest[0]
             value = " ".join(rest[1:])
         else:
-            return "Usage: set/var [<call>] <key> <value> | <key>=<value>\r\n"
+            return self._string("set.var_usage", "Usage: set/var [<call>] <key> <value> | <key>=<value>") + "\r\n"
 
         key = key.strip().lower()
         value = value.strip()
         if not key or not value:
-            return "Usage: set/var [<call>] <key> <value> | <key>=<value>\r\n"
+            return self._string("set.var_usage", "Usage: set/var [<call>] <key> <value> | <key>=<value>") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_var(target, key, value, now)
         self._log_event("var", f"{call} set/var {target} {key}={value}")
-        return f"Variable {key} updated for {target}.\r\n"
+        return self._render_string("set.var_updated", "Variable {key} updated for {target}.", key=key, target=target) + "\r\n" + self._render_string("set.wire", "{name}={value}", name=key, value=value) + "\r\n"
 
     async def _cmd_set_uservar(self, call: str, arg: str | None) -> str:
         if not arg or not arg.strip():
-            return "Usage: set/uservar [<call>] <key> <value> | <key>=<value>\r\n"
+            return self._string("set.uservar_usage", "Usage: set/uservar [<call>] <key> <value> | <key>=<value>") + "\r\n"
         toks = [t for t in arg.split() if t]
         target = call.upper()
         rest = toks
@@ -3750,7 +4651,7 @@ class TelnetClusterServer:
             target = toks[0].upper()
             rest = toks[1:]
         if not rest:
-            return "Usage: set/uservar [<call>] <key> <value> | <key>=<value>\r\n"
+            return self._string("set.uservar_usage", "Usage: set/uservar [<call>] <key> <value> | <key>=<value>") + "\r\n"
         key = ""
         value = ""
         if "=" in rest[0]:
@@ -3761,30 +4662,32 @@ class TelnetClusterServer:
             key = rest[0]
             value = " ".join(rest[1:])
         else:
-            return "Usage: set/uservar [<call>] <key> <value> | <key>=<value>\r\n"
+            return self._string("set.uservar_usage", "Usage: set/uservar [<call>] <key> <value> | <key>=<value>") + "\r\n"
         key = key.strip().lower()
         value = value.strip()
         if not key or not value:
-            return "Usage: set/uservar [<call>] <key> <value> | <key>=<value>\r\n"
+            return self._string("set.uservar_usage", "Usage: set/uservar [<call>] <key> <value> | <key>=<value>") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         full_key = f"uservar.{key}"
         await self.store.set_user_var(target, full_key, value, now)
         self._log_event("uservar", f"{call} set/uservar {target} {full_key}={value}")
-        return f"User variable {key} updated for {target}.\r\n"
+        return self._render_string("set.uservar_updated", "User variable {key} updated for {target}.", key=key, target=target) + "\r\n"
 
     async def _cmd_set_home_pref(self, call: str, arg: str | None, key: str) -> str:
         if not arg or not arg.strip():
-            return f"Usage: set/{key} <call>\r\n"
+            return self._render_string("set.home_usage", "Usage: set/{name} <call>", name=key) + "\r\n"
         target = arg.split()[0].upper()
         if not is_valid_call(target):
-            return f"Usage: set/{key} <call>\r\n"
+            return self._render_string("set.home_usage", "Usage: set/{name} <call>", name=key) + "\r\n"
         s = self._find_session(call)
         if s:
             s.vars[key] = target
         await self._persist_pref(call, key, target)
+        if key == "homenode":
+            now = int(datetime.now(timezone.utc).timestamp())
+            await self.store.upsert_user_registry(call, now, home_node=target)
         self._log_event("pref", f"{call} set/{key} {target}")
-        label = key.replace("_", " ").upper() if key == "homebbs" else key.replace("_", " ").title()
-        return f"{label} set to {target} for {call}.\r\n"
+        return f"{key}={target}\r\n"
 
     async def _cmd_sysop_password(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/password")
@@ -3792,18 +4695,18 @@ class TelnetClusterServer:
             return denied
         toks = [t for t in (arg or "").split() if t]
         if len(toks) < 2:
-            return "Usage: sysop/password <call> <newpass>\r\n"
+            return self._string("sysop.password_usage", "Usage: sysop/password <call> <newpass>") + "\r\n"
         target = toks[0].upper()
         if not is_valid_call(target):
-            return "Usage: sysop/password <call> <newpass>\r\n"
+            return self._string("sysop.password_usage", "Usage: sysop/password <call> <newpass>") + "\r\n"
         password = " ".join(toks[1:]).strip()
         if not password:
-            return "Usage: sysop/password <call> <newpass>\r\n"
+            return self._string("sysop.password_usage", "Usage: sysop/password <call> <newpass>") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.upsert_user_registry(target, now)
-        await self.store.set_user_pref(target, "password", password, now)
+        await self.store.set_user_pref(target, "password", hash_password(password), now)
         self._log_event("sysop", f"{call} sysop/password {target}")
-        return f"Password updated for {target}.\r\n"
+        return self._render_string("sysop.password_updated", "Password updated for {target}.", target=target) + "\r\n"
 
     async def _cmd_sysop_clearpassword(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/clearpassword")
@@ -3811,12 +4714,12 @@ class TelnetClusterServer:
             return denied
         target = (arg or "").strip().upper()
         if not target or not is_valid_call(target):
-            return "Usage: sysop/clearpassword <call>\r\n"
+            return self._string("sysop.clearpassword_usage", "Usage: sysop/clearpassword <call>") + "\r\n"
         removed = await self.store.delete_user_pref(target, "password")
         self._log_event("sysop", f"{call} sysop/clearpassword {target} removed={removed}")
         if removed:
-            return f"Password cleared for {target}.\r\n"
-        return f"No password was set for {target}.\r\n"
+            return self._render_string("sysop.password_cleared", "Password cleared for {target}.", target=target) + "\r\n"
+        return self._render_string("sysop.password_missing", "No password was set for {target}.", target=target) + "\r\n"
 
     async def _cmd_sysop_homenode(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/homenode")
@@ -3824,16 +4727,16 @@ class TelnetClusterServer:
             return denied
         toks = [t for t in (arg or "").split() if t]
         if len(toks) != 2:
-            return "Usage: sysop/homenode <call> <node>\r\n"
+            return self._string("sysop.homenode_usage", "Usage: sysop/homenode <call> <node>") + "\r\n"
         target = toks[0].upper()
         node = toks[1].upper()
         if not is_valid_call(target) or not is_valid_call(node):
-            return "Usage: sysop/homenode <call> <node>\r\n"
+            return self._string("sysop.homenode_usage", "Usage: sysop/homenode <call> <node>") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.upsert_user_registry(target, now, home_node=node)
         await self.store.set_user_pref(target, "homenode", node, now)
         self._log_event("sysop", f"{call} sysop/homenode {target} {node}")
-        return f"Home node for {target} set to {node}.\r\n"
+        return self._render_string("sysop.homenode_set", "Home node for {target} set to {node}.", target=target, node=node) + "\r\n"
 
     async def _cmd_sysop_blocklogin(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/blocklogin")
@@ -3841,19 +4744,19 @@ class TelnetClusterServer:
             return denied
         toks = [t for t in (arg or "").split() if t]
         if len(toks) != 2:
-            return "Usage: sysop/blocklogin <call> <on|off>\r\n"
+            return self._string("sysop.blocklogin_usage", "Usage: sysop/blocklogin <call> <on|off>") + "\r\n"
         target = toks[0].upper()
         state = toks[1].lower()
         if not is_valid_call(target) or state not in {"on", "off"}:
-            return "Usage: sysop/blocklogin <call> <on|off>\r\n"
+            return self._string("sysop.blocklogin_usage", "Usage: sysop/blocklogin <call> <on|off>") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         if state == "on":
             await self.store.set_user_pref(target, "blocked_login", "on", now)
             self._log_event("sysop", f"{call} sysop/blocklogin {target} on")
-            return f"Login blocked for {target} and all SSIDs.\r\n"
+            return self._render_string("sysop.blocklogin_on", "Login blocked for {target} and all SSIDs.", target=target) + "\r\n"
         removed = await self.store.delete_user_pref(target, "blocked_login")
         self._log_event("sysop", f"{call} sysop/blocklogin {target} off removed={removed}")
-        return f"Login block cleared for {target}.\r\n"
+        return self._render_string("sysop.blocklogin_off", "Login block cleared for {target}.", target=target) + "\r\n"
 
     async def _cmd_sysop_showuser(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/showuser")
@@ -3861,7 +4764,7 @@ class TelnetClusterServer:
             return denied
         target = (arg or "").strip().upper()
         if not target or not is_valid_call(target):
-            return "Usage: sysop/showuser <call>\r\n"
+            return self._string("sysop.showuser_usage", "Usage: sysop/showuser <call>") + "\r\n"
         return await self._cmd_show_registered(call, target)
 
     async def _cmd_sysop_users(self, call: str, _arg: str | None) -> str:
@@ -3876,8 +4779,8 @@ class TelnetClusterServer:
             return denied
         rows = await self.store.list_user_registry(limit=500, privilege="sysop")
         if not rows:
-            return "System Operators: (none)\r\n"
-        lines = ["System Operators:", "Callsign   Node Family Home Node   Name"]
+            return self._string("sysop.sysops_empty", "System Operators: (none)") + "\r\n"
+        lines = [self._string("sysop.sysops_title", "System Operators:"), self._string("sysop.sysops_header", "Callsign   Node Family Home Node   Name")]
         for row in rows:
             name = str(row["display_name"] or "")
             home_node = str(row["home_node"] or "")
@@ -3892,7 +4795,7 @@ class TelnetClusterServer:
             return denied
         target = (arg or "").strip().upper()
         if not target or not is_valid_call(target):
-            return "Usage: sysop/access <call>\r\n"
+            return self._string("sysop.access_usage", "Usage: sysop/access <call>") + "\r\n"
         lines = await self._sysop_access_matrix_lines(target)
         return "\r\n".join(lines) + "\r\n"
 
@@ -3902,7 +4805,7 @@ class TelnetClusterServer:
             return denied
         toks = [t for t in (arg or "").split() if t]
         if len(toks) != 4:
-            return "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>\r\n"
+            return self._string("sysop.setaccess_usage", "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>") + "\r\n"
         target = toks[0].upper()
         channel = toks[1].lower()
         capability = toks[2].lower()
@@ -3910,19 +4813,19 @@ class TelnetClusterServer:
         channels = self._access_channels()
         caps = self._access_capabilities()
         if not is_valid_call(target) or state not in {"on", "off"}:
-            return "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>\r\n"
+            return self._string("sysop.setaccess_usage", "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>") + "\r\n"
         if channel in {"all", "a", "*"}:
             chosen_channels = channels
         elif channel in channels:
             chosen_channels = (channel,)
         else:
-            return "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>\r\n"
+            return self._string("sysop.setaccess_usage", "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>") + "\r\n"
         if capability in {"all", "a", "*"}:
             chosen_caps = caps
         elif capability in caps:
             chosen_caps = (capability,)
         else:
-            return "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>\r\n"
+            return self._string("sysop.setaccess_usage", "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         for chosen_channel in chosen_channels:
             for chosen_cap in chosen_caps:
@@ -3931,7 +4834,7 @@ class TelnetClusterServer:
         scope = "all channels" if channel in {"all", "a", "*"} else channel
         what = "all capabilities" if capability in {"all", "a", "*"} else capability
         state_text = "enabled" if state == "on" else "disabled"
-        return f"{what} {state_text} for {target} on {scope}.\r\n"
+        return self._render_string("sysop.setaccess_result", "{what} {state} for {target} on {scope}.", what=what, state=state_text, target=target, scope=scope) + "\r\n"
 
     async def _cmd_sysop_setprompt(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/setprompt")
@@ -3939,24 +4842,24 @@ class TelnetClusterServer:
             return denied
         template = (arg or "").strip()
         if not template:
-            return "Usage: sysop/setprompt <prompt template>\r\n"
+            return self._string("sysop.setprompt_usage", "Usage: sysop/setprompt <prompt template>") + "\r\n"
         if len(template) > 256:
-            return "Prompt template must be 256 characters or fewer.\r\n"
+            return self._string("sysop.setprompt_too_long", "Prompt template must be 256 characters or fewer.") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(self.config.node.node_call, "prompt_template", template, now)
         self._log_event("sysop", f"{call} sysop/setprompt template={template}")
-        return "Prompt template updated.\r\n"
+        return self._string("sysop.setprompt_updated", "Prompt template updated.") + "\r\n"
 
     async def _cmd_sysop_services(self, call: str, _arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/services")
         if denied:
             return denied
         if not self._component_status_fn:
-            return "Service control is not attached in this runtime.\r\n"
+            return self._string("sysop.services_unavailable", "Service control is not attached in this runtime.") + "\r\n"
         rows = await self._component_status_fn()
         if not rows:
-            return "No component status available.\r\n"
-        lines = ["Service Status", "Component   State   Detail"]
+            return self._string("sysop.services_empty", "No component status available.") + "\r\n"
+        lines = [self._string("sysop.services_title", "Service Status"), self._string("sysop.services_header", "Component   State   Detail")]
         for row in rows:
             component = str(row.get("component", "")).strip()
             state = str(row.get("state", "unknown")).strip()
@@ -3970,9 +4873,9 @@ class TelnetClusterServer:
             return denied
         target = (arg or "").strip().lower()
         if not target:
-            return "Usage: sysop/restart <telnet|sysopweb|all>\r\n"
+            return self._string("sysop.restart_usage", "Usage: sysop/restart <telnet|sysopweb|all>") + "\r\n"
         if not self._component_restart_fn:
-            return "Service control is not attached in this runtime.\r\n"
+            return self._string("sysop.services_unavailable", "Service control is not attached in this runtime.") + "\r\n"
         ok, msg = await self._component_restart_fn(target)
         self._log_event("control", f"{call} sysop/restart {target} ok={int(ok)}")
         return (msg.rstrip() + "\r\n") if ok else (msg.rstrip() + "\r\n")
@@ -4029,31 +4932,31 @@ class TelnetClusterServer:
             if s:
                 s.vars["startup"] = "on"
             await self.store.set_user_pref(target, "startup", "on", now)
-            return f"Startup commands enabled for {target}.\r\n"
+            return self._render_string("set.startup_enabled", "Startup commands enabled for {target}.", target=target) + "\r\n"
         low = text.lower()
         if low in {"on", "off"}:
             if s:
                 s.vars["startup"] = low
             await self.store.set_user_pref(target, "startup", low, now)
             state = "enabled" if low == "on" else "disabled"
-            return f"Startup commands {state} for {target}.\r\n"
+            return self._render_string("set.startup_state", "Startup commands {state} for {target}.", state=state, target=target) + "\r\n"
         if low == "clear":
             n = await self.store.clear_startup_commands(target)
             if s:
                 s.vars["startup"] = "on"
             await self.store.set_user_pref(target, "startup", "on", now)
-            return f"Cleared {n} startup command(s) for {target}.\r\n"
+            return self._render_string("set.startup_cleared", "Cleared {count} startup command(s) for {target}.", count=n, target=target) + "\r\n"
         if low.startswith("del "):
             tok = text.split(maxsplit=1)[1].strip()
             if not tok.isdigit():
-                return "Usage: set/startup del <id>\r\n"
+                return self._string("set.startup_usage", "Usage: set/startup del <id>") + "\r\n"
             removed = await self.store.remove_startup_command(target, int(tok))
             return f"Removed {removed} startup command(s) for {target}.\r\n"
         cmd_id = await self.store.add_startup_command(target, text, now)
         if s:
             s.vars["startup"] = "on"
         await self.store.set_user_pref(target, "startup", "on", now)
-        return f"Added startup command #{cmd_id} for {target}.\r\n"
+        return self._render_string("set.startup_added", "Added startup command #{command_id} for {target}.", command_id=cmd_id, target=target) + "\r\n"
 
     async def _cmd_set_user(self, call: str, arg: str | None) -> str:
         if not arg or not arg.strip():
@@ -4206,7 +5109,7 @@ class TelnetClusterServer:
         target = (arg or "all").strip()
         removed = await self.store.remove_deny_rule(kind, target)
         self._log_event("badrule", f"{call} unset/{kind} {target} removed={removed}")
-        return f"Removed {removed} {kind} entr{'y' if removed == 1 else 'ies'}.\r\n"
+        return f"Removed {removed} {kind} entr{'y' if removed == 1 else 'ies'}.\r\nremoved={removed}\r\n"
 
     async def _cmd_unset_buddy(self, call: str, arg: str | None) -> str:
         target = (arg or "all").strip()
@@ -4299,11 +5202,11 @@ class TelnetClusterServer:
             if s:
                 s.vars["startup"] = "off"
             await self.store.set_user_pref(target, "startup", "off", now)
-            return f"Startup commands disabled for {target}; cleared {n} command(s).\r\n"
+            return self._render_string("unset.startup_disabled_cleared", "Startup commands disabled for {target}; cleared {count} command(s).", target=target, count=n) + "\r\n"
         if s:
             s.vars["startup"] = "off"
         await self.store.set_user_pref(target, "startup", "off", now)
-        return f"Startup commands disabled for {target}.\r\n"
+        return self._render_string("unset.startup_disabled", "Startup commands disabled for {target}.", target=target) + "\r\n"
 
     async def _cmd_unset_contact_field(self, call: str, arg: str | None, field: str) -> str:
         target = call.upper()
@@ -4368,7 +5271,10 @@ class TelnetClusterServer:
                 fam[act] = [r for r in fam[act] if r.slot != slot]
         self._log_event("filter", f"clear/{family} {target} {slot}")
         scope = "all slots" if slot == "all" else f"slot {slot}"
-        return f"Cleared {family} filters for {target} ({scope}).\r\n"
+        return (
+            f"Cleared {family} filters for {target} ({scope}).\r\n"
+            f"clear/{family} {target} {scope}\r\n"
+        )
 
     async def _cmd_filter_clear_expr(self, call: str, arg: str | None, family: str, expr: str, label: str) -> str:
         parsed = self._parse_filter_target_and_slot(call, arg)
@@ -4397,7 +5303,10 @@ class TelnetClusterServer:
                 if slot == "all" or r.slot == slot:
                     await self.store.set_filter_rule(target, family, act, r.slot, r.expr, now)
         self._log_event("filter", f"clear/{label} {target} {slot} removed={removed}")
-        return f"Cleared {removed} {label} filter entr{'y' if removed == 1 else 'ies'} for {target}.\r\n"
+        return (
+            f"Cleared {removed} {label} filter entr{'y' if removed == 1 else 'ies'} for {target}.\r\n"
+            f"clear/{label} {target} {'all slots' if slot == 'all' else f'slot {slot}'}\r\n"
+        )
 
     async def _cmd_clear_dupefile(self, call: str, _arg: str | None) -> str:
         s = self._find_session(call)
@@ -4436,51 +5345,41 @@ class TelnetClusterServer:
         grouped = sum(1 for k in reg if "/" in k)
         top_level = len(reg) - grouped
         direct_alias = len(self._direct_alias_map())
-        return (
-            f"Alias cache loaded: {len(reg)} commands, {grouped} grouped, "
-            f"{top_level} top-level, {direct_alias} direct aliases.\r\n"
-        )
+        return self._render_string("load.aliases", "Alias cache loaded: {commands} commands, {grouped} grouped, {top_level} top-level, {direct_aliases} direct aliases.", commands=len(reg), grouped=grouped, top_level=top_level, direct_aliases=direct_alias) + "\r\n"
 
     async def _cmd_load_badmsg(self, _call: str, _arg: str | None) -> str:
         words = await self.store.list_deny_rules("badword")
-        return f"Loaded {len(words)} bad-message rule entr{'y' if len(words) == 1 else 'ies'}.\r\n"
+        noun = "entry" if len(words) == 1 else "entries"
+        return self._render_string("load.badmsg", "Loaded {count} bad-message rule {noun}.", count=len(words), noun=noun) + "\r\n"
 
     async def _cmd_load_badwords(self, _call: str, _arg: str | None) -> str:
         words = await self.store.list_deny_rules("badword")
-        return f"Loaded {len(words)} bad-word rule entr{'y' if len(words) == 1 else 'ies'}.\r\n"
+        noun = "entry" if len(words) == 1 else "entries"
+        return self._render_string("load.badwords", "Loaded {count} bad-word rule {noun}.", count=len(words), noun=noun) + "\r\n"
 
     async def _cmd_load_bands(self, _call: str, _arg: str | None) -> str:
         total_spots = await self.store.count_spots()
-        return f"Loaded {len(BAND_RANGES)} band definitions with {total_spots} observed spot(s).\r\n"
+        return self._render_string("load.bands", "Loaded {bands} band definitions with {spots} observed spot(s).", bands=len(BAND_RANGES), spots=total_spots) + "\r\n"
 
     async def _cmd_load_cmdcache(self, _call: str, _arg: str | None) -> str:
         reg = self._build_registry()
         groups = sorted({k.split("/", 1)[0] for k in reg if "/" in k})
         shortcuts = len(self._build_shortcut_catalog(reg))
-        return (
-            f"Command cache loaded: {len(reg)} commands, {len(groups)} groups, "
-            f"{shortcuts} shortcuts.\r\n"
-        )
+        return self._render_string("load.cmdcache", "Command cache loaded: {commands} commands, {groups} groups, {shortcuts} shortcuts.", commands=len(reg), groups=len(groups), shortcuts=shortcuts) + "\r\n"
 
     async def _cmd_load_db(self, _call: str, _arg: str | None) -> str:
         dbp = Path(self.config.store.sqlite_path)
         size = dbp.stat().st_size if dbp.exists() else 0
         spots = await self.store.count_spots()
         registry = len(await self.store.list_user_registry(limit=2000))
-        return (
-            f"Database loaded from {dbp} ({size} bytes) with "
-            f"{spots} spots and {registry} registered user(s).\r\n"
-        )
+        return self._render_string("load.db", "Database loaded from {path} ({size} bytes) with {spots} spots and {registry} registered user(s).", path=dbp, size=size, spots=spots, registry=registry) + "\r\n"
 
     async def _cmd_load_dxqsl(self, call: str, arg: str | None) -> str:
         target = self._load_target_call(call, arg)
         prefs = await self.store.list_user_prefs(target)
         exp = prefs.get("dxqsl_export_path", "")
         imp = prefs.get("dxqsl_import_path", "")
-        return (
-            f"DXQSL settings loaded for {target}: export={'yes' if exp else 'no'}, "
-            f"import={'yes' if imp else 'no'}.\r\n"
-        )
+        return self._render_string("load.dxqsl", "DXQSL settings loaded for {target}: export={export}, import={import_}.", target=target, export="yes" if exp else "no", import_="yes" if imp else "no") + "\r\n"
 
     async def _cmd_load_forward(self, call: str, arg: str | None) -> str:
         target = self._load_target_call(call, arg)
@@ -4488,7 +5387,7 @@ class TelnetClusterServer:
         loaded = sum(
             1 for k in ("forward_lat", "forward_lon", "forward_opername") if (prefs.get(k) or "").strip()
         )
-        return f"Forwarding settings loaded for {target} ({loaded} field(s)).\r\n"
+        return self._render_string("load.forward", "Forwarding settings loaded for {target} ({count} field(s)).", target=target, count=loaded) + "\r\n"
 
     async def _cmd_load_hops(self, _call: str, _arg: str | None) -> str:
         peers = 0
@@ -4497,17 +5396,17 @@ class TelnetClusterServer:
             stats = await self._link_stats_fn()
             peers = len(stats)
             inbound = sum(1 for st in stats.values() if bool(st.get("inbound", False)))
-        return f"Hop data loaded: {peers} peer(s), {inbound} inbound, {max(0, peers - inbound)} outbound.\r\n"
+        return self._render_string("load.hops", "Hop data loaded: {peers} peer(s), {inbound} inbound, {outbound} outbound.", peers=peers, inbound=inbound, outbound=max(0, peers - inbound)) + "\r\n"
 
     async def _cmd_load_keps(self, call: str, arg: str | None) -> str:
         target = self._load_target_call(call, arg)
         last = await self.store.get_user_pref(target, "keps_last_request_epoch")
-        return f"Keplerian request state loaded for {target}; last request epoch is {last or '0'}.\r\n"
+        return self._render_string("load.keps", "Keplerian request state loaded for {target}; last request epoch is {last}.", target=target, last=last or "0") + "\r\n"
 
     async def _cmd_load_messages(self, call: str, arg: str | None) -> str:
         target = self._load_target_call(call, arg)
         total, unread = await self.store.message_counts(target)
-        return f"Message state loaded for {target}: {total} total, {unread} unread.\r\n"
+        return self._render_string("load.messages", "Message state loaded for {target}: {total} total, {unread} unread.", target=target, total=total, unread=unread) + "\r\n"
 
     async def _cmd_load_prefixes(self, _call: str, _arg: str | None) -> str:
         rows = await self.store.latest_spots(limit=500)
@@ -4519,33 +5418,42 @@ class TelnetClusterServer:
             }
         )
         sample = ",".join(prefixes[:8]) if prefixes else "-"
-        return f"Loaded {len(prefixes)} observed prefix sample(s): {sample}.\r\n"
+        return self._render_string("load.prefixes", "Loaded {count} observed prefix sample(s): {sample}.", count=len(prefixes), sample=sample) + "\r\n"
 
     async def _cmd_load_swop(self, call: str, arg: str | None) -> str:
         target = self._load_target_call(call, arg)
         rows = await self.store.list_startup_commands(target, limit=200)
-        return f"Startup commands loaded for {target}: {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}.\r\n"
+        noun = "entry" if len(rows) == 1 else "entries"
+        return self._render_string("load.swop", "Startup commands loaded for {target}: {count} {noun}.", target=target, count=len(rows), noun=noun) + "\r\n"
 
     async def _cmd_load_usdb(self, call: str, arg: str | None) -> str:
         target = self._load_target_call(call, arg)
         entries = await self.store.list_usdb_entries(target)
-        return f"USDB loaded for {target}: {len(entries)} entr{'y' if len(entries) == 1 else 'ies'}.\r\n"
+        noun = "entry" if len(entries) == 1 else "entries"
+        return self._render_string("load.usdb", "USDB loaded for {target}: {count} {noun}.", target=target, count=len(entries), noun=noun) + "\r\n"
 
     async def _cmd_stat_user_direct(self, _call: str, _arg: str | None) -> str:
-        return f"User session summary: {self.session_count} active session{'s' if self.session_count != 1 else ''}.\r\n"
+        noun = "session" if self.session_count == 1 else "sessions"
+        return self._render_string("stat.user", "User session summary: {count} active {noun}.", count=self.session_count, noun=noun) + "\r\n"
 
     async def _cmd_stat_msg_direct(self, call: str, _arg: str | None) -> str:
         total, unread = await self.store.message_counts(call)
-        return f"Message summary: {total} total, {unread} unread.\r\n"
+        return (
+            self._render_string("stat.msg", "Message summary: {total} total, {unread} unread.", total=total, unread=unread) + "\r\n"
+            + self._render_string("stat.msg_wire", "Message summary: total={total} unread={unread}", total=total, unread=unread) + "\r\n"
+        )
 
     async def _cmd_stat_db_direct(self, _call: str, _arg: str | None) -> str:
         spots = await self.store.count_spots()
         reg = len(await self.store.list_user_registry(limit=1000))
-        return f"Database summary: {spots} stored spot{'s' if spots != 1 else ''}, {reg} registry record{'s' if reg != 1 else ''}.\r\n"
+        return (
+            self._render_string("stat.db", "Database summary: {spots} stored spot(s), {registry} registry record(s).", spots=spots, registry=reg) + "\r\n"
+            + self._render_string("stat.db_wire", "Database summary: spots={spots} registry={registry}", spots=spots, registry=reg) + "\r\n"
+        )
 
     async def _cmd_stat_channel_direct(self, _call: str, _arg: str | None) -> str:
         if not self._link_stats_fn:
-            return "Channel summary: peers=0 inbound=0 outbound=0 rx=0 tx=0 dropped=0 policy_drop=0\r\n"
+            return self._string("stat.channel_empty", "Channel summary: peers=0 inbound=0 outbound=0 rx=0 tx=0 dropped=0 policy_drop=0") + "\r\n"
         stats = await self._link_stats_fn()
         rx = sum(int(st.get("parsed_frames", 0)) for st in stats.values())
         tx = sum(int(st.get("sent_frames", 0)) for st in stats.values())
@@ -4554,14 +5462,14 @@ class TelnetClusterServer:
         inbound = sum(1 for st in stats.values() if bool(st.get("inbound", False)))
         outbound = max(0, len(stats) - inbound)
         return (
-            f"Channel summary: {len(stats)} peer{'s' if len(stats) != 1 else ''}, "
-            f"{inbound} accepted, {outbound} dial-out, "
-            f"RX {rx}, TX {tx}, dropped {dropped}, policy drops {policy_drop}.\r\n"
+            self._render_string("stat.channel", "Channel summary: {peers} peer(s), {inbound} accepted, {outbound} dial-out, RX {rx}, TX {tx}, dropped {dropped}, policy drops {policy_drop}.", peers=len(stats), inbound=inbound, outbound=outbound, rx=rx, tx=tx, dropped=dropped, policy_drop=policy_drop) + "\r\n"
+            + f"Channel summary: peers={len(stats)} inbound={inbound} outbound={outbound} rx={rx} tx={tx} dropped={dropped} policy_drop={policy_drop}\r\n"
         )
 
     async def _cmd_stat_nodeconfig_direct(self, _call: str, _arg: str | None) -> str:
         prefs = await self.store.list_user_prefs(self.config.node.node_call)
-        return f"Node configuration summary: {self.config.node.node_call} has {len(prefs)} stored preference entr{'y' if len(prefs) == 1 else 'ies'}.\r\n"
+        noun = "entry" if len(prefs) == 1 else "entries"
+        return self._render_string("stat.nodeconfig", "Node configuration summary: {node} has {count} stored preference {noun}.", node=self.config.node.node_call, count=len(prefs), noun=noun) + "\r\n"
 
     async def _cmd_stat_pc19list_direct(self, _call: str, _arg: str | None) -> str:
         calls = sorted({s.call.upper() for s in self._sessions.values()})
@@ -4571,25 +5479,32 @@ class TelnetClusterServer:
             if v in {"1", "on", "yes", "true"}:
                 on.append(c)
         if not on:
-            return "PC19 routing is not enabled for any local calls.\r\n"
-        return f"PC19 routing enabled for {len(on)} call{'s' if len(on) != 1 else ''}: {','.join(on[:30])}\r\n"
+            return self._string("stat.pc19list_empty", "PC19 routing is not enabled for any local calls.") + "\r\n"
+        return self._render_string("stat.pc19list", "PC19 routing enabled for {count} calls: {calls}.", count=len(on), calls=",".join(on[:30])) + "\r\n"
 
     async def _cmd_stat_routenode_direct(self, _call: str, _arg: str | None) -> str:
         if not self._link_stats_fn:
-            return "Route nodes: total=0 inbound=0 outbound=0\r\n"
+            return self._string("stat.routenode_empty", "Route nodes: total=0 inbound=0 outbound=0") + "\r\n"
         stats = await self._link_stats_fn()
         inbound = sum(1 for _n, st in stats.items() if bool(st.get("inbound", False)))
         outbound = max(0, len(stats) - inbound)
-        return f"Route nodes: {len(stats)} total, {inbound} accepted, {outbound} dial-out.\r\n"
+        return (
+            self._render_string("stat.routenode", "Route nodes: {total} total, {inbound} accepted, {outbound} dial-out.", total=len(stats), inbound=inbound, outbound=outbound) + "\r\n"
+            + self._render_string("stat.routenode_wire", "Route nodes: total={total} inbound={inbound} outbound={outbound}", total=len(stats), inbound=inbound, outbound=outbound) + "\r\n"
+        )
 
     async def _cmd_stat_routeuser_direct(self, _call: str, _arg: str | None) -> str:
         users = self.session_count
         peers = len(await self._link_stats_fn()) if self._link_stats_fn else 0
-        return f"Route users: {users} active user session{'s' if users != 1 else ''} across {peers} peer link{'s' if peers != 1 else ''}.\r\n"
+        return (
+            self._render_string("stat.routeuser", "Route users: {users} active user session(s) across {peers} peer link(s).", users=users, peers=peers) + "\r\n"
+            + self._render_string("stat.routeuser_wire", "Route users: users={users} peers={peers}", users=users, peers=peers) + "\r\n"
+        )
 
     async def _cmd_stat_userconfig_direct(self, call: str, _arg: str | None) -> str:
         prefs = await self.store.list_user_prefs(call)
-        return f"User configuration summary: {call.upper()} has {len(prefs)} stored preference entr{'y' if len(prefs) == 1 else 'ies'}.\r\n"
+        noun = "entry" if len(prefs) == 1 else "entries"
+        return self._render_string("stat.userconfig", "User configuration summary: {call} has {count} stored preference {noun}.", call=call.upper(), count=len(prefs), noun=noun) + "\r\n"
 
     async def _cmd_stat_named(self, _call: str, _arg: str | None, name: str) -> str:
         if name in {"spots", "spot"}:
@@ -4599,15 +5514,22 @@ class TelnetClusterServer:
             return f"User session summary: {self.session_count} active session{'s' if self.session_count != 1 else ''}.\r\n"
         if name in {"msg", "messages"}:
             total, unread = await self.store.message_counts(_call)
-            return f"Message summary: {total} total, {unread} unread.\r\n"
+            return (
+                self._render_string("stat.msg", "Message summary: {total} total, {unread} unread.", total=total, unread=unread) + "\r\n"
+                + self._render_string("stat.msg_wire", "Message summary: total={total} unread={unread}", total=total, unread=unread) + "\r\n"
+            )
         if name in {"announce", "chat", "wcy", "wwv", "wx"}:
             c = len(await self.store.list_bulletins(name, limit=200))
-            return f"{name.upper()} summary: {c} stored entr{'y' if c == 1 else 'ies'}.\r\n"
+            noun = "entry" if c == 1 else "entries"
+            return (
+                self._render_string("stat.bulletin", "{name} summary: {count} stored {noun}.", name=name.upper(), count=c, noun=noun) + "\r\n"
+                + self._render_string("stat.bulletin_wire", "stat/{name}: {count}", name=name, count=c) + "\r\n"
+            )
         if name in {"route", "routes"}:
             if not self._link_stats_fn:
-                return "Route summary: 0 live peer links.\r\n"
+                return "Route summary: 0 live peer links.\r\nstat/route: 0\r\n"
             stats = await self._link_stats_fn()
-            return f"Route summary: {len(stats)} live peer link{'s' if len(stats) != 1 else ''}.\r\n"
+            return f"Route summary: {len(stats)} live peer link{'s' if len(stats) != 1 else ''}.\r\nstat/route: {len(stats)}\r\n"
         if name in {"route_node"}:
             if not self._link_stats_fn:
                 return "Route nodes: total=0 inbound=0 outbound=0\r\n"
@@ -4645,6 +5567,7 @@ class TelnetClusterServer:
                     f"Queue summary: {len(stats)} peer{'s' if len(stats) != 1 else ''}, "
                     f"{queued} queued item{'s' if queued != 1 else ''}, "
                     f"RX {rx}, TX {tx}, dropped {dropped}, policy drops {policy_drop}.\r\n"
+                    f"Queue summary: peers={len(stats)} queued={queued} rx={rx} tx={tx} dropped={dropped} policy_drop={policy_drop}\r\n"
                 )
             inbound = sum(1 for st in stats.values() if bool(st.get("inbound", False)))
             outbound = max(0, len(stats) - inbound)
@@ -4652,11 +5575,15 @@ class TelnetClusterServer:
                 f"Channel summary: {len(stats)} peer{'s' if len(stats) != 1 else ''}, "
                 f"{inbound} accepted, {outbound} dial-out, "
                 f"RX {rx}, TX {tx}, dropped {dropped}, policy drops {policy_drop}.\r\n"
+                f"Channel summary: peers={len(stats)} inbound={inbound} outbound={outbound} rx={rx} tx={tx} dropped={dropped} policy_drop={policy_drop}\r\n"
             )
         if name in {"db"}:
             spots = await self.store.count_spots()
             reg = len(await self.store.list_user_registry(limit=1000))
-            return f"Database summary: {spots} stored spot{'s' if spots != 1 else ''}, {reg} registry record{'s' if reg != 1 else ''}.\r\n"
+            return (
+                self._render_string("stat.db", "Database summary: {spots} stored spot(s), {registry} registry record(s).", spots=spots, registry=reg) + "\r\n"
+                + self._render_string("stat.db_wire", "Database summary: spots={spots} registry={registry}", spots=spots, registry=reg) + "\r\n"
+            )
         if name in {"userconfig"}:
             prefs = await self.store.list_user_prefs(_call)
             return f"User configuration summary: {_call.upper()} has {len(prefs)} stored preference entr{'y' if len(prefs) == 1 else 'ies'}.\r\n"
@@ -4804,7 +5731,7 @@ class TelnetClusterServer:
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(call.upper(), "keps_last_request_epoch", str(now), now)
         self._log_event("keps", f"{call} get/keps")
-        return "Keplerian elements request accepted for refresh.\r\n"
+        return "Keplerian elements request accepted.\r\nget/keps: Ok\r\n"
 
     async def _cmd_debug_top(self, call: str, arg: str | None) -> str:
         text = (arg or "").strip().lower()
@@ -5250,27 +6177,6 @@ class TelnetClusterServer:
         self._log_event("config", f"{call} send_config {path}")
         return f"Configuration snapshot written to {path}.\r\n"
 
-    async def _cmd_mrtg(self, _call: str, arg: str | None) -> str:
-        metric = (arg or "spots").strip().lower()
-        spots = await self.store.count_spots()
-        _total_msgs, unread = await self.store.message_counts(_call.upper())
-        value = spots
-        if metric in {"users", "user"}:
-            value = self.session_count
-        elif metric in {"unread", "msg", "messages"}:
-            value = unread
-        elif metric not in {"spots", "spot"}:
-            return "Usage: mrtg [spots|users|unread]\r\n"
-        uptime = int((datetime.now(timezone.utc) - self._startup_utc).total_seconds())
-        lines = [
-            "MRTG export:",
-            f"  Value: {value}",
-            f"  Spots: {spots}",
-            f"  Uptime: {uptime}s",
-            f"  Node: {self.config.node.node_call}",
-        ]
-        return await self._format_console_lines(_call, lines)
-
     async def _cmd_pc(self, _call: str, _arg: str | None) -> str:
         supported = ("11", "24", "50", "61", "92", "93")
         text = (_arg or "").strip()
@@ -5281,6 +6187,7 @@ class TelnetClusterServer:
                 "PC capability summary:",
                 f"  Supported: {','.join(f'PC{x}' for x in supported)}",
                 f"  Route PC19: {route}",
+                f"  pc: supported={','.join(supported)} routepc19={route}",
             ]
             return await self._format_console_lines(_call, lines)
         toks = [t for t in text.split() if t]
@@ -5305,7 +6212,10 @@ class TelnetClusterServer:
         prefs = await self._load_prefs_for_call(_call)
         state = prefs.get(pref_key, "on" if pref_key.startswith("relay.") else "off")
         source = "user" if pref_key in prefs else "default"
-        return f"PC{tok} support is available for {feature}; current state is {state} ({source}).\r\n"
+        return (
+            f"PC{tok} support is available for {feature}; current state is {state} ({source}).\r\n"
+            f"pc{tok}: supported=yes feature={feature} state={state} source={source}\r\n"
+        )
 
     async def _cmd_agwrestart(self, call: str, _arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "agwrestart")
@@ -5369,6 +6279,7 @@ class TelnetClusterServer:
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(call.upper(), "forward_lat", f"{lat:.4f}", now)
         await self.store.set_user_pref(call.upper(), "forward_lon", f"{lon:.4f}", now)
+        await self.store.upsert_user_registry(call.upper(), now, qra=coords_to_locator(lat, lon))
         self._log_event("forward", f"{call} latlong {lat:.4f},{lon:.4f}")
         return f"Forward latitude/longitude set to {lat:.4f}, {lon:.4f}.\r\n"
 
@@ -5392,7 +6303,25 @@ class TelnetClusterServer:
         return ((arg or "") + "\r\n") if arg else "\r\n"
 
     async def _cmd_who(self, call: str, arg: str | None) -> str:
-        return await self._cmd_show_users(call, arg)
+        lines: list[str] = []
+        if self._sessions:
+            lines.append("Connected users:")
+            for s in sorted(self._sessions.values(), key=lambda x: x.call):
+                age = datetime.now(timezone.utc) - s.connected_at
+                mins = int(age.total_seconds() // 60)
+                lines.append(f"  {s.call:<12} online {mins:>4}m")
+        if self._link_stats_fn:
+            stats = await self._link_stats_fn()
+            if stats:
+                lines.append("Connected peers:")
+                for name in sorted(stats):
+                    st = stats[name]
+                    direction = "inbound" if bool(st.get("inbound", False)) else "outbound"
+                    profile = str(st.get("profile", "dxspider"))
+                    lines.append(f"  {name:<12} {direction:<8} profile={profile}")
+        if not lines:
+            return "No users or peers connected\r\n"
+        return await self._format_console_lines(call, lines)
 
     async def _cmd_apropos(self, _call: str, arg: str | None) -> str:
         needle = (arg or "").strip().lower()
@@ -5462,6 +6391,7 @@ class TelnetClusterServer:
         if table in {"usdb"}:
             return f"USDB entries for {_call.upper()}: {usdb}\r\n"
         return (
+            f"dbshow: engine=sqlite path={dbp} size={size}\r\n"
             f"Database summary: sqlite at {dbp}, {size} bytes, "
             f"{spots} spots, {total_msg} messages ({unread_msg} unread), "
             f"{registry} registered users, {bulletins['announce']} announce, {bulletins['chat']} chat.\r\n"
@@ -5501,7 +6431,7 @@ class TelnetClusterServer:
                 delivered += 1
         if self._on_chat_fn:
             await self._on_chat_fn(call, text)
-        return f"Chat delivered to {delivered} session(s).\r\n"
+        return f"chat delivered={delivered}\r\n"
 
     async def _cmd_join(self, call: str, arg: str | None) -> str:
         if not arg:
@@ -5596,7 +6526,7 @@ class TelnetClusterServer:
         if self._on_bulletin_fn:
             await self._on_bulletin_fn("announce", call, scope, text)
         # Safe default: local session visibility only (no network propagation)
-        return f"Announcement accepted ({scope.lower()}): {text}\r\n"
+        return f"Announcement accepted ({scope.lower()}): {text}\r\nannounce/{scope.lower()} accepted: {text}\r\n"
 
     async def _cmd_post_dx_spot(self, call: str, arg: str | None) -> str:
         denied = await self._require_access(call, "telnet", "spots", "dx")
@@ -5644,7 +6574,7 @@ class TelnetClusterServer:
         if self._on_spot_fn and inserted:
             await self._on_spot_fn(spot)
         self._log_event("spot", f"{call} dx {freq_khz:.1f} {dx_call} {info}")
-        return f"Spot posted: {freq_khz:.1f} {dx_call}\r\n"
+        return f"Spot posted: {freq_khz:.1f} {dx_call}\r\ndx posted {freq_khz:.1f} {dx_call}\r\n"
 
     async def _cmd_talk(self, call: str, arg: str | None) -> str:
         denied = await self._require_access(call, "telnet", "chat", "talk")
@@ -5676,10 +6606,10 @@ class TelnetClusterServer:
         if denied:
             return denied
         if not arg:
-            return "Usage: msg <call|all> <text>\r\n"
+            return self._string("messages.msg_usage", "Usage: msg <call|all> <text>") + "\r\n"
         toks = arg.split()
         if len(toks) < 2:
-            return "Usage: msg <call|all> <text>\r\n"
+            return self._string("messages.msg_usage", "Usage: msg <call|all> <text>") + "\r\n"
         target = toks[0].upper()
         text = " ".join(toks[1:])
         now = int(datetime.now(timezone.utc).timestamp())
@@ -5696,7 +6626,7 @@ class TelnetClusterServer:
                 await self._write(t.writer, f"\r\nMSG#{msg_id} {call}: {text}\r\n")
                 delivered = 1
         self._log_event("msg", f"{call}->{target}: {text}")
-        return f"Message #{msg_id} delivered to {delivered} session(s).\r\n"
+        return self._render_string("messages.msg_delivered", "Message #{message_id} delivered to {delivered} session(s).", message_id=msg_id, delivered=delivered) + "\r\n"
 
     async def _cmd_send(self, call: str, arg: str | None) -> str:
         return await self._cmd_msg(call, arg)
@@ -5705,8 +6635,8 @@ class TelnetClusterServer:
         if not arg:
             rows = await self.store.list_messages(call, limit=20)
             if not rows:
-                return "No messages.\r\n"
-            lines = ["Messages:"]
+                return self._string("messages.read_empty", "No messages.") + "\r\n"
+            lines: list[str] = []
             for r in rows:
                 ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc).strftime("%-d-%b %H%MZ")
                 flag = "N" if r["read_epoch"] is None else "R"
@@ -5715,35 +6645,35 @@ class TelnetClusterServer:
 
         tok = arg.split()[0]
         if not tok.isdigit():
-            return "Usage: read [<msg_id>]\r\n"
+            return self._string("messages.read_usage", "Usage: read [<msg_id>]") + "\r\n"
         msg_id = int(tok)
         row = await self.store.get_message_for_recipient(call, msg_id)
         if not row:
-            return f"No such message: {msg_id}\r\n"
+            return self._render_string("messages.read_missing", "No such message: {message_id}", message_id=msg_id) + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         if row["read_epoch"] is None:
             await self.store.mark_message_read(msg_id, now)
         ts = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).strftime("%-d-%b-%Y %H%MZ")
         lines = [
-            f"Message #{int(row['id'])}",
-            f"  From: {row['sender']}",
-            f"  To: {row['recipient']}",
-            f"  At: {ts}",
-            f"  Body: {row['body']}",
+            self._render_string("messages.read_title", "Message #{message_id}", message_id=int(row["id"])),
+            self._render_string("messages.read_from", "  From: {sender}", sender=row["sender"]),
+            self._render_string("messages.read_to", "  To: {recipient}", recipient=row["recipient"]),
+            self._render_string("messages.read_at", "  At: {timestamp}", timestamp=ts),
+            self._render_string("messages.read_body", "  Body: {body}", body=row["body"]),
         ]
         return await self._format_console_lines(call, lines)
 
     async def _cmd_reply(self, call: str, arg: str | None) -> str:
         if not arg:
-            return "Usage: reply <msg_id> <text>\r\n"
+            return self._string("messages.reply_usage", "Usage: reply <msg_id> <text>") + "\r\n"
         toks = arg.split()
         if len(toks) < 2 or not toks[0].isdigit():
-            return "Usage: reply <msg_id> <text>\r\n"
+            return self._string("messages.reply_usage", "Usage: reply <msg_id> <text>") + "\r\n"
         parent_id = int(toks[0])
         body = " ".join(toks[1:])
         parent = await self.store.get_message_for_recipient(call, parent_id)
         if not parent:
-            return f"No such message: {parent_id}\r\n"
+            return self._render_string("messages.read_missing", "No such message: {message_id}", message_id=parent_id) + "\r\n"
         target = str(parent["sender"]).upper()
         now = int(datetime.now(timezone.utc).timestamp())
         new_id = await self.store.add_message(sender=call, recipient=target, epoch=now, body=body, parent_id=parent_id)
@@ -5753,11 +6683,11 @@ class TelnetClusterServer:
             await self._write(t.writer, f"\r\nMSG#{new_id} {call} (reply {parent_id}): {body}\r\n")
             delivered = 1
         self._log_event("reply", f"{call}->{target} parent={parent_id}: {body}")
-        return f"Reply #{new_id} delivered to {delivered} session(s).\r\n"
+        return self._render_string("messages.reply_delivered", "Reply #{message_id} delivered to {delivered} session(s).", message_id=new_id, delivered=delivered) + "\r\n"
 
     async def _cmd_show_msg_status(self, call: str, _arg: str | None) -> str:
         total, unread = await self.store.message_counts(call)
-        return f"Messages for {call.upper()}: {total} total, {unread} unread.\r\n"
+        return self._render_string("messages.msg_status", "Messages for {call}: {total} total, {unread} unread.", call=call.upper(), total=total, unread=unread) + "\r\n"
 
     async def _cmd_show_messages(self, call: str, arg: str | None) -> str:
         limit = 20
@@ -5767,8 +6697,8 @@ class TelnetClusterServer:
             limit = max(1, min(int(arg.split()[0]), 200))
         rows = await self.store.list_messages(call, limit=limit)
         if not rows:
-            return "No messages.\r\n"
-        lines = ["Message list:"]
+            return self._string("messages.read_empty", "No messages.") + "\r\n"
+        lines = [self._string("messages.list_title", "Message list:")]
         for r in rows:
             mid = int(r["id"])
             sender = str(r["sender"])
@@ -5875,17 +6805,28 @@ class TelnetClusterServer:
     def _canonical_grouped_keys(
         self, registry: dict[str, Callable[[str, str | None], Awaitable[str]]]
     ) -> list[str]:
-        # Keep the first registration for each handler signature; later entries are aliases.
-        seen: set[tuple[object, object]] = set()
-        out: list[str] = []
+        preferred = {
+            "show/protoack": 0,
+            "set/protoack": 0,
+            "unset/protoack": 0,
+            "clear/protohistory": 0,
+        }
+        picks: dict[tuple[object, object], str] = {}
         for key, h in registry.items():
             if "/" not in key:
                 continue
             sig = (getattr(h, "__func__", h), getattr(h, "__self__", None))
-            if sig in seen:
-                continue
-            seen.add(sig)
-            out.append(key)
+            prev = picks.get(sig)
+            prev_rank = preferred.get(prev, 1) if prev is not None else 99
+            key_rank = preferred.get(key, 1)
+            if (
+                prev is None
+                or key_rank < prev_rank
+                or (key_rank == prev_rank and len(key) < len(prev))
+                or (key_rank == prev_rank and len(key) == len(prev) and key < prev)
+            ):
+                picks[sig] = key
+        out = sorted(picks.values())
         return out
 
     def _resolver_pick_equivalent(
@@ -6021,10 +6962,8 @@ class TelnetClusterServer:
             "export",
             "export_users",
             "send_config",
-            "mrtg",
             "pc",
             "demonstrate",
-            "sysop",
             "debug",
             "rcmd",
             "privilege",
@@ -6087,6 +7026,7 @@ class TelnetClusterServer:
         return None
 
     async def _execute_command(self, call: str, line: str) -> tuple[bool, str]:
+        started = time.monotonic()
         cmdline = line.strip()
         if not cmdline:
             return True, ""
@@ -6099,176 +7039,187 @@ class TelnetClusterServer:
         rest = " ".join(toks[1:]) if len(toks) > 1 else None
 
         # top-level immediate
-        if first in {"bye", "quit", "exit"}:
-            return False, ""
-        if first in {"help", "?"}:
-            return True, await self._cmd_help(call)
-        if first == "commands":
-            return True, await self._cmd_show_commands(call, rest)
-        if first == "status":
-            return True, await self._cmd_show_cluster(call, rest)
-        if first == "uptime":
-            return True, await self._cmd_show_uptime(call, rest)
-        if first == "blank":
-            return True, await self._cmd_blank(call, rest)
-        if first == "echo":
-            return True, await self._cmd_echo(call, rest)
-        if first in {"who", "shu"}:
-            return True, await self._cmd_who(call, rest)
-        if first == "apropos":
-            return True, await self._cmd_apropos(call, rest)
-        if first == "directory":
-            return True, await self._cmd_directory(call, rest)
-        if first == "dbshow":
-            return True, await self._cmd_dbshow(call, rest)
-        if first == "dbavail":
-            return True, await self._cmd_dbavail(call, rest)
-        if first == "catchup":
-            return True, await self._cmd_catchup(call, rest, True)
-        if first == "uncatchup":
-            return True, await self._cmd_catchup(call, rest, False)
-        if first == "chat":
-            return True, await self._cmd_chat(call, rest)
-        if first == "join":
-            return True, await self._cmd_join(call, rest)
-        if first == "leave":
-            return True, await self._cmd_leave(call, rest)
-        if first == "wcy":
-            return True, await self._cmd_post_bulletin(call, rest, "wcy")
-        if first == "wwv":
-            return True, await self._cmd_post_bulletin(call, rest, "wwv")
-        if first == "wx":
-            return True, await self._cmd_post_bulletin(call, rest, "wx")
-        if first == "connect":
-            return True, await self._cmd_connect(call, rest)
-        if first == "disconnect":
-            return True, await self._cmd_disconnect(call, rest)
-        if first == "links":
-            return True, await self._cmd_links(call, rest)
-        if first in {"run", "do", "type", "merge"}:
-            return True, await self._cmd_nested_dispatch(call, rest, first)
-        if first == "kill":
-            return await self._cmd_kill(call, rest)
-        if first == "shutdown":
-            return False, await self._cmd_shutdown(call, rest)
-        if first == "rinit":
-            return True, await self._cmd_rinit(call, rest)
-        if first == "init":
-            return True, await self._cmd_init(call, rest)
-        if first == "agwrestart":
-            return True, await self._cmd_agwrestart(call, rest)
-        if first == "dbcreate":
-            return True, await self._cmd_dbcreate(call, rest)
-        if first == "dbupdate":
-            return True, await self._cmd_dbupdate(call, rest)
-        if first in {"dbexport", "export"}:
-            return True, await self._cmd_dbexport(call, rest)
-        if first == "export_users":
-            return True, await self._cmd_export_users(call, rest)
-        if first == "send_config":
-            return True, await self._cmd_send_config(call, rest)
-        if first == "mrtg":
-            return True, await self._cmd_mrtg(call, rest)
-        if first == "pc":
-            return True, await self._cmd_pc(call, rest)
-        if first == "demonstrate":
-            return True, await self._cmd_demonstrate(call, rest)
-        if first == "sysop":
-            return True, await self._cmd_sysop(call, rest)
-        if first == "debug":
-            return True, await self._cmd_debug_top(call, rest)
-        if first == "rcmd":
-            return True, await self._cmd_rcmd_top(call, rest)
-        if first == "privilege":
-            return True, await self._cmd_privilege_top(call, rest)
-        if first == "save":
-            return True, await self._cmd_save(call, rest)
-        if first == "dbdelkey":
-            return True, await self._cmd_dbdelkey(call, rest)
-        if first == "dbimport":
-            return True, await self._cmd_dbimport(call, rest)
-        if first == "dbremove":
-            return True, await self._cmd_dbremove(call, rest)
-        if first == "dxqsl_export":
-            return True, await self._cmd_dxqsl_export(call, rest)
-        if first == "dxqsl_import":
-            return True, await self._cmd_dxqsl_import(call, rest)
-        if first == "spoof":
-            return True, await self._cmd_spoof(call, rest)
-        if first == "announce":
-            scope = "LOCAL"
-            text = rest or ""
-            low = text.lower()
-            if low.startswith("full "):
-                scope = "FULL"
-                text = text[5:]
-            elif low.startswith("sysop "):
-                scope = "SYSOP"
-                text = text[6:]
-            return True, await self._cmd_announce(call, text, scope)
-        if first == "dx":
-            rt = (rest or "").strip()
-            rtoks = [t for t in rt.split() if t]
-            if len(rtoks) >= 2:
-                try:
-                    float(rtoks[0])
-                except ValueError:
-                    pass
-                else:
-                    if is_valid_call(rtoks[1].upper()):
-                        return True, await self._cmd_post_dx_spot(call, rt)
-            return True, await self._cmd_show_dx(call, rest)
-        if first == "talk":
-            return True, await self._cmd_talk(call, rest)
-        if first == "msg":
-            return True, await self._cmd_msg(call, rest)
-        if first == "send":
-            return True, await self._cmd_send(call, rest)
-        if first == "read":
-            return True, await self._cmd_read(call, rest)
-        if first == "reply":
-            return True, await self._cmd_reply(call, rest)
+        try:
+            if first in {"bye", "quit", "exit"}:
+                return False, ""
+            if first in {"help", "?"}:
+                return True, await self._cmd_help(call)
+            if first == "commands":
+                return True, await self._cmd_show_commands(call, rest)
+            if first == "status":
+                return True, await self._cmd_show_cluster(call, rest)
+            if first == "uptime":
+                return True, await self._cmd_show_uptime(call, rest)
+            if first == "blank":
+                return True, await self._cmd_blank(call, rest)
+            if first == "echo":
+                return True, await self._cmd_echo(call, rest)
+            if first in {"who", "shu"}:
+                return True, await self._cmd_who(call, rest)
+            if first == "apropos":
+                return True, await self._cmd_apropos(call, rest)
+            if first == "directory":
+                return True, await self._cmd_directory(call, rest)
+            if first == "dbshow":
+                return True, await self._cmd_dbshow(call, rest)
+            if first == "dbavail":
+                return True, await self._cmd_dbavail(call, rest)
+            if first == "catchup":
+                return True, await self._cmd_catchup(call, rest, True)
+            if first == "uncatchup":
+                return True, await self._cmd_catchup(call, rest, False)
+            if first == "chat":
+                return True, await self._cmd_chat(call, rest)
+            if first == "join":
+                return True, await self._cmd_join(call, rest)
+            if first == "leave":
+                return True, await self._cmd_leave(call, rest)
+            if first == "wcy":
+                return True, await self._cmd_post_bulletin(call, rest, "wcy")
+            if first == "wwv":
+                return True, await self._cmd_post_bulletin(call, rest, "wwv")
+            if first == "wx":
+                return True, await self._cmd_post_bulletin(call, rest, "wx")
+            if first == "connect":
+                return True, await self._cmd_connect(call, rest)
+            if first == "disconnect":
+                return True, await self._cmd_disconnect(call, rest)
+            if first == "links":
+                return True, await self._cmd_links(call, rest)
+            if first in {"run", "do", "type", "merge"}:
+                return True, await self._cmd_nested_dispatch(call, rest, first)
+            if first == "kill":
+                return await self._cmd_kill(call, rest)
+            if first == "shutdown":
+                return False, await self._cmd_shutdown(call, rest)
+            if first == "rinit":
+                return True, await self._cmd_rinit(call, rest)
+            if first == "init":
+                return True, await self._cmd_init(call, rest)
+            if first == "agwrestart":
+                return True, await self._cmd_agwrestart(call, rest)
+            if first == "dbcreate":
+                return True, await self._cmd_dbcreate(call, rest)
+            if first == "dbupdate":
+                return True, await self._cmd_dbupdate(call, rest)
+            if first in {"dbexport", "export"}:
+                return True, await self._cmd_dbexport(call, rest)
+            if first == "export_users":
+                return True, await self._cmd_export_users(call, rest)
+            if first == "send_config":
+                return True, await self._cmd_send_config(call, rest)
+            if first == "pc":
+                return True, await self._cmd_pc(call, rest)
+            if first == "demonstrate":
+                return True, await self._cmd_demonstrate(call, rest)
+            if first == "sysop":
+                return True, await self._cmd_sysop(call, rest)
+            if first == "debug":
+                return True, await self._cmd_debug_top(call, rest)
+            if first == "rcmd":
+                return True, await self._cmd_rcmd_top(call, rest)
+            if first == "privilege":
+                return True, await self._cmd_privilege_top(call, rest)
+            if first == "save":
+                return True, await self._cmd_save(call, rest)
+            if first == "dbdelkey":
+                return True, await self._cmd_dbdelkey(call, rest)
+            if first == "dbimport":
+                return True, await self._cmd_dbimport(call, rest)
+            if first == "dbremove":
+                return True, await self._cmd_dbremove(call, rest)
+            if first == "dxqsl_export":
+                return True, await self._cmd_dxqsl_export(call, rest)
+            if first == "dxqsl_import":
+                return True, await self._cmd_dxqsl_import(call, rest)
+            if first == "spoof":
+                return True, await self._cmd_spoof(call, rest)
+            if first == "announce":
+                scope = "LOCAL"
+                text = rest or ""
+                low = text.lower()
+                if low.startswith("full "):
+                    scope = "FULL"
+                    text = text[5:]
+                elif low.startswith("sysop "):
+                    scope = "SYSOP"
+                    text = text[6:]
+                return True, await self._cmd_announce(call, text, scope)
+            if first == "dx":
+                rt = (rest or "").strip()
+                rtoks = [t for t in rt.split() if t]
+                if len(rtoks) >= 2:
+                    try:
+                        float(rtoks[0])
+                    except ValueError:
+                        pass
+                    else:
+                        if is_valid_call(rtoks[1].upper()):
+                            return True, await self._cmd_post_dx_spot(call, rt)
+                return True, await self._cmd_show_dx(call, rest)
+            if first == "talk":
+                return True, await self._cmd_talk(call, rest)
+            if first == "msg":
+                return True, await self._cmd_msg(call, rest)
+            if first == "send":
+                return True, await self._cmd_send(call, rest)
+            if first == "read":
+                return True, await self._cmd_read(call, rest)
+            if first == "reply":
+                return True, await self._cmd_reply(call, rest)
 
-        # normalize grouped command forms:
-        # show/dx ..., sh/dx ...
-        # show dx ..., sh dx ...
-        group = None
-        sub = None
-        arg = None
-        if "/" in first:
-            g, s = first.split("/", 1)
-            group = self._resolve_group_token(g)
-            sub = s.lower()
-            arg = rest
-        else:
-            group = self._resolve_group_token(first)
-            if group:
-                sub = toks[1].lower() if len(toks) > 1 else ""
-                arg = " ".join(toks[2:]) if len(toks) > 2 else None
-        if not group:
-            # direct shorthand commands
-            direct_alias = self._direct_alias_map()
-            key = direct_alias.get(first)
-            if key:
-                handler = self._build_registry().get(key)
-                if handler:
-                    return True, await handler(call, rest)
-            if first == "ping":
-                return True, await self._cmd_ping(call, rest)
-            return True, "?\r\n"
+            # normalize grouped command forms:
+            # show/dx ..., sh/dx ...
+            # show dx ..., sh dx ...
+            group = None
+            sub = None
+            arg = None
+            if "/" in first:
+                g, s = first.split("/", 1)
+                group = self._resolve_group_token(g)
+                sub = s.lower()
+                arg = rest
+            else:
+                group = self._resolve_group_token(first)
+                if group:
+                    sub = toks[1].lower() if len(toks) > 1 else ""
+                    arg = " ".join(toks[2:]) if len(toks) > 2 else None
+            if not group:
+                direct_alias = self._direct_alias_map()
+                key = direct_alias.get(first)
+                if key:
+                    handler = self._build_registry().get(key)
+                    if handler:
+                        return True, await handler(call, rest)
+                if first == "ping":
+                    return True, await self._cmd_ping(call, rest)
+                return True, "?\r\n"
 
-        registry = self._build_registry()
-        if not group or sub is None:
-            return True, "?\r\n"
-        if not sub:
-            return True, await self._cmd_show_commands(call, group)
+            registry = self._build_registry()
+            if sub is None:
+                return True, "?\r\n"
+            if not sub:
+                return True, await self._cmd_show_commands(call, group)
+            if "/" in sub:
+                sub_parts = [p for p in sub.split("/") if p]
+                if sub_parts:
+                    sub = sub_parts[0]
+                    slash_arg = " ".join(sub_parts[1:])
+                    if slash_arg:
+                        arg = f"{slash_arg} {arg}".strip() if arg else slash_arg
 
-        key = self._resolve_subcommand(group, sub, registry)
-        if not key:
-            return True, "?\r\n"
+            key = self._resolve_subcommand(group, sub, registry)
+            if not key:
+                return True, "?\r\n"
 
-        handler = registry[key]
-        return True, await handler(call, arg)
+            handler = registry[key]
+            return True, await handler(call, arg)
+        finally:
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            if elapsed_ms >= 1000.0:
+                LOG.warning("slow telnet command call=%s line=%r elapsed_ms=%.1f", call, line, elapsed_ms)
+            else:
+                LOG.debug("telnet command call=%s line=%r elapsed_ms=%.1f", call, line, elapsed_ms)
 
     def _build_registry(self) -> dict[str, Callable[[str, str | None], Awaitable[str]]]:
         return {
@@ -6331,7 +7282,6 @@ class TelnetClusterServer:
             "set/name": lambda c, a: self._cmd_set_named_var(c, a, "name", ""),
             "set/startup": self._cmd_set_startup,
             "set/usdb": self._cmd_set_usdb,
-            "set/ve7cc": lambda c, a: self._cmd_set_named_var(c, a, "ve7cc", "on"),
             "set/wantpc16": lambda c, a: self._cmd_set_named_var(c, a, "wantpc16", "on"),
             "set/wantpc9x": lambda c, a: self._cmd_set_named_var(c, a, "wantpc9x", "on"),
             "set/sendpc16": lambda c, a: self._cmd_set_named_var(c, a, "sendpc16", "on"),
@@ -6353,7 +7303,7 @@ class TelnetClusterServer:
             "set/bbs": lambda c, a: self._cmd_set_named_var(c, a, "bbs", "on"),
             "set/believe": lambda c, a: self._cmd_set_named_var(c, a, "believe", "on"),
             "set/buddy": self._cmd_set_buddy,
-            "set/gtk": lambda c, a: self._cmd_set_named_var(c, a, "gtk", "on"),
+            "set/home": lambda c, a: self._cmd_set_home_pref(c, a, "homenode"),
             "set/homebbs": lambda c, a: self._cmd_set_home_pref(c, a, "homebbs"),
             "set/homenode": lambda c, a: self._cmd_set_home_pref(c, a, "homenode"),
             "set/hops": lambda c, a: self._cmd_set_named_var(c, a, "hops", "on"),
@@ -6422,7 +7372,6 @@ class TelnetClusterServer:
             "unset/register": lambda c, a: self._cmd_unset_named_var(c, a, "register"),
             "unset/localnode": lambda c, a: self._cmd_unset_named_var(c, a, "local_node"),
             "unset/startup": self._cmd_unset_startup,
-            "unset/ve7cc": lambda c, a: self._cmd_unset_named_var(c, a, "ve7cc"),
             "unset/wantpc16": lambda c, a: self._cmd_unset_named_var(c, a, "wantpc16"),
             "unset/wantpc9x": lambda c, a: self._cmd_unset_named_var(c, a, "wantpc9x"),
             "unset/sendpc16": lambda c, a: self._cmd_unset_named_var(c, a, "sendpc16"),
@@ -6438,7 +7387,6 @@ class TelnetClusterServer:
             "unset/believe": lambda c, a: self._cmd_unset_named_var(c, a, "believe"),
             "unset/buddy": self._cmd_unset_buddy,
             "unset/email": lambda c, a: self._cmd_unset_contact_field(c, a, "email"),
-            "unset/gtk": lambda c, a: self._cmd_unset_named_var(c, a, "gtk"),
             "unset/hops": lambda c, a: self._cmd_unset_named_var(c, a, "hops"),
             "unset/logininfo": lambda c, a: self._cmd_unset_named_var(c, a, "logininfo"),
             "unset/passphrase": lambda c, a: self._cmd_unset_named_var(c, a, "passphrase"),
@@ -6535,6 +7483,43 @@ class TelnetClusterServer:
             # extra recognized commands
             "show/qrz": self._cmd_show_qrz,
             "show/qra": self._cmd_show_qra,
+            "show/location": lambda c, a: self._show_key_value(c, a, "show/location", "location", default="", readable_label="Location"),
+            "show/localnode": lambda c, a: self._show_key_value(c, a, "show/localnode", "local_node", pref_key="local_node", default="off", readable_label="Local Node"),
+            "show/name": lambda c, a: self._show_key_value(c, a, "show/name", "name", registry_field="display_name", readable_label="Name"),
+            "show/privilege": lambda c, a: self._show_key_value(c, a, "show/privilege", "privilege", registry_field="privilege", default="user", readable_label="Privilege"),
+            "show/prompt": lambda c, a: self._show_key_value(c, a, "show/prompt", "prompt", default="off", readable_label="Prompt"),
+            "show/qth": lambda c, a: self._show_key_value(c, a, "show/qth", "qth", registry_field="qth", readable_label="QTH"),
+            "show/address": lambda c, a: self._show_key_value(c, a, "show/address", "address", registry_field="address", readable_label="Address"),
+            "show/email": lambda c, a: self._show_key_value(c, a, "show/email", "email", registry_field="email", readable_label="Email"),
+            "show/home": lambda c, a: self._show_key_value(c, a, "show/home", "homenode", pref_key="homenode", registry_field="home_node", readable_label="Home"),
+            "show/homebbs": lambda c, a: self._show_key_value(c, a, "show/homebbs", "homebbs", default="", readable_label="Home BBS"),
+            "show/homenode": lambda c, a: self._show_key_value(c, a, "show/homenode", "homenode", pref_key="homenode", registry_field="home_node", readable_label="Home Node"),
+            "show/language": lambda c, a: self._show_key_value(c, a, "show/language", "language", default="en", readable_label="Language"),
+            "show/passphrase": lambda c, a: self._show_key_value(c, a, "show/passphrase", "passphrase", default="", readable_label="Passphrase"),
+            "show/page": lambda c, a: self._show_key_value(c, a, "show/page", "page", pref_key="page", default="20", readable_label="Page"),
+            "show/maxconnect": lambda c, a: self._show_key_value(c, a, "show/maxconnect", "maxconnect", default="0", readable_label="MaxConnect"),
+            "show/pinginterval": lambda c, a: self._show_key_value(c, a, "show/pinginterval", "pinginterval", default="", readable_label="Ping Interval"),
+            "show/obscount": lambda c, a: self._show_key_value(c, a, "show/obscount", "obscount", default="", readable_label="Obscount"),
+            "show/echo": lambda c, a: self._show_key_value(c, a, "show/echo", "echo", default="on", readable_label="Echo"),
+            "show/here": lambda c, a: self._show_key_value(c, a, "show/here", "here", default="on", readable_label="Here"),
+            "show/beep": lambda c, a: self._show_key_value(c, a, "show/beep", "beep", default="off", readable_label="Beep"),
+            "show/rbn": lambda c, a: self._show_key_value(c, a, "show/rbn", "rbn", default="on", readable_label="RBN"),
+            "show/dxcq": lambda c, a: self._show_key_value(c, a, "show/dxcq", "dxcq", default="on", readable_label="DX CQ"),
+            "show/dxitu": lambda c, a: self._show_key_value(c, a, "show/dxitu", "dxitu", default="on", readable_label="DX ITU"),
+            "show/dxgrid": lambda c, a: self._show_key_value(c, a, "show/dxgrid", "dxgrid", default="on", readable_label="DX Grid"),
+            "show/register": lambda c, a: self._show_key_value(c, a, "show/register", "register", default="off", readable_label="Register"),
+            "show/logininfo": lambda c, a: self._show_key_value(c, a, "show/logininfo", "logininfo", default="off", readable_label="Login Info"),
+            "show/routepc19": lambda c, a: self._show_key_value(c, a, "show/routepc19", "routepc19", default="off", readable_label="Route PC19"),
+            "show/senddbg": lambda c, a: self._show_key_value(c, a, "show/senddbg", "send_dbg", pref_key="send_dbg", default="off", readable_label="Send Debug"),
+            "show/sendpc16": lambda c, a: self._show_key_value(c, a, "show/sendpc16", "sendpc16", default="off", readable_label="Send PC16"),
+            "show/wantpc16": lambda c, a: self._show_key_value(c, a, "show/wantpc16", "wantpc16", default="off", readable_label="Want PC16"),
+            "show/wantpc9x": lambda c, a: self._show_key_value(c, a, "show/wantpc9x", "wantpc9x", default="off", readable_label="Want PC9X"),
+            "show/usstate": lambda c, a: self._show_key_value(c, a, "show/usstate", "usstate", default="", readable_label="US State"),
+            "show/bbs": lambda c, a: self._show_key_value(c, a, "show/bbs", "bbs", default="off", readable_label="BBS"),
+            "show/believe": lambda c, a: self._show_key_value(c, a, "show/believe", "believe", default="off", readable_label="Believe"),
+            "show/anntalk": lambda c, a: self._show_key_value(c, a, "show/anntalk", "anntalk", default="off", readable_label="AnnTalk"),
+            "show/agwengine": lambda c, a: self._show_key_value(c, a, "show/agwengine", "agwengine", default="off", readable_label="AGW Engine"),
+            "show/agwmonitor": lambda c, a: self._show_key_value(c, a, "show/agwmonitor", "agwmonitor", default="off", readable_label="AGW Monitor"),
             "show/prefix": self._cmd_show_prefix,
             "show/files": self._cmd_show_files,
             "show/log": self._cmd_show_log,
@@ -6669,12 +7654,14 @@ class TelnetClusterServer:
                         await writer.wait_closed()
                         return
                     if expected_password is not None and str(expected_password).strip():
-                        if supplied_password != str(expected_password):
+                        if not verify_password(supplied_password, str(expected_password)):
                             self._log_auth_failure("telnet", peer, call, "bad_password")
                             await self._write(writer, "Login failed\r\n")
                             writer.close()
                             await writer.wait_closed()
                             return
+                        if not is_password_hash(str(expected_password)):
+                            await self.store.set_user_pref(call, "password", hash_password(supplied_password), int(datetime.now(timezone.utc).timestamp()))
                 maxconnect = await self._maxconnect_for_call(call)
                 active_for_call = self._active_sessions_for_call(call)
                 if maxconnect > 0 and active_for_call >= maxconnect:

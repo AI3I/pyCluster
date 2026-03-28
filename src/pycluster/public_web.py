@@ -17,13 +17,35 @@ import xml.etree.ElementTree as ET
 
 from . import __version__
 from .auth_logging import log_auth_failure
+from .access_policy import default_access_allowed
+from .auth import hash_password, is_password_hash, verify_password
 from .config import AppConfig, node_presentation_defaults
 from .ctydat import load_cty, lookup
-from .models import Spot, is_valid_call, normalize_call
+from .geocode import estimate_location_from_locator, resolve_location_to_coords
+from .maidenhead import coords_to_locator, extract_locator
+from .models import Spot, display_call, is_valid_call, normalize_call
 from .store import SpotStore
 
 
 LOG = logging.getLogger(__name__)
+_CONFIG_AUTH_NODE_FIELDS = {
+    "node_call",
+    "node_alias",
+    "owner_name",
+    "qth",
+    "node_locator",
+    "branding_name",
+    "welcome_title",
+    "welcome_body",
+    "login_tip",
+    "show_status_after_login",
+    "require_password",
+    "support_contact",
+    "website_url",
+    "motd",
+    "prompt_template",
+    "telnet_ports",
+}
 
 _MODE_ORDER = ["CW", "WSPR", "RTTY", "FT8", "FT4", "FT2", "JS8", "JT9", "JT65", "SSB", "AM", "FM", "PSK"]
 
@@ -153,8 +175,11 @@ class PublicWebServer:
 
     async def _branding(self) -> dict[str, object]:
         data = node_presentation_defaults(self.config.node)
-        data.update(await self.store.list_user_prefs(self.config.node.node_call))
-        node_call = str(data.get("node_call", self.config.node.node_call)).strip() or self.config.node.node_call
+        prefs = await self.store.list_user_prefs(self.config.node.node_call)
+        for key in _CONFIG_AUTH_NODE_FIELDS:
+            prefs.pop(key, None)
+        data.update(prefs)
+        node_call = self.config.node.node_call
         node_alias = str(data.get("node_alias", self.config.node.node_alias)).strip() or self.config.node.node_alias
         qth = str(data.get("qth", self.config.node.qth)).strip()
         node_locator = str(data.get("node_locator", self.config.node.node_locator)).strip().upper()
@@ -162,9 +187,7 @@ class PublicWebServer:
         branding_name = str(data.get("branding_name", self.config.node.branding_name)).strip() or "pyCluster"
         support_contact = str(data.get("support_contact", self.config.node.support_contact)).strip()
         website_url = str(data.get("website_url", self.config.node.website_url)).strip()
-        telnet_ports = str(data.get("telnet_ports", "")).strip()
-        if not telnet_ports:
-            telnet_ports = ",".join(str(p) for p in (self.config.telnet.ports or (self.config.telnet.port,)))
+        telnet_ports = ",".join(str(p) for p in (self.config.telnet.ports or (self.config.telnet.port,)))
         title = f"{node_alias or node_call} {branding_name}".strip()
         title_suffix = f" - {qth}" if qth else ""
         footer_primary = f"Node {node_call}"
@@ -289,8 +312,21 @@ class PublicWebServer:
     def _access_pref_key(self, channel: str, capability: str) -> str:
         return f"access.{channel}.{capability}"
 
-    def _access_default(self, channel: str, capability: str) -> bool:
-        return True
+    async def _access_subject(self, call: str) -> tuple[str, bool]:
+        target = call.upper()
+        base = target.split("-", 1)[0]
+        blocked_login = False
+        privilege = ""
+        for candidate in (target, base):
+            raw_block = await self.store.get_user_pref(candidate, "blocked_login")
+            if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
+                blocked_login = True
+            row = await self.store.get_user_registry(candidate)
+            if row and not privilege:
+                privilege = str(row["privilege"] or "").strip().lower()
+            if not privilege:
+                privilege = str(await self.store.get_user_pref(candidate, "privilege") or "").strip().lower()
+        return privilege, blocked_login
 
     async def _access_snapshot(self, call: str, channel: str) -> dict[str, bool]:
         caps = ["login", "spots", "chat", "announce", "wx", "wcy", "wwv"]
@@ -307,7 +343,8 @@ class PublicWebServer:
             if raw is None or str(raw).strip() == "":
                 continue
             return self._is_on_value(str(raw))
-        return self._access_default(channel, capability)
+        privilege, blocked_login = await self._access_subject(call)
+        return default_access_allowed(privilege, blocked_login, channel, capability)
 
     def _parse_json_body(self, body: bytes) -> dict[str, object]:
         if not body:
@@ -427,7 +464,7 @@ class PublicWebServer:
         freq = float(row["freq_khz"])
         comment = str(row["info"] or "")
         dx_call = str(row["dx_call"] or "")
-        spotter = str(row["spotter"] or "")
+        spotter = display_call(str(row["spotter"] or ""))
         stamp = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).isoformat()
         dx_ent = lookup(dx_call) if self._cty_loaded else None
         sp_ent = lookup(spotter) if self._cty_loaded else None
@@ -541,7 +578,7 @@ class PublicWebServer:
         by_hour: dict[int, int] = {}
         band_hour: dict[tuple[str, int], int] = {}
         for row in payload:
-            spotter = str(row["spotter"])
+            spotter = display_call(str(row["spotter"]))
             dx_call = str(row["dx_call"])
             ent = str(row["dx_entity"])
             cont = str(row["dx_continent"])
@@ -850,15 +887,22 @@ class PublicWebServer:
                     self._log_auth_failure(writer, headers, "public-web", call, "invalid_callsign")
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
+                _privilege, blocked_login = await self._access_subject(call)
+                if blocked_login:
+                    self._log_auth_failure(writer, headers, "public-web", call, "blocked_login")
+                    await self._write_response(writer, 403, self._json({"error": "login blocked"}))
+                    return
                 if not await self._access_allowed(call, "web", "login"):
                     self._log_auth_failure(writer, headers, "public-web", call, "web_login_not_allowed")
                     await self._write_response(writer, 403, self._json({"error": "web login not allowed"}))
                     return
                 expected = await self.store.get_user_pref(call, "password")
-                if expected is None or not str(expected).strip() or password != str(expected):
+                if expected is None or not str(expected).strip() or not verify_password(password, str(expected)):
                     self._log_auth_failure(writer, headers, "public-web", call, "invalid_credentials")
                     await self._write_response(writer, 401, self._json({"error": "invalid credentials"}))
                     return
+                if not is_password_hash(str(expected)):
+                    await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
                 token, exp = self._issue_web_token(call)
                 access = await self._access_snapshot(call, "web")
                 profile = await self._web_profile_snapshot(call)
@@ -930,6 +974,14 @@ class PublicWebServer:
                 qra = str(payload.get("qra", "")).strip().upper()[:16]
                 homenode = normalize_call(str(payload.get("homenode", "")).strip())[:16]
                 now = int(time.time())
+                if qth:
+                    coords = resolve_location_to_coords(qth)
+                    if coords is not None:
+                        qra = coords_to_locator(*coords)
+                elif qra:
+                    qra = extract_locator(qra)
+                    if qra:
+                        qth = estimate_location_from_locator(qra).strip()[:80]
                 await self.store.upsert_user_registry(
                     call,
                     now,

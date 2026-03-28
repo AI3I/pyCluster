@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+import json
 import tomllib
 
 
@@ -47,7 +48,7 @@ class NodeConfig:
     require_password: bool = True
     support_contact: str = ""
     website_url: str = ""
-    prompt_template: str = "{node}{suffix}[{timestamp}] "
+    prompt_template: str = "[{timestamp}] {node}{suffix}"
 
 
 @dataclass(slots=True)
@@ -128,3 +129,40 @@ def load_config(path: str | Path) -> AppConfig:
     store = StoreConfig(**_load_section(data, "store"))
 
     return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store)
+
+
+def _toml_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    raise TypeError(f"unsupported TOML value type: {type(value)!r}")
+
+
+def dump_config(config: AppConfig) -> str:
+    data = {
+        "node": asdict(config.node),
+        "telnet": asdict(config.telnet),
+        "web": asdict(config.web),
+        "public_web": asdict(config.public_web),
+        "store": asdict(config.store),
+    }
+    lines: list[str] = []
+    for section in ("node", "telnet", "web", "public_web", "store"):
+        lines.append(f"[{section}]")
+        for key, value in data[section].items():
+            lines.append(f"{key} = {_toml_value(value)}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def save_config(path: str | Path, config: AppConfig) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(dump_config(config), encoding="utf-8")

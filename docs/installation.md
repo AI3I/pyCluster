@@ -103,12 +103,20 @@ This installs:
 - logrotate policy for `/var/log/pycluster/authfail.log`
 - an initial `SYSOP` account bootstrap note at `/root/pycluster-initial-sysop.txt`
 
+During install and repair, pyCluster now prints the bootstrap `SYSOP` credentials prominently in the terminal, saves the same note to `/root/pycluster-initial-sysop.txt`, and pauses interactive installs until the operator explicitly acknowledges that the credentials were reviewed.
+
 ## Upgrade
 
 ```bash
 sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
+
+For the `1.0.0` to `1.0.1` upgrade path, `deploy/upgrade.sh` now also:
+
+- hashes any legacy plaintext passwords still stored in the local SQLite `user_prefs` table
+- seeds `config/strings.toml` if it is missing
+- preserves the existing `config/pycluster.toml`, data, and logs in place
 
 ## Repair
 
@@ -162,6 +170,8 @@ sudo ls -l /root/pycluster-initial-sysop.txt
 ```
 
 That file contains the one-time generated `SYSOP` password for first web-based operator login.
+
+If the install is interactive, the deploy script now stops and requires `READ` confirmation before it continues past the bootstrap credential notice.
 
 ## Retention and Cleanup
 

@@ -27,6 +27,13 @@ def normalize_call(value: str) -> str:
     return value.strip().upper()
 
 
+def display_call(value: str) -> str:
+    call = normalize_call(value)
+    if "-" in call:
+        return call.split("-", 1)[0]
+    return call
+
+
 def is_valid_call(value: str) -> bool:
     call = normalize_call(value)
     if not CALL_RE.match(call):

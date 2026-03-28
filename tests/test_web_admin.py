@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import tomllib
 
 import pycluster.web_admin as web_admin_mod
+from pycluster.auth import is_password_hash, verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.models import Spot
 from pycluster.store import SpotStore
@@ -108,7 +110,9 @@ def test_web_login_and_spot_post(tmp_path) -> None:
             publish_spot_fn=_pub,
             relay_spot_fn=_relay,
         )
-        await store.set_user_pref("N0CALL", "password", "pw1", int(datetime.now(timezone.utc).timestamp()))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.set_user_pref("N0CALL", "password", "pw1", now)
+        await store.upsert_user_registry("N0CALL", now, privilege="user")
         try:
             code, _, body = await _http_request(
                 srv,
@@ -626,12 +630,52 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
         cfg.node.node_call = "AI3I-15"
         cfg.node.welcome_title = "Welcome"
         cfg.node.motd = "Default MOTD"
+        cfg_path = tmp_path / "pycluster.toml"
+        cfg_path.write_text(
+            "[node]\n"
+            "node_call = \"AI3I-15\"\n"
+            "node_alias = \"N0NODE\"\n"
+            "owner_name = \"Cluster Sysop\"\n"
+            "qth = \"Unknown\"\n"
+            "node_locator = \"\"\n"
+            "motd = \"Default MOTD\"\n"
+            "branding_name = \"pyCluster\"\n"
+            "welcome_title = \"Welcome\"\n"
+            "welcome_body = \"\"\n"
+            "login_tip = \"Tip\"\n"
+            "show_status_after_login = true\n"
+            "require_password = true\n"
+            "support_contact = \"\"\n"
+            "website_url = \"\"\n"
+            "prompt_template = \"[{timestamp}] {node}{suffix}\"\n\n"
+            "[telnet]\n"
+            "host = \"127.0.0.1\"\n"
+            "port = 0\n"
+            "ports = []\n"
+            "max_clients = 100\n"
+            "idle_timeout_seconds = 30\n"
+            "max_line_length = 512\n\n"
+            "[web]\n"
+            "host = \"0.0.0.0\"\n"
+            "port = 0\n"
+            "admin_token = \"adm\"\n\n"
+            "[public_web]\n"
+            "enabled = false\n"
+            "host = \"127.0.0.1\"\n"
+            "port = 8081\n"
+            "static_dir = \"\"\n"
+            "cty_dat_path = \"\"\n\n"
+            "[store]\n"
+            f"sqlite_path = {json.dumps(db)}\n",
+            encoding="utf-8",
+        )
         store = SpotStore(db)
         srv = WebAdminServer(
             config=cfg,
             store=store,
             started_at=datetime.now(timezone.utc),
             session_count_fn=lambda: 0,
+            config_path=str(cfg_path),
         )
         try:
             code, _, body = await _http_request(
@@ -662,6 +706,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
                 "support_contact": "dxcluster@ai3i.net",
                 "website_url": "https://github.com/AI3I/pyCluster",
                 "motd": "Warm MOTD",
+                "prompt_template": "[{timestamp}] {node}{suffix}",
             }
             code, _, body = await _http_request(
                 srv,
@@ -679,12 +724,21 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["show_status_after_login"] is False
             assert data["require_password"] is True
             assert data["motd"] == "Warm MOTD"
+            assert data["prompt_template"] == "[{timestamp}] {node}{suffix}"
 
-            assert await store.get_user_pref("AI3I-15", "node_call") == "AI3I-7"
-            assert await store.get_user_pref("AI3I-15", "node_locator") == "FN00FS"
-            assert await store.get_user_pref("AI3I-15", "telnet_ports") == "7300,7373,8000"
-            assert await store.get_user_pref("AI3I-15", "welcome_title") == "Welcome back"
-            assert await store.get_user_pref("AI3I-15", "require_password") == "on"
+            assert await store.get_user_pref("AI3I-15", "node_call") is None
+            assert await store.get_user_pref("AI3I-15", "node_locator") is None
+            assert await store.get_user_pref("AI3I-15", "telnet_ports") is None
+            assert await store.get_user_pref("AI3I-15", "welcome_title") is None
+            assert await store.get_user_pref("AI3I-15", "require_password") is None
+            assert await store.get_user_pref("AI3I-15", "prompt_template") is None
+            saved = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+            assert saved["node"]["node_call"] == "AI3I-7"
+            assert saved["node"]["node_locator"] == "FN00FS"
+            assert saved["node"]["welcome_title"] == "Welcome back"
+            assert saved["node"]["require_password"] is True
+            assert saved["node"]["prompt_template"] == "[{timestamp}] {node}{suffix}"
+            assert saved["telnet"]["ports"] == [7300, 7373, 8000]
         finally:
             await store.close()
 
@@ -833,6 +887,8 @@ def test_web_chat_and_bulletin_posts(tmp_path) -> None:
             publish_bulletin_fn=_pub_b,
             relay_bulletin_fn=_relay_b,
         )
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, privilege="user")
         code, _, body = await _http_request(
             srv,
             "POST",
@@ -1004,6 +1060,47 @@ def test_web_proto_history_endpoint(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_proto_alerts_ignore_expired_flap_scores(tmp_path) -> None:
+    async def _stats():
+        return {
+            "peer1": {"profile": "spider", "inbound": False, "parsed_frames": 1, "sent_frames": 1, "policy_dropped": 0},
+        }
+
+    async def run() -> None:
+        db = str(tmp_path / "web_proto_expired_flap.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        old = now - 900
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+            link_stats_fn=_stats,
+        )
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.pc24.call", "K1ABC", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.pc24.flag", "1", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.flap_score", "7", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.last_epoch", str(now), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.last_change_epoch", str(old), now)
+        try:
+            code, _, body = await _http_request(srv, "GET", "/api/proto/alerts", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert rows == []
+
+            code, _, body = await _http_request(srv, "GET", "/api/peers", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            peers = json.loads(body.decode("utf-8"))
+            assert peers[0]["proto"]["health"] == "ok"
+            assert peers[0]["proto"]["flap_score"] == 7
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_proto_history_reset_endpoint(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_proto_hist_reset.db")
@@ -1062,6 +1159,8 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             started_at=datetime.now(timezone.utc),
             session_count_fn=lambda: 0,
         )
+        orig = web_admin_mod.resolve_location_to_coords
+        web_admin_mod.resolve_location_to_coords = lambda text: (42.3601, -71.0589) if text == "Boston" else None
         try:
             await store.set_user_pref("AI3I", "password", "pw", now)
             await store.upsert_user_registry("AI3I", now, display_name="John", qth="PA", email="ai3i@example.org", privilege="sysop")
@@ -1117,6 +1216,7 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             assert data["ok"] is True
             assert await store.get_user_registry("W3XYZ") is None
         finally:
+            web_admin_mod.resolve_location_to_coords = orig
             await store.close()
 
     asyncio.run(run())
@@ -1148,7 +1248,9 @@ def test_web_users_password_set_and_clear(tmp_path) -> None:
             data = json.loads(body.decode("utf-8"))
             assert data["ok"] is True
             assert data["user"]["has_password"] is True
-            assert await store.get_user_pref("AI3I", "password") == "pw123"
+            saved = await store.get_user_pref("AI3I", "password")
+            assert is_password_hash(saved)
+            assert verify_password("pw123", saved)
 
             code, _, body = await _http_request(
                 srv,
@@ -1208,7 +1310,9 @@ def test_web_users_can_rename_existing_callsign(tmp_path) -> None:
             row = await store.get_user_registry("NEW1AA")
             assert row is not None
             assert str(row["display_name"]) == "Alice"
-            assert await store.get_user_pref("NEW1AA", "password") == "pw123"
+            saved = await store.get_user_pref("NEW1AA", "password")
+            assert is_password_hash(saved)
+            assert verify_password("pw123", saved)
             assert await store.get_user_pref("OLD1AA", "password") is None
         finally:
             await store.close()
@@ -1438,6 +1542,7 @@ def test_web_proto_alerts_endpoint(tmp_path) -> None:
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.pc24.flag", "1", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.flap_score", "7", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.last_epoch", str(now), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.last_change_epoch", str(now), now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer3.pc24.call", "K3ABC", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer3.pc24.flag", "1", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer3.last_epoch", str(old), now)
