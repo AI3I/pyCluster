@@ -29,6 +29,7 @@ All notable changes to pyCluster should be recorded here.
 - product-facing defaults and examples were scrubbed of site-specific AI3I deployment data
 - sysop and public web UI polish continued, including cleanup controls, footer login/logout actions, and sidebar/runtime presentation
 - `deploy/upgrade.sh` now performs the 1.0.0 -> 1.0.1 state upgrade tasks automatically
+- protocol-health flapping detection no longer treats routine `PC24` traffic as a flap event, avoiding false flapping status in the sysop console (`#32`)
 
 ## 1.0.1 - 2026-03-28
 
