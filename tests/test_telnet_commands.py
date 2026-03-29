@@ -483,6 +483,7 @@ def test_show_shortcuts_catalog_and_execution(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "show/shortcuts proto")
+            assert "Capital letters show the shorthand pyCluster guarantees." in out
             assert "show/protoack" in out
             assert "set/protoack" in out
             assert "unset/protoack" in out
@@ -524,6 +525,16 @@ def test_show_shortcuts_catalog_and_execution(tmp_path) -> None:
             await store.close()
 
     asyncio.run(run())
+
+
+def test_b_alias_resolves_to_bye() -> None:
+    cfg = _mk_config(":memory:")
+    store = SpotStore(":memory:")
+    try:
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        assert srv._resolve_top_token("b") == "bye"
+    finally:
+        asyncio.run(store.close())
 
 
 def test_all_token_shortcuts_across_command_families(tmp_path) -> None:
@@ -635,7 +646,7 @@ def test_show_shortcuts_includes_top_level_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/shortcuts dbsho")
             assert "dbshow" in out
             assert "=>" in out
-            row = next((ln for ln in out.splitlines() if "dbshow" in ln and "=>" in ln), "")
+            row = next((ln for ln in out.splitlines() if "=>" in ln and "dbsho" in ln.lower()), "")
             assert row
             rhs = row.split("=>", 1)[1].strip()
             short = rhs.split()[0]

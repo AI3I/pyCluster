@@ -37,10 +37,10 @@ It also supports direct commands such as:
 |---|---|
 | `help` | Show the main telnet help screen with examples and operator-aware sections. |
 | `show/commands [term]` | List available commands, grouped by family, optionally filtered by family or text. |
-| `show/shortcuts [term]` | Show useful abbreviations and direct aliases. |
+| `show/shortcuts [term]` | Show useful abbreviations and direct aliases, with capital letters marking the guaranteed shorthand. |
 | `show/apropos <term>` | Search commands by keyword. |
 | `ping` | Quick liveness check. |
-| `bye` | End the current session. |
+| `bye` | End the current session. The explicit one-letter alias `b` is also accepted. |
 | `show/version` | Show program/version information. |
 | `show/program` | Show a short program/status summary. |
 | `show/date` | Show the current date. |
