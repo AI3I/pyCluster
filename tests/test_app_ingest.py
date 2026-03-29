@@ -343,7 +343,8 @@ def test_ingest_pc24_pc50_pc51_record_proto_state(tmp_path) -> None:
             await app._handle_node_link_item("PEER1", WirePcFrame("PC50", m50.to_fields()), m50)
             m51 = Pc51Message.from_fields([app.config.node.node_call, "WB3FFV-2", "1", ""])
             await app._handle_node_link_item("PEER1", WirePcFrame("PC51", m51.to_fields()), m51)
-            # Toggle a protocol value twice to exercise transition/flap counters.
+            # Toggle a protocol value twice to exercise transition tracking without
+            # treating routine PC24 activity as link flapping.
             m24b = Pc24Message.from_fields(["OH8X", "0", "H29", ""])
             await app._handle_node_link_item("PEER1", WirePcFrame("PC24", m24b.to_fields()), m24b)
             m24c = Pc24Message.from_fields(["OH8X", "1", "H29", ""])
@@ -359,7 +360,7 @@ def test_ingest_pc24_pc50_pc51_record_proto_state(tmp_path) -> None:
             assert prefs.get("proto.peer.peer1.pc51.value") == "1"
             assert int(prefs.get("proto.peer.peer1.last_epoch", "0")) > 0
             assert int(prefs.get("proto.peer.peer1.change_count", "0")) >= 2
-            assert int(prefs.get("proto.peer.peer1.flap_score", "0")) >= 1
+            assert int(prefs.get("proto.peer.peer1.flap_score", "0")) == 0
             assert int(prefs.get("proto.peer.peer1.change.pc24_flag", "0")) >= 2
             raw_hist = prefs.get("proto.peer.peer1.history", "[]")
             hist = json.loads(raw_hist)
@@ -1560,7 +1561,7 @@ def test_app_wire_proto_state_burst_records_peer_history(tmp_path) -> None:
             assert prefs.get(f"proto.peer.{tag}.pc51.to") == cfg.node.node_call
             assert prefs.get(f"proto.peer.{tag}.pc51.from") == "WB3FFV-2"
             assert prefs.get(f"proto.peer.{tag}.pc51.value") == "1"
-            assert int(prefs.get(f"proto.peer.{tag}.flap_score", "0")) >= 1
+            assert int(prefs.get(f"proto.peer.{tag}.flap_score", "0")) == 0
             raw_hist = prefs.get(f"proto.peer.{tag}.history", "[]")
             hist = json.loads(raw_hist)
             assert isinstance(hist, list)
