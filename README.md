@@ -130,6 +130,12 @@ sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
 
+For upgrades from `1.0.0` to `1.0.1`, `deploy/upgrade.sh` also performs the required state conversion:
+
+- hashes any legacy plaintext passwords still stored in `user_prefs`
+- seeds `config/strings.toml` if it is missing
+- preserves the existing `config/pycluster.toml`, data, and logs in place
+
 Default listeners:
 
 - telnet: 0.0.0.0:7300
@@ -177,6 +183,8 @@ Typical upgrade:
 sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
+
+If you are moving an existing node from `1.0.0` to `1.0.1`, run that upgrade path instead of reinstalling. The upgrader handles the `1.0.1` state conversion in place.
 
 Installed services:
 

@@ -32,6 +32,18 @@ All notable changes to pyCluster should be recorded here.
 
 ## 1.0.1 - 2026-03-28
 
+### Upgrade Note
+
+Existing `1.0.0` installations should be upgraded in place with:
+
+```bash
+git pull --ff-only
+sudo ./deploy/upgrade.sh
+sudo ./deploy/doctor.sh
+```
+
+The `1.0.1` upgrader hashes any legacy plaintext passwords still stored in `user_prefs`, seeds `config/strings.toml` if it is missing, and preserves the existing config, data, and logs in place.
+
 ### Added
 
 - configurable telnet prompt templates via `node.prompt_template`
