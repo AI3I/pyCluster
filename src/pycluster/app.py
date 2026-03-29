@@ -32,7 +32,6 @@ _PROTO_FLAP_KEYS = {
     "pc18.proto",
     "pc18.family",
     "pc18.summary",
-    "pc24.flag",
 }
 
 
