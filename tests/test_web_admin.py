@@ -189,6 +189,10 @@ def test_web_access_policy_controls_login_and_posting(tmp_path) -> None:
             )
             assert code == 200
             tok = json.loads(body.decode("utf-8"))["token"]
+            row = await store.get_user_registry("N0CALL")
+            assert row is not None
+            assert str(row["last_login_peer"]).startswith("sysop-web")
+            assert "sysop-web" in str(row["last_login_peer"])
 
             await store.set_user_pref("N0CALL", "access.web.spots", "off", now)
             code, _, body = await _http_request(
@@ -617,6 +621,8 @@ def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
             assert row["reconnect_enabled"] is True
             assert row["retry_count"] == 2
             assert row["last_error"] == "timed out"
+            assert row["transport"] == "dxspider"
+            assert row["path_hint"] == "host dxspider.ai3i.net:7300"
         finally:
             await store.close()
 
@@ -1067,6 +1073,8 @@ def test_web_peers_includes_proto_state(tmp_path) -> None:
             assert code == 200
             rows = json.loads(body.decode("utf-8"))
             assert len(rows) == 1
+            assert rows[0]["transport"] == ""
+            assert rows[0]["path_hint"] == ""
             p = rows[0]["proto"]
             assert p["known"] is True
             assert p["health"] == "ok"

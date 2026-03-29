@@ -21,6 +21,7 @@ from .config import AppConfig, node_presentation_defaults, parse_telnet_ports
 from .ctydat import load_cty, lookup
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .models import Spot, display_call, is_valid_call, normalize_call
+from .pathmeta import describe_session_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
 from .shdx import BAND_RANGES, parse_sh_dx_args
 from .strings import StringCatalog
@@ -142,6 +143,7 @@ class TelnetClusterServer:
         "sysop/users",
         "sysop/sysops",
         "sysop/access",
+        "sysop/path",
         "sysop/setaccess",
         "sysop/audit",
         "sysop/services",
@@ -1321,7 +1323,7 @@ class TelnetClusterServer:
                 [
                     "System Operator:",
                     "  sysop/users, sysop/sysops, sysop/showuser <call>",
-                    "  sysop/access <call>, sysop/setaccess ...",
+                    "  sysop/access <call>, sysop/path <call|peer>, sysop/setaccess ...",
                     "  sysop/password <call> <newpass>",
                     "  sysop/services, sysop/restart <telnet|sysopweb|all>",
                     "  sysop/audit [category] [limit]",
@@ -4837,6 +4839,41 @@ class TelnetClusterServer:
         lines = await self._sysop_access_matrix_lines(target)
         return "\r\n".join(lines) + "\r\n"
 
+    async def _cmd_sysop_path(self, call: str, arg: str | None) -> str:
+        denied = await self._require_privilege(call, 2, "sysop/path")
+        if denied:
+            return denied
+        target = (arg or "").strip().upper()
+        if not target:
+            return "Usage: sysop/path <call|peer>\r\n"
+        if self._link_stats_fn:
+            stats = await self._link_stats_fn()
+            st = stats.get(target)
+            if st:
+                direction = "inbound" if bool(st.get("inbound", False)) else "outbound"
+                transport = str(st.get("transport", "") or "-")
+                path_hint = str(st.get("path_hint", "") or "-")
+                lines = [
+                    f"Path for peer {target}:",
+                    f"  direction={direction}",
+                    f"  transport={transport}",
+                    f"  path={path_hint}",
+                ]
+                return "\r\n".join(lines) + "\r\n"
+        if not is_valid_call(target):
+            return "Usage: sysop/path <call|peer>\r\n"
+        row = await self.store.get_user_registry(target)
+        if not row:
+            return f"No local path record for {target}.\r\n"
+        last_epoch = int(row["last_login_epoch"] or 0)
+        last_peer = str(row["last_login_peer"] or "").strip() or "(none)"
+        lines = [
+            f"Path for {target}:",
+            f"  last_login={self._fmt_epoch_short(last_epoch) if last_epoch else '(never)'}",
+            f"  path={last_peer}",
+        ]
+        return "\r\n".join(lines) + "\r\n"
+
     async def _cmd_sysop_setaccess(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/setaccess")
         if denied:
@@ -7380,6 +7417,7 @@ class TelnetClusterServer:
             "sysop/users": self._cmd_sysop_users,
             "sysop/sysops": self._cmd_sysop_sysops,
             "sysop/access": self._cmd_sysop_access,
+            "sysop/path": self._cmd_sysop_path,
             "sysop/setaccess": self._cmd_sysop_setaccess,
             "sysop/setprompt": self._cmd_sysop_setprompt,
             "sysop/audit": self._cmd_sysop_audit,
@@ -7708,7 +7746,15 @@ class TelnetClusterServer:
                     await writer.wait_closed()
                     return
                 login_epoch = int(datetime.now(timezone.utc).timestamp())
-                await self.store.record_login(call, login_epoch, str(peer))
+                await self.store.record_login(
+                    call,
+                    login_epoch,
+                    describe_session_path(
+                        "telnet",
+                        peer,
+                        writer.get_extra_info("sockname") if hasattr(writer, "get_extra_info") else None,
+                    ),
+                )
 
                 if node_family:
                     bridged = await self._bridge_node_login(call, reader, writer)

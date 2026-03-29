@@ -465,6 +465,10 @@ def test_public_web_access_policy_controls_login_and_posting(tmp_path) -> None:
             )
             assert code == 200
             token = json.loads(body.decode("utf-8"))["token"]
+            row = await store.get_user_registry("AI3I")
+            assert row is not None
+            assert str(row["last_login_peer"]).startswith("public-web")
+            assert "public-web" in str(row["last_login_peer"])
 
             await store.set_user_pref("AI3I", "access.web.spots", "off", now)
             code, _, _ = await _http_request_ex(

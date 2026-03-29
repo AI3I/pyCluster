@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
+from .pathmeta import describe_socket_path
 
 DXSPIDER_COMPAT_VERSION = "1.57"
 DXSPIDER_COMPAT_BUILD = "46"
@@ -164,6 +165,8 @@ class _TcpConnection:
     name: str
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
+    transport: str = "tcp"
+    path_hint: str = ""
 
     async def readline(self) -> str | None:
         raw = await self.reader.readline()
@@ -195,8 +198,10 @@ class _TcpListener:
 
 
 class _DxSpiderTelnetConnection:
-    def __init__(self, name: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    def __init__(self, name: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, transport: str = "dxspider", path_hint: str = "") -> None:
         self.name = name
+        self.transport = transport
+        self.path_hint = path_hint
         self._reader = reader
         self._writer = writer
         self._buf = bytearray()
@@ -361,6 +366,8 @@ class DxSpiderInboundConnection:
         initial_lines: list[str] | None = None,
     ) -> None:
         self.name = name
+        self.transport = "dxspider"
+        self.path_hint = describe_socket_path(writer.get_extra_info("peername"), writer.get_extra_info("sockname"))
         self._reader = reader
         self._writer = writer
         self._buf = bytearray()
@@ -413,6 +420,11 @@ class DxSpiderInboundConnection:
 class _SocketLineConnection:
     def __init__(self, name: str, sock: socket.socket) -> None:
         self.name = name
+        self.transport = "ax25_socket"
+        try:
+            self.path_hint = describe_socket_path(sock.getpeername(), sock.getsockname())
+        except Exception:
+            self.path_hint = ""
         self._sock = sock
         self._sock.setblocking(False)
         self._buf = bytearray()
@@ -464,6 +476,8 @@ class _Ax25Listener:
 class _KissSerialConnection:
     def __init__(self, name: str, ser: Any, tnc_port: int = 0) -> None:
         self.name = name
+        self.transport = "kiss_serial"
+        self.path_hint = str(getattr(ser, "port", "") or "")
         self._ser = ser
         self._tnc_port = tnc_port
         self._closed = False
@@ -538,7 +552,13 @@ async def _tcp_listen(host: str, port: int, on_accept: OnAccept) -> LinkListener
     async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         name = f"in:{peer}"
-        conn = _TcpConnection(name=name, reader=reader, writer=writer)
+        conn = _TcpConnection(
+            name=name,
+            reader=reader,
+            writer=writer,
+            transport="tcp",
+            path_hint=describe_socket_path(peer, writer.get_extra_info("sockname")),
+        )
         await on_accept(conn)
 
     server = await asyncio.start_server(_handler, host=host, port=port)
@@ -547,7 +567,13 @@ async def _tcp_listen(host: str, port: int, on_accept: OnAccept) -> LinkListener
 
 async def _tcp_connect(name: str, host: str, port: int) -> LinkConnection:
     reader, writer = await asyncio.open_connection(host, port)
-    return _TcpConnection(name=name, reader=reader, writer=writer)
+    return _TcpConnection(
+        name=name,
+        reader=reader,
+        writer=writer,
+        transport="tcp",
+        path_hint=describe_socket_path(writer.get_extra_info("peername"), writer.get_extra_info("sockname")),
+    )
 
 
 async def _dxspider_connect(name: str, spec: TransportSpec) -> LinkConnection:
@@ -562,7 +588,13 @@ async def _dxspider_connect(name: str, spec: TransportSpec) -> LinkConnection:
     if not client:
         raise ValueError("dxspider dsn requires ?client=PEERCALL")
     reader, writer = await asyncio.open_connection(spec.host, spec.port)
-    conn = _DxSpiderTelnetConnection(name=name, reader=reader, writer=writer)
+    conn = _DxSpiderTelnetConnection(
+        name=name,
+        reader=reader,
+        writer=writer,
+        transport="dxspider",
+        path_hint=describe_socket_path(writer.get_extra_info("peername"), writer.get_extra_info("sockname")),
+    )
     try:
         await conn.handshake(login=login, client=client, password=password, timeout=timeout)
     except Exception:
