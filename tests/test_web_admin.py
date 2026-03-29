@@ -623,6 +623,76 @@ def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_user_notes_and_block_reason_round_trip(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_user_notes.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, privilege="")
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            payload = {
+                "call": "N0CALL",
+                "display_name": "Op Name",
+                "blocked_reason": "General operator note",
+                "privilege": "",
+                "access": {},
+            }
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps(payload).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))["user"]
+            assert data["blocked_login"] is False
+            assert data["user_note"] == "General operator note"
+            assert data["blocked_reason"] == ""
+            assert await store.get_user_pref("N0CALL", "note") == "General operator note"
+            assert await store.get_user_pref("N0CALL", "blocked_reason") is None
+
+            payload["privilege"] = "blocked"
+            payload["blocked_reason"] = "Abuse report"
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps(payload).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))["user"]
+            assert data["blocked_login"] is True
+            assert data["user_note"] == "Abuse report"
+            assert data["blocked_reason"] == "Abuse report"
+            assert await store.get_user_pref("N0CALL", "note") == "Abuse report"
+            assert await store.get_user_pref("N0CALL", "blocked_reason") == "Abuse report"
+
+            code, _, body = await _http_request(
+                srv,
+                "GET",
+                "/api/users?limit=5&offset=0",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))["rows"]
+            row = next(r for r in rows if r["call"] == "N0CALL")
+            assert row["user_note"] == "Abuse report"
+            assert row["blocked_reason"] == "Abuse report"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_node_presentation.db")
