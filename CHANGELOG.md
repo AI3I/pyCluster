@@ -2,7 +2,7 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## Unreleased
+## 1.0.2 - Unreleased
 
 ### Added
 
