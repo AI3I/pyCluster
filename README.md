@@ -128,6 +128,24 @@ For a host-level install, cloning into `/usr/src/pyCluster` is the recommended l
 The deploy scripts create the `pycluster` system user and group automatically; the installer does not require the operator to create that account first.
 The installed runtime tree is placed under `/home/pycluster/pyCluster`.
 
+Typical deployed layout:
+
+```text
+/usr/src/pyCluster                 # admin-managed checkout used for install/upgrade
+/home/pycluster/pyCluster/        # live runtime tree
+├── config/
+│   ├── pycluster.toml            # active node config
+│   └── strings.toml              # hot-reloadable operator text
+├── data/
+│   └── pycluster.db              # live SQLite database
+├── logs/
+│   └── proto/                    # protocol trace logs
+└── src/                          # installed application code
+
+/var/log/pycluster/authfail.log   # auth-failure log watched by fail2ban
+/root/pycluster-initial-sysop.txt # bootstrap SYSOP credentials note
+```
+
 Upgrade an existing deployment:
 
 ```bash

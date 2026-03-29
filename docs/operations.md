@@ -34,6 +34,26 @@ Check them:
 systemctl status pycluster.service pyclusterweb.service pycluster-cty-refresh.timer
 ```
 
+## On-Disk Layout
+
+Typical deployed paths:
+
+```text
+/usr/src/pyCluster                 # admin-managed checkout used for install/upgrade
+/home/pycluster/pyCluster/        # live runtime tree
+├── config/
+│   ├── pycluster.toml            # active node config
+│   └── strings.toml              # hot-reloadable operator text
+├── data/
+│   └── pycluster.db              # live SQLite database
+├── logs/
+│   └── proto/                    # protocol trace logs
+└── src/                          # installed application code
+
+/var/log/pycluster/authfail.log   # auth-failure log watched by fail2ban
+/root/pycluster-initial-sysop.txt # bootstrap SYSOP credentials note
+```
+
 ## Deploy Scripts
 
 Supported operational scripts:
