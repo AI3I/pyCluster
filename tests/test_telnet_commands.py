@@ -4058,6 +4058,47 @@ def test_non_authenticated_users_are_read_only_by_default(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_sysop_path_reports_user_and_peer_paths(tmp_path) -> None:
+    async def _stats():
+        return {
+            "AI3I-16": {
+                "inbound": True,
+                "profile": "dxspider",
+                "transport": "tcp",
+                "path_hint": "ipv4 203.0.113.10:53214 -> 198.51.100.5:7300",
+            }
+        }
+
+    async def run() -> None:
+        db = str(tmp_path / "sysop_path.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), link_stats_fn=_stats)
+        srv._sessions[1] = Session(
+            call="AI3I",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I", now, privilege="sysop")
+            await store.upsert_user_registry("K1ABC", now, privilege="user")
+            await store.record_login("K1ABC", now, "telnet ipv4 198.51.100.24:54012 -> 198.51.100.5:7373")
+
+            _, out = await srv._execute_command("AI3I", "sysop/path K1ABC")
+            assert "Path for K1ABC:" in out
+            assert "path=telnet ipv4 198.51.100.24:54012 -> 198.51.100.5:7373" in out
+
+            _, out = await srv._execute_command("AI3I", "sysop/path AI3I-16")
+            assert "Path for peer AI3I-16:" in out
+            assert "transport=tcp" in out
+            assert "path=ipv4 203.0.113.10:53214 -> 198.51.100.5:7300" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_contact_fields_persist_and_render(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "contact.db")

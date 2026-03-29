@@ -18,6 +18,7 @@ from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .maidenhead import coords_to_locator, extract_locator
 from .models import Spot, is_valid_call, normalize_call
+from .pathmeta import describe_session_path, describe_transport_dsn
 from .store import SpotStore
 
 
@@ -2133,6 +2134,8 @@ function setPeerRows(peers) {
     const proto = peer.proto ? `${peer.proto.health || 'unknown'}${peer.proto.age_min >= 0 ? `, ${peer.proto.age_min}m` : ''}` : 'unknown';
     const status = peer.connected === false ? 'Disconnected' : 'Connected';
     const statusMeta = peer.connected === false ? (peer.inbound ? 'waiting for remote node' : 'waiting for outbound link') : `${direction} • active`;
+    const pathHint = String(peer.path_hint || '').trim();
+    const transport = String(peer.transport || '').trim();
     const desired = peer.desired ? '<div class="mini">configured peer</div>' : '';
     const reconnect = peer.inbound ? 'no local retry' : (peer.reconnect_enabled ? 'auto retry' : 'manual retry');
     const retry = peer.inbound ? 'n/a' : (peer.next_retry_epoch ? `next ${fmtEpoch(peer.next_retry_epoch)}` : 'ready');
@@ -2151,7 +2154,7 @@ function setPeerRows(peers) {
     const healthText = peer.proto ? `${peer.proto.age_min >= 0 ? `${peer.proto.age_min}m since update` : 'no age data'} • last ${peer.proto.last_pc_type || 'unknown'}` : 'no protocol data';
     return `<tr data-peer="${esc(peer.peer || '')}">
       <td><strong>${peer.peer}</strong></td>
-      <td>${esc(direction)}<div class="mini">${peer.desired ? 'configured peer' : 'observed live peer'}</div></td>
+      <td>${esc(direction)}<div class="mini">${peer.desired ? 'configured peer' : 'observed live peer'}</div>${pathHint ? `<div class="mini">${esc((transport ? transport + ' • ' : '') + pathHint)}</div>` : ''}</td>
       <td><strong>${status}</strong><div class="mini">${esc(statusMeta)}</div>${desired}</td>
       <td><span class="tag">${peer.profile || 'dxspider'}</span><div class="mini">${esc(reconnect)}</div></td>
       <td>${frames}<div class="mini">rx ${esc(rxTypes)}</div><div class="mini">tx ${esc(txTypes)}</div></td>
@@ -2374,8 +2377,8 @@ function setSysopRows(rows) {
     <td><strong>${esc(row.call || '')}</strong></td>
     <td>${esc(row.display_name || '-')}</td>
     <td>${esc(row.email || '-')}</td>
-    <td>${seenText(!!row.telnet_online, String(row.last_login_peer || '').toLowerCase() === 'sysop-web' ? 0 : row.last_login_epoch, 'Telnet session active now', 'Last telnet login')}</td>
-    <td>${seenText(!!row.web_online, String(row.last_login_peer || '').toLowerCase() === 'sysop-web' ? row.last_login_epoch : 0, 'System Operator web session active now', 'Last System Operator web login')}</td>
+    <td>${seenText(!!row.telnet_online, String(row.last_login_peer || '').toLowerCase().startsWith('sysop-web') ? 0 : row.last_login_epoch, 'Telnet session active now', `Last telnet login${row.last_login_peer ? ` via ${row.last_login_peer}` : ''}`)}</td>
+    <td>${seenText(!!row.web_online, String(row.last_login_peer || '').toLowerCase().startsWith('sysop-web') ? row.last_login_epoch : 0, 'System Operator web session active now', `Last System Operator web login${row.last_login_peer ? ` via ${row.last_login_peer}` : ''}`)}</td>
   </tr>`).join('');
   bindSelectableRows(body, rows);
 }
@@ -2460,10 +2463,10 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
     <td><strong>${esc(row.call || '')}</strong></td>
     <td><span class="tag">${esc(row.access_label || row.privilege || 'None')}</span></td>
     <td>${esc(row.home_node || '-')}</td>
-    <td>${mark(!!(((row.access || {}).telnet || {}).login), 'Telnet login allowed', 'Telnet login blocked')}</td>
-    <td>${mark(!!(((row.access || {}).web || {}).login), 'Web login allowed', 'Web login blocked')}</td>
+    <td title="${esc(row.last_login_peer || 'No recorded telnet login path')}">${mark(!!(((row.access || {}).telnet || {}).login), 'Telnet login allowed', 'Telnet login blocked')}</td>
+    <td title="${esc(row.last_login_peer || 'No recorded web login path')}">${mark(!!(((row.access || {}).web || {}).login), 'Web login allowed', 'Web login blocked')}</td>
     <td>${mark(anyPostingEnabled(row.access), 'Posting allowed on one or more channels', 'Posting disabled on all channels')}</td>
-    <td>${esc(fmtEpoch(row.last_login_epoch))}</td>
+    <td title="${esc(row.last_login_peer || 'No recorded inbound path')}">${esc(fmtEpoch(row.last_login_epoch))}</td>
   </tr>`).join('');
   bindSelectableRows(body, rows);
 }
@@ -2965,7 +2968,16 @@ if (restoreWebSession()) {
                 if has_real_password and not is_password_hash(str(expected)) and verify_password(password, str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
                 token, exp = self._issue_web_token(call, is_sysop=is_sysop)
-                await self.store.record_login(call, int(time.time()), "sysop-web")
+                await self.store.record_login(
+                    call,
+                    int(time.time()),
+                    describe_session_path(
+                        "sysop-web",
+                        writer.get_extra_info("peername") if hasattr(writer, "get_extra_info") else None,
+                        writer.get_extra_info("sockname") if hasattr(writer, "get_extra_info") else None,
+                        headers.get("x-forwarded-for", ""),
+                    ),
+                )
                 self._audit("sysop", f"{call} logged in to System Operator web")
                 await self._write_response(
                     writer,
@@ -3460,6 +3472,7 @@ if (restoreWebSession()) {
                 for name in sorted(set(stats) | set(desired_map)):
                     st = stats.get(name, {})
                     desired = desired_map.get(name, {})
+                    desired_transport, desired_path = describe_transport_dsn(str(desired.get("dsn", "")))
                     proto = self._proto_state_for_peer(node_cfg, name, now_epoch)
                     out.append(
                         {
@@ -3473,6 +3486,8 @@ if (restoreWebSession()) {
                             "rx_by_type": st.get("rx_by_type", {}),
                             "tx_by_type": st.get("tx_by_type", {}),
                             "policy_reasons": st.get("policy_reasons", {}),
+                            "transport": str(st.get("transport", desired.get("transport", desired_transport))),
+                            "path_hint": str(st.get("path_hint", desired_path)),
                             "proto": proto,
                             "desired": bool(desired),
                             "connected": name in stats,

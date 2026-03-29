@@ -32,6 +32,7 @@ All notable changes to pyCluster should be recorded here.
 - protocol-health flapping detection no longer treats routine `PC24` traffic as a flap event, avoiding false flapping status in the sysop console (`#32`)
 - public web now exposes bulletin traffic on its own tab, including announce, chat, WX, WCY, and WWV activity (`#24`)
 - sysop web `Non-Authenticated` defaults now match the enforced access policy in the access matrix
+- sysop user and peer views now surface normalized inbound path and transport details, including source and destination ports (`#30`)
 
 ## 1.0.1 - 2026-03-28
 

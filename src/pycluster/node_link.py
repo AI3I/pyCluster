@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import logging
 from typing import Awaitable, Callable
 
+from .pathmeta import describe_transport_dsn
 from .peer_profiles import allowed_types_for_profile, normalize_profile, profile_allows_pc
 from .protocol import WirePcFrame, decode_typed, parse_wire_pc_frame, serialize_wire_pc_frame
 from .transports import LinkConnection, LinkListener, connect_from_dsn, listen_from_dsn
@@ -21,6 +22,8 @@ class LinkPeer:
     conn: LinkConnection
     inbound: bool
     profile: str = "dxspider"
+    transport: str = ""
+    path_hint: str = ""
     connected_epoch: int = 0
     parsed_frames: int = 0
     sent_frames: int = 0
@@ -93,11 +96,14 @@ class NodeLinkEngine:
     async def connect_dsn(self, name: str, dsn: str, profile: str = "dxspider") -> None:
         conn = await connect_from_dsn(name, dsn)
         now = int(datetime.now(timezone.utc).timestamp())
+        transport, path_hint = describe_transport_dsn(dsn)
         peer = LinkPeer(
             name=name,
             conn=conn,
             inbound=False,
             profile=normalize_profile(profile),
+            transport=transport or str(getattr(conn, "transport", "") or ""),
+            path_hint=path_hint or str(getattr(conn, "path_hint", "") or ""),
             connected_epoch=now,
         )
         async with self._lock:
@@ -112,6 +118,8 @@ class NodeLinkEngine:
             conn=conn,
             inbound=True,
             profile=normalize_profile(profile),
+            transport=str(getattr(conn, "transport", "") or "tcp"),
+            path_hint=str(getattr(conn, "path_hint", "") or ""),
             connected_epoch=now,
         )
         async with self._lock:
@@ -238,6 +246,8 @@ class NodeLinkEngine:
             out[p.name] = {
                 "inbound": p.inbound,
                 "profile": p.profile,
+                "transport": p.transport,
+                "path_hint": p.path_hint,
                 "connected_epoch": p.connected_epoch,
                 "parsed_frames": p.parsed_frames,
                 "sent_frames": p.sent_frames,

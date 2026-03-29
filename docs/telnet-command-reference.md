@@ -340,6 +340,7 @@ These commands require sysop privilege and are hidden from ordinary command list
 | `sysop/users` | Show local users. |
 | `sysop/sysops` | Show system operators. |
 | `sysop/access <call>` | Show a per-user channel/capability access matrix. |
+| `sysop/path <call\|peer>` | Show the recorded inbound path for a user or the live transport path for a peer. |
 | `sysop/setaccess <call> <channel\|all> <capability\|all> <on\|off>` | Change user access policy. |
 | `sysop/audit [category] [limit]` | Show recent operator audit events. |
 | `sysop/services` | Show service-level state exposed by the core app. |
@@ -380,6 +381,7 @@ If you are onboarding a sysop:
 help
 show/commands
 sysop/users
+sysop/path N0CALL
 sysop/showuser N0CALL
 sysop/access N0CALL
 sysop/setaccess N0CALL web login on

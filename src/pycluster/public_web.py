@@ -24,6 +24,7 @@ from .ctydat import load_cty, lookup
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .maidenhead import coords_to_locator, extract_locator
 from .models import Spot, display_call, is_valid_call, normalize_call
+from .pathmeta import describe_session_path
 from .store import SpotStore
 
 
@@ -928,6 +929,16 @@ class PublicWebServer:
                     return
                 if not is_password_hash(str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
+                await self.store.record_login(
+                    call,
+                    int(time.time()),
+                    describe_session_path(
+                        "public-web",
+                        writer.get_extra_info("peername") if hasattr(writer, "get_extra_info") else None,
+                        writer.get_extra_info("sockname") if hasattr(writer, "get_extra_info") else None,
+                        headers.get("x-forwarded-for", ""),
+                    ),
+                )
                 token, exp = self._issue_web_token(call)
                 access = await self._access_snapshot(call, "web")
                 profile = await self._web_profile_snapshot(call)
