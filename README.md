@@ -126,6 +126,7 @@ sudo ./deploy/doctor.sh
 
 For a host-level install, cloning into `/usr/src/pyCluster` is the recommended layout.
 The deploy scripts create the `pycluster` system user and group automatically; the installer does not require the operator to create that account first.
+The installed runtime tree is placed under `/home/pycluster/pyCluster`.
 
 Upgrade an existing deployment:
 
