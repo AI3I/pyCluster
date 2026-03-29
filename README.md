@@ -174,15 +174,15 @@ Validated deployment targets:
 
 - Debian 12 and 13
 - Ubuntu 24.04 LTS and 25.10
-- Fedora 42 and 43 with SELinux enforcing  (Fedora 44 is likely to work, but is not yet validated)
+- Fedora 42 and 43 with SELinux enforcing
 - CentOS Stream 9 and 10 with SELinux enforcing
 - AlmaLinux 8, 9, and 10 with SELinux enforcing
 - Rocky Linux 8, 9, and 10 with SELinux enforcing
 
 Likely install candidates (not yet tested):
 
-- Fedora 44 (should work; release due April 14, 2026)
-- Red Hat 8, 9 and 10 (should work)
+- Fedora 44 with SELinux enforcing  (official release April 14, 2026)
+- Red Hat 8, 9 and 10 with SELinux enforcing  (presumed working)
 
 Deployment notes:
 
