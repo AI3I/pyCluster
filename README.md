@@ -179,6 +179,11 @@ Validated deployment targets:
 - AlmaLinux 8, 9, and 10 with SELinux enforcing
 - Rocky Linux 8, 9, and 10 with SELinux enforcing
 
+Likely install candidates (not yet tested):
+
+- Fedora 44 (should work; release due April 14, 2026)
+- Red Hat 8, 9 and 10 (should work)
+
 Deployment notes:
 
 - `install.sh`, `upgrade.sh`, `repair.sh`, and `uninstall.sh` have been validated on the distributions above
