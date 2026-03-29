@@ -1805,11 +1805,13 @@ class TelnetClusterServer:
         if page > 0:
             rows = rows[:page]
         lines = [f"shortcuts ({len(rows)}):"]
+        lines.append("  Capital letters show the shorthand pyCluster guarantees.")
         for k, v in rows:
             emphasized = self._emphasize_shortcut(k, v)
-            lines.append(f"  {k:<18} => {v}")
-            if emphasized and emphasized != v:
-                lines.append(f"    note: {emphasized}")
+            display = emphasized or k
+            lines.append(f"  {display:<18} => {v}")
+            if display != k:
+                lines.append(f"    full: {k}")
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_capabilities(self, _call: str, _arg: str | None) -> str:
@@ -7075,6 +7077,8 @@ class TelnetClusterServer:
         # Keep grouped families (sh/show, set, unset, ...) out of top-level resolution.
         if self._resolve_group_token(t):
             return None
+        if t == "b":
+            return "bye"
         canon = self._top_level_canonical_tokens()
         if t in canon:
             return t
