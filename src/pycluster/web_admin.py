@@ -160,7 +160,10 @@ class WebAdminServer:
         base_call = call.split("-", 1)[0]
         blocked_login = False
         blocked_reason = ""
+        user_note = ""
         for candidate in (call, base_call):
+            if not user_note:
+                user_note = str(await self.store.get_user_pref(candidate, "note") or "").strip()
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
                 blocked_login = True
@@ -219,6 +222,7 @@ class WebAdminServer:
             "has_password": bool(str(password or "").strip()),
             "blocked_login": blocked_login,
             "blocked_reason": blocked_reason or ("Blocked by local policy" if blocked_login else ""),
+            "user_note": user_note or blocked_reason,
             "access": access,
             "access_login_summary": self._access_login_summary(access),
             "access_post_summary": self._access_post_summary(access),
@@ -2285,7 +2289,7 @@ function fillUserForm(row) {
   byId('user_email').value = data.email || '';
   byId('user_home_node').value = data.home_node || '';
   byId('user_grid').value = data.qra || '';
-  byId('user_block_reason').value = data.blocked_reason || '';
+  byId('user_block_reason').value = data.user_note || data.blocked_reason || '';
   byId('user_node_family').value = data.node_family || '';
   byId('user_password').value = '';
   const access = data.access || {};
@@ -3309,6 +3313,10 @@ if (restoreWebSession()) {
                     if original_base:
                         block_targets.add(original_base)
                     for target in sorted({t for t in block_targets if t}):
+                        if blocked_reason:
+                            await self.store.set_user_pref(target, "note", blocked_reason, now)
+                        else:
+                            await self.store.delete_user_pref(target, "note")
                         if blocked_login:
                             await self.store.set_user_pref(target, "blocked_login", "on", now)
                             if blocked_reason:
