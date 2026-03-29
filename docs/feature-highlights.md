@@ -32,6 +32,17 @@ pyCluster uses:
 
 That keeps the mental model cleaner and avoids overloading normal user verbs.
 
+### Less Defensive Tuning
+
+pyCluster tries to solve more network-protection problems in the core instead of expecting the sysop to hand-maintain elaborate defensive filters just to keep the node healthy.
+
+That includes:
+
+- built-in duplicate and loop-resistant behavior
+- protocol-health visibility and policy-drop accounting
+- peer cleanup and safer default link behavior
+- optional filters and policy controls for unusual cases, without making them mandatory for normal operation
+
 ## Web Interfaces
 
 ### Public Web UI

@@ -42,12 +42,24 @@ Key improvements:
 - public web UI for normal users
 - System Operator web console for runtime and policy management
 - clearer link and protocol visibility
+- more protective routing and duplicate-handling behavior built into the core engine
 - per-user access matrix for telnet and web
 - integrated audit and security visibility
 - structured auth-failure logging with fail2ban support
 - age-based retention controls with daily cleanup
 - bundled and refreshable CTY data instead of relying on stale host copies
 - Linux-first deployment with systemd tooling
+
+## Less Manual Admin Work
+
+pyCluster is designed to reduce the amount of defensive cluster administration that older systems often push onto the operator.
+
+In practice that means:
+
+- duplicate and loop-resistant behavior is handled primarily in core logic rather than depending on heavy manual route-filter tuning
+- peer cleanup, policy-drop accounting, and protocol-health visibility are built in
+- operators can still apply filters and policy controls when needed, but normal operation should not require constant route-filter micromanagement
+- the goal is safer default behavior with fewer admin headaches, not recreating a large manual-maintenance burden
 
 ## 📌 Current Status
 
