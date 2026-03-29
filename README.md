@@ -174,7 +174,7 @@ Validated deployment targets:
 
 - Debian 12 and 13
 - Ubuntu 24.04 LTS and 25.10
-- Fedora 42 and 43 with SELinux enforcing
+- Fedora 42 and 43 with SELinux enforcing  (Fedora 44 is likely to work, but is not yet validated)
 - CentOS Stream 9 and 10 with SELinux enforcing
 - AlmaLinux 8, 9, and 10 with SELinux enforcing
 - Rocky Linux 8, 9, and 10 with SELinux enforcing
@@ -273,9 +273,9 @@ pyCluster can automatically prune older operational data.
 
 - spots, messages, and bulletins can be retained for configurable day counts
 - the System Operator web UI exposes:
-  - `Enable age-based cleanup`
+  - ability to enable age-based cleanup
   - per-category day values
-  - `Run Cleanup Now`
+  - ad-hoc, on-demand cleanup
 - scheduled cleanup runs daily through:
   - `pycluster-retention.timer`
 
