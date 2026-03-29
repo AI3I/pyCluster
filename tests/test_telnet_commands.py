@@ -1509,7 +1509,7 @@ def test_show_dx_applies_spot_filters(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_spot_filters_support_call_zone_and_call_itu(tmp_path) -> None:
+def test_spot_filters_support_call_zone_call_itu_and_call_dxcc(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "spot_filter_zones.db")
         cfg = _mk_config(db)
@@ -1545,6 +1545,25 @@ def test_spot_filters_support_call_zone_and_call_itu(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/filter test spots --verbose 14074 VE3XYZ K1AAA FT8")
             assert "Decision: allow" in out
             assert "Winning Rule: matched=accept slot=1 expr=call_itu 9" in out
+
+            await srv._execute_command("N0CALL", "clear/spots")
+            await srv._execute_command("N0CALL", "accept/spots 1 call_dxcc canada")
+            before = len(w1.buffer)
+            await srv.publish_spot(allow)
+            assert b"VE3XYZ" in bytes(w1.buffer[before:])
+            before = len(w1.buffer)
+            await srv.publish_spot(Spot(14074.0, "JA1ABC", now, "FT8", "K1AAA", "N2WQ-1", ""))
+            assert len(w1.buffer) == before
+
+            _, out = await srv._execute_command("N0CALL", "show/filter test spots --verbose 14074 VE3XYZ K1AAA FT8")
+            assert "Decision: allow" in out
+            assert "Winning Rule: matched=accept slot=1 expr=call_dxcc canada" in out
+
+            await srv._execute_command("N0CALL", "clear/spots")
+            await srv._execute_command("N0CALL", "accept/spots 1 call_dxcc ve")
+            before = len(w1.buffer)
+            await srv.publish_spot(allow)
+            assert b"VE3XYZ" in bytes(w1.buffer[before:])
         finally:
             await store.close()
 

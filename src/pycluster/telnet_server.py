@@ -803,6 +803,22 @@ class TelnetClusterServer:
             }
             return bool(wanted) and ent.itu_zone in wanted
 
+        if first == "call_dxcc" and rest:
+            ent = lookup(dx_call) if self._cty_loaded else None
+            if not ent:
+                return False
+            wanted = [tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()]
+            if not wanted:
+                return False
+            ent_name = re.sub(r"[^A-Z0-9]+", "", ent.name.upper())
+            ent_prefix = (ent.prefix or "").strip().upper()
+            return any(
+                tok == ent_prefix
+                or tok == ent_name
+                or re.sub(r"[^A-Z0-9]+", "", tok) == ent_name
+                for tok in wanted
+            )
+
         if first == "info" and rest:
             return rest in (info or "").lower()
 
