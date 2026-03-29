@@ -104,6 +104,8 @@ Recent activity is shown relatively, for example:
 
 - `19h ago`
 
+User last-login details now carry normalized inbound path information, and live peer rows include transport/path hints when pyCluster has them.
+
 ### User Details
 
 This is the main user editor.
