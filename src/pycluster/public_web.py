@@ -25,6 +25,7 @@ from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .maidenhead import coords_to_locator, extract_locator
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path
+from .spot_throttle import check_spot_throttle
 from .store import SpotStore
 
 
@@ -381,8 +382,11 @@ class PublicWebServer:
         reason = {
             200: "OK",
             400: "Bad Request",
+            401: "Unauthorized",
+            403: "Forbidden",
             404: "Not Found",
             405: "Method Not Allowed",
+            429: "Too Many Requests",
             500: "Internal Server Error",
         }.get(status, "OK")
         headers = [
@@ -1108,6 +1112,22 @@ class PublicWebServer:
                     await self._write_response(writer, 400, self._json({"error": "invalid dx_call"}))
                     return
                 epoch = int(datetime.now(timezone.utc).timestamp())
+                throttle = await check_spot_throttle(self.store, self.config.node.node_call, call, epoch)
+                if throttle.enabled and throttle.recent_count >= throttle.max_per_window:
+                    await self._write_response(
+                        writer,
+                        429,
+                        self._json(
+                            {
+                                "error": "spot rate limit exceeded",
+                                "limit": {
+                                    "max_per_window": throttle.max_per_window,
+                                    "window_seconds": throttle.window_seconds,
+                                },
+                            }
+                        ),
+                    )
+                    return
                 raw = "^".join(
                     [
                         f"{freq_khz:.1f}",

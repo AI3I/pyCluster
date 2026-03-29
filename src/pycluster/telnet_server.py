@@ -24,6 +24,13 @@ from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
 from .shdx import BAND_RANGES, parse_sh_dx_args
+from .spot_throttle import (
+    SPOT_THROTTLE_EXEMPT_KEY,
+    SPOT_THROTTLE_MAX_KEY,
+    SPOT_THROTTLE_WINDOW_KEY,
+    check_spot_throttle,
+    load_spot_throttle_policy,
+)
 from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
@@ -4876,6 +4883,108 @@ class TelnetClusterServer:
         ]
         return "\r\n".join(lines) + "\r\n"
 
+    async def _cmd_sysop_spotlimit(self, call: str, arg: str | None) -> str:
+        denied = await self._require_privilege(call, 2, "sysop/spotlimit")
+        if denied:
+            return denied
+        toks = [t for t in (arg or "").split() if t]
+        if not toks:
+            return "Usage: sysop/spotlimit <default|call> [off|default|<max_per_window> [window_seconds]]\r\n"
+        target = toks[0].upper()
+        now = int(datetime.now(timezone.utc).timestamp())
+        if target == "DEFAULT":
+            if len(toks) == 1:
+                default_max = await self.store.get_user_pref(self.config.node.node_call, SPOT_THROTTLE_MAX_KEY)
+                default_window = await self.store.get_user_pref(self.config.node.node_call, SPOT_THROTTLE_WINDOW_KEY)
+                policy = await load_spot_throttle_policy(self.store, self.config.node.node_call, call)
+                lines = [
+                    "Spot throttle defaults:",
+                    f"  Enabled: {'on' if policy.enabled else 'off'}",
+                    f"  Max Per Window: {policy.max_per_window}",
+                    f"  Window Seconds: {policy.window_seconds}",
+                    f"  Stored Max Override: {default_max or '(default)'}",
+                    f"  Stored Window Override: {default_window or '(default)'}",
+                ]
+                return "\r\n".join(lines) + "\r\n"
+            action = toks[1].lower()
+            if action == "off":
+                await self.store.set_user_pref(self.config.node.node_call, SPOT_THROTTLE_MAX_KEY, "0", now)
+                await self.store.set_user_pref(self.config.node.node_call, SPOT_THROTTLE_WINDOW_KEY, "0", now)
+                self._log_event("sysop", f"{call} sysop/spotlimit default off")
+                return "Spot throttle defaults disabled.\r\n"
+            if action == "default":
+                await self.store.delete_user_pref(self.config.node.node_call, SPOT_THROTTLE_MAX_KEY)
+                await self.store.delete_user_pref(self.config.node.node_call, SPOT_THROTTLE_WINDOW_KEY)
+                self._log_event("sysop", f"{call} sysop/spotlimit default reset")
+                return "Spot throttle defaults reset.\r\n"
+            try:
+                max_per_window = int(toks[1])
+                window_seconds = int(toks[2]) if len(toks) > 2 else None
+            except ValueError:
+                return "Usage: sysop/spotlimit <default|call> [off|default|<max_per_window> [window_seconds]]\r\n"
+            if max_per_window < 0 or (window_seconds is not None and window_seconds < 0):
+                return "sysop/spotlimit: values must be non-negative\r\n"
+            await self.store.set_user_pref(self.config.node.node_call, SPOT_THROTTLE_MAX_KEY, str(max_per_window), now)
+            if window_seconds is not None:
+                await self.store.set_user_pref(self.config.node.node_call, SPOT_THROTTLE_WINDOW_KEY, str(window_seconds), now)
+            self._log_event(
+                "sysop",
+                f"{call} sysop/spotlimit default max={max_per_window}"
+                + (f" window={window_seconds}" if window_seconds is not None else ""),
+            )
+            return (
+                f"Spot throttle defaults updated: max={max_per_window}"
+                + (f" window={window_seconds}s" if window_seconds is not None else "")
+                + "\r\n"
+            )
+        if not is_valid_call(target):
+            return "Usage: sysop/spotlimit <default|call> [off|default|<max_per_window> [window_seconds]]\r\n"
+        if len(toks) == 1:
+            policy = await check_spot_throttle(self.store, self.config.node.node_call, target, now)
+            lines = [
+                f"Spot throttle for {target}:",
+                f"  Enabled: {'on' if policy.enabled else 'off'}",
+                f"  Exempt: {'yes' if policy.exempt else 'no'}",
+                f"  Privilege: {policy.privilege or 'non-authenticated'}",
+                f"  Max Per Window: {policy.max_per_window}",
+                f"  Window Seconds: {policy.window_seconds}",
+                f"  Recent Count: {policy.recent_count}",
+                f"  Override Scope: {policy.override_scope or 'default'}",
+            ]
+            return "\r\n".join(lines) + "\r\n"
+        action = toks[1].lower()
+        if action == "off":
+            await self.store.set_user_pref(target, SPOT_THROTTLE_EXEMPT_KEY, "on", now)
+            self._log_event("sysop", f"{call} sysop/spotlimit {target} off")
+            return f"Spot throttle disabled for {target}.\r\n"
+        if action == "default":
+            await self.store.delete_user_pref(target, SPOT_THROTTLE_EXEMPT_KEY)
+            await self.store.delete_user_pref(target, SPOT_THROTTLE_MAX_KEY)
+            await self.store.delete_user_pref(target, SPOT_THROTTLE_WINDOW_KEY)
+            self._log_event("sysop", f"{call} sysop/spotlimit {target} reset")
+            return f"Spot throttle override cleared for {target}.\r\n"
+        try:
+            max_per_window = int(toks[1])
+            window_seconds = int(toks[2]) if len(toks) > 2 else None
+        except ValueError:
+            return "Usage: sysop/spotlimit <default|call> [off|default|<max_per_window> [window_seconds]]\r\n"
+        if max_per_window < 0 or (window_seconds is not None and window_seconds < 0):
+            return "sysop/spotlimit: values must be non-negative\r\n"
+        await self.store.delete_user_pref(target, SPOT_THROTTLE_EXEMPT_KEY)
+        await self.store.set_user_pref(target, SPOT_THROTTLE_MAX_KEY, str(max_per_window), now)
+        if window_seconds is not None:
+            await self.store.set_user_pref(target, SPOT_THROTTLE_WINDOW_KEY, str(window_seconds), now)
+        self._log_event(
+            "sysop",
+            f"{call} sysop/spotlimit {target} max={max_per_window}"
+            + (f" window={window_seconds}" if window_seconds is not None else ""),
+        )
+        return (
+            f"Spot throttle updated for {target}: max={max_per_window}"
+            + (f" window={window_seconds}s" if window_seconds is not None else "")
+            + "\r\n"
+        )
+
     async def _cmd_sysop_setaccess(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/setaccess")
         if denied:
@@ -6623,6 +6732,13 @@ class TelnetClusterServer:
             return "Usage: dx <freq_khz> <dx_call> [info]\r\n"
         info = " ".join(toks[2:]) if len(toks) > 2 else ""
         now = int(datetime.now(timezone.utc).timestamp())
+        throttle = await check_spot_throttle(self.store, self.config.node.node_call, call, now)
+        if throttle.enabled and throttle.recent_count >= throttle.max_per_window:
+            self._log_event(
+                "spot",
+                f"{call} dx throttled count={throttle.recent_count} max={throttle.max_per_window} window={throttle.window_seconds}",
+            )
+            return f"dx: rate limited ({throttle.max_per_window} spots per {throttle.window_seconds}s)\r\n"
         source_node = self.config.node.node_call
         raw = "^".join(
             [
@@ -7422,6 +7538,7 @@ class TelnetClusterServer:
             "sysop/sysops": self._cmd_sysop_sysops,
             "sysop/access": self._cmd_sysop_access,
             "sysop/path": self._cmd_sysop_path,
+            "sysop/spotlimit": self._cmd_sysop_spotlimit,
             "sysop/setaccess": self._cmd_sysop_setaccess,
             "sysop/setprompt": self._cmd_sysop_setprompt,
             "sysop/audit": self._cmd_sysop_audit,
