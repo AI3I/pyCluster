@@ -57,6 +57,8 @@ pyCluster is designed to reduce the amount of defensive cluster administration t
 In practice that means:
 
 - duplicate and loop-resistant behavior is handled primarily in core logic rather than depending on heavy manual route-filter tuning
+- in normal deployments you can usually link to multiple partner nodes without first writing special defensive route filters
+- duplicate suppression, routing protections, and peer-state handling are intended to make multi-link operation work safely by default
 - peer cleanup, policy-drop accounting, and protocol-health visibility are built in
 - operators can still apply filters and policy controls when needed, but normal operation should not require constant route-filter micromanagement
 - the goal is safer default behavior with fewer admin headaches, not recreating a large manual-maintenance burden
