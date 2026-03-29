@@ -18,7 +18,7 @@ from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .maidenhead import coords_to_locator, extract_locator
 from .models import Spot, is_valid_call, normalize_call
-from .pathmeta import describe_session_path, describe_transport_dsn
+from .pathmeta import describe_session_path, describe_transport_dsn, normalize_recorded_path
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
 
@@ -218,7 +218,7 @@ class WebAdminServer:
             "privilege": privilege,
             "access_label": access_label,
             "last_login_epoch": int(row["last_login_epoch"] or 0),
-            "last_login_peer": str(row["last_login_peer"] or ""),
+            "last_login_peer": normalize_recorded_path(str(row["last_login_peer"] or "")),
             "registered_epoch": int(row["registered_epoch"] or 0),
             "updated_epoch": int(row["updated_epoch"] or 0),
             "has_password": bool(str(password or "").strip()),
@@ -1513,12 +1513,12 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
         </header>
         <div class="body">
-          <section>
-            <h3>System Operators</h3>
-            <div class="tablewrap">
+            <section>
+              <h3>System Operators</h3>
+              <div class="tablewrap">
               <table>
-                  <thead><tr><th>Callsign</th><th>Name</th><th>Email</th><th>Telnet</th><th>Web</th></tr></thead>
-                  <tbody id="sysopRows"><tr><td colspan="5">Loading System Operators...</td></tr></tbody>
+                  <thead><tr><th>Callsign</th><th>Name</th><th>Email</th><th>Telnet</th><th>Web</th><th>Last Path</th></tr></thead>
+                  <tbody id="sysopRows"><tr><td colspan="6">Loading System Operators...</td></tr></tbody>
               </table>
             </div>
           </section>
@@ -1578,8 +1578,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="subtle" style="margin-bottom:12px">Calls blocked from login on this node, including matching SSID variants.</div>
               <div class="tablewrap">
                 <table>
-                  <thead><tr><th>Callsign</th><th>Home Node</th><th>Block Reason</th><th>Blocked</th></tr></thead>
-                  <tbody id="blockedRows"><tr><td colspan="4">Loading blocked users...</td></tr></tbody>
+                  <thead><tr><th>Callsign</th><th>Home Node</th><th>Block Reason</th><th>Blocked</th><th>Last Path</th></tr></thead>
+                  <tbody id="blockedRows"><tr><td colspan="5">Loading blocked users...</td></tr></tbody>
                 </table>
               </div>
             </section>
@@ -1594,8 +1594,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               </div>
               <div class="tablewrap">
                 <table>
-                  <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>Post</th><th>Last Login</th></tr></thead>
-                  <tbody id="userRows"><tr><td colspan="9">Loading local users...</td></tr></tbody>
+                  <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>Post</th><th>Last Login</th><th>Last Path</th></tr></thead>
+                  <tbody id="userRows"><tr><td colspan="8">Loading local users...</td></tr></tbody>
                 </table>
               </div>
             </section>
@@ -1745,8 +1745,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <h3>Recent Spots</h3>
             <div class="tablewrap">
               <table>
-                <thead><tr><th>Freq</th><th>DX</th><th>When</th><th>Spotter</th><th>Info</th></tr></thead>
-                <tbody id="spotRows"><tr><td colspan="5">Loading spots...</td></tr></tbody>
+                <thead><tr><th>Freq</th><th>DX</th><th>When</th><th>Spotter</th><th>Info</th><th>Node</th></tr></thead>
+                <tbody id="spotRows"><tr><td colspan="6">Loading spots...</td></tr></tbody>
               </table>
             </div>
           </section>
@@ -2170,7 +2170,7 @@ function setPeerRows(peers) {
 function setSpotRows(spots) {
   const body = byId('spotRows');
   if (!Array.isArray(spots) || !spots.length) {
-    body.innerHTML = '<tr><td colspan="5">No spots stored yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="6">No spots stored yet.</td></tr>';
     return;
   }
   body.innerHTML = spots.map((spot) => `<tr>
@@ -2179,6 +2179,7 @@ function setSpotRows(spots) {
     <td>${esc(fmtEpoch(spot.epoch))}</td>
     <td>${esc(spot.spotter || '')}</td>
     <td>${esc(spot.info || '')}</td>
+    <td>${esc(spot.source_node || '-')}</td>
   </tr>`).join('');
 }
 function setAuditRows(rows) {
@@ -2373,7 +2374,7 @@ function anyPostingEnabled(access) {
 function setSysopRows(rows) {
   const body = byId('sysopRows');
   if (!Array.isArray(rows) || !rows.length) {
-    body.innerHTML = '<tr><td colspan="5">No System Operators registered yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="6">No System Operators registered yet.</td></tr>';
     return;
   }
   body.innerHTML = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
@@ -2382,6 +2383,7 @@ function setSysopRows(rows) {
     <td>${esc(row.email || '-')}</td>
     <td>${seenText(!!row.telnet_online, String(row.last_login_peer || '').toLowerCase().startsWith('sysop-web') ? 0 : row.last_login_epoch, 'Telnet session active now', `Last telnet login${row.last_login_peer ? ` via ${row.last_login_peer}` : ''}`)}</td>
     <td>${seenText(!!row.web_online, String(row.last_login_peer || '').toLowerCase().startsWith('sysop-web') ? row.last_login_epoch : 0, 'System Operator web session active now', `Last System Operator web login${row.last_login_peer ? ` via ${row.last_login_peer}` : ''}`)}</td>
+    <td>${esc(row.last_login_peer || '-')}</td>
   </tr>`).join('');
   bindSelectableRows(body, rows);
 }
@@ -2436,7 +2438,7 @@ function setBlockedRows(payload) {
   const body = byId('blockedRows');
   const rows = Array.isArray(payload && payload.rows) ? payload.rows : [];
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="4">No blocked users match this filter.</td></tr>';
+    body.innerHTML = '<tr><td colspan="5">No blocked users match this filter.</td></tr>';
     return;
   }
   body.innerHTML = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
@@ -2444,6 +2446,7 @@ function setBlockedRows(payload) {
     <td>${esc(row.home_node || '-')}</td>
     <td>${esc(row.blocked_reason || 'Blocked by local policy')}</td>
     <td>${esc(fmtEpoch(row.updated_epoch))}</td>
+    <td>${esc(row.last_login_peer || '-')}</td>
   </tr>`).join('');
   bindSelectableRows(body, rows);
 }
@@ -2459,7 +2462,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
   if (prevId && byId(prevId)) byId(prevId).disabled = offset <= 0;
   if (nextId && byId(nextId)) byId(nextId).disabled = offset + limit >= total;
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="7">${esc(emptyText)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8">${esc(emptyText)}</td></tr>`;
     return;
   }
   body.innerHTML = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
@@ -2470,6 +2473,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
     <td title="${esc(row.last_login_peer || 'No recorded web login path')}">${mark(!!(((row.access || {}).web || {}).login), 'Web login allowed', 'Web login blocked')}</td>
     <td>${mark(anyPostingEnabled(row.access), 'Posting allowed on one or more channels', 'Posting disabled on all channels')}</td>
     <td title="${esc(row.last_login_peer || 'No recorded inbound path')}">${esc(fmtEpoch(row.last_login_epoch))}</td>
+    <td>${esc(row.last_login_peer || '-')}</td>
   </tr>`).join('');
   bindSelectableRows(body, rows);
 }

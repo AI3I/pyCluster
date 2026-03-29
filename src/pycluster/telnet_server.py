@@ -21,7 +21,7 @@ from .config import AppConfig, node_presentation_defaults, parse_telnet_ports
 from .ctydat import load_cty, lookup
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .models import Spot, display_call, is_valid_call, normalize_call
-from .pathmeta import describe_session_path
+from .pathmeta import describe_session_path, normalize_recorded_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
 from .shdx import BAND_RANGES, parse_sh_dx_args
 from .spot_throttle import (
@@ -4203,7 +4203,7 @@ class TelnetClusterServer:
                     lines.append(f"  {k}={v}")
             if show_logininfo:
                 lines.append(f"  Last Login: {self._fmt_epoch_short(int(row['last_login_epoch'] or 0))}")
-                lines.append(f"  Last Peer: {row['last_login_peer'] or '(none)'}")
+                lines.append(f"  Last Peer: {normalize_recorded_path(str(row['last_login_peer'] or '')) or '(none)'}")
             return await self._format_console_lines(_call, lines)
         rows = await self.store.list_user_registry(limit=500)
         if not rows:
@@ -4875,7 +4875,7 @@ class TelnetClusterServer:
         if not row:
             return f"No local path record for {target}.\r\n"
         last_epoch = int(row["last_login_epoch"] or 0)
-        last_peer = str(row["last_login_peer"] or "").strip() or "(none)"
+        last_peer = normalize_recorded_path(str(row["last_login_peer"] or "").strip()) or "(none)"
         lines = [
             f"Path for {target}:",
             f"  last_login={self._fmt_epoch_short(last_epoch) if last_epoch else '(never)'}",
