@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
 import ipaddress
 from urllib.parse import urlparse
+
+_SOCKET_TUPLE_RE = re.compile(r"\('([^']+)',\s*([0-9]+)(?:,\s*[0-9]+,\s*[0-9]+)?\)")
 
 
 def _host_kind(host: str) -> str:
@@ -86,3 +89,18 @@ def describe_transport_dsn(dsn: str) -> tuple[str, str]:
             return "ax25_socket", f"{src}->{dst}"
         return "ax25_socket", src or dst
     return scheme or "transport", raw
+
+
+def normalize_recorded_path(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    def _replace(match: re.Match[str]) -> str:
+        host = match.group(1)
+        port = int(match.group(2))
+        endpoint = format_endpoint((host, port))
+        kind = _host_kind(host)
+        return f"{kind} {endpoint}".strip()
+
+    return _SOCKET_TUPLE_RE.sub(_replace, raw)

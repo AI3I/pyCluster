@@ -381,6 +381,7 @@ Columns:
 - `When`
 - `Spotter`
 - `Info`
+- `Node`
 
 ### Recent Audit
 
@@ -420,6 +421,18 @@ Current bans show:
 - IP
 
 This area is the main operator-facing view for login abuse and automatic bans.
+
+## User and Login Visibility
+
+The user-management tables now surface recorded login path data directly in the table view.
+
+Visible columns now include:
+
+- `Last Path` for `System Operators`
+- `Last Path` for `Blocked Users`
+- `Last Path` for `Local Users`
+
+This is intended to expose the recorded interface, source address, listener port, and related path detail without requiring hover-only inspection.
 
 ## Operational Notes
 
