@@ -88,6 +88,7 @@ Operator-facing browser console.
 Get the code with SSH:
 
 ```bash
+cd /usr/src
 git clone git@github.com:AI3I/pyCluster.git
 cd pyCluster
 ```
@@ -95,6 +96,7 @@ cd pyCluster
 Or with HTTPS:
 
 ```bash
+cd /usr/src
 git clone https://github.com/AI3I/pyCluster.git
 cd pyCluster
 ```
@@ -121,6 +123,9 @@ Deploy on a supported Linux host:
 sudo ./deploy/install.sh
 sudo ./deploy/doctor.sh
 ```
+
+For a host-level install, cloning into `/usr/src/pyCluster` is the recommended layout.
+The deploy scripts create the `pycluster` system user and group automatically; the installer does not require the operator to create that account first.
 
 Upgrade an existing deployment:
 

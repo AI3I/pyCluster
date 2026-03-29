@@ -88,9 +88,19 @@ pycluster --config ./config/pycluster.toml serve
 From the repo root:
 
 ```bash
+cd /usr/src
+git clone git@github.com:AI3I/pyCluster.git
+cd pyCluster
 sudo ./deploy/install.sh
 sudo ./deploy/doctor.sh
 ```
+
+Recommended layout for a host-level install:
+
+- checkout under `/usr/src/pyCluster`
+- let `deploy/install.sh` create the `pycluster` system user and group automatically
+
+There is no separate pre-install account creation step for the operator to perform.
 
 This installs:
 
