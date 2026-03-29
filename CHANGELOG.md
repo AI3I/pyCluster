@@ -2,6 +2,8 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.3 - Unreleased
+
 ## 1.0.2 - 2026-03-29
 
 ### Added
