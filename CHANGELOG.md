@@ -34,6 +34,7 @@ All notable changes to pyCluster should be recorded here.
 - sysop web `Non-Authenticated` defaults now match the enforced access policy in the access matrix
 - sysop user and peer views now surface normalized inbound path and transport details, including source and destination ports (`#30`)
 - `show/shortcuts` now presents canonical camelcase-style shorthand boundaries more explicitly, and the one-letter `b` alias is accepted for `bye` (`#22`)
+- spot posting can now be rate-limited per user across telnet, public web, and sysop web, with shared defaults and sysop overrides (`#31`)
 
 ## 1.0.1 - 2026-03-28
 
