@@ -139,7 +139,7 @@ sh/dx day 2
 
 | Command | Purpose |
 |---|---|
-| `accept/spots <expr>` | Add an accept rule for spots. |
+| `accept/spots <expr>` | Add an accept rule for spots. Supports expressions such as `on 20m`, `by K1*`, `call_zone 5`, `call_itu 9`, and `call_dxcc canada`. |
 | `reject/spots <expr>` | Add a reject rule for spots. |
 | `clear/spots` | Clear spot filter rules. |
 | `accept/rbn <expr>` | Add an RBN-focused accept rule for spot traffic. |

@@ -206,6 +206,9 @@ Examples:
 ```text
 accept/spots 20m
 reject/spots FT8
+accept/spots call_zone 5
+accept/spots call_itu 9
+accept/spots call_dxcc canada
 clear/spots
 accept/rbn CQ
 reject/rbn TEST
@@ -223,6 +226,7 @@ Filters are useful when:
 - a band or mode is too noisy
 - you only want certain activity types
 - you want special handling for RBN-style spot traffic
+- you want entity-aware spot filtering by CQ zone, ITU zone, or DXCC entity name/prefix
 
 ## 7. Buddy Lists and User Data
 
