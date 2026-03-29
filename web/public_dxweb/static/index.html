@@ -349,6 +349,7 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .stats-rng-btn:hover { color:var(--text-primary); border-color:var(--text-muted); }
 .stats-rng-btn.active { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
 .stats-scroll { padding:20px; display:flex; flex-direction:column; gap:20px; }
+.bulletins-scroll { padding:20px; display:flex; flex-direction:column; gap:20px; overflow:auto; }
 .stats-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
 .stats-grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:20px; }
 .stat-card {
@@ -387,6 +388,21 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .rank-table .rbar  { width:72px; }
 .rbar-track { height:6px; background:var(--border-main); border-radius:3px; overflow:hidden; }
 .rbar-fill  { height:6px; border-radius:3px; background:var(--accent); opacity:.65; transition:width .4s; }
+.bulletin-toolbar { display:flex; gap:8px; flex-wrap:wrap; }
+.bulletin-toolbar button { padding:4px 10px; border-radius:999px; border:1px solid var(--border-btn); background:var(--bg-btn); color:var(--text-secondary); font-size:.72rem; font-weight:700; cursor:pointer; }
+.bulletin-toolbar button.active { color:var(--accent); border-color:var(--accent); background:rgba(88,166,255,.12); }
+.bulletin-list { display:flex; flex-direction:column; gap:10px; }
+.bulletin-item { background:var(--bg-card); border:1px solid var(--border-card); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px; }
+.bulletin-head { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.bulletin-meta { display:flex; gap:10px; flex-wrap:wrap; color:var(--text-dim); font-size:.72rem; }
+.bulletin-body { color:var(--text-primary); font-size:.82rem; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+.bulletin-cat { display:inline-block; border-radius:999px; padding:3px 8px; font-size:.64rem; font-weight:800; text-transform:uppercase; letter-spacing:.06em; }
+.bulletin-cat.chat { color:#67e8f9; background:#67e8f922; border:1px solid #67e8f955; }
+.bulletin-cat.announce { color:#f59e0b; background:#f59e0b22; border:1px solid #f59e0b55; }
+.bulletin-cat.wx { color:#22c55e; background:#22c55e22; border:1px solid #22c55e55; }
+.bulletin-cat.wcy { color:#a78bfa; background:#a78bfa22; border:1px solid #a78bfa55; }
+.bulletin-cat.wwv { color:#fb7185; background:#fb718522; border:1px solid #fb718555; }
+.bulletin-empty { color:var(--text-muted); font-size:.8rem; padding:18px 4px; }
 
 /* ================================================================ propagation page */
 #page-propagation { overflow-y:auto; }
@@ -947,6 +963,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 <!-- ============================================================ PAGE NAV -->
 <div id="page-nav">
   <button class="page-tab active" data-page="spots">&#128225; Spots</button>
+  <button class="page-tab" data-page="bulletins">&#128240; Bulletins</button>
   <button class="page-tab" data-page="stats">&#128202; Stats</button>
   <button class="page-tab" data-page="propagation">&#9728;&#65039; Propagation</button>
   <button class="page-tab" data-page="cluster">&#127760; Cluster</button>
@@ -1282,6 +1299,26 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
   </div><!-- #content -->
 </div><!-- #page-spots -->
 
+<!-- ============================================================ PAGE: BULLETINS -->
+<div id="page-bulletins" class="page-content">
+  <div class="bulletins-scroll">
+    <div class="stat-card">
+      <h3>Cluster Bulletins <span class="card-badge" id="bulletins-badge">loading…</span></h3>
+      <div class="bulletin-toolbar" id="bulletin-toolbar">
+        <button class="active" data-bcat="all">All</button>
+        <button data-bcat="announce">Announce</button>
+        <button data-bcat="chat">Chat</button>
+        <button data-bcat="wx">WX</button>
+        <button data-bcat="wcy">WCY</button>
+        <button data-bcat="wwv">WWV</button>
+      </div>
+      <div id="bulletin-list" class="bulletin-list">
+        <div class="bulletin-empty">Loading bulletins…</div>
+      </div>
+    </div>
+  </div>
+</div><!-- #page-bulletins -->
+
 <!-- ============================================================ PAGE: STATS -->
 <div id="page-stats" class="page-content">
   <div class="stats-scroll">
@@ -1560,6 +1597,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 <script>
 // ================================================================ Config
 const API    = '/api/spots';
+const BULLETINS = '/api/bulletins';
 const STATS  = '/api/stats';
 const LEADER = '/api/leaderboard';
 const SOLAR  = '/api/solar';
@@ -1662,6 +1700,7 @@ document.querySelectorAll('.page-tab').forEach(tab => {
     currentPage = tab.dataset.page;
     document.getElementById(`page-${currentPage}`).classList.add('active');
     if (currentPage === 'spots' && mapVisible) setTimeout(() => map.invalidateSize(), 10);
+    if (currentPage === 'bulletins') renderBulletinsPage();
     if (currentPage === 'stats') renderStatsPage();
     if (currentPage === 'propagation') renderPropPage();
     if (currentPage === 'cluster') renderClusterPage();
@@ -1682,6 +1721,8 @@ let commentTagFilter = 'ALL';
 let timeRangeHrs = 24;
 let searchTerm  = '';
 let allSpots    = [];
+let allBulletins = [];
+let bulletinCategory = 'all';
 let mapVisible  = true;
 let highlightId = null;
 let wsRetryTimer= null;
@@ -1710,6 +1751,7 @@ function activateMainPage(page) {
   document.querySelectorAll('.page-content').forEach(p => p.classList.toggle('active', p.id === `page-${target}`));
   currentPage = target;
   if (currentPage === 'spots' && mapVisible) setTimeout(() => map.invalidateSize(), 10);
+  if (currentPage === 'bulletins') renderBulletinsPage();
   if (currentPage === 'stats') renderStatsPage();
   if (currentPage === 'propagation') renderPropPage();
   if (currentPage === 'cluster') renderClusterPage();
@@ -1937,6 +1979,58 @@ function applyOperatorState() {
   updateFooterUser();
 }
 
+function fmtBulletinTime(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toISOString().replace('T', ' ').slice(0, 16) + 'Z';
+  } catch {
+    return '';
+  }
+}
+
+function filteredBulletins() {
+  return bulletinCategory === 'all'
+    ? allBulletins
+    : allBulletins.filter(row => row.category === bulletinCategory);
+}
+
+function renderBulletinsPage() {
+  const list = document.getElementById('bulletin-list');
+  const badge = document.getElementById('bulletins-badge');
+  if (!list || !badge) return;
+  const rows = filteredBulletins();
+  badge.textContent = `${rows.length} shown`;
+  if (!rows.length) {
+    list.innerHTML = '<div class="bulletin-empty">No bulletin traffic in this category yet.</div>';
+    return;
+  }
+  list.innerHTML = rows.map(row => `
+    <article class="bulletin-item">
+      <div class="bulletin-head">
+        <span class="bulletin-cat ${esc(row.category)}">${esc(row.category)}</span>
+        <div class="bulletin-meta">
+          <span>${esc(fmtBulletinTime(row.time))}</span>
+          <span>${esc(row.sender || '')}</span>
+          <span>${esc(row.scope || '')}</span>
+        </div>
+      </div>
+      <div class="bulletin-body">${esc(row.body || '')}</div>
+    </article>
+  `).join('');
+}
+
+async function loadBulletins() {
+  try {
+    allBulletins = await fetch(`${BULLETINS}?category=all&limit=150`).then(r => r.json());
+    if (currentPage === 'bulletins') renderBulletinsPage();
+  } catch {
+    const badge = document.getElementById('bulletins-badge');
+    const list = document.getElementById('bulletin-list');
+    if (badge) badge.textContent = 'unavailable';
+    if (list && currentPage === 'bulletins') list.innerHTML = '<div class="bulletin-empty">Bulletin feed unavailable.</div>';
+  }
+}
+
 async function webJson(url, opts={}) {
   const headers = Object.assign({}, opts.headers || {});
   if (webToken) headers['X-Web-Token'] = webToken;
@@ -2063,6 +2157,7 @@ async function submitPublicAction(kind) {
       body:JSON.stringify(payload)
     });
     document.getElementById('post-text').value = '';
+    loadBulletins();
     opSetStatus(`${kind.toUpperCase()} posted by ${webCall}.`, true);
   } catch (err) {
     opSetStatus(err.message || `${kind} failed.`, false);
@@ -3118,6 +3213,7 @@ function switchPage(name) {
   document.querySelectorAll('.page-content').forEach(p=>p.classList.toggle('active',p.id===`page-${name}`));
   currentPage = name;
   if (name==='spots'&&mapVisible) setTimeout(()=>map.invalidateSize(),10);
+  if (name==='bulletins') renderBulletinsPage();
 }
 
 // ================================================================ Solar / Propagation
@@ -4108,6 +4204,15 @@ document.getElementById('post-wcy-btn')?.addEventListener('click', () => {
 document.getElementById('post-wwv-btn')?.addEventListener('click', () => {
   submitPublicAction('wwv');
 });
+document.querySelectorAll('#bulletin-toolbar [data-bcat]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    bulletinCategory = btn.dataset.bcat || 'all';
+    document.querySelectorAll('#bulletin-toolbar [data-bcat]').forEach(other => {
+      other.classList.toggle('active', other === btn);
+    });
+    renderBulletinsPage();
+  });
+});
 document.getElementById('op-pass')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') loginOperator();
 });
@@ -4126,6 +4231,7 @@ document.getElementById('post-text')?.addEventListener('keydown', e => {
   await restoreWebSession();
   await loadBranding();
   await fetchSpots();
+  await loadBulletins();
   loadStats();
   loadLeaderboard();
   loadSolar();
@@ -4134,6 +4240,7 @@ document.getElementById('post-text')?.addEventListener('keydown', e => {
   connectWS();
   setInterval(loadStats, 120000);
   setInterval(loadLeaderboard, 120000);
+  setInterval(loadBulletins, 120000);
   setInterval(loadSolar, 600000);
   setInterval(loadHistory, 3600000);
   setInterval(loadNodes, 300000);
