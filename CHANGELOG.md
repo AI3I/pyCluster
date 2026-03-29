@@ -30,6 +30,8 @@ All notable changes to pyCluster should be recorded here.
 - sysop and public web UI polish continued, including cleanup controls, footer login/logout actions, and sidebar/runtime presentation
 - `deploy/upgrade.sh` now performs the 1.0.0 -> 1.0.1 state upgrade tasks automatically
 - protocol-health flapping detection no longer treats routine `PC24` traffic as a flap event, avoiding false flapping status in the sysop console (`#32`)
+- public web now exposes bulletin traffic on its own tab, including announce, chat, WX, WCY, and WWV activity (`#24`)
+- sysop web `Non-Authenticated` defaults now match the enforced access policy in the access matrix
 
 ## 1.0.1 - 2026-03-28
 

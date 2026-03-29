@@ -156,6 +156,23 @@ def test_public_web_spot_endpoints_and_static_root(tmp_path) -> None:
             assert hist[0]["date"] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
             assert hist[0]["spots"] == 2
             assert hist[0]["top_band"] in {"20m", "40m"}
+
+            await store.add_bulletin("announce", "AI3I", "FULL", now, "cluster announcement")
+            await store.add_bulletin("wcy", "AI3I", "LOCAL", now - 60, "wcy bulletin")
+
+            code, _, body = await _http_request(srv, "/api/bulletins?category=all&limit=10")
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert len(rows) == 2
+            assert rows[0]["category"] == "announce"
+            assert rows[0]["body"] == "cluster announcement"
+
+            code, _, body = await _http_request(srv, "/api/bulletins?category=wcy&limit=10")
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert len(rows) == 1
+            assert rows[0]["category"] == "wcy"
+            assert rows[0]["sender"] == "AI3I"
         finally:
             await store.close()
 
