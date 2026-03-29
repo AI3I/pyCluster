@@ -141,7 +141,7 @@ Access levels:
 
 Default behavior by level:
 
-- `Non-Authenticated`: login allowed, but spot and announce posting are off by default until access is explicitly granted
+- `Non-Authenticated`: login, chat, WX, WCY, and WWV remain allowed by default; spot and announce posting are off until access is explicitly granted
 - `Authenticated`: normal login and posting access
 - `System Operator`: sysop login plus full administrative access
 - `Blocked`: login denied for the base callsign and matching SSIDs

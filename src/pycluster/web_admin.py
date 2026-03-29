@@ -2410,7 +2410,13 @@ function applyPrivilegeDefaults(privilege) {
   }
   if (level === '') {
     setAccessMatrixAll(false);
-    ['telnet','web'].forEach((channel) => setAccessCapability(channel, 'login', true));
+    ['telnet','web'].forEach((channel) => {
+      setAccessCapability(channel, 'login', true);
+      setAccessCapability(channel, 'chat', true);
+      setAccessCapability(channel, 'wx', true);
+      setAccessCapability(channel, 'wcy', true);
+      setAccessCapability(channel, 'wwv', true);
+    });
     return;
   }
   if (level === 'user' || level === 'sysop') {
@@ -2701,7 +2707,7 @@ byId('newUser').onclick = async () => {
 byId('user_privilege').onchange = () => {
   const level = byId('user_privilege').value.trim();
   applyPrivilegeDefaults(level);
-  if (level === '') say('Non-Authenticated selected. Login remains allowed; posting stays disabled by default.');
+  if (level === '') say('Non-Authenticated selected. Login, chat, WX, WCY, and WWV remain allowed by default; spots and announcements stay disabled.');
   else if (level === 'blocked') say('Blocked selected. Cleared telnet and web access in the current form.');
   else say('Authenticated access defaults applied in the current form.');
 };

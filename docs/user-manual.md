@@ -255,6 +255,7 @@ User variables are useful for local preference-like data that does not belong in
 The public web UI gives users a browser interface for:
 
 - viewing live spots
+- browsing announcements, chat, WX, WCY, and WWV bulletins
 - cluster summary
 - watch rules
 - logging in to post

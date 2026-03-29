@@ -19,6 +19,25 @@ Features:
 - `RARE` badge support for selected entities
 - `All` reset button when a filter is active
 
+### Bulletins
+
+Recent non-spot traffic from the cluster.
+
+Shows:
+
+- announcements
+- chat/talk traffic
+- WX bulletins
+- WCY bulletins
+- WWV bulletins
+
+Features:
+
+- category tabs for quick filtering
+- most-recent-first ordering
+- sender, time, and scope metadata
+- automatic refresh after posting and on interval reloads
+
 ### Cluster
 
 Cluster overview without pretending to know a global topology it has not observed.

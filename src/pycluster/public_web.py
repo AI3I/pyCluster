@@ -542,6 +542,31 @@ class PublicWebServer:
             ]
         return payload[:limit]
 
+    async def _api_bulletins(self, q: dict[str, list[str]]) -> list[dict[str, object]]:
+        limit = self._parse_limit(q, "limit", 100, 1, 200)
+        category = str(q.get("category", ["all"])[0] or "all").strip().lower()
+        categories = ["announce", "chat", "wx", "wcy", "wwv"] if category in {"", "all", "*"} else [category]
+        rows = []
+        for cat in categories:
+            if cat not in {"announce", "chat", "wx", "wcy", "wwv"}:
+                continue
+            rows.extend(await self.store.list_bulletins(cat, limit=limit))
+        rows.sort(key=lambda row: (int(row["epoch"]), int(row["id"])), reverse=True)
+        out: list[dict[str, object]] = []
+        for row in rows[:limit]:
+            out.append(
+                {
+                    "id": int(row["id"]),
+                    "category": str(row["category"]),
+                    "sender": display_call(str(row["sender"])),
+                    "scope": str(row["scope"]),
+                    "epoch": int(row["epoch"]),
+                    "time": datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).isoformat(),
+                    "body": str(row["body"]),
+                }
+            )
+        return out
+
     async def _api_stats(self) -> dict[str, object]:
         cutoff = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp())
         rows = await self.store.latest_spots(limit=500)
@@ -959,6 +984,12 @@ class PublicWebServer:
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
                 await self._write_response(writer, 200, self._json(await self._api_spots(q)))
+                return
+            if path == "/api/bulletins":
+                if method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                await self._write_response(writer, 200, self._json(await self._api_bulletins(q)))
                 return
             if path == "/api/profile":
                 if method != "POST":
