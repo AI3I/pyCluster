@@ -33,6 +33,7 @@ All notable changes to pyCluster should be recorded here.
 - public web now exposes bulletin traffic on its own tab, including announce, chat, WX, WCY, and WWV activity (`#24`)
 - sysop web `Non-Authenticated` defaults now match the enforced access policy in the access matrix
 - sysop user and peer views now surface normalized inbound path and transport details, including source and destination ports (`#30`)
+- `show/shortcuts` now presents canonical camelcase-style shorthand boundaries more explicitly, and the one-letter `b` alias is accepted for `bye` (`#22`)
 
 ## 1.0.1 - 2026-03-28
 

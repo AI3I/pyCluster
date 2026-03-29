@@ -39,6 +39,8 @@ apropos route
 
 `show/commands` lists real commands grouped by family. Use `show/commands set` or `show/commands route` to narrow the list.
 
+`show/shortcuts` now presents the supported shorthand boundary explicitly. Capital letters mark the abbreviation pyCluster guarantees, for example `SHow/USers` or `SEt/PAge`.
+
 Those commands are privilege-aware, so ordinary users are not flooded with sysop-only actions.
 
 ## Everyday Commands
