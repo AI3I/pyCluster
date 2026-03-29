@@ -781,6 +781,28 @@ class TelnetClusterServer:
                 return fnmatch.fnmatchcase(d, pat)
             return d.startswith(pat)
 
+        if first == "call_zone" and rest:
+            ent = lookup(dx_call) if self._cty_loaded else None
+            if not ent:
+                return False
+            wanted = {
+                int(tok)
+                for tok in re.split(r"[,\s]+", rest)
+                if tok.strip().isdigit()
+            }
+            return bool(wanted) and ent.cq_zone in wanted
+
+        if first == "call_itu" and rest:
+            ent = lookup(dx_call) if self._cty_loaded else None
+            if not ent:
+                return False
+            wanted = {
+                int(tok)
+                for tok in re.split(r"[,\s]+", rest)
+                if tok.strip().isdigit()
+            }
+            return bool(wanted) and ent.itu_zone in wanted
+
         if first == "info" and rest:
             return rest in (info or "").lower()
 

@@ -41,6 +41,8 @@ def _write_cty(tmp_path: Path) -> str:
     path.write_text(
         "United States: 5: 8: NA: 37.0: 95.0: 5.0: K:\n"
         " K, N, W, =K1ABC;\n"
+        "Canada: 5: 9: NA: 45.0: 73.0: 5.0: VE:\n"
+        " VE, =VE3XYZ;\n"
         "Japan: 25: 45: AS: 35.0: 139.0: -9.0: JA:\n"
         " JA, 7K;\n",
         encoding="ascii",
@@ -1501,6 +1503,48 @@ def test_show_dx_applies_spot_filters(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/dx 20")
             assert "W1AW" in out
             assert "K3LR" not in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_spot_filters_support_call_zone_and_call_itu(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "spot_filter_zones.db")
+        cfg = _mk_config(db)
+        cfg.public_web.cty_dat_path = _write_cty(tmp_path)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        w1 = _DummyWriter()
+        srv._sessions[1] = Session(call="N0CALL", writer=w1, connected_at=datetime.now(timezone.utc))
+        try:
+            await srv._execute_command("N0CALL", "accept/spots 1 call_zone 5")
+            now = int(datetime.now(timezone.utc).timestamp())
+            allow = Spot(14074.0, "VE3XYZ", now, "FT8", "K1AAA", "N2WQ-1", "")
+            deny = Spot(14074.0, "JA1ABC", now, "FT8", "K1AAA", "N2WQ-1", "")
+            await srv.publish_spot(allow)
+            assert b"VE3XYZ" in bytes(w1.buffer)
+            before = len(w1.buffer)
+            await srv.publish_spot(deny)
+            assert len(w1.buffer) == before
+
+            _, out = await srv._execute_command("N0CALL", "show/filter test spots --verbose 14074 VE3XYZ K1AAA FT8")
+            assert "Decision: allow" in out
+            assert "Winning Rule: matched=accept slot=1 expr=call_zone 5" in out
+
+            await srv._execute_command("N0CALL", "clear/spots")
+            await srv._execute_command("N0CALL", "accept/spots 1 call_itu 9")
+            before = len(w1.buffer)
+            await srv.publish_spot(allow)
+            assert b"VE3XYZ" in bytes(w1.buffer[before:])
+            before = len(w1.buffer)
+            await srv.publish_spot(Spot(14074.0, "JA1ABC", now, "FT8", "K1AAA", "N2WQ-1", ""))
+            assert len(w1.buffer) == before
+
+            _, out = await srv._execute_command("N0CALL", "show/filter test spots --verbose 14074 VE3XYZ K1AAA FT8")
+            assert "Decision: allow" in out
+            assert "Winning Rule: matched=accept slot=1 expr=call_itu 9" in out
         finally:
             await store.close()
 
