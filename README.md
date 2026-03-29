@@ -131,19 +131,19 @@ The installed runtime tree is placed under `/home/pycluster/pyCluster`.
 Typical deployed layout:
 
 ```text
-/usr/src/pyCluster                 # admin-managed checkout used for install/upgrade
-/home/pycluster/pyCluster/        # live runtime tree
+/usr/src/pyCluster                  # administrator managed checkout used for install/upgrade
+/home/pycluster/pyCluster/          # live runtime tree
 ├── config/
-│   ├── pycluster.toml            # active node config
-│   └── strings.toml              # hot-reloadable operator text
+│   ├── pycluster.toml              # active node configuration
+│   └── strings.toml                # hot-reloadable operator text
 ├── data/
-│   └── pycluster.db              # live SQLite database
+│   └── pycluster.db                # live SQLite database
 ├── logs/
-│   └── proto/                    # protocol trace logs
-└── src/                          # installed application code
+│   └── proto/                      # protocol (PCxx) trace logs
+└── src/                            # installed application code
 
-/var/log/pycluster/authfail.log   # auth-failure log watched by fail2ban
-/root/pycluster-initial-sysop.txt # bootstrap SYSOP credentials note
+/var/log/pycluster/authfail.log     # authentication failure log watched by fail2ban
+/root/pycluster-initial-sysop.txt   # bootstrap SYSOP credentials note (needed post-install!)
 ```
 
 Upgrade an existing deployment:
