@@ -39,6 +39,7 @@ pyCluster tries to solve more network-protection problems in the core instead of
 That includes:
 
 - built-in duplicate and loop-resistant behavior
+- multi-link node connectivity that usually does not require hand-written defensive route filters just to be safe
 - protocol-health visibility and policy-drop accounting
 - peer cleanup and safer default link behavior
 - optional filters and policy controls for unusual cases, without making them mandatory for normal operation
