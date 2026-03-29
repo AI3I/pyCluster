@@ -4564,3 +4564,36 @@ def test_telnet_server_supports_multiple_listener_ports(tmp_path) -> None:
             await store.close()
 
     asyncio.run(run())
+
+
+def test_sysop_spotlimit_enforces_telnet_post_throttle(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "spotlimit_telnet.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="AI3I", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        srv._sessions[2] = Session(call="K1ABC", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I", now, privilege="sysop")
+            await store.upsert_user_registry("K1ABC", now, privilege="user")
+
+            _, out = await srv._execute_command("AI3I", "sysop/spotlimit default 2 300")
+            assert "max=2" in out
+
+            _, out = await srv._execute_command("AI3I", "sysop/spotlimit K1ABC")
+            assert "Max Per Window: 2" in out
+            assert "Window Seconds: 300" in out
+
+            _, out = await srv._execute_command("K1ABC", "dx 14074.0 N0TST one")
+            assert "Spot posted" in out
+            _, out = await srv._execute_command("K1ABC", "dx 14075.0 N0TSU two")
+            assert "Spot posted" in out
+            _, out = await srv._execute_command("K1ABC", "dx 14076.0 N0TSV three")
+            assert "rate limited" in out
+            assert await store.count_spots() == 2
+        finally:
+            await store.close()
+
+    asyncio.run(run())

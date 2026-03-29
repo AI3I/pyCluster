@@ -154,6 +154,58 @@ def test_web_login_and_spot_post(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_spot_throttle_returns_429(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_spot_throttle.db")
+        cfg = _mk_config(db, admin_token="")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, privilege="user")
+        await store.set_user_pref("N0CALL", "password", "pw1", now)
+        await store.set_user_pref(cfg.node.node_call, "spot_throttle.max_per_window", "1", now)
+        await store.set_user_pref(cfg.node.node_call, "spot_throttle.window_seconds", "300", now)
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "N0CALL", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 200
+            tok = json.loads(body.decode("utf-8"))["token"]
+
+            code, _, _ = await _http_request(
+                srv,
+                "POST",
+                "/api/spot",
+                headers={"Content-Type": "application/json", "X-Web-Token": tok},
+                body=json.dumps({"freq_khz": 14074.0, "dx_call": "K1ABC", "info": "FT8"}).encode("utf-8"),
+            )
+            assert code == 200
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/spot",
+                headers={"Content-Type": "application/json", "X-Web-Token": tok},
+                body=json.dumps({"freq_khz": 14075.0, "dx_call": "K1ABD", "info": "FT8"}).encode("utf-8"),
+            )
+            assert code == 429
+            resp = json.loads(body.decode("utf-8"))
+            assert resp["error"] == "spot rate limit exceeded"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_access_policy_controls_login_and_posting(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_access_policy.db")

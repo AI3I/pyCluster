@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS spots (
 );
 CREATE INDEX IF NOT EXISTS idx_spots_epoch ON spots(epoch DESC);
 CREATE INDEX IF NOT EXISTS idx_spots_dx_call ON spots(dx_call);
+CREATE INDEX IF NOT EXISTS idx_spots_spotter_epoch ON spots(spotter, epoch DESC);
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -425,6 +426,24 @@ class SpotStore:
             cur = self._conn.execute(
                 "SELECT COUNT(*) AS c FROM spots WHERE dx_call LIKE ?",
                 (p + "%",),
+            )
+            row = cur.fetchone()
+            return int(row["c"]) if row else 0
+
+    async def count_recent_spots_by_spotter(self, spotter: str, cutoff_epoch: int) -> int:
+        target = (spotter or "").strip().upper()
+        if not target:
+            return 0
+        base = target.split("-", 1)[0]
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM spots
+                WHERE epoch >= ?
+                  AND (spotter = ? OR spotter LIKE ?)
+                """,
+                (int(cutoff_epoch), base, base + "-%"),
             )
             row = cur.fetchone()
             return int(row["c"]) if row else 0

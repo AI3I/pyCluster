@@ -341,6 +341,7 @@ These commands require sysop privilege and are hidden from ordinary command list
 | `sysop/sysops` | Show system operators. |
 | `sysop/access <call>` | Show a per-user channel/capability access matrix. |
 | `sysop/path <call\|peer>` | Show the recorded inbound path for a user or the live transport path for a peer. |
+| `sysop/spotlimit <default\|call> [off\|default\|<max_per_window> [window_seconds]]` | Show or set DX spot posting limits, including node defaults and per-user overrides. |
 | `sysop/setaccess <call> <channel\|all> <capability\|all> <on\|off>` | Change user access policy. |
 | `sysop/audit [category] [limit]` | Show recent operator audit events. |
 | `sysop/services` | Show service-level state exposed by the core app. |
@@ -356,6 +357,7 @@ Prompt template tokens:
 Default access note:
 
 - `Non-Authenticated` users may log in, but DX spot posting and announce posting are off by default until a sysop changes access level or applies an explicit `sysop/setaccess` override.
+- DX spot posting can also be throttled separately from access control. Use `sysop/spotlimit default` to inspect node defaults and `sysop/spotlimit <call>` to inspect or override one user.
 
 Solar/sky views use the operator's stored QRA when available and fall back to the node grid square.
 

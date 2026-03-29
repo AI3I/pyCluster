@@ -544,3 +544,52 @@ def test_public_web_blocked_login_is_denied(tmp_path) -> None:
             await store.close()
 
     asyncio.run(run())
+
+
+def test_public_web_spot_throttle_returns_429(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_spot_throttle.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref(cfg.node.node_call, "spot_throttle.max_per_window", "1", now)
+        await store.set_user_pref(cfg.node.node_call, "spot_throttle.window_seconds", "300", now)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            token = json.loads(body.decode("utf-8"))["token"]
+
+            code, _, _ = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/spot",
+                json.dumps({"freq_khz": 14074.0, "dx_call": "N0TST", "info": "one"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/spot",
+                json.dumps({"freq_khz": 14075.0, "dx_call": "N0TSU", "info": "two"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 429
+            resp = json.loads(body.decode("utf-8"))
+            assert resp["error"] == "spot rate limit exceeded"
+            assert resp["limit"]["max_per_window"] == 1
+            assert resp["limit"]["window_seconds"] == 300
+        finally:
+            await store.close()
+
+    asyncio.run(run())
