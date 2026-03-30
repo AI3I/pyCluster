@@ -6784,7 +6784,7 @@ class TelnetClusterServer:
         return f"Peer {peer} was not found.\r\n"
 
     async def _cmd_links(self, call: str, arg: str | None) -> str:
-        return await self._cmd_show_connect(call, arg)
+        return await self._cmd_show_links(call, arg)
 
     async def _cmd_announce(self, call: str, arg: str | None, scope: str = "LOCAL") -> str:
         denied = await self._require_access(call, "telnet", "announce", "announce")
