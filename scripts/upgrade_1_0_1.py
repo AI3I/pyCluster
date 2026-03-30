@@ -33,8 +33,18 @@ def _build_parser() -> argparse.ArgumentParser:
 def _migrate_passwords(sqlite_path: str) -> int:
     conn = sqlite3.connect(sqlite_path)
     try:
+        info = conn.execute("PRAGMA table_info(user_prefs)").fetchall()
+        columns = {str(row[1]) for row in info}
+        if {"call", "pref_key", "pref_value"} <= columns:
+            key_col = "pref_key"
+            value_col = "pref_value"
+        elif {"call", "key", "value"} <= columns:
+            key_col = "key"
+            value_col = "value"
+        else:
+            return 0
         cur = conn.execute(
-            "SELECT call, key, value FROM user_prefs WHERE key = 'password'"
+            f"SELECT call, {key_col}, {value_col} FROM user_prefs WHERE {key_col} = 'password'"
         )
         rows = cur.fetchall()
         updated = 0
@@ -43,7 +53,7 @@ def _migrate_passwords(sqlite_path: str) -> int:
             if not raw or is_password_hash(raw):
                 continue
             conn.execute(
-                "UPDATE user_prefs SET value = ? WHERE call = ? AND key = ?",
+                f"UPDATE user_prefs SET {value_col} = ? WHERE call = ? AND {key_col} = ?",
                 (hash_password(raw), str(call), str(key)),
             )
             updated += 1
