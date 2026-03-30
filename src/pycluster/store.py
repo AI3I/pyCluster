@@ -33,7 +33,12 @@ CREATE TABLE IF NOT EXISTS messages (
     epoch INTEGER NOT NULL,
     body TEXT NOT NULL,
     read_epoch INTEGER,
-    parent_id INTEGER
+    parent_id INTEGER,
+    origin_node TEXT NOT NULL DEFAULT '',
+    route_node TEXT NOT NULL DEFAULT '',
+    delivery_state TEXT NOT NULL DEFAULT 'local',
+    delivered_epoch INTEGER,
+    error_text TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender, id DESC);
@@ -163,6 +168,20 @@ class SpotStore:
             self._conn.execute("ALTER TABLE user_registry ADD COLUMN last_login_peer TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+        for stmt in (
+            "ALTER TABLE messages ADD COLUMN origin_node TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE messages ADD COLUMN route_node TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'local'",
+            "ALTER TABLE messages ADD COLUMN delivered_epoch INTEGER",
+            "ALTER TABLE messages ADD COLUMN error_text TEXT NOT NULL DEFAULT ''",
+        ):
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_route_state ON messages(route_node, delivery_state, id ASC)"
+        )
         self._conn.commit()
 
     def _normalize_privilege(self, privilege: str | None) -> str:
@@ -472,14 +491,33 @@ class SpotStore:
         epoch: int,
         body: str,
         parent_id: int | None = None,
+        origin_node: str = "",
+        route_node: str = "",
+        delivery_state: str = "local",
+        delivered_epoch: int | None = None,
+        error_text: str = "",
     ) -> int:
         async with self._lock:
             cur = self._conn.execute(
                 """
-                INSERT INTO messages(sender, recipient, epoch, body, read_epoch, parent_id)
-                VALUES (?, ?, ?, ?, NULL, ?)
+                INSERT INTO messages(
+                    sender, recipient, epoch, body, read_epoch, parent_id,
+                    origin_node, route_node, delivery_state, delivered_epoch, error_text
+                )
+                VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
                 """,
-                (sender.upper(), recipient.upper(), epoch, body, parent_id),
+                (
+                    sender.upper(),
+                    recipient.upper(),
+                    epoch,
+                    body,
+                    parent_id,
+                    origin_node.upper(),
+                    route_node.upper(),
+                    delivery_state,
+                    delivered_epoch,
+                    error_text,
+                ),
             )
             self._conn.commit()
             return int(cur.lastrowid)
@@ -489,7 +527,8 @@ class SpotStore:
         async with self._lock:
             cur = self._conn.execute(
                 """
-                SELECT id, sender, recipient, epoch, body, read_epoch, parent_id
+                SELECT id, sender, recipient, epoch, body, read_epoch, parent_id,
+                       origin_node, route_node, delivery_state, delivered_epoch, error_text
                 FROM messages
                 WHERE recipient = ? OR recipient = 'ALL'
                 ORDER BY id DESC
@@ -503,7 +542,8 @@ class SpotStore:
         async with self._lock:
             cur = self._conn.execute(
                 """
-                SELECT id, sender, recipient, epoch, body, read_epoch, parent_id
+                SELECT id, sender, recipient, epoch, body, read_epoch, parent_id,
+                       origin_node, route_node, delivery_state, delivered_epoch, error_text
                 FROM messages
                 WHERE id = ? AND (recipient = ? OR recipient = 'ALL')
                 """,
@@ -511,10 +551,64 @@ class SpotStore:
             )
             return cur.fetchone()
 
+    async def get_message(self, msg_id: int) -> sqlite3.Row | None:
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id, sender, recipient, epoch, body, read_epoch, parent_id,
+                       origin_node, route_node, delivery_state, delivered_epoch, error_text
+                FROM messages
+                WHERE id = ?
+                """,
+                (msg_id,),
+            )
+            return cur.fetchone()
+
     async def mark_message_read(self, msg_id: int, read_epoch: int) -> None:
         async with self._lock:
             self._conn.execute("UPDATE messages SET read_epoch = ? WHERE id = ?", (read_epoch, msg_id))
             self._conn.commit()
+
+    async def set_message_delivery(
+        self,
+        msg_id: int,
+        state: str,
+        *,
+        delivered_epoch: int | None = None,
+        route_node: str | None = None,
+        error_text: str | None = None,
+    ) -> None:
+        clauses = ["delivery_state = ?"]
+        params: list[object] = [state]
+        if delivered_epoch is not None:
+            clauses.append("delivered_epoch = ?")
+            params.append(delivered_epoch)
+        if route_node is not None:
+            clauses.append("route_node = ?")
+            params.append(route_node.upper())
+        if error_text is not None:
+            clauses.append("error_text = ?")
+            params.append(error_text)
+        params.append(msg_id)
+        async with self._lock:
+            self._conn.execute(f"UPDATE messages SET {', '.join(clauses)} WHERE id = ?", params)
+            self._conn.commit()
+
+    async def list_pending_messages_for_route(self, route_node: str, limit: int = 100) -> list[sqlite3.Row]:
+        limit = max(1, min(limit, 500))
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id, sender, recipient, epoch, body, read_epoch, parent_id,
+                       origin_node, route_node, delivery_state, delivered_epoch, error_text
+                FROM messages
+                WHERE route_node = ? AND delivery_state = 'pending'
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (route_node.upper(), limit),
+            )
+            return cur.fetchall()
 
     async def message_counts(self, recipient: str) -> tuple[int, int]:
         r = recipient.upper()

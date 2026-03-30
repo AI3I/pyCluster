@@ -1794,8 +1794,10 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
         try:
             now = int(datetime.now(timezone.utc).timestamp())
             await store.upsert_user_registry("N0CALL", now, privilege="user")
+            await store.upsert_user_registry("K1ABC", now, privilege="user")
             _, out = await srv._execute_command("N0CALL", "msg K1ABC hello there")
             assert "Message #" in out and "delivered to 1 session(s)." in out
+            assert "state=delivered" in out
             assert b"MSG#" in bytes(w2.buffer)
             assert b"N0CALL: hello there" in bytes(w2.buffer)
 
@@ -1810,6 +1812,7 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
             assert "Messages for K1ABC:" in out
             _, out = await srv._execute_command("K1ABC", "show/messages")
             assert "UNREAD" in out and "hello there" in out
+            assert "delivered" in out
             _, out = await srv._execute_command("K1ABC", "mail")
             assert "hello there" in out
 
@@ -1819,10 +1822,12 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
 
             _, out = await srv._execute_command("K1ABC", f"read {msg_id}")
             assert f"Message #{msg_id}" in out
+            assert "State: delivered" in out
 
             _, out = await srv._execute_command("K1ABC", f"reply {msg_id} roger")
             assert "Reply #" in out
             assert "delivered to " in out
+            assert "state=delivered" in out
 
             _, out = await srv._execute_command("N0CALL", "read")
             assert "K1ABC" in out
@@ -1837,7 +1842,73 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_show_prefix_qrz_bands(tmp_path) -> None:
+def test_msg_to_remote_home_node_stays_pending_until_mail_transport_exists(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "msg_remote.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, privilege="user")
+            await store.upsert_user_registry("K1ABC", now, privilege="user", home_node="PEER1")
+
+            _, out = await srv._execute_command("N0CALL", "msg K1ABC hello remote")
+            assert "Message #" in out
+            assert "state=pending" in out
+            msg_id = int(out.split("#", 1)[1].split()[0])
+            row = await store.get_message(msg_id)
+            assert row is not None
+            assert row["route_node"] == "PEER1"
+            assert row["delivery_state"] == "pending"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_mail_shorthand_aliases_work(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mail_short.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        w1 = _DummyWriter()
+        w2 = _DummyWriter()
+        srv._sessions[1] = Session(call="N0CALL", writer=w1, connected_at=datetime.now(timezone.utc))
+        srv._sessions[2] = Session(call="K1ABC", writer=w2, connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, privilege="user")
+            await store.upsert_user_registry("K1ABC", now, privilege="user")
+
+            _, out = await srv._execute_command("N0CALL", "s K1ABC quick test")
+            assert "Message #" in out
+            assert "state=delivered" in out
+
+            _, out = await srv._execute_command("N0CALL", "sp K1ABC another test")
+            assert "Message #" in out
+            assert "state=delivered" in out
+
+            _, out = await srv._execute_command("K1ABC", "r")
+            assert "N0CALL" in out
+
+            msg_id = int(out.splitlines()[0].split()[0])
+            _, out = await srv._execute_command("K1ABC", f"rep {msg_id} roger copy")
+            assert "Reply #" in out
+            assert "state=delivered" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/shortcuts")
+            assert "Send" in out or "SEnd" in out
+            assert "Read" in out or "REad" in out
+            assert "REPly" in out or "Reply" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_prefix_lastspot_bands(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "qrz.db")
         cfg = _mk_config(db)
@@ -1857,13 +1928,66 @@ def test_show_prefix_qrz_bands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/prefix K3")
             assert "Prefix K3 has 1 local spot entry." in out
 
-            _, out = await srv._execute_command("N0CALL", "show/qrz K3AJ")
+            _, out = await srv._execute_command("N0CALL", "show/lastspot K3AJ")
             assert "was last spotted on" in out
             assert "Frequency: 7109.9 kHz" in out
 
             _, out = await srv._execute_command("N0CALL", "show/bands")
             assert "40m" in out
             assert "hf" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_qrz_uses_remote_xml_lookup(tmp_path, monkeypatch) -> None:
+    class _FakeResp:
+        def __init__(self, body: str) -> None:
+            self._body = body.encode("utf-8")
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    calls: list[str] = []
+
+    def _fake_urlopen(req, timeout=10):
+        calls.append(req.full_url)
+        if "username=" in req.full_url:
+            return _FakeResp(
+                "<QRZDatabase><Session><Key>session123</Key><Count>1</Count><SubExp>Wed Jan 1 12:34:03 2030</SubExp></Session></QRZDatabase>"
+            )
+        return _FakeResp(
+            "<QRZDatabase><Session><Key>session123</Key><Count>1</Count></Session>"
+            "<Callsign><call>K1ABC</call><fname>John</fname><name>Doe</name><addr2>Boston</addr2>"
+            "<state>MA</state><country>United States</country><grid>FN42</grid><dxcc>291</dxcc>"
+            "<cqzone>5</cqzone><ituzone>8</ituzone><lat>42.0</lat><lon>-71.0</lon></Callsign></QRZDatabase>"
+        )
+
+    async def run() -> None:
+        db = str(tmp_path / "qrz_remote.db")
+        cfg = _mk_config(db)
+        cfg.qrz.username = "demo"
+        cfg.qrz.password = "secret"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        monkeypatch.setattr("pycluster.qrz.urllib.request.urlopen", _fake_urlopen)
+        try:
+            _, out = await srv._execute_command("N0CALL", "show/qrz K1ABC")
+            assert "QRZ lookup for K1ABC:" in out
+            assert "     Name : John Doe" in out
+            assert "      QTH : Boston" in out
+            assert "     Grid : FN42" in out
+            assert "  CQ Zone : 5" in out
+            assert "ITU Zone : 8" in out
+            assert len(calls) == 2
         finally:
             await store.close()
 

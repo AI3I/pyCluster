@@ -13,7 +13,7 @@ from .config import AppConfig
 from .maidenhead import extract_locator
 from .models import Spot, is_valid_call, normalize_call
 from .node_link import NodeLinkEngine
-from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc24Message, Pc50Message, Pc51Message, Pc61Message, Pc93Message, WirePcFrame
+from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc93Message, WirePcFrame
 from .store import SpotStore
 from .telnet_server import TelnetClusterServer
 from .transports import DxSpiderInboundConnection, dxspider_compat_pc18
@@ -44,6 +44,10 @@ class ClusterApp:
         self.node_link = NodeLinkEngine()
         self.node_link.set_trace_hook(self._trace_protocol_line)
         self._legacy_dxspider_peers: set[str] = set()
+        self._mail_stream_seq = 0
+        self._outbound_mail: dict[tuple[str, str], dict[str, object]] = {}
+        self._outbound_mail_pending_header: dict[str, list[dict[str, object]]] = {}
+        self._inbound_mail: dict[tuple[str, str], dict[str, object]] = {}
         self.telnet = TelnetClusterServer(
             config=config,
             store=self.store,
@@ -59,6 +63,7 @@ class ClusterApp:
             on_chat_fn=self._relay_chat_to_links,
             on_bulletin_fn=self._relay_bulletin_to_links,
             on_spot_fn=self._relay_spot_to_links,
+            on_message_fn=self._relay_message_to_links,
             on_sessions_changed_fn=self._sync_legacy_user_roster,
             on_node_login_fn=self.accept_inbound_node_login,
             strings_path=strings_path,
@@ -171,6 +176,7 @@ class ClusterApp:
             await self._persist_peer_target(name, dsn, profile=profile, reconnect=True)
         wire_profile = "spider" if dsn.strip().lower().startswith("dxspider://") and profile == "dxspider" else profile
         await self.node_link.connect_dsn(name, dsn, profile=wire_profile)
+        await self._reset_mail_transport_state(name, "peer session refreshed")
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_connect_epoch"), str(now), now)
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "retry_count"), "0", now)
@@ -184,7 +190,7 @@ class ClusterApp:
                 LOG.info("legacy dxspider init skipped for disconnected peer=%s", name)
             else:
                 self._legacy_dxspider_peers.add(name)
-
+        await self._flush_pending_messages_for_peer(name)
     async def desired_peer_status(self) -> list[dict[str, object]]:
         desired = await self._desired_peer_targets()
         live = set(await self.node_link.peer_names())
@@ -287,6 +293,8 @@ class ClusterApp:
                 self._legacy_dxspider_peers.discard(call)
                 LOG.info("legacy inbound init skipped for disconnected peer=%s", call)
                 return False
+        await self._reset_mail_transport_state(call, "peer session refreshed")
+        await self._flush_pending_messages_for_peer(call)
         LOG.info("accepted inbound node login call=%s peer=%s", call, peer_name)
         return True
 
@@ -615,7 +623,7 @@ class ClusterApp:
         )
 
     async def _handle_node_link_item(self, peer_name: str, frame: WirePcFrame, typed: object | None) -> None:
-        if frame.pc_type in {"PC11", "PC12", "PC16", "PC17", "PC18", "PC19", "PC21", "PC22", "PC23", "PC24", "PC50", "PC51", "PC61", "PC93", "PC10"}:
+        if frame.pc_type in {"PC10", "PC11", "PC12", "PC16", "PC17", "PC18", "PC19", "PC21", "PC22", "PC23", "PC24", "PC28", "PC29", "PC30", "PC31", "PC32", "PC33", "PC50", "PC51", "PC61", "PC93"}:
             await self._touch_proto_activity(peer_name, frame.pc_type)
 
         if frame.pc_type == "PC18":
@@ -819,14 +827,138 @@ class ClusterApp:
                 await self.node_link.mark_policy_drop(peer_name, "ingest_pc10_loop")
                 return
             if not await self._ingest_peer_enabled(peer_name, "chat"):
-                await self.node_link.mark_policy_drop(peer_name, "ingest_chat_disabled")
+                await self.node_link.mark_policy_drop(peer_name, "ingest_talk_disabled")
                 return
             sender = normalize_call(msg.from_call) if msg.from_call else normalize_call(peer_name)
             if not is_valid_call(sender):
                 sender = normalize_call(peer_name)
+            recipient = normalize_call(msg.user2 or msg.user1)
+            if not is_valid_call(recipient):
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc10_invalid_recipient")
+                return
+            delivered = await self.telnet.publish_talk(recipient, sender, body)
+            if delivered <= 0:
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc10_offline")
+            return
+
+        if frame.pc_type == "PC28":
+            msg = typed if isinstance(typed, Pc28Message) else Pc28Message.from_fields(frame.payload_fields)
+            target_node = normalize_call(msg.to_node)
+            local_node = normalize_call(self.config.node.node_call)
+            if target_node and target_node != local_node:
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc28_wrong_node")
+                return
+            stream = self._next_mail_stream()
+            key = (normalize_call(msg.from_node or peer_name), stream)
+            self._inbound_mail[key] = {
+                "peer": peer_name,
+                "from_node": normalize_call(msg.from_node or peer_name),
+                "to_call": normalize_call(msg.to_call),
+                "from_call": normalize_call(msg.from_call),
+                "subject": (msg.subject or "").strip(),
+                "origin": normalize_call(msg.origin or msg.from_node or peer_name),
+                "lines": [],
+                "count": 0,
+                "linesreq": max(1, int((msg.line_count or "5").strip() or "5")),
+            }
+            await self.node_link.send(
+                peer_name,
+                WirePcFrame(
+                    "PC30",
+                    Pc30Message(
+                        to_node=normalize_call(msg.from_node or peer_name),
+                        from_node=local_node,
+                        stream=stream,
+                        trailer="",
+                    ).to_fields(),
+                ),
+            )
+            return
+
+        if frame.pc_type == "PC29":
+            msg = typed if isinstance(typed, Pc29Message) else Pc29Message.from_fields(frame.payload_fields)
+            key = (normalize_call(msg.from_node or peer_name), (msg.stream or "").strip())
+            state = self._inbound_mail.get(key)
+            if state is None:
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc29_unknown_stream")
+                return
+            lines = state.setdefault("lines", [])
+            if isinstance(lines, list):
+                lines.append((msg.text or "").replace("%5E", "^").strip())
+            count = int(state.get("count", 0)) + 1
+            state["count"] = count
+            if count >= max(1, int(state.get("linesreq", 5))):
+                await self.node_link.send(
+                    peer_name,
+                    WirePcFrame(
+                        "PC31",
+                        Pc31Message(
+                            to_node=normalize_call(msg.from_node or peer_name),
+                            from_node=normalize_call(self.config.node.node_call),
+                            stream=(msg.stream or "").strip(),
+                            trailer="",
+                        ).to_fields(),
+                    ),
+                )
+                state["count"] = 0
+            return
+
+        if frame.pc_type == "PC30":
+            msg = typed if isinstance(typed, Pc30Message) else Pc30Message.from_fields(frame.payload_fields)
+            await self._handle_mail_ack_subject(peer_name, msg)
+            return
+
+        if frame.pc_type == "PC31":
+            msg = typed if isinstance(typed, Pc31Message) else Pc31Message.from_fields(frame.payload_fields)
+            await self._handle_mail_ack_text(peer_name, msg)
+            return
+
+        if frame.pc_type == "PC32":
+            msg = typed if isinstance(typed, Pc32Message) else Pc32Message.from_fields(frame.payload_fields)
+            key = (normalize_call(msg.from_node or peer_name), (msg.stream or "").strip())
+            state = self._inbound_mail.pop(key, None)
+            if state is None:
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc32_unknown_stream")
+                return
+            to_call = str(state.get("to_call") or "").strip().upper()
+            from_call = str(state.get("from_call") or "").strip().upper()
+            body_lines = [str(line) for line in state.get("lines", []) if str(line).strip()]
+            subject = str(state.get("subject") or "").strip()
+            body = "\n".join(body_lines) if body_lines else ""
+            if subject and body:
+                body = f"Subject: {subject}\n{body}"
+            elif subject:
+                body = f"Subject: {subject}"
             now = int(datetime.now(timezone.utc).timestamp())
-            await self.store.add_bulletin("chat", sender, "LOCAL", now, body)
-            await self.telnet.publish_chat(sender, body)
+            msg_id = await self.store.add_message(
+                sender=from_call or normalize_call(peer_name),
+                recipient=to_call,
+                epoch=now,
+                body=body,
+                parent_id=None,
+                origin_node=str(state.get("origin") or normalize_call(peer_name)),
+                route_node="",
+                delivery_state="delivered",
+                delivered_epoch=now,
+            )
+            await self.telnet.publish_message(to_call, from_call or normalize_call(peer_name), body, msg_id)
+            await self.node_link.send(
+                peer_name,
+                WirePcFrame(
+                    "PC33",
+                    Pc33Message(
+                        to_node=normalize_call(msg.from_node or peer_name),
+                        from_node=normalize_call(self.config.node.node_call),
+                        stream=(msg.stream or "").strip(),
+                        trailer="",
+                    ).to_fields(),
+                ),
+            )
+            return
+
+        if frame.pc_type == "PC33":
+            msg = typed if isinstance(typed, Pc33Message) else Pc33Message.from_fields(frame.payload_fields)
+            await self._handle_mail_ack_complete(peer_name, msg)
             return
 
         if frame.pc_type == "PC12":
@@ -998,6 +1130,193 @@ class ClusterApp:
         )
         frame = WirePcFrame("PC93", msg.to_fields())
         await self._broadcast_with_policy(sender, category, frame)
+
+    def _next_mail_stream(self) -> str:
+        self._mail_stream_seq += 1
+        return str(self._mail_stream_seq)
+
+    async def _reset_mail_transport_state(self, peer_name: str, error_text: str = "") -> None:
+        route_node = normalize_call(peer_name)
+        queue = self._outbound_mail_pending_header.pop(route_node, [])
+        inflight_keys = [key for key in self._outbound_mail if key[0] == route_node]
+        pending_ids: set[int] = set()
+        for state in queue:
+            try:
+                pending_ids.add(int(state["message_id"]))
+            except Exception:
+                pass
+        for key in inflight_keys:
+            state = self._outbound_mail.pop(key, None)
+            if state is None:
+                continue
+            try:
+                pending_ids.add(int(state["message_id"]))
+            except Exception:
+                pass
+        for message_id in sorted(pending_ids):
+            await self.store.set_message_delivery(
+                message_id,
+                "pending",
+                route_node=route_node,
+                error_text=error_text,
+            )
+
+    async def _start_outbound_mail(self, peer_name: str, row: object) -> None:
+        route_node = normalize_call(peer_name)
+        body = str(row["body"] or "")
+        body_lines = [line.strip() for line in body.splitlines() if line.strip()]
+        if not body_lines:
+            body_lines = [body.strip() or " "]
+        subject = " "
+        if body_lines and body_lines[0].startswith("Subject:"):
+            subject = body_lines.pop(0)[len("Subject:") :].strip() or " "
+        state = {
+            "message_id": int(row["id"]),
+            "peer": route_node,
+            "sender": normalize_call(str(row["sender"] or "")),
+            "recipient": normalize_call(str(row["recipient"] or "")),
+            "subject": subject,
+            "lines": body_lines,
+            "index": 0,
+            "tranche_size": 5,
+        }
+        queue = self._outbound_mail_pending_header.setdefault(route_node, [])
+        queue.append(state)
+        if len(queue) > 1 or any(key_peer == route_node for key_peer, _ in self._outbound_mail):
+            return
+        now = datetime.now(timezone.utc)
+        await self.node_link.send(
+            route_node,
+            WirePcFrame(
+                "PC28",
+                Pc28Message(
+                    to_node=route_node,
+                    from_node=normalize_call(self.config.node.node_call),
+                    to_call=str(state["recipient"]),
+                    from_call=str(state["sender"]),
+                    date_token=now.strftime("%d-%b-%Y"),
+                    time_token=now.strftime("%H%MZ"),
+                    private_flag="1",
+                    subject=subject,
+                    placeholder1=" ",
+                    line_count="5",
+                    rr_flag="0",
+                    placeholder2=" ",
+                    origin=normalize_call(self.config.node.node_call),
+                    trailer="~",
+                ).to_fields(),
+            ),
+        )
+
+    async def _handle_mail_ack_subject(self, peer_name: str, msg: Pc30Message) -> None:
+        route_node = normalize_call(peer_name)
+        queue = self._outbound_mail_pending_header.get(route_node, [])
+        if not queue:
+            return
+        state = queue.pop(0)
+        stream = (msg.stream or "").strip()
+        state["stream"] = stream
+        self._outbound_mail[(route_node, stream)] = state
+        await self._send_mail_tranche(peer_name, state)
+
+    async def _handle_mail_ack_text(self, peer_name: str, msg: Pc31Message) -> None:
+        key = (normalize_call(peer_name), (msg.stream or "").strip())
+        state = self._outbound_mail.get(key)
+        if state is None:
+            return
+        await self._send_mail_tranche(peer_name, state)
+
+    async def _send_mail_tranche(self, peer_name: str, state: dict[str, object]) -> None:
+        lines = state["lines"] if isinstance(state.get("lines"), list) else []
+        stream = str(state["stream"])
+        index = int(state.get("index", 0))
+        tranche_size = max(1, int(state.get("tranche_size", 5)))
+        if index >= len(lines):
+            await self.node_link.send(
+                peer_name,
+                WirePcFrame(
+                    "PC32",
+                    Pc32Message(
+                        to_node=normalize_call(peer_name),
+                        from_node=normalize_call(self.config.node.node_call),
+                        stream=stream,
+                        trailer="",
+                    ).to_fields(),
+                ),
+            )
+            return
+        end = min(len(lines), index + tranche_size)
+        for line in lines[index:end]:
+            text = str(line).replace("^", "%5E")
+            await self.node_link.send(
+                peer_name,
+                WirePcFrame(
+                    "PC29",
+                    Pc29Message(
+                        to_node=normalize_call(peer_name),
+                        from_node=normalize_call(self.config.node.node_call),
+                        stream=stream,
+                        text=text,
+                        trailer="~",
+                    ).to_fields(),
+                ),
+            )
+        state["index"] = end
+        if end >= len(lines):
+            await self.node_link.send(
+                peer_name,
+                WirePcFrame(
+                    "PC32",
+                    Pc32Message(
+                        to_node=normalize_call(peer_name),
+                        from_node=normalize_call(self.config.node.node_call),
+                        stream=stream,
+                        trailer="",
+                    ).to_fields(),
+                ),
+            )
+
+    async def _handle_mail_ack_complete(self, peer_name: str, msg: Pc33Message) -> None:
+        key = (normalize_call(peer_name), (msg.stream or "").strip())
+        state = self._outbound_mail.pop(key, None)
+        if state is None:
+            return
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.set_message_delivery(
+            int(state["message_id"]),
+            "routed",
+            delivered_epoch=now,
+            route_node=normalize_call(peer_name),
+            error_text="",
+        )
+        await self._flush_pending_messages_for_peer(peer_name)
+
+    async def _relay_message_to_links(self, sender: str, recipient: str, body: str, message_id: int, parent_id: int | None) -> None:
+        del sender, recipient, body, parent_id
+        row = await self.store.get_message(message_id)
+        if row is None:
+            return
+        route_node = str(row["route_node"] or "").strip().upper()
+        if not route_node:
+            return
+        try:
+            await self._start_outbound_mail(route_node, row)
+        except Exception as exc:
+            await self.store.set_message_delivery(message_id, "pending", route_node=route_node, error_text=str(exc))
+            LOG.info("queued cluster mail id=%s route=%s error=%s", message_id, route_node, exc)
+
+    async def _flush_pending_messages_for_peer(self, peer_name: str) -> None:
+        route_node = normalize_call(peer_name)
+        if self._outbound_mail_pending_header.get(route_node) or any(key_peer == route_node for key_peer, _ in self._outbound_mail):
+            return
+        rows = await self.store.list_pending_messages_for_route(peer_name, limit=200)
+        for row in rows:
+            try:
+                await self._start_outbound_mail(peer_name, row)
+            except Exception as exc:
+                await self.store.set_message_delivery(int(row["id"]), "pending", route_node=peer_name, error_text=str(exc))
+                LOG.info("pending cluster mail still queued id=%s peer=%s error=%s", int(row["id"]), peer_name, exc)
+                return
 
     async def _relay_spot_to_links(self, spot: Spot, exclude_peer: str | None = None) -> None:
         sender = normalize_call(spot.spotter)
