@@ -218,7 +218,7 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `show/prefix` | `complete` | `show/prefix` |  |
 | `show/program` | `complete` | `show/program` |  |
 | `show/qra` | `complete` | `show/qra` |  |
-| `show/qrz` | `complete` | `show/qrz` |  |
+| `show/qrz` | `partial` | `show/qrz` | real QRZ XML lookup when configured; requires QRZ credentials |
 | `show/rcmd` | `complete` | `show/rcmd` |  |
 | `show/registered` | `complete` | `show/registered` |  |
 | `show/route` | `complete` | `show/route` |  |
@@ -235,7 +235,7 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `show/vhfstats` | `complete` | `show/vhfstats` |  |
 | `show/vhftable` | `complete` | `show/vhftable` |  |
 | `show/wcy` | `complete` | `show/wcy` |  |
-| `show/wm7d` | `complete` | `show/wm7d` |  |
+| `show/wm7d` | `complete` | `show/wm7d` | real WM7D page lookup |
 | `show/wwv` | `complete` | `show/wwv` |  |
 | `show/wx` | `complete` | `show/wx` |  |
 | `shu` | `complete` | `shu` |  |

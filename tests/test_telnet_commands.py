@@ -2481,18 +2481,34 @@ def test_connect_disconnect_links_commands(tmp_path) -> None:
                 "profile": "spider",
                 "inbound": False,
                 "last_pc_type": "PC92",
+                "last_rx_epoch": int(datetime.now(timezone.utc).timestamp()),
             }
         }
+
+    async def _desired():
+        return [
+            {
+                "peer": "peer1",
+                "profile": "spider",
+                "connected": True,
+                "desired": True,
+                "last_connect_epoch": int(datetime.now(timezone.utc).timestamp()),
+            }
+        ]
 
     async def run() -> None:
         db = str(tmp_path / "conn.db")
         cfg = _mk_config(db)
         store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.pc18.family", "spider", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.pc18.summary", "DXSpider 1.57 build 633", now)
         srv = TelnetClusterServer(
             cfg,
             store,
             datetime.now(timezone.utc),
             link_stats_fn=_stats,
+            link_desired_peers_fn=_desired,
             link_connect_fn=_connect,
             link_disconnect_fn=_disconnect,
         )
@@ -2508,6 +2524,10 @@ def test_connect_disconnect_links_commands(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "links")
             assert "peer1" in out
+            assert "Peer         Family" in out
+            assert "DXSpider 1.57 build 633" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/connect")
             assert "policy_drop=" in out
             assert "profile=spider" in out
 

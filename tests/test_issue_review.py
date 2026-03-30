@@ -215,30 +215,40 @@ def test_telnet_login_line_strips_iac_negotiation_bytes(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_show_wm7d_returns_lookup_data_for_call(tmp_path) -> None:
+def test_show_wm7d_returns_lookup_data_for_call(tmp_path, monkeypatch) -> None:
+    class _FakeResp:
+        def __init__(self, body: str) -> None:
+            self._body = body.encode("utf-8")
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def _fake_urlopen(req, timeout=10):
+        return _FakeResp(
+            '<html><body><font size="+1"><b>Call:</b> N9JR <b>Class:</b> Extra</font><br><br>'
+            '<b>JOE RADIO<br>123 MAIN ST<br>MILWAUKEE, WI 53202<br></b></body></html>'
+        )
+
     async def run() -> None:
         db = str(tmp_path / "issue_wm7d_lookup.db")
         cfg = _mk_config(db)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N9JR-5", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
-        now = int(datetime.now(timezone.utc).timestamp())
+        monkeypatch.setattr("pycluster.wm7d.urllib.request.urlopen", _fake_urlopen)
         try:
-            await store.upsert_user_registry(
-                "N9JR",
-                now,
-                display_name="Joe Radio",
-                qth="Milwaukee, WI",
-                qra="EN63AA",
-                home_node="N9JR-3",
-                email="joe@example.net",
-            )
             _, out = await srv._execute_command("N9JR-5", "show/wm7d N9JR")
             assert "WM7D lookup for N9JR:" in out
-            assert "Name: Joe Radio" in out
-            assert "QTH: Milwaukee, WI" in out
-            assert "Grid: EN63AA" in out
-            assert "Home Node: N9JR-3" in out
+            assert "    Class : Extra" in out
+            assert "     Name : JOE RADIO" in out
+            assert "  Address : 123 MAIN ST" in out
+            assert "MILWAUKEE, WI 53202" in out
         finally:
             await store.close()
 

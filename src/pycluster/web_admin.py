@@ -1509,10 +1509,37 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <header>
           <div>
             <h2>Users</h2>
-            <div class="subtle">Manage local users and see which people on this node have System Operator access.</div>
+            <div class="subtle">Review local users and login state first, then edit the selected account details.</div>
           </div>
         </header>
         <div class="body">
+          <div class="users-columns">
+            <section>
+              <h3>Local Users</h3>
+              <div class="actions" style="margin-bottom:12px">
+                <input id="user_search" placeholder="Filter users by callsign, name, home node, QTH, email" title="Search local users by callsign, name, home node, QTH, or email." style="max-width:320px">
+                <button class="secondary" id="userSearch">Search</button>
+                <button class="secondary" id="userPrev">Previous</button>
+                <button class="secondary" id="userNext">Next</button>
+                <span class="subtle" id="userPageInfo">Page 1</span>
+              </div>
+              <div class="tablewrap">
+                <table>
+                  <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>Post</th><th>Last Login</th><th>Last Path</th></tr></thead>
+                  <tbody id="userRows"><tr><td colspan="8">Loading local users...</td></tr></tbody>
+                </table>
+              </div>
+            </section>
+            <section>
+              <h3>Blocked Users</h3>
+              <div class="subtle" style="margin-bottom:12px">Calls blocked from login on this node, including matching SSID variants.</div>
+              <div class="tablewrap">
+              <table>
+                  <thead><tr><th>Callsign</th><th>Home Node</th><th>Block Reason</th><th>Blocked</th><th>Last Path</th></tr></thead>
+                  <tbody id="blockedRows"><tr><td colspan="5">Loading blocked users...</td></tr></tbody>
+              </table>
+            </div>
+          </section>
             <section>
               <h3>System Operators</h3>
               <div class="tablewrap">
@@ -1522,6 +1549,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               </table>
             </div>
           </section>
+          </div>
           <div class="users-editor" style="margin-top:14px">
             <section>
               <h3 id="userEditorTitle">User Details</h3>
@@ -1569,34 +1597,6 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="actions" style="margin-top:12px">
                 <button class="secondary" id="accessAll">Add All</button>
                 <button class="secondary" id="accessNone">Remove All</button>
-              </div>
-            </section>
-          </div>
-          <div class="users-columns">
-            <section>
-              <h3>Blocked Users</h3>
-              <div class="subtle" style="margin-bottom:12px">Calls blocked from login on this node, including matching SSID variants.</div>
-              <div class="tablewrap">
-                <table>
-                  <thead><tr><th>Callsign</th><th>Home Node</th><th>Block Reason</th><th>Blocked</th><th>Last Path</th></tr></thead>
-                  <tbody id="blockedRows"><tr><td colspan="5">Loading blocked users...</td></tr></tbody>
-                </table>
-              </div>
-            </section>
-            <section>
-              <h3>Local Users</h3>
-              <div class="actions" style="margin-bottom:12px">
-                <input id="user_search" placeholder="Filter users by callsign, name, home node, QTH, email" title="Search local users by callsign, name, home node, QTH, or email." style="max-width:320px">
-                <button class="secondary" id="userSearch">Search</button>
-                <button class="secondary" id="userPrev">Previous</button>
-                <button class="secondary" id="userNext">Next</button>
-                <span class="subtle" id="userPageInfo">Page 1</span>
-              </div>
-              <div class="tablewrap">
-                <table>
-                  <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>Post</th><th>Last Login</th><th>Last Path</th></tr></thead>
-                  <tbody id="userRows"><tr><td colspan="8">Loading local users...</td></tr></tbody>
-                </table>
               </div>
             </section>
           </div>

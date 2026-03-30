@@ -29,3 +29,9 @@ cty_dat_path = "./fixtures/live/dxspider/cty.dat"
 
 [store]
 sqlite_path = "./data/pycluster.db"
+
+[qrz]
+username = ""
+password = ""
+agent = ""
+api_url = "https://xmldata.qrz.com/xml/current/"
