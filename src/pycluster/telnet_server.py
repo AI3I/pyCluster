@@ -1584,6 +1584,7 @@ class TelnetClusterServer:
             "save": "Persist the current session state.",
             "send": "Send a raw or compatibility message command.",
             "send_config": "Show or write a configuration snapshot.",
+            "outbox": "Show recent sent and queued personal messages.",
             "shu": "Show the shutdown status summary.",
             "shutdown": "Shut down listeners and disconnect sessions.",
             "spoof": "Inject a test message or DX spot as sysop.",
@@ -1669,7 +1670,7 @@ class TelnetClusterServer:
             "mail": "Show recent message headers.",
             "maxconnect": "Show the maximum connection limit.",
             "motd": "Show the message of the day.",
-            "msgstatus": "Show personal message totals and unread counts.",
+            "msgstatus": "Show personal inbox and outbox message status.",
             "mydx": "Show DX spots posted by your callsign.",
             "node": "Show node and home-node information for a callsign.",
             "notimpl": "Show commands that are still not implemented.",
@@ -7016,7 +7017,22 @@ class TelnetClusterServer:
 
     async def _cmd_show_msg_status(self, call: str, _arg: str | None) -> str:
         total, unread = await self.store.message_counts(call)
-        return self._render_string("messages.msg_status", "Messages for {call}: {total} total, {unread} unread.", call=call.upper(), total=total, unread=unread) + "\r\n"
+        inbox = await self.store.message_state_counts(call)
+        outbox = await self.store.sent_message_state_counts(call)
+        inbox_txt = ",".join(f"{k}={inbox[k]}" for k in sorted(inbox)) or "none"
+        outbox_txt = ",".join(f"{k}={outbox[k]}" for k in sorted(outbox)) or "none"
+        lines = [
+            self._render_string(
+                "messages.msg_status",
+                "Messages for {call}: {total} total, {unread} unread.",
+                call=call.upper(),
+                total=total,
+                unread=unread,
+            ),
+            f"  Inbox states: {inbox_txt}",
+            f"  Outbox states: {outbox_txt}",
+        ]
+        return await self._format_console_lines(call, lines)
 
     async def _cmd_show_messages(self, call: str, arg: str | None) -> str:
         limit = 20
@@ -7035,7 +7051,32 @@ class TelnetClusterServer:
             unread = "UNREAD" if r["read_epoch"] is None else "READ"
             status = str(r["delivery_state"] or "local")[:10]
             body = str(r["body"] or "")
-            lines.append(f"{mid:>6} {sender:<10} {ts} {unread:<6} {status:<10} {body}")
+            route = str(r["route_node"] or "").strip() or "-"
+            origin = str(r["origin_node"] or "").strip() or "-"
+            lines.append(f"{mid:>6} {sender:<10} {ts} {unread:<6} {status:<10} via={route:<10} from={origin:<10} {body}")
+        lines = await self._apply_page_size(call, lines, explicit_limit=explicit)
+        return await self._format_console_lines(call, lines)
+
+    async def _cmd_show_outbox(self, call: str, arg: str | None) -> str:
+        limit = 20
+        explicit = False
+        if arg and arg.split()[0].isdigit():
+            explicit = True
+            limit = max(1, min(int(arg.split()[0]), 200))
+        rows = await self.store.list_sent_messages(call, limit=limit)
+        if not rows:
+            return "No sent messages.\r\n"
+        lines = ["Outbox:"]
+        for r in rows:
+            mid = int(r["id"])
+            recipient = str(r["recipient"])
+            ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc).strftime("%-d-%b %H%MZ")
+            status = str(r["delivery_state"] or "local")[:10]
+            route = str(r["route_node"] or "").strip() or "-"
+            err = str(r["error_text"] or "").strip()
+            body = str(r["body"] or "")
+            extra = f" err={err}" if err else ""
+            lines.append(f"{mid:>6} {recipient:<10} {ts} {status:<10} via={route:<10} {body}{extra}")
         lines = await self._apply_page_size(call, lines, explicit_limit=explicit)
         return await self._format_console_lines(call, lines)
 
@@ -7257,6 +7298,7 @@ class TelnetClusterServer:
             "ap": "show/apropos",
             "apropos": "show/apropos",
             "mail": "show/messages",
+            "outbox": "show/outbox",
         }
 
     def _top_level_canonical_tokens(self) -> list[str]:
@@ -7894,6 +7936,7 @@ class TelnetClusterServer:
             "show/msgstatus": self._cmd_show_msg_status,
             "show/messages": self._cmd_show_messages,
             "show/mail": self._cmd_show_messages,
+            "show/outbox": self._cmd_show_outbox,
             "show/bands": self._cmd_show_bands,
             "show/dxstats": lambda c, a: self._cmd_show_dxstats(c, a, "all"),
             "show/hfstats": lambda c, a: self._cmd_show_dxstats(c, a, "hf"),
