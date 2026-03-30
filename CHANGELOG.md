@@ -2,7 +2,17 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## 1.0.3 - Unreleased
+## 1.0.3 - 2026-03-30
+
+- `show/qrz` now targets real QRZ XML lookups when QRZ credentials are configured, and the prior local history view has moved to `show/lastspot`
+- `show/wm7d` now performs a real WM7D callsign lookup
+- cluster mail has started moving beyond node-local storage:
+  - `PC10` is aligned back to talk/direct-message semantics
+  - cluster mail transport now uses `PC28`-`PC33`
+  - `msg` and `reply` can queue and route mail by the recipient's configured home node
+  - pending mail is flushed when the target peer connects
+  - message listings now show delivery state
+- top-level `links` now shows the richer direct link status view instead of the older `show/connect` session dump
 
 ## 1.0.2 - 2026-03-29
 

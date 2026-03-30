@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import json
 import tomllib
@@ -57,12 +57,21 @@ class StoreConfig:
 
 
 @dataclass(slots=True)
+class QRZConfig:
+    username: str = ""
+    password: str = ""
+    agent: str = ""
+    api_url: str = "https://xmldata.qrz.com/xml/current/"
+
+
+@dataclass(slots=True)
 class AppConfig:
     node: NodeConfig
     telnet: TelnetConfig
     web: WebConfig
     public_web: PublicWebConfig
     store: StoreConfig
+    qrz: QRZConfig = field(default_factory=QRZConfig)
 
 
 def node_presentation_defaults(node: NodeConfig) -> dict[str, str]:
@@ -128,7 +137,9 @@ def load_config(path: str | Path) -> AppConfig:
     public_web = PublicWebConfig(**_load_section(data, "public_web")) if "public_web" in data else PublicWebConfig()
     store = StoreConfig(**_load_section(data, "store"))
 
-    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store)
+    qrz = QRZConfig(**_load_section(data, "qrz")) if "qrz" in data else QRZConfig()
+
+    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store, qrz=qrz)
 
 
 def _toml_value(value: object) -> str:
@@ -152,9 +163,10 @@ def dump_config(config: AppConfig) -> str:
         "web": asdict(config.web),
         "public_web": asdict(config.public_web),
         "store": asdict(config.store),
+        "qrz": asdict(config.qrz),
     }
     lines: list[str] = []
-    for section in ("node", "telnet", "web", "public_web", "store"):
+    for section in ("node", "telnet", "web", "public_web", "store", "qrz"):
         lines.append(f"[{section}]")
         for key, value in data[section].items():
             lines.append(f"{key} = {_toml_value(value)}")

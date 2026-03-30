@@ -238,6 +238,7 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `show/program`
 - `show/qra`
 - `show/qrz`
+- `show/lastspot`
 - `show/rcmd`
 - `show/registered`
 - `show/route`
