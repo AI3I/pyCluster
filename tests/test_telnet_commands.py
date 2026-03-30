@@ -1810,9 +1810,12 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
 
             _, out = await srv._execute_command("K1ABC", "show/msgstatus")
             assert "Messages for K1ABC:" in out
+            assert "Inbox states:" in out
+            assert "Outbox states:" in out
             _, out = await srv._execute_command("K1ABC", "show/messages")
             assert "UNREAD" in out and "hello there" in out
             assert "delivered" in out
+            assert "via=-" in out
             _, out = await srv._execute_command("K1ABC", "mail")
             assert "hello there" in out
 
@@ -1831,6 +1834,11 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "read")
             assert "K1ABC" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/outbox")
+            assert "Outbox:" in out
+            assert "K1ABC" in out
+            assert "delivered" in out
 
             _, out = await srv._execute_command("N0CALL", "show/log 10")
             assert "announce" in out.lower()
@@ -1861,6 +1869,15 @@ def test_msg_to_remote_home_node_stays_pending_until_mail_transport_exists(tmp_p
             assert row is not None
             assert row["route_node"] == "PEER1"
             assert row["delivery_state"] == "pending"
+
+            _, out = await srv._execute_command("N0CALL", "show/msgstatus")
+            assert "Outbox states:" in out
+            assert "pending=1" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/outbox")
+            assert "PEER1" in out
+            assert "pending" in out
+            assert "hello remote" in out
         finally:
             await store.close()
 
