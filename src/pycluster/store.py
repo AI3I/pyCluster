@@ -1172,6 +1172,24 @@ class SpotStore:
             self._conn.commit()
             return int(cur.rowcount or 0)
 
+    async def match_user_registry_calls(self, pattern: str, *, limit: int = 5000) -> list[str]:
+        pat = str(pattern or "").strip().upper()
+        if not pat:
+            return []
+        lim = max(1, min(int(limit), 10000))
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT call
+                FROM user_registry
+                ORDER BY call
+                LIMIT ?
+                """,
+                (lim,),
+            )
+            rows = cur.fetchall()
+        return [str(row["call"]).upper() for row in rows if fnmatch.fnmatchcase(str(row["call"]).upper(), pat)]
+
     async def delete_user_data(self, call: str, scopes: set[str] | None = None) -> dict[str, int]:
         c = call.strip().upper()
         if not c:
