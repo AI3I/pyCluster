@@ -538,6 +538,22 @@ class SpotStore:
             )
             return cur.fetchall()
 
+    async def list_sent_messages(self, sender: str, limit: int = 50) -> list[sqlite3.Row]:
+        limit = max(1, min(limit, 200))
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id, sender, recipient, epoch, body, read_epoch, parent_id,
+                       origin_node, route_node, delivery_state, delivered_epoch, error_text
+                FROM messages
+                WHERE sender = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (sender.upper(), limit),
+            )
+            return cur.fetchall()
+
     async def get_message_for_recipient(self, recipient: str, msg_id: int) -> sqlite3.Row | None:
         async with self._lock:
             cur = self._conn.execute(
@@ -629,6 +645,36 @@ class SpotStore:
             total = int(row["total"] or 0)
             unread = int(row["unread"] or 0)
             return total, unread
+
+    async def message_state_counts(self, recipient: str) -> dict[str, int]:
+        r = recipient.upper()
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT delivery_state, COUNT(*) AS total
+                FROM messages
+                WHERE recipient = ? OR recipient = 'ALL'
+                GROUP BY delivery_state
+                """,
+                (r,),
+            )
+            rows = cur.fetchall()
+            return {str(row["delivery_state"] or "local"): int(row["total"] or 0) for row in rows}
+
+    async def sent_message_state_counts(self, sender: str) -> dict[str, int]:
+        s = sender.upper()
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT delivery_state, COUNT(*) AS total
+                FROM messages
+                WHERE sender = ?
+                GROUP BY delivery_state
+                """,
+                (s,),
+            )
+            rows = cur.fetchall()
+            return {str(row["delivery_state"] or "local"): int(row["total"] or 0) for row in rows}
 
     async def add_bulletin(self, category: str, sender: str, scope: str, epoch: int, body: str) -> int:
         cat = category.strip().lower()

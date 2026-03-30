@@ -85,7 +85,8 @@ Related views:
 
 - `show/dx`
 - `show/prefix <prefix>`
-- `show/qrz <call>`
+- `show/lastspot <call>`
+- `show/qrz <call>` if QRZ XML lookup is configured on the node
 - `show/dxstats`
 - `show/hfstats`
 - `show/vhfstats`
@@ -190,12 +191,24 @@ Useful views:
 
 - `show/messages`
 - `show/mail`
+- `show/outbox`
 - `show/msgstatus`
 - `show/chat`
 - `show/announce`
 - `show/wcy`
 - `show/wwv`
 - `show/wx`
+
+Message delivery states:
+
+- `local`
+  - stored on this node with no remote routing needed
+- `delivered`
+  - delivered to a currently connected local session or received from a linked peer
+- `pending`
+  - queued for a remote home node that is not connected yet
+- `routed`
+  - handed to the linked node for onward delivery
 
 ## 6. Filters
 

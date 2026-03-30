@@ -61,7 +61,9 @@ It also supports direct commands such as:
 | `show/route` | Show route-related information. |
 | `show/hops` | Show hop-related routing state. |
 | `show/prefix <prefix>` | Show local spot counts for a prefix. |
-| `show/qrz <call>` | Show the most recent known spot summary for a callsign. |
+| `show/qrz <call>` | Run a real QRZ XML lookup when QRZ credentials are configured on the node. |
+| `show/lastspot <call>` | Show the most recent local spot summary for a callsign. |
+| `show/wm7d <call>` | Run a real WM7D callsign lookup. |
 | `show/qra <call>` | Show stored QRA/grid for a callsign when known. |
 | `show/bands` | Show band information. |
 | `show/dxstats` | Show overall DX spot statistics. |
@@ -182,13 +184,14 @@ sh/dx day 2
 |---|---|
 | `announce <text>` | Send an announcement. |
 | `talk <target> <text>` | Send direct talk/chat traffic. |
-| `send <call> <text>` | Send a mailbox-style message. |
-| `msg <call> <text>` | Alias-style message send path. |
+| `send <call> <text>` | Send a message locally or queue it for the recipient's home node. |
+| `msg <call> <text>` | Alias-style message send path with the same routing behavior. |
 | `read <id>` | Read a stored message. |
-| `reply <id> <text>` | Reply to a stored message. |
-| `show/messages` | Show stored messages. |
+| `reply <id> <text>` | Reply to a stored message locally or via the recipient's home node. |
+| `show/messages` | Show inbox messages with unread flags, delivery state, route node, and origin node. |
 | `show/mail` | Alias to the message list. |
-| `show/msgstatus` | Show message count/status summary. |
+| `show/outbox` | Show recent sent and queued messages with route state. |
+| `show/msgstatus` | Show inbox totals plus inbox/outbox delivery-state counts. |
 | `show/announce` | Show stored announcement traffic. |
 | `show/chat` | Show stored chat/talk traffic. |
 | `show/wcy` | Show stored WCY traffic. |
