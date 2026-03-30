@@ -168,10 +168,11 @@ sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
 
-For upgrades from `1.0.0` to `1.0.1`, `deploy/upgrade.sh` also performs the required state conversion:
+For upgrades from `1.0.0` through `1.0.3`, `deploy/upgrade.sh` performs the required cumulative state conversion for older installs:
 
 - hashes any legacy plaintext passwords still stored in `user_prefs`
 - seeds `config/strings.toml` if it is missing
+- preserves compatibility with older `pycluster.toml` files by supplying defaults for newer optional config sections such as `[qrz]`
 - preserves the existing `config/pycluster.toml`, data, and logs in place
 
 Default listeners:

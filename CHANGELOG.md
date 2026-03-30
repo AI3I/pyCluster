@@ -6,6 +6,7 @@ All notable changes to pyCluster should be recorded here.
 
 - `show/qrz` now targets real QRZ XML lookups when QRZ credentials are configured, and the prior local history view has moved to `show/lastspot`
 - `show/wm7d` now performs a real WM7D callsign lookup
+- the documented in-place upgrade path now explicitly covers `1.0.0` through `1.0.3`
 - cluster mail has started moving beyond node-local storage:
   - `PC10` is aligned back to talk/direct-message semantics
   - cluster mail transport now uses `PC28`-`PC33`
@@ -61,7 +62,7 @@ sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
 
-The `1.0.1` upgrader hashes any legacy plaintext passwords still stored in `user_prefs`, seeds `config/strings.toml` if it is missing, and preserves the existing config, data, and logs in place.
+The cumulative upgrader used by `deploy/upgrade.sh` hashes any legacy plaintext passwords still stored in `user_prefs`, seeds `config/strings.toml` if it is missing, preserves compatibility with older configs that predate newer optional sections such as `[qrz]`, and keeps the existing config, data, and logs in place.
 
 ### Added
 
