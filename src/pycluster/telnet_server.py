@@ -23,6 +23,7 @@ from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path, normalize_recorded_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
+from .qrz import QRZClient, QRZLookupError
 from .shdx import BAND_RANGES, parse_sh_dx_args
 from .spot_throttle import (
     SPOT_THROTTLE_EXEMPT_KEY,
@@ -35,6 +36,7 @@ from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
 from .maidenhead import coords_to_locator, extract_locator, locator_to_coords
+from .wm7d import WM7DClient, WM7DLookupError
 
 
 LOG = logging.getLogger(__name__)
@@ -190,6 +192,7 @@ class TelnetClusterServer:
         on_chat_fn: Callable[[str, str], Awaitable[None]] | None = None,
         on_bulletin_fn: Callable[[str, str, str, str], Awaitable[None]] | None = None,
         on_spot_fn: Callable[[Spot], Awaitable[None]] | None = None,
+        on_message_fn: Callable[[str, str, str, int, int | None], Awaitable[None]] | None = None,
         on_sessions_changed_fn: Callable[[], Awaitable[None]] | None = None,
         on_node_login_fn: Callable[[str, str, asyncio.StreamReader, asyncio.StreamWriter, list[str] | None], Awaitable[bool]]
         | None = None,
@@ -215,12 +218,15 @@ class TelnetClusterServer:
         self._on_chat_fn = on_chat_fn
         self._on_bulletin_fn = on_bulletin_fn
         self._on_spot_fn = on_spot_fn
+        self._on_message_fn = on_message_fn
         self._on_sessions_changed_fn = on_sessions_changed_fn
         self._on_node_login_fn = on_node_login_fn
         self._filters: dict[str, dict[str, dict[str, list[FilterRule]]]] = {}
         self._events: list[EventLogEntry] = []
         self._users: set[str] = set()
         self._strings = StringCatalog(strings_path)
+        self._qrz = QRZClient(self.config.qrz)
+        self._wm7d = WM7DClient()
         self._cty_loaded = False
         cty_path = self.config.public_web.cty_dat_path.strip()
         if cty_path:
@@ -992,6 +998,15 @@ class TelnetClusterServer:
             delivered += 1
         return delivered
 
+    async def publish_talk(self, recipient: str, sender: str, text: str) -> int:
+        t = self._find_session(recipient)
+        if not t:
+            return 0
+        prefix = "\r\n" if not t.async_line_open else ""
+        await self._write(t.writer, f"{prefix}TALK {sender}: {text}\r\n")
+        t.async_line_open = True
+        return 1
+
     async def publish_bulletin(self, category: str, sender: str, scope: str, text: str) -> int:
         delivered = 0
         tag = category.upper()
@@ -1008,6 +1023,16 @@ class TelnetClusterServer:
             s.async_line_open = True
             delivered += 1
         return delivered
+
+    async def publish_message(self, recipient: str, sender: str, text: str, msg_id: int, parent_id: int | None = None) -> int:
+        t = self._find_session(recipient)
+        if not t:
+            return 0
+        prefix = "\r\n" if not t.async_line_open else ""
+        trailer = f" (reply {parent_id})" if parent_id is not None else ""
+        await self._write(t.writer, f"{prefix}MSG#{msg_id} {sender}{trailer}: {text}\r\n")
+        t.async_line_open = True
+        return 1
 
     async def _readline(self, reader: asyncio.StreamReader) -> str | None:
         timeout = float(self.config.telnet.idle_timeout_seconds or 0)
@@ -1665,7 +1690,7 @@ class TelnetClusterServer:
             "protoevents": "Show recent protocol event history.",
             "protohistory": "Show recorded protocol state changes.",
             "prompt": "Show the current prompt template.",
-            "qrz": "Show the last local sighting for a callsign.",
+            "qrz": "Look up a callsign using the configured QRZ XML service.",
             "rbn": "Show whether RBN spots are enabled.",
             "rcmd": "Show the configured remote command string.",
             "register": "Show whether automatic registration is enabled.",
@@ -1696,10 +1721,11 @@ class TelnetClusterServer:
             "vhfstats": "Show VHF-only DX spot statistics.",
             "wantpc16": "Show whether incoming PC16 frames are accepted.",
             "wantpc9x": "Show whether incoming PC9x frames are accepted.",
-            "wm7d": "Show WM7D gateway configuration status.",
+            "wm7d": "Look up a callsign using WM7D.",
             "wcy": "Show recent WCY propagation bulletins.",
             "wwv": "Show recent WWV propagation bulletins.",
             "wx": "Show recent weather bulletins.",
+            "lastspot": "Show the last local spot summary for a callsign.",
             "commands": "List commands in a family or by keyword.",
             "shortcuts": "Show command shortcuts and abbreviations.",
             "setprompt": "Set the login prompt template.",
@@ -2245,28 +2271,73 @@ class TelnetClusterServer:
         noun = "entry" if c == 1 else "entries"
         return self._render_string("show.prefix.result", "Prefix {prefix} has {count} local spot {noun}.", prefix=p, count=c, noun=noun) + "\r\n"
 
+    async def _cmd_show_lastspot(self, _call: str, arg: str | None) -> str:
+        if not arg:
+            return self._string("show.lastspot.usage", "Usage: show/lastspot <call>") + "\r\n"
+        call = arg.split()[0].upper()
+        row = await self.store.latest_spot_for_call(call)
+        if not row:
+            return self._render_string("show.lastspot.empty", "{call}: no local spot data.", call=call) + "\r\n"
+        ts = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).strftime("%-d-%b-%Y %H%MZ")
+        lines = [
+            self._render_string("show.lastspot.title", "{call} was last spotted on {timestamp}.", call=call, timestamp=ts),
+            self._render_string("show.lastspot.frequency", "  Frequency: {freq:.1f} kHz", freq=float(row["freq_khz"])),
+            self._render_string("show.lastspot.spotter", "  Spotter: {spotter}", spotter=row["spotter"]),
+            self._render_string("show.lastspot.via", "  Via: {source}", source=row["source_node"]),
+            self._render_string("show.lastspot.comment", "  Comment: {comment}", comment=row["info"] or "(none)"),
+        ]
+        return await self._format_console_lines(_call, lines)
+
+    @staticmethod
+    def _kv_line(label: str, value: str) -> str:
+        if not label:
+            return f"  {'':<9}   {value}"
+        return f"  {label:>9} : {value}"
+
     async def _cmd_show_qrz(self, _call: str, arg: str | None) -> str:
         if not arg:
             return self._string("show.qrz.usage", "Usage: show/qrz <call>") + "\r\n"
         call = arg.split()[0].upper()
-        row = await self.store.latest_spot_for_call(call)
-        if not row:
-            return self._render_string("show.qrz.empty", "{call}: no local spot data.", call=call) + "\r\n"
-        ts = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).strftime("%-d-%b-%Y %H%MZ")
-        lines = [
-            self._render_string("show.qrz.title", "{call} was last spotted on {timestamp}.", call=call, timestamp=ts),
-            self._render_string("show.qrz.frequency", "  Frequency: {freq:.1f} kHz", freq=float(row["freq_khz"])),
-            self._render_string("show.qrz.spotter", "  Spotter: {spotter}", spotter=row["spotter"]),
-            self._render_string("show.qrz.via", "  Via: {source}", source=row["source_node"]),
-            self._render_string("show.qrz.comment", "  Comment: {comment}", comment=row["info"] or "(none)"),
-        ]
+        try:
+            result = await self._qrz.lookup(call)
+        except QRZLookupError as exc:
+            return f"{exc}\r\n"
+        if result is None:
+            return self._render_string("show.qrz.empty", "{call}: no QRZ data returned.", call=call) + "\r\n"
+        lines = [self._render_string("show.qrz.title", "QRZ lookup for {call}:", call=result.callsign)]
+        if result.fname or result.name:
+            label = " ".join(part for part in (result.fname, result.name) if part).strip()
+            lines.append(self._kv_line("Name", label))
+        if result.addr1:
+            lines.append(self._kv_line("Address", result.addr1))
+        if result.addr2:
+            lines.append(self._kv_line("QTH", result.addr2))
+        if result.state:
+            lines.append(self._kv_line("State", result.state))
+        if result.country:
+            lines.append(self._kv_line("Country", result.country))
+        if result.grid:
+            lines.append(self._kv_line("Grid", result.grid))
+        if result.county:
+            lines.append(self._kv_line("County", result.county))
+        if result.dxcc:
+            lines.append(self._kv_line("DXCC", result.dxcc))
+        if result.cqzone:
+            lines.append(self._kv_line("CQ Zone", result.cqzone))
+        if result.ituzone:
+            lines.append(self._kv_line("ITU Zone", result.ituzone))
+        if result.lat and result.lon:
+            lines.append(self._kv_line("Lat/Lon", f"{result.lat}, {result.lon}"))
+        if result.aliases:
+            lines.append(self._kv_line("Aliases", result.aliases))
         return await self._format_console_lines(_call, lines)
 
-    async def _cmd_show_callsign_lookup(self, actor_call: str, arg: str | None, service: str) -> str:
+    async def _cmd_show_callsign_lookup(self, actor_call: str, arg: str | None, service: str, title: str | None = None) -> str:
         if not arg:
             return self._render_string("show.lookup.usage", "Usage: show/{service} <call>", service=service) + "\r\n"
         target = arg.split()[0].upper()
-        lines = [self._render_string("show.lookup.title", "{service} lookup for {target}:", service=service.upper(), target=target)]
+        heading = title or self._render_string("show.lookup.title", "{service} lookup for {target}:", service=service.upper(), target=target)
+        lines = [heading]
 
         reg = await self.store.get_user_registry(target)
         if reg is not None:
@@ -2703,9 +2774,24 @@ class TelnetClusterServer:
         return await self._show_gateway_status(call, arg, "show/ik3qar", "ik3qar")
 
     async def _cmd_show_wm7d_direct(self, call: str, arg: str | None) -> str:
-        if arg and arg.strip():
-            return await self._cmd_show_callsign_lookup(call, arg, "wm7d")
-        return await self._show_gateway_status(call, arg, "show/wm7d", "wm7d")
+        if not (arg and arg.strip()):
+            return self._string("show.wm7d.usage", "Usage: show/wm7d <call>") + "\r\n"
+        target = arg.split()[0].upper()
+        try:
+            result = await self._wm7d.lookup(target)
+        except WM7DLookupError as exc:
+            return f"{exc}\r\n"
+        if result is None:
+            return self._render_string("show.wm7d.empty", "{call}: no WM7D data returned.", call=target) + "\r\n"
+        lines = [self._render_string("show.wm7d.title", "WM7D lookup for {call}:", call=result.callsign)]
+        if result.license_class:
+            lines.append(self._kv_line("Class", result.license_class))
+        if result.name:
+            lines.append(self._kv_line("Name", result.name))
+        for idx, line in enumerate(result.address_lines, start=1):
+            label = "Address" if idx == 1 else ""
+            lines.append(self._kv_line(label, line))
+        return await self._format_console_lines(call, lines)
 
     async def _cmd_show_dupann_direct(self, call: str, arg: str | None) -> str:
         return await self._show_session_pref(call, arg, "show/dupann", "dup_ann", "off")
@@ -6806,7 +6892,24 @@ class TelnetClusterServer:
         target = toks[0].upper()
         text = " ".join(toks[1:])
         now = int(datetime.now(timezone.utc).timestamp())
-        msg_id = await self.store.add_message(sender=call, recipient=target, epoch=now, body=text, parent_id=None)
+        route_node = ""
+        state = "local"
+        if target != "ALL":
+            reg = await self.store.get_user_registry(target)
+            home_node = str(reg["home_node"] or "").strip().upper() if reg else ""
+            if home_node and home_node != normalize_call(self.config.node.node_call):
+                route_node = home_node
+                state = "pending"
+        msg_id = await self.store.add_message(
+            sender=call,
+            recipient=target,
+            epoch=now,
+            body=text,
+            parent_id=None,
+            origin_node=normalize_call(self.config.node.node_call),
+            route_node=route_node,
+            delivery_state=state,
+        )
         delivered = 0
         if target == "ALL":
             for s in self._sessions.values():
@@ -6814,12 +6917,20 @@ class TelnetClusterServer:
                     await self._write(s.writer, f"\r\nMSG#{msg_id} {call}: {text}\r\n")
                     delivered += 1
         else:
-            t = self._find_session(target)
-            if t:
-                await self._write(t.writer, f"\r\nMSG#{msg_id} {call}: {text}\r\n")
-                delivered = 1
+            delivered = await self.publish_message(target, call, text, msg_id)
+            if delivered:
+                await self.store.set_message_delivery(msg_id, "delivered", delivered_epoch=now)
+            elif route_node and self._on_message_fn:
+                await self._on_message_fn(call, target, text, msg_id, None)
         self._log_event("msg", f"{call}->{target}: {text}")
-        return self._render_string("messages.msg_delivered", "Message #{message_id} delivered to {delivered} session(s).", message_id=msg_id, delivered=delivered) + "\r\n"
+        row = await self.store.get_message(msg_id)
+        return self._render_string(
+            "messages.msg_delivered",
+            "Message #{message_id} delivered to {delivered} session(s). state={state}",
+            message_id=msg_id,
+            delivered=delivered,
+            state=str(row["delivery_state"] or state) if row else state,
+        ) + "\r\n"
 
     async def _cmd_send(self, call: str, arg: str | None) -> str:
         return await self._cmd_msg(call, arg)
@@ -6833,7 +6944,8 @@ class TelnetClusterServer:
             for r in rows:
                 ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc).strftime("%-d-%b %H%MZ")
                 flag = "N" if r["read_epoch"] is None else "R"
-                lines.append(f"{int(r['id']):>5} {flag} {ts} {r['sender']:<10} {r['body'][:50]}")
+                status = str(r["delivery_state"] or "local")[:10]
+                lines.append(f"{int(r['id']):>5} {flag} {ts} {status:<10} {r['sender']:<10} {r['body'][:38]}")
             return await self._format_console_lines(call, lines)
 
         tok = arg.split()[0]
@@ -6852,6 +6964,7 @@ class TelnetClusterServer:
             self._render_string("messages.read_from", "  From: {sender}", sender=row["sender"]),
             self._render_string("messages.read_to", "  To: {recipient}", recipient=row["recipient"]),
             self._render_string("messages.read_at", "  At: {timestamp}", timestamp=ts),
+            self._render_string("messages.read_state", "  State: {state}", state=row["delivery_state"] or "local"),
             self._render_string("messages.read_body", "  Body: {body}", body=row["body"]),
         ]
         return await self._format_console_lines(call, lines)
@@ -6869,14 +6982,37 @@ class TelnetClusterServer:
             return self._render_string("messages.read_missing", "No such message: {message_id}", message_id=parent_id) + "\r\n"
         target = str(parent["sender"]).upper()
         now = int(datetime.now(timezone.utc).timestamp())
-        new_id = await self.store.add_message(sender=call, recipient=target, epoch=now, body=body, parent_id=parent_id)
-        t = self._find_session(target)
-        delivered = 0
-        if t:
-            await self._write(t.writer, f"\r\nMSG#{new_id} {call} (reply {parent_id}): {body}\r\n")
-            delivered = 1
+        route_node = ""
+        state = "local"
+        reg = await self.store.get_user_registry(target)
+        home_node = str(reg["home_node"] or "").strip().upper() if reg else ""
+        if home_node and home_node != normalize_call(self.config.node.node_call):
+            route_node = home_node
+            state = "pending"
+        new_id = await self.store.add_message(
+            sender=call,
+            recipient=target,
+            epoch=now,
+            body=body,
+            parent_id=parent_id,
+            origin_node=normalize_call(self.config.node.node_call),
+            route_node=route_node,
+            delivery_state=state,
+        )
+        delivered = await self.publish_message(target, call, body, new_id, parent_id=parent_id)
+        if delivered:
+            await self.store.set_message_delivery(new_id, "delivered", delivered_epoch=now)
+        elif route_node and self._on_message_fn:
+            await self._on_message_fn(call, target, body, new_id, parent_id)
         self._log_event("reply", f"{call}->{target} parent={parent_id}: {body}")
-        return self._render_string("messages.reply_delivered", "Reply #{message_id} delivered to {delivered} session(s).", message_id=new_id, delivered=delivered) + "\r\n"
+        row = await self.store.get_message(new_id)
+        return self._render_string(
+            "messages.reply_delivered",
+            "Reply #{message_id} delivered to {delivered} session(s). state={state}",
+            message_id=new_id,
+            delivered=delivered,
+            state=str(row["delivery_state"] or state) if row else state,
+        ) + "\r\n"
 
     async def _cmd_show_msg_status(self, call: str, _arg: str | None) -> str:
         total, unread = await self.store.message_counts(call)
@@ -6897,8 +7033,9 @@ class TelnetClusterServer:
             sender = str(r["sender"])
             ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc).strftime("%-d-%b %H%MZ")
             unread = "UNREAD" if r["read_epoch"] is None else "READ"
+            status = str(r["delivery_state"] or "local")[:10]
             body = str(r["body"] or "")
-            lines.append(f"{mid:>6} {sender:<10} {ts} {unread:<6} {body}")
+            lines.append(f"{mid:>6} {sender:<10} {ts} {unread:<6} {status:<10} {body}")
         lines = await self._apply_page_size(call, lines, explicit_limit=explicit)
         return await self._format_console_lines(call, lines)
 
@@ -6952,7 +7089,17 @@ class TelnetClusterServer:
                 rows.append((key, f"{gshort}/{sshort}"))
         # Top-level shortcut map for unique command-prefix dispatch.
         top = sorted(set(self._top_level_canonical_tokens()))
+        preferred_top = {
+            "bye": "b",
+            "send": "s",
+            "read": "r",
+            "reply": "rep",
+        }
         for cmd in top:
+            pref = preferred_top.get(cmd)
+            if pref and self._resolve_top_token(pref) == cmd:
+                rows.append((cmd, pref))
+                continue
             short = cmd
             for i in range(2, len(cmd) + 1):
                 cand = cmd[:i]
@@ -7190,11 +7337,17 @@ class TelnetClusterServer:
         t = (token or "").lower().strip()
         if not t or "/" in t:
             return None
+        if t == "b":
+            return "bye"
+        if t in {"s", "sp"}:
+            return "send"
+        if t == "r":
+            return "read"
+        if t == "rep":
+            return "reply"
         # Keep grouped families (sh/show, set, unset, ...) out of top-level resolution.
         if self._resolve_group_token(t):
             return None
-        if t == "b":
-            return "bye"
         canon = self._top_level_canonical_tokens()
         if t in canon:
             return t
@@ -7679,6 +7832,7 @@ class TelnetClusterServer:
             "show/chat": self._cmd_show_chat,
             # extra recognized commands
             "show/qrz": self._cmd_show_qrz,
+            "show/lastspot": self._cmd_show_lastspot,
             "show/qra": self._cmd_show_qra,
             "show/location": lambda c, a: self._show_key_value(c, a, "show/location", "location", default="", readable_label="Location"),
             "show/localnode": lambda c, a: self._show_key_value(c, a, "show/localnode", "local_node", pref_key="local_node", default="off", readable_label="Local Node"),

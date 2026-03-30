@@ -16,6 +16,7 @@ class _DummyWriter:
     def __init__(self) -> None:
         self.buffer = bytearray()
         self.closed = False
+        self._extra: dict[str, object] = {}
 
     def write(self, b: bytes) -> None:
         self.buffer.extend(b)
@@ -28,6 +29,9 @@ class _DummyWriter:
 
     async def wait_closed(self) -> None:
         return
+
+    def get_extra_info(self, name: str, default=None):
+        return self._extra.get(name, default)
 
 
 class _DummyConn:
@@ -426,20 +430,229 @@ def test_ingest_pc93_adds_chat_bulletin(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_ingest_pc10_adds_chat_bulletin(tmp_path) -> None:
+def test_ingest_pc10_delivers_talk_without_creating_mail(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_pc10.db")
         app = ClusterApp(_mk_config(db))
+        writer = _DummyWriter()
         try:
+            app.telnet._sessions[1] = Session(
+                call="AI3I",
+                writer=writer,
+                connected_at=datetime.now(timezone.utc),
+            )
             msg = Pc10Message.from_fields(
-                ["AI3I", "*", "hello from legacy talk", "*", " ", "AI3I-15", "~"]
+                ["N0CALL", "AI3I-15", "hello from cluster mail", "*", "AI3I", "AI3I-16", "~"]
             )
             frame = WirePcFrame("PC10", msg.to_fields())
             await app._handle_node_link_item("PEER2", frame, msg)
-            rows = await app.store.list_bulletins("chat", limit=5)
+            rows = await app.store.list_messages("AI3I", limit=5)
+            assert rows == []
+            assert b"TALK N0CALL: hello from cluster mail" in bytes(writer.buffer)
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_connect_peer_starts_pending_mail_with_pc28(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "flush_pc10.db")
+        app = ClusterApp(_mk_config(db))
+        sent: list[tuple[str, WirePcFrame]] = []
+        try:
+            async def _connect(name: str, dsn: str, profile: str = "spider") -> None:
+                return
+
+            async def _send(peer: str, frame: WirePcFrame) -> None:
+                sent.append((peer, frame))
+
+            app.node_link.connect_dsn = _connect  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            now = int(datetime.now(timezone.utc).timestamp())
+            msg_id = await app.store.add_message(
+                sender="N0CALL",
+                recipient="K1ABC",
+                epoch=now,
+                body="queued hello",
+                origin_node="AI3I-15",
+                route_node="PEER1",
+                delivery_state="pending",
+            )
+
+            await app.connect_peer("PEER1", "spider://peer1")
+
+            pc28 = [frame for peer, frame in sent if peer == "PEER1" and frame.pc_type == "PC28"]
+            assert len(pc28) == 1
+            assert pc28[0].payload_fields[0] == "PEER1"
+            assert pc28[0].payload_fields[2] == "K1ABC"
+            assert pc28[0].payload_fields[3] == "N0CALL"
+            row = await app.store.get_message(msg_id)
+            assert row is not None
+            assert row["delivery_state"] == "pending"
+            assert row["route_node"] == "PEER1"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_pc30_pc31_pc33_complete_outbound_mail_route(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mail_ack.db")
+        app = ClusterApp(_mk_config(db))
+        sent: list[tuple[str, WirePcFrame]] = []
+        try:
+            async def _send(peer: str, frame: WirePcFrame) -> None:
+                sent.append((peer, frame))
+
+            app.node_link.send = _send  # type: ignore[method-assign]
+            now = int(datetime.now(timezone.utc).timestamp())
+            msg_id = await app.store.add_message(
+                sender="N0CALL",
+                recipient="K1ABC",
+                epoch=now,
+                body="\n".join([f"line {n}" for n in range(1, 7)]),
+                origin_node="AI3I-15",
+                route_node="PEER1",
+                delivery_state="pending",
+            )
+
+            row = await app.store.get_message(msg_id)
+            assert row is not None
+            await app._start_outbound_mail("PEER1", row)
+            pc28 = sent[-1][1]
+            assert pc28.pc_type == "PC28"
+            stream = "42"
+
+            await app._handle_node_link_item("PEER1", WirePcFrame("PC30", ["N0NODE-1", "PEER1", stream, ""]), None)
+            tranche = [frame for peer, frame in sent if peer == "PEER1" and frame.pc_type == "PC29"]
+            assert len(tranche) == 5
+            assert tranche[0].payload_fields[3] == "line 1"
+            assert tranche[-1].payload_fields[3] == "line 5"
+            await app._handle_node_link_item("PEER1", WirePcFrame("PC31", ["N0NODE-1", "PEER1", stream, ""]), None)
+            assert sent[-2][1].pc_type == "PC29"
+            assert sent[-2][1].payload_fields[3] == "line 6"
+            assert sent[-1][1].pc_type == "PC32"
+            await app._handle_node_link_item("PEER1", WirePcFrame("PC33", ["N0NODE-1", "PEER1", stream, ""]), None)
+
+            routed = await app.store.get_message(msg_id)
+            assert routed is not None
+            assert routed["delivery_state"] == "routed"
+            assert routed["route_node"] == "PEER1"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_pc28_pc29_pc32_store_inbound_mail(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mail_inbound.db")
+        app = ClusterApp(_mk_config(db))
+        sent: list[tuple[str, WirePcFrame]] = []
+        writer = _DummyWriter()
+        try:
+            async def _send(peer: str, frame: WirePcFrame) -> None:
+                sent.append((peer, frame))
+
+            app.node_link.send = _send  # type: ignore[method-assign]
+            app.telnet._sessions[1] = Session(
+                call="AI3I",
+                writer=writer,
+                connected_at=datetime.now(timezone.utc),
+            )
+
+            await app._handle_node_link_item(
+                "AI3I-16",
+                WirePcFrame("PC28", ["N0NODE-1", "AI3I-16", "AI3I", "N0CALL", "30-Mar-2026", "0010Z", "1", "Test Subject", " ", "5", "0", " ", "AI3I-16", "~"]),
+                None,
+            )
+            assert sent[-1][1].pc_type == "PC30"
+            stream = sent[-1][1].payload_fields[2]
+
+            for idx in range(1, 5):
+                await app._handle_node_link_item(
+                    "AI3I-16",
+                    WirePcFrame("PC29", ["N0NODE-1", "AI3I-16", stream, f"mail line {idx}", "~"]),
+                    None,
+                )
+                assert sent[-1][1].pc_type == "PC30"
+            await app._handle_node_link_item("AI3I-16", WirePcFrame("PC29", ["N0NODE-1", "AI3I-16", stream, "mail line 5", "~"]), None)
+            assert sent[-1][1].pc_type == "PC31"
+            await app._handle_node_link_item("AI3I-16", WirePcFrame("PC32", ["N0NODE-1", "AI3I-16", stream, ""]), None)
+            assert sent[-1][1].pc_type == "PC33"
+
+            rows = await app.store.list_messages("AI3I", limit=5)
             assert len(rows) == 1
-            assert rows[0]["sender"] == "AI3I"
-            assert "hello from legacy talk" in str(rows[0]["body"])
+            assert rows[0]["sender"] == "N0CALL"
+            assert "Subject: Test Subject" in str(rows[0]["body"])
+            assert "mail line 1" in str(rows[0]["body"])
+            assert "mail line 5" in str(rows[0]["body"])
+            assert b"MSG#" in bytes(writer.buffer)
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_connect_peer_resets_stale_mail_state_and_restarts_pending_route(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mail_reset.db")
+        app = ClusterApp(_mk_config(db))
+        sent: list[tuple[str, WirePcFrame]] = []
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            msg_id = await app.store.add_message(
+                sender="N0CALL",
+                recipient="K1ABC",
+                epoch=now,
+                body="retry after reconnect",
+                parent_id=None,
+                origin_node=app.config.node.node_call,
+                route_node="PEER1",
+                delivery_state="pending",
+            )
+            app._outbound_mail[("PEER1", "1")] = {
+                "message_id": msg_id,
+                "peer": "PEER1",
+                "sender": "N0CALL",
+                "recipient": "K1ABC",
+                "subject": " ",
+                "lines": ["stale"],
+                "index": 0,
+                "stream": "1",
+            }
+            app._outbound_mail_pending_header["PEER1"] = [
+                {
+                    "message_id": msg_id,
+                    "peer": "PEER1",
+                    "sender": "N0CALL",
+                    "recipient": "K1ABC",
+                    "subject": " ",
+                    "lines": ["stale"],
+                    "index": 0,
+                }
+            ]
+
+            async def _connect(_name: str, _dsn: str, profile: str = "dxspider") -> None:
+                return
+
+            async def _send(peer: str, frame: WirePcFrame) -> None:
+                sent.append((peer, frame))
+
+            app.node_link.connect_dsn = _connect  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+
+            await app.connect_peer("PEER1", "tcp://example.invalid:7300", persist=False)
+
+            assert ("PEER1", "1") not in app._outbound_mail
+            assert len(app._outbound_mail_pending_header.get("PEER1", [])) == 1
+            pc28 = [frame for peer, frame in sent if peer == "PEER1" and frame.pc_type == "PC28"]
+            assert len(pc28) == 1
+            row = await app.store.get_message(msg_id)
+            assert row is not None
+            assert row["delivery_state"] == "pending"
         finally:
             await app.store.close()
 
