@@ -5509,13 +5509,24 @@ class TelnetClusterServer:
         if denied:
             return denied
         target = (arg or "").strip().upper()
-        if not target or not is_valid_call(target):
-            return "Usage: delete/user <call>\r\n"
-        removed = await self.store.delete_user_registry(target)
-        self._log_event("user", f"{call} delete/user {target} removed={removed}")
-        if removed:
-            return f"User {target} removed.\r\n"
-        return f"No user record found for {target}.\r\n"
+        has_wildcard = any(ch in target for ch in "*?[")
+        if not target or (not has_wildcard and not is_valid_call(target)):
+            return "Usage: delete/user <call-or-pattern>\r\n"
+        matches = [target] if not has_wildcard else await self.store.match_user_registry_calls(target)
+        if not matches:
+            return f"No user record found for {target}.\r\n"
+        removed_calls: list[str] = []
+        for matched in matches:
+            counts = await self.store.delete_user_data(matched)
+            removed = await self.store.delete_user_registry(matched)
+            if removed or any(int(v) > 0 for v in counts.values()):
+                removed_calls.append(matched)
+        self._log_event("user", f"{call} delete/user {target} removed={','.join(removed_calls) or 'none'}")
+        if not removed_calls:
+            return f"No user record found for {target}.\r\n"
+        if len(removed_calls) == 1 and not has_wildcard:
+            return f"User {removed_calls[0]} removed.\r\n"
+        return f"Removed {len(removed_calls)} user(s): {', '.join(removed_calls)}.\r\n"
 
     async def _cmd_create_user(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "create/user")

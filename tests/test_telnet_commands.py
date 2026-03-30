@@ -3955,6 +3955,38 @@ def test_home_node_preferences_persist_and_render(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_delete_user_supports_wildcard_pattern_and_cleans_local_data(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "delete_pattern.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(
+            call="N0CALL",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.set_user_pref("N0CALL", "privilege", "sysop", now)
+            await store.upsert_user_registry("MAILTST", now, display_name="Mail Test")
+            await store.upsert_user_registry("MAILTST-1", now, display_name="Mail Test SSID")
+            await store.set_user_pref("MAILTST", "password", "secret", now)
+            await store.set_user_pref("MAILTST-1", "blocked_login", "on", now)
+
+            _, out = await srv._execute_command("N0CALL", "delete/user MAILTST*")
+            assert "Removed 2 user(s): MAILTST, MAILTST-1." in out
+
+            assert await store.get_user_registry("MAILTST") is None
+            assert await store.get_user_registry("MAILTST-1") is None
+            assert await store.get_user_pref("MAILTST", "password") is None
+            assert await store.get_user_pref("MAILTST-1", "blocked_login") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_sysop_namespace_handles_user_management(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "sysop_namespace.db")
