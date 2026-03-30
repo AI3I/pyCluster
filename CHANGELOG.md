@@ -2,6 +2,11 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.4 - 2026-03-30
+
+- fixed the cumulative upgrade path so older `1.0.0` databases with the real `user_prefs(pref_key, pref_value)` schema now upgrade cleanly through `deploy/upgrade.sh`
+- added regression coverage for the upgrader against the legacy `1.0.0` config/database shape
+
 ## 1.0.3 - 2026-03-30
 
 - `show/qrz` now targets real QRZ XML lookups when QRZ credentials are configured, and the prior local history view has moved to `show/lastspot`
