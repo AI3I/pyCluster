@@ -92,3 +92,7 @@ def lookup(callsign: str) -> Entity | None:
         if prefix in _prefix_map:
             return _prefix_map[prefix]
     return None
+
+
+def is_loaded() -> bool:
+    return bool(_prefix_map or _exact_map)

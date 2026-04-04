@@ -65,6 +65,8 @@ It also supports direct commands such as:
 | `show/lastspot <call>` | Show the most recent local spot summary for a callsign. |
 | `show/wm7d <call>` | Run a real WM7D callsign lookup. |
 | `show/qra <call>` | Show stored QRA/grid for a callsign when known. |
+| `show/location <call>` | Show the stored location detail text when known. |
+| `show/qth <call>` | Show the stored QTH value when known. |
 | `show/bands` | Show band information. |
 | `show/dxstats` | Show overall DX spot statistics. |
 | `show/hfstats` | Show HF-oriented spot statistics. |
@@ -91,7 +93,7 @@ sh/dx day 2
 | `set/name <text>` | Set display name. |
 | `set/qth <text>` | Set location/QTH. |
 | `set/qra <text>` | Set QRA or grid-style field used by this node. |
-| `set/location <text>` | Set location text alias. |
+| `set/location <text>` | Set location text and update QRA automatically when the location resolves to coordinates. |
 | `set/address <text>` | Set address/contact text. |
 | `set/email <addr>` | Set email address. |
 | `unset/email` | Clear email address. |
@@ -334,6 +336,13 @@ These commands require sysop privilege and are hidden from ordinary command list
 |---|---|
 | `sysop/password <call> <newpass>` | Set another user’s password. |
 | `sysop/clearpassword <call>` | Clear another user’s password. |
+| `sysop/clearmfa <call>` | Force email MFA off for a principal and clear outstanding OTP challenges. |
+
+## Spot Review Notes
+
+- inbound spot ingest accepts plausible real-world callsigns instead of requiring the stricter local-account validator
+- when a spot callsign or spotter is syntactically plausible but not recognized by the currently loaded prefix data, the System Console spot table shows a `Review` badge
+- the application log records these as `spot call review: ...` entries for follow-up
 | `sysop/user <call> <field> <value>` | Update a registry field for a user or node-classified record. |
 | `sysop/deleteuser <call>` | Delete a user record. |
 | `sysop/privilege <call> <level>` | Set privilege level. |

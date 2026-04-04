@@ -1,0 +1,15 @@
+[node]
+# qth = "Boston, MA"
+# node_locator = "FN42LI"
+
+[telnet]
+# port = 7300
+
+[web]
+# admin_token = "change-me"
+
+[public_web]
+# enabled = true
+
+[store]
+# sqlite_path = "./data/pycluster.db"

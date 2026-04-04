@@ -26,6 +26,7 @@ host = "127.0.0.1"
 port = 8081
 static_dir = "./web/public_dxweb/static"
 cty_dat_path = "./fixtures/live/dxspider/cty.dat"
+wpxloc_raw_path = ""
 
 [store]
 sqlite_path = "./data/pycluster.db"

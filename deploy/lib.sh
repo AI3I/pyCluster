@@ -376,9 +376,9 @@ refresh_cty_best_effort() {
   local cmd
   cmd=("$PYCLUSTER_PYTHON_LINK" "$PYCLUSTER_APP_DIR/scripts/update_cty.py" --config "$PYCLUSTER_CONFIG_DEST")
   if cd "$PYCLUSTER_APP_DIR" && runuser -u "$PYCLUSTER_USER" -- "${cmd[@]}"; then
-    log "CTY.DAT refresh succeeded"
+    log "Country data refresh succeeded"
   else
-    log "CTY.DAT refresh skipped or failed; keeping bundled copy"
+    log "Country data refresh skipped or failed; keeping existing local copies"
   fi
 }
 

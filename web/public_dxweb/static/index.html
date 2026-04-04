@@ -1744,6 +1744,7 @@ let webCall     = '';
 let webAccess   = {};
 let webProfile  = {};
 let opBusyCount = 0;
+let liveStats   = null;
 
 function activateMainPage(page) {
   const target = String(page || 'spots');
@@ -2389,24 +2390,14 @@ function updateQthMarker() {
 }
 
 function updateLiveStats() {
-  const timeCutoff = Date.now() - timeRangeHrs * 3600000;
-  const visible = allSpots.filter(s => new Date(s.time).getTime() >= timeCutoff);
-  const entities = new Set(visible.map(s => s.dx_entity).filter(Boolean));
-  const bandCnt = {}, modeCnt = {};
-  visible.forEach(s => {
-    if (s.band) bandCnt[s.band] = (bandCnt[s.band]||0)+1;
-    if (s.mode) modeCnt[s.mode] = (modeCnt[s.mode]||0)+1;
-  });
-  const topBand = Object.entries(bandCnt).sort((a,b)=>b[1]-a[1])[0]?.[0] || '–';
-  const topMode = Object.entries(modeCnt).sort((a,b)=>b[1]-a[1])[0]?.[0] || '–';
   const lbl = {1:'1h',6:'6h',12:'12h',24:'24h'}[timeRangeHrs] || `${timeRangeHrs}h`;
   const lblEl = document.getElementById('stat-total-lbl');
   if (lblEl) lblEl.textContent = lbl + ' Spots';
-  document.getElementById('stat-total').textContent   = visible.length.toLocaleString();
-  document.getElementById('stat-topband').textContent = topBand;
-  document.getElementById('stat-topmode').textContent = topMode;
+  document.getElementById('stat-total').textContent   = liveStats ? Number(liveStats.total || 0).toLocaleString() : '–';
+  document.getElementById('stat-topband').textContent = liveStats?.top_band || '–';
+  document.getElementById('stat-topmode').textContent = liveStats?.top_mode || '–';
   const dxccEl = document.getElementById('stat-dxcc');
-  if (dxccEl) dxccEl.textContent = entities.size.toLocaleString();
+  if (dxccEl) dxccEl.textContent = liveStats ? Number(liveStats.dxcc_entities || 0).toLocaleString() : '–';
 }
 
 const glBtn = document.getElementById('greyline-toggle');
@@ -2428,6 +2419,7 @@ document.querySelectorAll('.sb-time').forEach(btn => {
     document.querySelectorAll('.sb-time').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     timeRangeHrs = parseInt(btn.dataset.hrs);
+    loadStats();
     renderTable();
   });
 });
@@ -2990,7 +2982,12 @@ function showToast(spot) {
 
 // ================================================================ Stats
 async function loadStats() {
-  // Stats now computed live from allSpots via updateLiveStats(); kept for future use.
+  try {
+    liveStats = await fetch(`${STATS}?hours=${timeRangeHrs}`).then(r=>r.json());
+  } catch {
+    liveStats = null;
+  }
+  updateLiveStats();
 }
 
 // ================================================================ Leaderboard
@@ -3548,6 +3545,7 @@ async function fetchSpots() {
   try {
     allSpots = await fetch(API+'?limit=500').then(r=>r.json());
     dedupeAllSpots();
+    await loadStats();
     renderTable();
   } catch(e) { console.error('fetchSpots',e); }
 }

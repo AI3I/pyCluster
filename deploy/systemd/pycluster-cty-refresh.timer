@@ -1,5 +1,5 @@
 [Unit]
-Description=Weekly pyCluster CTY.DAT refresh
+Description=Weekly pyCluster country data refresh
 
 [Timer]
 OnCalendar=weekly

@@ -83,6 +83,8 @@ Run the core service:
 pycluster --config ./config/pycluster.toml serve
 ```
 
+If you need machine-local settings, create `./config/pycluster.local.toml`. pyCluster automatically loads it after the base `pycluster.toml`, so local edits do not need to live in the tracked repo file.
+
 ## Production Install
 
 From the repo root:
@@ -108,6 +110,7 @@ This installs:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-cty-refresh.timer`
+  - keeps `CTY.DAT` and `wpxloc.raw` current from the Country Files refresh path
 - `pycluster-retention.timer`
 - fail2ban filters and jails for pyCluster auth failures
 - logrotate policy for `/var/log/pycluster/authfail.log`
@@ -128,6 +131,14 @@ For upgrades from `1.0.0` through `1.0.3`, `deploy/upgrade.sh` performs the cumu
 - seeds `config/strings.toml` if it is missing
 - preserves compatibility with older `pycluster.toml` files by supplying defaults for newer optional config sections such as `[qrz]`
 - preserves the existing `config/pycluster.toml`, data, and logs in place
+
+Recommended before future upgrades:
+
+- keep `config/pycluster.toml` close to upstream defaults
+- move host-specific changes into `config/pycluster.local.toml`
+- leave `config/pycluster.local.toml` untracked so `git pull --ff-only` stays clean
+
+That local override file is also the right place for host-specific secrets such as QRZ credentials, SMTP credentials, and any node identity or listener changes that should survive repo updates.
 
 ## Repair
 
@@ -183,6 +194,38 @@ sudo ls -l /root/pycluster-initial-sysop.txt
 That file contains the one-time generated `SYSOP` password for first web-based operator login.
 
 If the install is interactive, the deploy script now stops and requires `READ` confirmation before it continues past the bootstrap credential notice.
+
+## MFA Recovery
+
+Normal operator recovery paths:
+
+- System Console: use `Reset MFA` on the user record
+- Telnet sysop command: `sysop/clearmfa <call>`
+
+Both paths:
+
+- force `mfa_email_otp=off` for the principal/base callsign
+- clear outstanding OTP challenges for that callsign and its SSIDs
+- leave the password unchanged
+- write an audit record
+
+If every sysop is locked out, recover locally on the host:
+
+```bash
+cd /home/pycluster/pyCluster
+sqlite3 data/pycluster.db "
+DELETE FROM mfa_challenges;
+DELETE FROM user_prefs WHERE call='AI3I' AND pref_key='mfa_email_otp';
+INSERT INTO user_prefs(call,pref_key,pref_value,updated_epoch)
+VALUES('AI3I','mfa_email_otp','off',strftime('%s','now'))
+ON CONFLICT(call,pref_key) DO UPDATE SET
+  pref_value=excluded.pref_value,
+  updated_epoch=excluded.updated_epoch;
+"
+systemctl restart pycluster.service pyclusterweb.service
+```
+
+Replace `AI3I` with the principal/base sysop callsign you are recovering. If needed, also reset the password through the existing bootstrap or direct SQLite recovery path.
 
 ## Retention and Cleanup
 

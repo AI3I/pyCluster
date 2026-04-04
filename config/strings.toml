@@ -1,9 +1,29 @@
 [commands.show]
+row = "  {command:<{width}}  {description}"
 title = "Commands:"
 usage = "  Use: show/commands <family>   or   show/commands <keyword>"
 examples = "  Examples: show/commands show, show/commands set, show/commands dx, show/commands route"
 more = "  ... {count} more commands. Increase page length with set/page or filter with show/commands <family>."
 other = "Other commands:"
+no_match = "No commands match '{needle}'."
+empty = "No commands are available in this view."
+group_usage = "  Use: {group}/<name> or show/commands <keyword>"
+
+[commands.shortcuts]
+row = "  {shortcut:<18} runs {command}"
+full = "    Full Command: {command}"
+title = "Shortcuts ({count}):"
+note = "  Capital letters show the shorthand pyCluster guarantees."
+no_match = "No shortcuts match '{needle}'."
+empty = "No shortcuts are available in this view."
+
+[table.kv]
+blank = "  {label:<9}   {value}"
+line = "  {label:>9} : {value}"
+
+[access]
+denied = "{action}: not allowed via {channel}"
+privilege_denied = "{action}: permission denied (requires {need})"
 
 [commands.show.sections]
 show = "Show commands:"
@@ -218,6 +238,417 @@ delete_usdb = "Delete a field from your USDB record."
 load_usdb = "Reload USDB data."
 reject_announce = "Reject announcement traffic that matches a rule."
 reject_rbn = "Reject RBN spot traffic that matches a rule."
+
+[show.qra]
+value = "QRA for {target}: {value}"
+empty = "QRA is not set for {target}."
+
+[show.time]
+value = "UTC time: {time}"
+
+[show.date]
+value = "UTC date: {date}"
+
+[show.configuration]
+title = "Node configuration:"
+node_call = "  Node Call: {value}"
+node_alias = "  Node Alias: {value}"
+qth = "  Location (QTH): {value}"
+telnet_listener = "  Telnet Listener: {value}"
+telnet_ports = "  Telnet Ports: {value}"
+sysop_web = "  System Operator Web: {value}"
+database = "  Database: {value}"
+
+[show.program]
+title = "Program information:"
+name = "  Name: pyCluster"
+mode = "  Mode: DXSpider compatibility"
+version = "  Version: {value}"
+
+[show.dxqsl]
+title = "DXQSL status for {target}:"
+export_path = "  Export Path: {value}"
+import_path = "  Import Path: {value}"
+ready = "  Ready: {value}"
+
+[show.session_pref]
+value = "{label} for {target}: {value}"
+
+[show.named_map]
+title = "{title} for {target}:"
+empty = "{title} for {target}: none."
+primary_row = "{label}: {value}"
+row = "{label}: {value}"
+
+[show.lookup]
+name = "  Name: {value}"
+qth = "  QTH: {value}"
+grid = "  Grid: {value}"
+home_node = "  Home Node: {value}"
+
+[show.bands]
+title = "Band plan:"
+line = "  {band:<6} {low:>8.1f}-{high:<8.1f} kHz"
+
+[session]
+not_found = "Session not found"
+
+[catchup]
+state = "Catch-up on login {state} for {call}."
+
+[chat]
+usage = "Usage: chat <text>"
+delivered = "Chat delivered to {count} session(s)."
+
+[talk]
+usage = "Usage: talk <call|all> <text>"
+delivered = "Talk delivered to {count} session(s)."
+
+[usdb]
+delete_field_done = "Removed USDB field {field} for {target}."
+delete_field_missing = "USDB field {field} was not set for {target}."
+delete_done = "Removed {count} USDB entr{suffix} for {target}."
+
+[var]
+unset_done = "Variable {key} cleared for {target}."
+unset_missing = "Variable {key} was not set for {target}."
+unset_all_done = "Cleared {count} variable entr{suffix} for {target}."
+
+[uservar]
+unset_done = "User variable {key} cleared for {target}."
+unset_missing = "User variable {key} was not set for {target}."
+unset_all_done = "Cleared {count} user variable entr{suffix} for {target}."
+
+[filters]
+clear_usage = "Usage: clear/{family} [<call>] [input] [<slot>|all]"
+clear_done = "Cleared {family} filters for {target} ({scope})."
+clear_expr_usage = "Usage: clear/{label} [<call>] [input] [<slot>|all]"
+clear_expr_done = "Cleared {count} {label} filter entr{suffix} for {target} ({scope})."
+dupefile_cleared = "Duplicate spot tracking reset; removed {count} cached duplicate entr{suffix}."
+
+[user]
+create_usage = "Usage: create/user <call>"
+create_done = "User record created for {target}."
+delete_usage = "Usage: delete/user <call-or-pattern>"
+delete_missing = "No user record found for {target}."
+delete_done = "User {target} removed."
+delete_many_done = "Removed {count} user(s): {calls}."
+
+[stat]
+spots = "Spot summary: {count} stored spot{suffix}."
+users = "User session summary: {count} active session{suffix}."
+route_empty = "There are no live peer links right now."
+route = "There {verb} {count} live peer link{suffix} right now."
+queue_empty = "Queue status: there are 0 peers, 0 queued items, RX 0, TX 0, dropped 0, and 0 policy drops."
+proto_empty = "Protocol status: 0 peers, with 0 known, 0 ok, 0 degraded, 0 flapping, 0 stale, and 0 unknown."
+proto = "Protocol status: {peers} peers, with {known} known, {ok} ok, {degraded} degraded, {flapping} flapping, {stale} stale, and {unknown} unknown."
+protohistory_empty = "Protocol history status: 0 peers, 0 with history, 0 events, and no last event."
+protohistory = "Protocol history status: {peers} peers, {with_history} with history, {events} events, and last epoch {last_epoch}."
+protoevents_empty = "Protocol event status: 0 events across 0 keys."
+protoevents = "Protocol event status: {events} events across {keys} keys. Top activity: {tops}."
+protoalerts_empty = "Protocol alert status: 0 total, 0 degraded, 0 flapping, 0 stale, and 0 acknowledged."
+protoalerts = "Protocol alert status: {total} total, {degraded} degraded, {flapping} flapping, {stale} stale, and {acked} acknowledged."
+protoacks = "Protocol acknowledgement status: {total} total, {suppressed} suppressed, and {expired} expired."
+named_unknown = "There is no summary yet for stat/{name}. Try the related show command for more detail."
+
+[sysop]
+access_level = "Access level for {call}: {level}"
+access_row = "{capability:<10}{telnet:>8}{web:>6}"
+services_row = "{component:<10} {state:<7} {detail}"
+spotlimit_disabled = "Spot throttle disabled for {target}."
+spotlimit_default = "Spot throttle override cleared for {target}."
+
+[pc]
+status = "PC{pc} support is available for {feature}; current state is {state} ({source})."
+
+[startup]
+skipped_unsafe = "[startup] skipped unsafe command: {command}"
+halted = "[startup] halted by command request"
+
+[groups]
+join_usage = "Usage: join <group>"
+leave_usage = "Usage: leave <group>"
+joined = "Joined group {group}."
+left = "Left group {group}."
+
+[who]
+users_title = "Connected users:"
+peers_title = "Connected peers:"
+user_row = "  {call:<12} online {minutes:>4}m"
+peer_row = "  {peer:<12} {direction:<8} profile {profile}"
+empty = "No users or peers connected"
+
+[apropos]
+usage = "Usage: apropos <pattern>"
+no_match = "No commands match {needle}."
+no_visible = "No visible commands match {needle}."
+title = "Commands matching {needle} ({count}):"
+
+[directory]
+title = "Directories:"
+database = "  Database: {path}"
+log = "  Log: in-memory"
+filters = "  Filters: in-memory"
+
+[forward]
+latlong_usage = "Usage: forward/latlong <lat> <lon>"
+latlong_range = "forward/latlong: range error (-90..90, -180..180)"
+latlong_done = "Forward latitude/longitude set to {lat:.4f}, {lon:.4f}."
+opername_usage = "Usage: forward/opername <text>"
+opername_done = "Forward operator name set to {text}."
+
+[ping]
+reply = "PONG {target}"
+
+[bulletin]
+usage = "Usage: {name} <text>"
+accepted = "{name}: accepted (local-safe)"
+
+[links]
+connect_unavailable = "Node-link connect unavailable"
+connect_usage = "Usage: connect <peer> <dsn|host port>"
+connect_host_usage = "Usage: connect <peer> <host> <port>"
+connect_started = "Connection attempt started for {peer} ({dsn})."
+connect_failed = "Connection to {peer} failed: {error}"
+disconnect_unavailable = "Node-link disconnect unavailable"
+disconnect_usage = "Usage: disconnect <peer>"
+disconnect_done = "Disconnected {peer}."
+disconnect_missing = "Peer {peer} was not found."
+
+[show.links]
+row = "{peer:<12} {family:<8} {state:<5} {age:>4} {traffic:>7} {loop:>5} {last_pc:<4} {ident}"
+detail = "  Reconnect: {reconnect}  Retry Count: {retry_count}  Next Retry: {next_retry}  Mail Queue: {pending_mail}"
+route_issues = "  Route Issues: {count}"
+last_error = "  Last Error: {error}"
+
+[show.hops]
+row = "{name:<24} hop metric {hop:>2}  RX {parsed:>6}  TX {sent:>6}  policy drops {policy:>4}"
+
+[profile]
+peer_set = "Profile for peer {peer} set to {profile}."
+peer_missing = "Peer {peer} was not found."
+user_set = "Profile for {call} set to {profile}."
+
+[compat]
+not_implemented = "That command is recognized, but it has not been implemented yet."
+keps_ok = "Keplerian elements request accepted."
+ok = "{label} completed successfully."
+disabled = "{label} is not available in pyCluster."
+
+[filters]
+header = "Echo {echo}  Here {here}  Beep {beep}  Language {language}  Profile {profile}"
+profile = "Profile for {target} set to {profile}."
+title = "Filters for {target}"
+family = "[{family}]"
+rule = "  {action}/{family} {slot} {expr}"
+add_usage = "Usage: {action}/{family} [<call>] [input] [0-9] <pattern>"
+add_done = "{action} filter for {family} saved for {target} in slot {slot}."
+alias_usage = "Usage: {action}/{label} [<call>] [input] [<slot>|all]"
+alias_done = "{action} filter for {family} saved for {target} in slot {slot} ({label})."
+alias_echo = "{action}/{label} {target} {slot}"
+
+[show.uptime]
+title = "Uptime:"
+running = "  Running: {uptime}"
+started = "  Started: {started}"
+now = "  Now: {now}"
+
+[show.startup]
+title = "Startup status:"
+utc = "  Startup UTC: {startup_utc}"
+services = "  Services: telnet, web"
+node_link = "  Node Link: available (transport adapters)"
+enabled = "  Startup for {target}: {state}"
+count = "  Startup Commands: {count}"
+
+[show.dxqsl]
+title = "DXQSL status for {target}:"
+export_path = "  Export Path: {path}"
+import_path = "  Import Path: {path}"
+ready = "  Ready: {state}"
+
+[show.named]
+value = "{label} for {target}: {value}"
+not_set = "{label} is not set for {target}."
+local_empty = "No local {name} information is available for {target}."
+
+[show.key_value]
+value = "{label} for {target}: {value}"
+empty = "{label} is not set for {target}."
+
+[show.gateway]
+title = "{name} gateway status:"
+enabled = "  Enabled: {state}"
+host = "  Host: {host}"
+port = "  Port: {port}"
+endpoint_missing = "  Endpoint: This gateway is not configured on this node."
+
+[show.capabilities]
+title = "Command capabilities:"
+commands = "  Commands: {count}"
+not_implemented = "  Not Implemented: {count}"
+show_set_unset = "  Show: {show}  Set: {set}  Unset: {unset}"
+accept_reject_clear = "  Accept: {accept}  Reject: {reject}  Clear: {clear}"
+load_stat = "  Load: {load}  Stat: {stat}"
+
+[show.deny]
+title = "{kind} rules ({count}):"
+empty = "No {kind} rules are stored."
+
+[deny]
+set_usage = "Usage: set/{kind} <pattern>"
+set_done = "{name} rule added: {pattern}"
+unset_done = "Removed {count} {kind} entr{suffix}."
+
+[show.var]
+item = "Variable {key} for {target}: {value}"
+item_empty = "Variable {key} is not set for {target}."
+
+[show.registered]
+title = "Registered user {call}"
+name = "  Name: {value}"
+address = "  Address: {value}"
+qth = "  Location (QTH): {value}"
+qra = "  Grid Square (QRA): {value}"
+email = "  Email: {value}"
+location = "  Location Detail: {value}"
+usstate = "  US State: {value}"
+privilege = "  Privilege: {value}"
+homebbs = "  Home BBS: {value}"
+homenode = "  Home Node: {value}"
+node = "  Node: {value}"
+family = "  Node Family: {value}"
+access = "  Login Access: {value}"
+uservar = "  {key}: {value}"
+last_login = "  Last Login: {value}"
+last_peer = "  Last Peer: {value}"
+
+[sysop]
+clearmfa_usage = "Usage: sysop/clearmfa <call>"
+clearmfa_done = "Email MFA reset for {principal}. Outstanding challenges cleared: {cleared}. MFA is now off."
+path_usage = "Usage: sysop/path <call|peer>"
+path_empty = "No local path record for {target}."
+
+[sysop.path]
+peer_title = "Path for peer {target}:"
+title = "Path for {target}:"
+direction = "  Direction: {value}"
+transport = "  Transport: {value}"
+path = "  Path: {value}"
+last_login = "  Last Login: {value}"
+
+[log]
+spot_call_review = "spot call review: peer={peer} frame={frame} dx_call={dx_call} spotter={spotter} reasons={reasons}"
+cluster_mail_undeliverable = "cluster mail undeliverable: id={message_id} route={route} reason={reason}"
+cluster_mail_pending = "cluster mail pending: id={message_id} route={route} reason={reason}"
+
+[save]
+summary = "Saved {writes} item(s) for {call}: {prefs} preference(s) and {spots} stored spot(s)."
+
+[buddy]
+unset_done = "Removed {count} buddy entr{suffix} for {call}."
+
+[user]
+set_usage = "Usage: set/user <call> [<field> <value>]"
+set_created_or_updated = "User record created or updated for {target}."
+set_privilege_denied = "set/user privilege: cannot grant above your own level"
+set_node_family_usage = "Usage: set/user <call> node_family <pycluster|dxspider|dxnet|arcluster|clx>"
+set_node_family_done = "node_family updated for {target}."
+set_field_usage = "Usage: set/user <call> [name|address|qth|qra|email|privilege|node_family] <value>"
+set_field_done = "{field} updated for {target}."
+contact_usage = "Usage: set/{field} [<call>] <value>"
+contact_done = "{field} updated for {target}."
+privilege_usage = "Usage: set/privilege [<call>] <user|op|sysop>"
+privilege_denied = "set/privilege: cannot grant above your own level"
+privilege_done = "Privilege for {target} set to {level}."
+privilege_reset = "Privilege for {target} reset to user."
+
+[db]
+delkey_usage = "Usage: dbdelkey <call> <key>"
+delkey_removed = "Database key {key} removed for {target}."
+delkey_missing = "Database key {key} was not present for {target}."
+import_usage = "Usage: dbimport <file>"
+import_missing = "dbimport: file not found {path}"
+import_error = "dbimport: {error}"
+import_done = "Database import complete. Imported {imported} record(s); skipped {skipped}."
+remove_usage = "Usage: dbremove <table> <call>"
+remove_table_usage = "Usage: dbremove <table=user|registry|prefs|vars|usdb|buddy|startup|filters> <call>"
+remove_registry = "Removed {removed} registry entr{suffix} for {target}."
+remove_table = "Removed {removed} {table} entr{suffix} for {target}."
+remove_user = "Removed {removed} stored item(s) for {target}: preferences {prefs}, variables {vars}, USDB entries {usdb}, buddy entries {buddy}, startup commands {startup}, filters {filters}"
+create_done = "Database structures verified: {spots} spots, {messages} messages, {bulletins} bulletins, {prefs} preferences."
+update_done = "Database refresh complete: {spots} spots, {messages} messages, {bulletins} bulletins, {prefs} preferences."
+export_done = "Database export written to {path}. Export size: {lines} line(s)."
+export_users_done = "User export written to {path}. Exported {rows} row(s)."
+
+[dbshow]
+spots = "Spot database entries: {count}"
+messages = "Messages: {total} total, {unread} unread."
+bulletin_one = "{name} bulletins: {count}"
+bulletins = "Bulletins: announce {announce}, chat {chat}, wcy {wcy}, wwv {wwv}, wx {wx}"
+users = "Registered users: {count}"
+prefs = "Preferences for {call}: {count}"
+filters = "Filters for {call}: {count}"
+buddies = "Buddies for {call}: {count}"
+usdb = "USDB entries for {call}: {count}"
+summary_title = "Database summary for {path}:"
+size = "  Size: {size} bytes"
+summary_spots = "  Spots: {count}"
+summary_messages = "  Messages: {total} total, {unread} unread"
+summary_users = "  Registered Users: {count}"
+summary_announce = "  Announce Bulletins: {count}"
+summary_chat = "  Chat Bulletins: {count}"
+
+[dxqsl]
+export_error = "dxqsl_export: {error}"
+export_done = "DXQSL export written to {path}."
+import_usage = "Usage: dxqsl_import <file>"
+import_missing = "dxqsl_import: file not found {path}"
+import_done = "DXQSL import loaded from {path}."
+
+[control]
+init_done = "Reloaded preferences and filters for {count} session(s)."
+rinit_skipped = "Listener restart skipped because telnet is not running."
+rinit_done = "Telnet listeners restarted."
+shutdown_done = "Shutdown requested: listener stopped, {count} session(s) closed."
+kill_usage = "Usage: kill <call|all>"
+kill_done = "Disconnected {count} session(s) for {target}."
+spoof_usage = "Usage: spoof <call> <text> | spoof dx <spotter> <freq_khz> <dx_call> [info]"
+spoof_dx_usage = "Usage: spoof dx <spotter> <freq_khz> <dx_call> [info]"
+spoof_dx_done = "Injected DX spot {freq_khz:.1f} {dx_call} from {spotter}."
+spoof_chat_done = "Injected chat as {call}."
+disabled = "{action} is currently disabled by system control policy. Use set/control on to enable it."
+show_usage = "Usage: show/control [limit] [--reset]"
+show_state = "System control is {state}."
+show_empty = "Recent control events: none"
+show_count = "Recent control events: {count}"
+set_usage = "Usage: set/control <on|off>"
+set_done = "System control commands {state}."
+unset_done = "System control policy restored to its default enabled state. Overrides removed: {removed}."
+dispatch_usage = "Usage: {name} <command>"
+dispatch_nested = "{name}: nested control commands are not allowed."
+dispatch_denied = "{name}: that command is not allowed from this dispatcher."
+dispatch_disconnect = "{name}: that command would disconnect the session and cannot be run here."
+agwrestart_done = "AGW restart requested at {when}. Restart request count: {seq}."
+demonstrate_usage = "Usage: demonstrate <command>"
+demonstrate_nested = "demonstrate: nested dispatch is not allowed."
+demonstrate_denied = "demonstrate: that command is not allowed here."
+demonstrate_disconnect = "demonstrate: that command would disconnect the session and cannot be run here."
+demonstrate_echo = "demonstrate: {text}"
+
+[config]
+send_error = "send_config: {error}"
+send_done = "Configuration snapshot written to {path}."
+
+[announce]
+usage = "Usage: announce [full|sysop] <text>"
+accepted = "Announcement accepted ({scope}): {text}"
+accepted_alias = "announce/{scope} accepted: {text}"
+
+[dx]
+usage = "Usage: dx <freq_khz> <dx_call> [info]"
+rate_limited = "dx: rate limited ({max_per_window} spots per {window_seconds}s)"
+posted = "Spot posted on {freq_khz:.1f} kHz for {dx_call}."
 reject_route = "Reject route traffic that matches a rule."
 reject_spots = "Reject DX spot traffic that matches a rule."
 reject_wcy = "Reject WCY traffic that matches a rule."
@@ -380,6 +811,8 @@ unset_wx = "Disable weather bulletins."
 empty = "No log events"
 
 [show.wcy]
+long_row_base = "{date:>11}   {hour:>2}{sfi:>6}{a:>4}{k:>4}{r:>8.1f}"
+long_row = "{base} {forecast:<39} <{sender}>"
 header = "Date        Hour   SFI   A   K Exp.K   R SA    GMF   Aurora   Logger"
 empty = "No WCY entries"
 
@@ -592,6 +1025,8 @@ user_wire = "  {name}={value} (user)"
 default_wire = "  {name}=on (default)"
 
 [show.policy]
+override_row = "  {key}: {value}"
+nested_override_row = "    {key}: {value}"
 title = "Policy for {call}:"
 route_pc19 = "  Route PC19: {value}"
 relay = "  Relay:"
@@ -633,6 +1068,10 @@ default = "  {key}: {value} (default)"
 default_wire = "  {key}={value} (default)"
 
 [show.proto]
+bit_pc18 = "PC18 {summary}"
+bit_pc24 = "PC24 {call} / {flag}"
+bit_pc50 = "PC50 {call} / {count}"
+bit_pc51 = "PC51 {to_call} from {from_call} value {value}"
 unavailable = "Protocol table unavailable (node-link not attached)."
 empty = "No protocol peer data."
 usage = "Usage: show/proto [peer] [--stale-mins <minutes>] [--history] [--history-limit <n>]"
@@ -655,10 +1094,12 @@ line = "{when} {peer}  {field}  {from_call} -> {to}"
 
 [messages]
 msg_usage = "Usage: msg <call|all> <text>"
+read_header_row = "{id:>5} {flag} {timestamp} {status:<10} {sender:<10} {body}"
 msg_delivered = "Message #{message_id} delivered to {delivered} session(s)."
 read_usage = "Usage: read [<msg_id>]"
 read_empty = "No messages."
 list_title = "Messages:"
+list_row = "{id:>6} {sender:<10} {timestamp} {unread:<6} {status:<10} via {route:<10} from {origin:<10} {body}"
 read_missing = "No such message: {message_id}"
 read_title = "Message #{message_id}"
 read_from = "  From: {sender}"
@@ -668,6 +1109,13 @@ read_body = "  Body: {body}"
 reply_usage = "Usage: reply <msg_id> <text>"
 reply_delivered = "Reply #{message_id} delivered to {delivered} session(s)."
 msg_status = "Messages for {call}: {total} total, {unread} unread."
+inbox_states = "  Inbox states: {states}"
+outbox_states = "  Outbox states: {states}"
+pending_routes = "  Pending routes: {routes}"
+latest_outbox_error = "  Latest outbox error: {error}"
+outbox_empty = "No sent messages."
+outbox_title = "Outbox:"
+outbox_row = "{id:>6} {recipient:<10} {timestamp} {status:<13} via {route:<10} {body}{extra}"
 
 [filters]
 preview = "Preview:"
@@ -695,6 +1143,9 @@ text = "  Text: {text}"
 winning_rule = "  Winning Rule: {detail}"
 
 [show.protoalerts]
+reason_flap = "flap score {score}"
+reason_age = "age {age} minutes"
+reason_acked = "acknowledged at {when}"
 unavailable = "No protocol alerts (node-link not attached)."
 empty = "No protocol alerts."
 usage = "Usage: show/protoalerts [peer] [--stale-mins <minutes>]"
@@ -887,3 +1338,32 @@ show_grayline = "Show grayline times for your current location."
 show_heading = "Show beam heading to a DXCC entity."
 show_hops = "Show hop-related routing settings."
 show_moon = "Show moon phase data for your current location."
+
+[bulletin]
+row = "{timestamp} {prefix}{sender}: {body}"
+
+[event]
+row = "{timestamp} {text}"
+category_row = "{timestamp} {category}: {text}"
+
+[show.list]
+indexed_row = "{index:>3} {value}"
+key_value_row = "  {key}: {value}"
+
+[control]
+event_row = "{timestamp} {text}"
+
+[console]
+page_more = "... ({count} more, use explicit limit)"
+
+[location]
+estimated_grid = "Grid {locator}"
+
+[show.cmdcache]
+title = "Command cache:"
+commands = "  Commands: {count}"
+show = "  Show: {count}"
+set = "  Set: {count}"
+unset = "  Unset: {count}"
+shortcuts = "  Shortcuts: {count}"
+state = "  State: warm"

@@ -30,6 +30,7 @@ class PublicWebConfig:
     port: int = 8081
     static_dir: str = ""
     cty_dat_path: str = ""
+    wpxloc_raw_path: str = ""
 
 
 @dataclass(slots=True)
@@ -65,6 +66,31 @@ class QRZConfig:
 
 
 @dataclass(slots=True)
+class SMTPConfig:
+    host: str = ""
+    port: int = 587
+    username: str = ""
+    password: str = ""
+    from_addr: str = ""
+    from_name: str = "pyCluster"
+    starttls: bool = True
+    use_ssl: bool = False
+    timeout_seconds: int = 10
+
+
+@dataclass(slots=True)
+class MFAConfig:
+    enabled: bool = False
+    require_for_sysop: bool = True
+    require_for_users: bool = False
+    issuer: str = "pyCluster"
+    otp_ttl_seconds: int = 600
+    otp_length: int = 6
+    max_attempts: int = 5
+    resend_cooldown_seconds: int = 30
+
+
+@dataclass(slots=True)
 class AppConfig:
     node: NodeConfig
     telnet: TelnetConfig
@@ -72,6 +98,8 @@ class AppConfig:
     public_web: PublicWebConfig
     store: StoreConfig
     qrz: QRZConfig = field(default_factory=QRZConfig)
+    smtp: SMTPConfig = field(default_factory=SMTPConfig)
+    mfa: MFAConfig = field(default_factory=MFAConfig)
 
 
 def node_presentation_defaults(node: NodeConfig) -> dict[str, str]:
@@ -124,9 +152,39 @@ def _load_section(raw: dict, key: str) -> dict:
     return v
 
 
+def _load_toml(path: Path) -> dict:
+    return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def _merge_config_dict(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_config_dict(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def config_override_paths(path: str | Path) -> tuple[Path, ...]:
+    p = Path(path)
+    if p.suffix == ".toml":
+        local_name = f"{p.stem}.local{p.suffix}"
+    else:
+        local_name = p.name + ".local"
+    sibling = p.with_name(local_name)
+    paths: list[Path] = []
+    if sibling != p:
+        paths.append(sibling)
+    return tuple(paths)
+
+
 def load_config(path: str | Path) -> AppConfig:
     p = Path(path)
-    data = tomllib.loads(p.read_text(encoding="utf-8"))
+    data = _load_toml(p)
+    for override_path in config_override_paths(p):
+        if override_path.exists():
+            data = _merge_config_dict(data, _load_toml(override_path))
 
     node = NodeConfig(**_load_section(data, "node"))
     telnet_raw = _load_section(data, "telnet")
@@ -138,8 +196,10 @@ def load_config(path: str | Path) -> AppConfig:
     store = StoreConfig(**_load_section(data, "store"))
 
     qrz = QRZConfig(**_load_section(data, "qrz")) if "qrz" in data else QRZConfig()
+    smtp = SMTPConfig(**_load_section(data, "smtp")) if "smtp" in data else SMTPConfig()
+    mfa = MFAConfig(**_load_section(data, "mfa")) if "mfa" in data else MFAConfig()
 
-    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store, qrz=qrz)
+    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store, qrz=qrz, smtp=smtp, mfa=mfa)
 
 
 def _toml_value(value: object) -> str:
@@ -164,9 +224,11 @@ def dump_config(config: AppConfig) -> str:
         "public_web": asdict(config.public_web),
         "store": asdict(config.store),
         "qrz": asdict(config.qrz),
+        "smtp": asdict(config.smtp),
+        "mfa": asdict(config.mfa),
     }
     lines: list[str] = []
-    for section in ("node", "telnet", "web", "public_web", "store", "qrz"):
+    for section in ("node", "telnet", "web", "public_web", "store", "qrz", "smtp", "mfa"):
         lines.append(f"[{section}]")
         for key, value in data[section].items():
             lines.append(f"{key} = {_toml_value(value)}")
