@@ -7,3 +7,6 @@ logs/
 dist/
 build/
 *.egg-info/
+config/pycluster.local.toml
+.codex
+.deploy-files.txt

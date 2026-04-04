@@ -249,6 +249,49 @@ def test_reconnect_once_reattaches_persisted_peer_and_tracks_backoff(tmp_path) -
     asyncio.run(run())
 
 
+def test_desired_peer_status_includes_mail_queue_and_route_issues(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "desired_peer_mail_status.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref(app.config.node.node_call, "peer.outbound.peer1.name", "PEER1", now)
+            await app.store.set_user_pref(app.config.node.node_call, "peer.outbound.peer1.dsn", "tcp://example.invalid:7300", now)
+            await app.store.set_user_pref(app.config.node.node_call, "peer.outbound.peer1.profile", "dxspider", now)
+            await app.store.set_user_pref(app.config.node.node_call, "peer.outbound.peer1.reconnect", "on", now)
+            await app.store.add_message(
+                sender="N0CALL",
+                recipient="K1ABC",
+                epoch=now,
+                body="pending route mail",
+                origin_node=app.config.node.node_call,
+                route_node="PEER1",
+                delivery_state="pending",
+            )
+            await app.store.add_message(
+                sender="N0CALL",
+                recipient="K1DEF",
+                epoch=now,
+                body="failed route mail",
+                origin_node=app.config.node.node_call,
+                route_node="PEER1",
+                delivery_state="undeliverable",
+                error_text="no configured route to peer",
+            )
+
+            rows = await app.desired_peer_status()
+            assert len(rows) == 1
+            row = rows[0]
+            assert row["peer"] == "PEER1"
+            assert row["pending_mail"] == 1
+            assert row["route_issues"] == 1
+            assert row["connected"] is False
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_ingest_pc61_rejects_invalid_and_disabled_inputs_with_policy_counts(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_pc61_policy.db")
@@ -304,6 +347,26 @@ def test_ingest_pc11_adds_spot(tmp_path) -> None:
             prefs = await app.store.list_user_prefs(app.config.node.node_call)
             assert int(prefs.get("proto.peer.peer1.last_epoch", "0")) > 0
             assert prefs.get("proto.peer.peer1.last_pc_type") == "PC11"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc11_accepts_plausible_special_event_style_call(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc11_special_event.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            msg = Pc11Message.from_fields(
+                ["7168.0", "RG65SM", "3-Apr-2026", "1649Z", "Wkd59 CQing", "F8DRA", "AI9T", "H1", "~"]
+            )
+            frame = WirePcFrame("PC11", msg.to_fields())
+            await app._handle_node_link_item("PEER1", frame, msg)
+            assert await app.store.count_spots() == 1
+            rows = await app.store.latest_spots(limit=1)
+            assert rows[0]["dx_call"] == "RG65SM"
+            assert rows[0]["spotter"] == "F8DRA"
         finally:
             await app.store.close()
 
@@ -653,6 +716,138 @@ def test_connect_peer_resets_stale_mail_state_and_restarts_pending_route(tmp_pat
             row = await app.store.get_message(msg_id)
             assert row is not None
             assert row["delivery_state"] == "pending"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_relay_message_marks_undeliverable_without_known_peer_route(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mail_undeliverable.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            msg_id = await app.store.add_message(
+                sender="N0CALL",
+                recipient="K1ABC",
+                epoch=now,
+                body="no route for this peer",
+                origin_node=app.config.node.node_call,
+                route_node="PEER404",
+                delivery_state="pending",
+            )
+
+            await app._relay_message_to_links("N0CALL", "K1ABC", "no route for this peer", msg_id, None)
+
+            row = await app.store.get_message(msg_id)
+            assert row is not None
+            assert row["delivery_state"] == "undeliverable"
+            assert row["route_node"] == "PEER404"
+            assert row["error_text"] == "No configured route to that peer."
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_relay_message_marks_pending_with_reconnect_context_for_down_peer(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mail_pending_peer_down.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref(app.config.node.node_call, "peer.outbound.peer1.name", "PEER1", now)
+            await app.store.set_user_pref(app.config.node.node_call, "peer.outbound.peer1.dsn", "tcp://example.invalid:7300", now)
+            await app.store.set_user_pref(app.config.node.node_call, "peer.outbound.peer1.reconnect", "on", now)
+            msg_id = await app.store.add_message(
+                sender="N0CALL",
+                recipient="K1ABC",
+                epoch=now,
+                body="route should wait for reconnect",
+                origin_node=app.config.node.node_call,
+                route_node="PEER1",
+                delivery_state="pending",
+            )
+
+            await app._relay_message_to_links("N0CALL", "K1ABC", "route should wait for reconnect", msg_id, None)
+
+            row = await app.store.get_message(msg_id)
+            assert row is not None
+            assert row["delivery_state"] == "pending"
+            assert row["error_text"] == "Peer is disconnected and queued for reconnect."
+
+            await app.store.set_user_pref(app.config.node.node_call, "peer.outbound.peer1.reconnect", "off", now)
+            await app._relay_message_to_links("N0CALL", "K1ABC", "route should wait for reconnect", msg_id, None)
+            row = await app.store.get_message(msg_id)
+            assert row is not None
+            assert row["delivery_state"] == "pending"
+            assert row["error_text"] == "Peer is disconnected and reconnect is disabled."
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc28_drops_looped_mail_origin(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mail_loop_drop.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            app.node_link._peers["PEER1"] = LinkPeer(name="PEER1", conn=_DummyConn(), inbound=False)
+            await app._handle_node_link_item(
+                "PEER1",
+                WirePcFrame("PC28", [app.config.node.node_call, "PEER1", "AI3I", "N0CALL", "30-Mar-2026", "0010Z", "1", "Looped", " ", "1", "0", " ", app.config.node.node_call, "~"]),
+                None,
+            )
+
+            rows = await app.store.list_messages("AI3I", limit=5)
+            assert rows == []
+            stats = await app.node_link.stats()
+            assert stats["PEER1"]["policy_dropped"] >= 1
+            assert stats["PEER1"]["policy_reasons"]["ingest_pc28_loop"] >= 1
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_duplicate_cluster_mail_is_suppressed(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mail_duplicate.db")
+        app = ClusterApp(_mk_config(db))
+        sent: list[tuple[str, WirePcFrame]] = []
+        try:
+            async def _send(peer: str, frame: WirePcFrame) -> None:
+                sent.append((peer, frame))
+
+            app.node_link.send = _send  # type: ignore[method-assign]
+
+            await app._handle_node_link_item(
+                "AI3I-16",
+                WirePcFrame("PC28", ["N0NODE-1", "AI3I-16", "AI3I", "N0CALL", "30-Mar-2026", "0010Z", "1", "Dup Subject", " ", "2", "0", " ", "AI3I-16", "~"]),
+                None,
+            )
+            stream = sent[-1][1].payload_fields[2]
+            await app._handle_node_link_item("AI3I-16", WirePcFrame("PC29", ["N0NODE-1", "AI3I-16", stream, "mail line 1", "~"]), None)
+            await app._handle_node_link_item("AI3I-16", WirePcFrame("PC29", ["N0NODE-1", "AI3I-16", stream, "mail line 2", "~"]), None)
+            await app._handle_node_link_item("AI3I-16", WirePcFrame("PC32", ["N0NODE-1", "AI3I-16", stream, ""]), None)
+
+            first_rows = await app.store.list_messages("AI3I", limit=5)
+            assert len(first_rows) == 1
+
+            await app._handle_node_link_item(
+                "AI3I-16",
+                WirePcFrame("PC28", ["N0NODE-1", "AI3I-16", "AI3I", "N0CALL", "30-Mar-2026", "0011Z", "1", "Dup Subject", " ", "2", "0", " ", "AI3I-16", "~"]),
+                None,
+            )
+            stream2 = sent[-1][1].payload_fields[2]
+            await app._handle_node_link_item("AI3I-16", WirePcFrame("PC29", ["N0NODE-1", "AI3I-16", stream2, "mail line 1", "~"]), None)
+            await app._handle_node_link_item("AI3I-16", WirePcFrame("PC29", ["N0NODE-1", "AI3I-16", stream2, "mail line 2", "~"]), None)
+            await app._handle_node_link_item("AI3I-16", WirePcFrame("PC32", ["N0NODE-1", "AI3I-16", stream2, ""]), None)
+
+            rows = await app.store.list_messages("AI3I", limit=5)
+            assert len(rows) == 1
         finally:
             await app.store.close()
 

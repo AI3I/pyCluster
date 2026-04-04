@@ -44,9 +44,9 @@ def test_telnet_profile_commands_update_registry_and_console(tmp_path) -> None:
         telnet_server_mod.estimate_location_from_locator = lambda locator: "Milwaukee, WI"
         try:
             _, out = await srv._execute_command("N9JR-5", "set/name Joe")
-            assert "name=Joe" in out
+            assert "Name set to Joe for N9JR-5." in out
             _, out = await srv._execute_command("N9JR-5", "set/qth Milwaukee, WI")
-            assert "qth=Milwaukee, WI" in out
+            assert "QTH set to Milwaukee, WI for N9JR-5." in out
             _, out = await srv._execute_command("N9JR-5", "set/qra EN63AA")
             assert "QRA set to EN63AA for N9JR-5." in out
             row = await store.get_user_registry("N9JR-5")
@@ -78,7 +78,7 @@ def test_set_home_alias_and_who_lists_peers(tmp_path) -> None:
         srv._sessions[1] = Session(call="N9JR-5", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N9JR-5", "set/home N9JR-3")
-            assert "homenode=N9JR-3" in out
+            assert "Home Node set to N9JR-3 for N9JR-5." in out
             row = await store.get_user_registry("N9JR-5")
             assert row is not None
             assert str(row["home_node"]) == "N9JR-3"
@@ -126,8 +126,8 @@ def test_set_qra_backfills_location_when_unset(tmp_path) -> None:
             _, out = await srv._execute_command("N9JR-5", "set/qra EN63AA")
             assert "QRA set to EN63AA" in out
             _, station = await srv._execute_command("N9JR-5", "show/station")
-            assert "location=Milwaukee, WI" in station
-            assert "qra=EN63AA" in station
+            assert "Location Detail: Milwaukee, WI" in station
+            assert "Grid Square (QRA): EN63AA" in station
         finally:
             telnet_server_mod.estimate_location_from_locator = orig
             await store.close()
@@ -175,19 +175,19 @@ def test_show_field_aliases_read_back_set_values(tmp_path) -> None:
         telnet_server_mod.estimate_location_from_locator = lambda locator: "Milwaukee, WI"
         telnet_server_mod.resolve_location_to_coords = lambda text: (42.3601, -71.0589) if text == "Boston, MA" else None
         try:
-            assert "name=Joe" in (await srv._execute_command("N9JR-5", "set/name Joe"))[1]
-            assert "qth=Milwaukee, WI" in (await srv._execute_command("N9JR-5", "set/qth Milwaukee, WI"))[1]
+            assert "Name set to Joe for N9JR-5." in (await srv._execute_command("N9JR-5", "set/name Joe"))[1]
+            assert "QTH set to Milwaukee, WI for N9JR-5." in (await srv._execute_command("N9JR-5", "set/qth Milwaukee, WI"))[1]
             assert "QRA set to EN63AA" in (await srv._execute_command("N9JR-5", "set/qra EN63AA"))[1]
             assert "Address updated" in (await srv._execute_command("N9JR-5", "set/address 123 Main St"))[1]
             assert "Email updated" in (await srv._execute_command("N9JR-5", "set/email joe@example.net"))[1]
             assert "Location set to Boston, MA" in (await srv._execute_command("N9JR-5", "set/location Boston, MA"))[1]
 
-            assert "name=Joe" in (await srv._execute_command("N9JR-5", "show/name"))[1]
-            assert "qth=Milwaukee, WI" in (await srv._execute_command("N9JR-5", "show/qth"))[1]
-            assert "qra=" in (await srv._execute_command("N9JR-5", "show/qra"))[1]
-            assert "address=123 Main St" in (await srv._execute_command("N9JR-5", "show/address"))[1]
-            assert "email=joe@example.net" in (await srv._execute_command("N9JR-5", "show/email"))[1]
-            assert "location=Boston, MA" in (await srv._execute_command("N9JR-5", "show/location"))[1]
+            assert "Name for N9JR-5: Joe" in (await srv._execute_command("N9JR-5", "show/name"))[1]
+            assert "QTH for N9JR-5: Milwaukee, WI" in (await srv._execute_command("N9JR-5", "show/qth"))[1]
+            assert "QRA for N9JR-5:" in (await srv._execute_command("N9JR-5", "show/qra"))[1]
+            assert "Address for N9JR-5: 123 Main St" in (await srv._execute_command("N9JR-5", "show/address"))[1]
+            assert "Email for N9JR-5: joe@example.net" in (await srv._execute_command("N9JR-5", "show/email"))[1]
+            assert "Location for N9JR-5: Boston, MA" in (await srv._execute_command("N9JR-5", "show/location"))[1]
         finally:
             telnet_server_mod.estimate_location_from_locator = orig_est
             telnet_server_mod.resolve_location_to_coords = orig_res
@@ -249,6 +249,9 @@ def test_show_wm7d_returns_lookup_data_for_call(tmp_path, monkeypatch) -> None:
             assert "     Name : JOE RADIO" in out
             assert "  Address : 123 MAIN ST" in out
             assert "MILWAUKEE, WI 53202" in out
+            assert "     DXCC : United States" in out
+            assert "  CQ Zone : 4" in out
+            assert " ITU Zone : 8" in out
         finally:
             await store.close()
 

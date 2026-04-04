@@ -21,8 +21,11 @@ from .access_policy import default_access_allowed
 from .auth import hash_password, is_password_hash, verify_password
 from .config import AppConfig, node_presentation_defaults
 from .ctydat import load_cty, lookup
+from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
+from .datafiles import describe_cty_file, describe_wpxloc_file
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .maidenhead import coords_to_locator, extract_locator
+from .mfa import EmailOtpManager, SMTPMailer
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path
 from .spot_throttle import check_spot_throttle
@@ -164,9 +167,12 @@ class PublicWebServer:
         self.event_log_fn = event_log_fn
         self._server: asyncio.AbstractServer | None = None
         self._cty_loaded = False
+        self._wpx_loaded = False
         self._ws_clients: set[asyncio.Task[None]] = set()
         self._ws_writers: set[asyncio.StreamWriter] = set()
         self._web_sessions: dict[str, tuple[str, int]] = {}
+        self._smtp = SMTPMailer(config.smtp)
+        self._mfa = EmailOtpManager(config.mfa, self._smtp.send_code, store)
 
     def _audit(self, category: str, text: str) -> None:
         if self.event_log_fn:
@@ -174,6 +180,31 @@ class PublicWebServer:
                 self.event_log_fn(category, text)
             except Exception:
                 LOG.exception("public web audit log failed")
+
+    async def _email_for_call(self, call: str) -> str:
+        row = await self.store.get_user_registry(call)
+        return str(row["email"] or "").strip() if row else ""
+
+    async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
+        base_call = call.split("-", 1)[0]
+        override = ""
+        for candidate in (call.upper(), base_call.upper()):
+            raw = await self.store.get_user_pref(candidate, "mfa_email_otp")
+            txt = str(raw or "").strip().lower()
+            if txt:
+                override = txt
+                break
+        if override == "required":
+            return True
+        if override == "off":
+            return False
+        return self._mfa.required_for(is_sysop=is_sysop)
+
+    def _dataset_status(self) -> dict[str, dict[str, object]]:
+        return {
+            "cty": describe_cty_file(self.config.public_web.cty_dat_path, loaded=self._cty_loaded).to_json(),
+            "wpxloc": describe_wpxloc_file(self.config.public_web.wpxloc_raw_path, loaded=self._wpx_loaded).to_json(),
+        }
 
     async def _branding(self) -> dict[str, object]:
         data = node_presentation_defaults(self.config.node)
@@ -206,6 +237,7 @@ class PublicWebServer:
             "node_locator": node_locator,
             "branding_name": branding_name,
             "software_version": software_version,
+            "datasets": self._dataset_status(),
             "support_contact": support_contact,
             "website_url": website_url,
             "page_title": f"{title}{title_suffix}",
@@ -226,6 +258,13 @@ class PublicWebServer:
                 self._cty_loaded = True
             except Exception as exc:
                 LOG.warning("public web cty load failed from %s: %s", cty_path, exc)
+        wpx_path = self.config.public_web.wpxloc_raw_path.strip()
+        if wpx_path:
+            try:
+                load_wpxloc(wpx_path)
+                self._wpx_loaded = True
+            except Exception as exc:
+                LOG.warning("public web wpxloc load failed from %s: %s", wpx_path, exc)
         self._server = await asyncio.start_server(
             self._handle,
             host=self.config.public_web.host,
@@ -472,7 +511,11 @@ class PublicWebServer:
         spotter = display_call(str(row["spotter"] or ""))
         stamp = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).isoformat()
         dx_ent = lookup(dx_call) if self._cty_loaded else None
+        if dx_ent is None and self._wpx_loaded:
+            dx_ent = wpx_lookup(dx_call)
         sp_ent = lookup(spotter) if self._cty_loaded else None
+        if sp_ent is None and self._wpx_loaded:
+            sp_ent = wpx_lookup(spotter)
         return {
             "time": stamp,
             "freq": freq,
@@ -572,33 +615,44 @@ class PublicWebServer:
             )
         return out
 
-    async def _api_stats(self) -> dict[str, object]:
-        cutoff = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp())
-        rows = await self.store.latest_spots(limit=500)
+    async def _api_stats(self, q: dict[str, list[str]]) -> dict[str, object]:
+        hours = self._parse_limit(q, "hours", 24, 1, 24)
+        cutoff = int((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
+        rows = await self.store.spots_since_epoch(cutoff)
         payload = [self._spot_payload(r) for r in rows if int(r["epoch"]) >= cutoff]
         bands: dict[str, int] = {}
         modes: dict[str, int] = {}
+        entities: set[str] = set()
         for row in payload:
             band = str(row["band"])
             mode = str(row["mode"])
+            entity = str(row["dx_entity"])
             if band:
                 bands[band] = bands.get(band, 0) + 1
             if mode:
                 modes[mode] = modes.get(mode, 0) + 1
+            if entity:
+                entities.add(entity)
         mode_rank = {mode: idx for idx, mode in enumerate(_MODE_ORDER)}
+        band_rows = [{"band": k, "count": v} for k, v in sorted(bands.items(), key=lambda kv: (-kv[1], kv[0]))]
+        mode_rows = [
+            {"mode": k, "count": v}
+            for k, v in sorted(modes.items(), key=lambda kv: (mode_rank.get(kv[0], len(_MODE_ORDER)), -kv[1], kv[0]))
+        ]
         return {
+            "hours": hours,
             "total": len(payload),
-            "bands": [{"band": k, "count": v} for k, v in sorted(bands.items(), key=lambda kv: (-kv[1], kv[0]))],
-            "modes": [
-                {"mode": k, "count": v}
-                for k, v in sorted(modes.items(), key=lambda kv: (mode_rank.get(kv[0], len(_MODE_ORDER)), -kv[1], kv[0]))
-            ],
+            "bands": band_rows,
+            "modes": mode_rows,
+            "dxcc_entities": len(entities),
+            "top_band": band_rows[0]["band"] if band_rows else "",
+            "top_mode": mode_rows[0]["mode"] if mode_rows else "",
         }
 
     async def _api_leaderboard(self, q: dict[str, list[str]]) -> dict[str, object]:
         hours = self._parse_limit(q, "hours", 24, 1, 24)
         cutoff = int((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
-        rows = await self.store.latest_spots(limit=500)
+        rows = await self.store.spots_since_epoch(cutoff)
         payload = [self._spot_payload(r) for r in rows if int(r["epoch"]) >= cutoff]
         spotters: dict[str, int] = {}
         dx: dict[str, dict[str, object]] = {}
@@ -636,7 +690,8 @@ class PublicWebServer:
         }
 
     async def _api_history(self) -> list[dict[str, object]]:
-        rows = await self.store.latest_spots(limit=500)
+        cutoff = int((datetime.now(timezone.utc) - timedelta(days=14)).timestamp())
+        rows = await self.store.spots_since_epoch(cutoff)
         buckets: dict[str, dict[str, object]] = {}
         for row in rows:
             dt = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc)
@@ -933,6 +988,37 @@ class PublicWebServer:
                     return
                 if not is_password_hash(str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
+                reg = await self.store.get_user_registry(call)
+                is_sysop = str(reg["privilege"] or "").strip().lower() in {"sysop", "admin"} if reg is not None else False
+                if await self._mfa_required_for_call(call, is_sysop=is_sysop):
+                    email = await self._email_for_call(call)
+                    if not email:
+                        self._log_auth_failure(writer, headers, "public-web", call, "mfa_email_missing")
+                        await self._write_response(writer, 401, self._json({"error": "mfa email not configured"}))
+                        return
+                    if not self._smtp.enabled():
+                        await self._write_response(writer, 503, self._json({"error": "mfa delivery not configured"}))
+                        return
+                    challenge_id = str(payload.get("challenge_id", "")).strip()
+                    otp = str(payload.get("otp", "")).strip()
+                    if not challenge_id or not otp:
+                        try:
+                            challenge_id, expires_epoch = await self._mfa.issue(call=call, email=email, purpose="public-web")
+                        except Exception:
+                            LOG.exception("public web mfa delivery failed call=%s", call)
+                            await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
+                            return
+                        await self._write_response(
+                            writer,
+                            202,
+                            self._json({"ok": False, "mfa_required": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
+                        )
+                        return
+                    ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="public-web", otp=otp)
+                    if not ok:
+                        self._log_auth_failure(writer, headers, "public-web", call, "mfa_" + reason.replace(" ", "_"))
+                        await self._write_response(writer, 401, self._json({"error": reason}))
+                        return
                 await self.store.record_login(
                     call,
                     int(time.time()),
@@ -1050,7 +1136,7 @@ class PublicWebServer:
                 if method != "GET":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
-                await self._write_response(writer, 200, self._json(await self._api_stats()))
+                await self._write_response(writer, 200, self._json(await self._api_stats(q)))
                 return
             if path == "/api/leaderboard":
                 if method != "GET":

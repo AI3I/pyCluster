@@ -1,5 +1,5 @@
 [Unit]
-Description=pyCluster CTY.DAT refresh
+Description=pyCluster country data refresh
 After=network-online.target
 Wants=network-online.target
 

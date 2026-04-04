@@ -13,6 +13,7 @@ from pycluster.telnet_server import Session, TelnetClusterServer
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "docs" / "dxspider-command-catalog.md"
+INVENTORY = ROOT / "docs" / "commands-inventory.txt"
 
 
 class _DummyWriter:
@@ -39,6 +40,15 @@ def _parse_catalog_commands(path: Path) -> list[str]:
         m = re.match(r"^\s*-\s+`([^`]+)`\s*$", line)
         if m:
             cmds.append(m.group(1).strip())
+    return cmds
+
+
+def _parse_inventory_commands(path: Path) -> list[str]:
+    cmds: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if text.startswith(("show/", "set/", "unset/")):
+            cmds.append(text)
     return cmds
 
 
@@ -192,5 +202,46 @@ def test_dxspider_catalog_commands_execute_without_fallbacks(tmp_path) -> None:
             await store.close()
 
         assert not failures, "catalog command failures:\n" + "\n".join(failures)
+
+    asyncio.run(run())
+
+
+def test_inventory_show_set_unset_commands_execute_without_fallbacks(tmp_path) -> None:
+    async def _stats():
+        return {
+            "peer1": {"inbound": False, "parsed_frames": 2, "sent_frames": 3, "dropped_frames": 0, "policy_dropped": 0},
+        }
+
+    async def run() -> None:
+        db = str(tmp_path / "inventory.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), link_stats_fn=_stats)
+        now = int(datetime.now(timezone.utc).timestamp())
+
+        await store.add_spot(Spot(14074.0, "K1ABC", now, "FT8", "N0CALL", "N2WQ-1", ""))
+        await store.add_message("K1ABC", "N0CALL", now, "hello")
+        await store.add_bulletin("announce", "N0CALL", "LOCAL", now, "contest soon")
+        await store.upsert_user_registry("N0CALL", now, privilege="sysop")
+        await store.set_user_pref("N0CALL", "privilege", "sysop", now)
+
+        failures: list[str] = []
+        try:
+            for cmd in _parse_inventory_commands(INVENTORY):
+                srv._sessions.clear()
+                sess = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+                sess.vars["privilege"] = "sysop"
+                srv._sessions[1] = sess
+                await srv._apply_prefs_to_session(sess)
+                keep, out = await srv._execute_command("N0CALL", _probe_command(cmd))
+                low = out.strip().lower()
+                if low == "?" or "not implemented yet" in low or low.startswith("exception:") or not low:
+                    failures.append(f"{cmd}: {out.strip()}")
+                if not keep:
+                    failures.append(f"{cmd}: unexpected disconnect")
+        finally:
+            await store.close()
+
+        assert not failures, "inventory command failures:\n" + "\n".join(failures)
 
     asyncio.run(run())

@@ -2,6 +2,35 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.5 - 2026-04-04
+
+### Changed
+
+- cleaned up the telnet command surface so operator responses are more readable and more consistent across `show/*`, `set/*`, `unset/*`, mail, route, protocol, and sysop command families
+- moved a large share of operator-facing telnet text and selected operational log strings into `config/strings.toml` so wording tweaks no longer require code edits or restarts
+- public web 24-hour spot stats, history, and leaderboard views now use real time-window queries instead of capped recent-spot snapshots
+- the System Operator web console now shows country-data status more clearly, including left-nav pills for loaded `CTY.DAT` and `wpxloc.raw` version/date metadata
+- deploy tooling now treats country-data refresh as `CTY.DAT` plus `wpxloc.raw`, and `deploy/doctor.sh` checks the public stats endpoint on the correct listener
+- upgrades and deploys are now documented around `config/pycluster.local.toml` so host-local settings stay out of the tracked base config
+
+### Added
+
+- `wpxloc.raw` parsing and fallback lookup support for heading, web spot enrichment, and suspicious-prefix review cues
+- email OTP MFA recovery paths in both the System Console and telnet via `sysop/clearmfa <call>`
+- stale-user cleanup controls in the System Operator web console
+- richer cluster-mail observability in telnet and the System Operator web console
+
+### Fixed
+
+- `set/name`, `set/qth`, `set/qra`, `set/location`, `set/home`, and related `show/*` commands now persist and read back consistently
+- `set/location` now takes precedence over `set/qra`, while `set/qra` backfills location only when location is unset
+- `show/heading`, `who`, `show/links`, `show/route`, and related peer/operator views now report more accurate live state
+- telnet login handling no longer misbehaves when negotiation bytes are present before the callsign
+- public web frequency formatting and 24-hour summary counts now match real backend data better
+- live spot ingest now uses permissive plausibility checks instead of an over-strict homemade world callsign validator, while suspicious cases are flagged for review instead of being dropped
+- cluster mail routing handles offline peers and undeliverable paths more cleanly, with clearer operator readback
+- `show/wm7d` CQ-zone handling for calls like `N9JR` now prefers better lookup data instead of stale prefix-only assumptions
+
 ## 1.0.4 - 2026-03-30
 
 - fixed the cumulative upgrade path so older `1.0.0` databases with the real `user_prefs(pref_key, pref_value)` schema now upgrade cleanly through `deploy/upgrade.sh`

@@ -219,6 +219,12 @@ Typical troubleshooting flow:
 4. review protocol history
 5. only then decide whether thresholds need adjustment
 
+Spot review note:
+
+- pyCluster now ingests plausible spot calls even when they are not recognized by the currently loaded prefix dataset
+- suspicious calls are flagged in the System Console spot table with a `Review` badge
+- the app log records these as `spot call review: ...` entries so sysops can audit which peer and callsign triggered the review signal
+
 ## 7. Security and Abuse Control
 
 pyCluster uses layered security:
@@ -294,6 +300,7 @@ Healthy baseline:
 - core service active
 - public web service active
 - CTY refresh timer active
+- wpxloc.raw configured and current if you use DXSpider-style WPX/location data
 - database present
 - security logging and `fail2ban` functioning
 
@@ -310,3 +317,6 @@ For detailed command coverage, use:
 - [System Operator Web](sysop-web.md)
 - [Node Linking](node-linking.md)
 - [Security](security.md)
+
+
+Dataset status is visible in the System Operator Console Node Settings view and in telnet `show/configuration`. Use that before treating unknown prefixes as suspicious; stale CTY or missing `wpxloc.raw` data can make review cues less reliable.

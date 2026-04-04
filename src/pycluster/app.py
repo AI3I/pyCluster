@@ -10,11 +10,15 @@ import re
 import signal
 
 from .config import AppConfig
+from .ctydat import is_loaded as cty_loaded, lookup as cty_lookup
+from .wpxloc import is_loaded as wpx_loaded, lookup as wpx_lookup
+from .datafiles import describe_cty_file, describe_wpxloc_file
 from .maidenhead import extract_locator
-from .models import Spot, is_valid_call, normalize_call
+from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
 from .node_link import NodeLinkEngine
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc93Message, WirePcFrame
 from .store import SpotStore
+from .strings import StringCatalog
 from .telnet_server import TelnetClusterServer
 from .transports import DxSpiderInboundConnection, dxspider_compat_pc18
 from .public_web import PublicWebServer
@@ -41,6 +45,7 @@ class ClusterApp:
         self.started_at = datetime.now(timezone.utc)
         self.store = SpotStore(config.store.sqlite_path)
         strings_path = str(Path(config_path).with_name("strings.toml")) if config_path else None
+        self._strings = StringCatalog(strings_path)
         self.node_link = NodeLinkEngine()
         self.node_link.set_trace_hook(self._trace_protocol_line)
         self._legacy_dxspider_peers: set[str] = set()
@@ -112,6 +117,27 @@ class ClusterApp:
         self._node_ingest_stop = asyncio.Event()
         self._proto_trace_lock = asyncio.Lock()
         self._public_web_started = False
+
+    def _string(self, key: str, default: str) -> str:
+        return self._strings.get(key, default)
+
+    def _render_string(self, key: str, default: str, **values: object) -> str:
+        return self._strings.render(key, default, **values)
+
+    def _spot_review_reasons(self, dx_call: str, spotter: str) -> list[str]:
+        reasons: list[str] = []
+        cty = describe_cty_file(self.config.public_web.cty_dat_path, loaded=cty_loaded())
+        wpx = describe_wpxloc_file(self.config.public_web.wpxloc_raw_path, loaded=wpx_loaded())
+        geo_ready = cty.loaded or wpx.loaded
+        if not geo_ready:
+            return ["prefix_data_unavailable"]
+        if cty.stale and not wpx.loaded:
+            return ["prefix_data_stale"]
+        if cty_lookup(dx_call) is None and wpx_lookup(dx_call) is None:
+            reasons.append(f"dx_call:{dx_call}:unrecognized_prefix")
+        if cty_lookup(spotter) is None and wpx_lookup(spotter) is None:
+            reasons.append(f"spotter:{spotter}:unrecognized_prefix")
+        return reasons
 
     def _peer_pref_key(self, name: str, field: str) -> str:
         slug = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
@@ -211,6 +237,9 @@ class ClusterApp:
                 last_connect_epoch = int(str(row.get("last_connect_epoch", "0")).strip() or "0")
             except ValueError:
                 last_connect_epoch = 0
+            route_counts = await self.store.route_message_state_counts(name)
+            pending_mail = int(route_counts.get("pending", 0))
+            route_issues = int(route_counts.get("failed", 0)) + int(route_counts.get("undeliverable", 0))
             out.append(
                 {
                     "peer": name,
@@ -221,6 +250,8 @@ class ClusterApp:
                     "next_retry_epoch": next_retry_epoch,
                     "last_connect_epoch": last_connect_epoch,
                     "last_error": str(row.get("last_error", "")).strip(),
+                    "pending_mail": pending_mail,
+                    "route_issues": route_issues,
                     "desired": True,
                     "connected": name in live,
                 }
@@ -696,7 +727,7 @@ class ClusterApp:
             msg = typed if isinstance(typed, Pc11Message) else Pc11Message.from_fields(frame.payload_fields)
             dx_call = normalize_call(msg.dx_call)
             spotter = normalize_call(msg.spotter)
-            if not is_valid_call(dx_call) or not is_valid_call(spotter):
+            if not is_plausible_spot_call(dx_call) or not is_plausible_spot_call(spotter):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_invalid_call")
                 return
             try:
@@ -708,6 +739,19 @@ class ClusterApp:
             if source_node == normalize_call(self.config.node.node_call):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_loop")
                 return
+            review_reasons = self._spot_review_reasons(dx_call, spotter)
+            if review_reasons:
+                LOG.info(
+                    self._render_string(
+                        "log.spot_call_review",
+                        "spot call review: peer={peer} frame={frame} dx_call={dx_call} spotter={spotter} reasons={reasons}",
+                        peer=peer_name,
+                        frame="PC11",
+                        dx_call=dx_call,
+                        spotter=spotter,
+                        reasons=",".join(review_reasons),
+                    ),
+                )
             epoch = self._pc61_epoch(
                 Pc61Message(
                     freq_khz=msg.freq_khz,
@@ -753,7 +797,7 @@ class ClusterApp:
             msg = typed if isinstance(typed, Pc61Message) else Pc61Message.from_fields(frame.payload_fields)
             dx_call = normalize_call(msg.dx_call)
             spotter = normalize_call(msg.spotter)
-            if not is_valid_call(dx_call) or not is_valid_call(spotter):
+            if not is_plausible_spot_call(dx_call) or not is_plausible_spot_call(spotter):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_invalid_call")
                 return
             try:
@@ -765,6 +809,19 @@ class ClusterApp:
             if source_node == normalize_call(self.config.node.node_call):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_loop")
                 return
+            review_reasons = self._spot_review_reasons(dx_call, spotter)
+            if review_reasons:
+                LOG.info(
+                    self._render_string(
+                        "log.spot_call_review",
+                        "spot call review: peer={peer} frame={frame} dx_call={dx_call} spotter={spotter} reasons={reasons}",
+                        peer=peer_name,
+                        frame="PC61",
+                        dx_call=dx_call,
+                        spotter=spotter,
+                        reasons=",".join(review_reasons),
+                    ),
+                )
             epoch = self._pc61_epoch(msg)
             raw = "^".join(
                 [
@@ -848,15 +905,23 @@ class ClusterApp:
             if target_node and target_node != local_node:
                 await self.node_link.mark_policy_drop(peer_name, "ingest_pc28_wrong_node")
                 return
+            origin_node = normalize_call(msg.origin or msg.from_node or peer_name)
+            if origin_node == local_node:
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc28_loop")
+                return
+            to_call = normalize_call(msg.to_call)
+            if not is_valid_call(to_call):
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc28_invalid_recipient")
+                return
             stream = self._next_mail_stream()
             key = (normalize_call(msg.from_node or peer_name), stream)
             self._inbound_mail[key] = {
                 "peer": peer_name,
                 "from_node": normalize_call(msg.from_node or peer_name),
-                "to_call": normalize_call(msg.to_call),
+                "to_call": to_call,
                 "from_call": normalize_call(msg.from_call),
                 "subject": (msg.subject or "").strip(),
-                "origin": normalize_call(msg.origin or msg.from_node or peer_name),
+                "origin": origin_node,
                 "lines": [],
                 "count": 0,
                 "linesreq": max(1, int((msg.line_count or "5").strip() or "5")),
@@ -930,18 +995,28 @@ class ClusterApp:
             elif subject:
                 body = f"Subject: {subject}"
             now = int(datetime.now(timezone.utc).timestamp())
-            msg_id = await self.store.add_message(
-                sender=from_call or normalize_call(peer_name),
+            origin_node = str(state.get("origin") or normalize_call(peer_name))
+            sender = from_call or normalize_call(peer_name)
+            duplicate = await self.store.find_message_duplicate(
+                sender=sender,
                 recipient=to_call,
-                epoch=now,
                 body=body,
-                parent_id=None,
-                origin_node=str(state.get("origin") or normalize_call(peer_name)),
-                route_node="",
-                delivery_state="delivered",
-                delivered_epoch=now,
+                origin_node=origin_node,
+                now_epoch=now,
             )
-            await self.telnet.publish_message(to_call, from_call or normalize_call(peer_name), body, msg_id)
+            if duplicate is None:
+                msg_id = await self.store.add_message(
+                    sender=sender,
+                    recipient=to_call,
+                    epoch=now,
+                    body=body,
+                    parent_id=None,
+                    origin_node=origin_node,
+                    route_node="",
+                    delivery_state="delivered",
+                    delivered_epoch=now,
+                )
+                await self.telnet.publish_message(to_call, sender, body, msg_id)
             await self.node_link.send(
                 peer_name,
                 WirePcFrame(
@@ -1299,11 +1374,63 @@ class ClusterApp:
         route_node = str(row["route_node"] or "").strip().upper()
         if not route_node:
             return
+        desired = await self._desired_peer_targets()
+        live = set(await self.node_link.peer_names())
+        if route_node not in desired and route_node not in live:
+            reason = "No configured route to that peer."
+            await self.store.set_message_delivery(
+                int(row["id"]),
+                "undeliverable",
+                route_node=route_node,
+                error_text=reason,
+            )
+            LOG.warning(
+                self._render_string(
+                    "log.cluster_mail_undeliverable",
+                    "cluster mail undeliverable: id={message_id} route={route} reason={reason}",
+                    message_id=message_id,
+                    route=route_node,
+                    reason=reason,
+                )
+            )
+            return
+        desired_row = desired.get(route_node, {})
+        reconnect_enabled = str(desired_row.get("reconnect", "on")).strip().lower() in {"1", "on", "yes", "true"}
+        if route_node not in live:
+            reason = (
+                "Peer is disconnected and reconnect is disabled."
+                if desired_row and not reconnect_enabled
+                else "Peer is disconnected and queued for reconnect."
+            )
+            await self.store.set_message_delivery(
+                message_id,
+                "pending",
+                route_node=route_node,
+                error_text=reason,
+            )
+            LOG.info(
+                self._render_string(
+                    "log.cluster_mail_pending",
+                    "cluster mail pending: id={message_id} route={route} reason={reason}",
+                    message_id=message_id,
+                    route=route_node,
+                    reason=reason,
+                )
+            )
+            return
         try:
             await self._start_outbound_mail(route_node, row)
         except Exception as exc:
             await self.store.set_message_delivery(message_id, "pending", route_node=route_node, error_text=str(exc))
-            LOG.info("queued cluster mail id=%s route=%s error=%s", message_id, route_node, exc)
+            LOG.info(
+                self._render_string(
+                    "log.cluster_mail_pending",
+                    "cluster mail pending: id={message_id} route={route} reason={reason}",
+                    message_id=message_id,
+                    route=route_node,
+                    reason=exc,
+                )
+            )
 
     async def _flush_pending_messages_for_peer(self, peer_name: str) -> None:
         route_node = normalize_call(peer_name)
