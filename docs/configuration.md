@@ -4,6 +4,12 @@ Primary config file:
 
 - `config/pycluster.toml`
 
+Optional local override file:
+
+- `config/pycluster.local.toml`
+
+pyCluster loads `config/pycluster.toml` first, then layers `config/pycluster.local.toml` on top when it exists. Put host-specific settings in the local override file so upgrades do not require editing the tracked base config.
+
 ## Main Sections
 
 ### `[node]`
@@ -58,6 +64,7 @@ Important fields:
 - `port`
 - `static_dir`
 - `cty_dat_path`
+- `wpxloc_raw_path`
 
 ### `[store]`
 
@@ -67,17 +74,59 @@ Important field:
 
 - `sqlite_path`
 
+### `[smtp]`
+
+Node-wide email delivery settings used for SMTP-backed MFA.
+
+Important fields:
+
+- `host`
+- `port`
+- `username`
+- `password`
+- `from_addr`
+- `from_name`
+- `starttls`
+- `use_ssl`
+- `timeout_seconds`
+
+### `[mfa]`
+
+Node-wide email OTP policy.
+
+Important fields:
+
+- `enabled`
+- `require_for_sysop`
+- `require_for_users`
+- `issuer`
+- `otp_ttl_seconds`
+- `otp_length`
+- `max_attempts`
+- `resend_cooldown_seconds`
+
 ## Example Paths
 
 Default deployed layout:
 
 - config: `/home/pycluster/pyCluster/config/pycluster.toml`
+- local override: `/home/pycluster/pyCluster/config/pycluster.local.toml`
 - database: `/home/pycluster/pyCluster/data/pycluster.db`
 - CTY data: `/home/pycluster/pyCluster/fixtures/live/dxspider/cty.dat`
+- wpxloc.raw data: `/home/pycluster/pyCluster/fixtures/live/dxspider/wpxloc.raw` when you use the standard refresh path
 
 ## Operational Advice
 
 - keep web listeners local and publish them through a reverse proxy
 - use realistic `max_clients` values for your hardware
-- back up the config file and SQLite DB together
+- back up the base config, local override, and SQLite DB together
 - do not hand-edit the live CTY file unless you need an emergency local override
+- keep SMTP credentials in `config/pycluster.local.toml`, not the tracked base config
+- CTY data is used for enrichment and review cues such as suspicious spot-prefix flags in the sysop web UI; it is not treated as a complete worldwide legal callsign authority
+
+
+## Dataset Status
+
+- The System Operator Console and telnet `show/configuration` report `CTY.DAT` and `wpxloc.raw` status, path, and version/date when detectable.
+- The left navigation in the System Operator Console also shows compact pills for the currently loaded country datasets.
+- Suspicious spot-prefix review uses CTY and `wpxloc.raw` as operational cues. If country data is missing or stale, pyCluster reports an advisory state instead of hard-flagging calls as suspicious solely because the prefix could not be recognized.

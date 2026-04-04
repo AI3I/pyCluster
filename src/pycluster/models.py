@@ -6,6 +6,7 @@ import re
 
 
 CALL_RE = re.compile(r"^[A-Z0-9/]+(?:-[0-9]{1,2})?$")
+SPOT_CALL_RE = re.compile(r"^[A-Z0-9/-]+$")
 
 
 @dataclass(slots=True)
@@ -54,6 +55,32 @@ def is_valid_call(value: str) -> bool:
     else:
         parts = [core]
     joined = "".join(parts)
+    return any(ch.isalpha() for ch in joined) and any(ch.isdigit() for ch in joined)
+
+
+def is_plausible_spot_call(value: str) -> bool:
+    call = normalize_call(value)
+    if not call or len(call) > 24:
+        return False
+    if not SPOT_CALL_RE.match(call):
+        return False
+    if call.startswith(("/", "-")) or call.endswith(("/", "-")):
+        return False
+    if "//" in call or "--" in call or "/-" in call or "-/" in call:
+        return False
+    parts = call.split("/")
+    if any(not part for part in parts):
+        return False
+    for part in parts:
+        if "-" in part:
+            head, tail = part.rsplit("-", 1)
+            if not head or not tail or not tail.isdigit():
+                return False
+            if not head.isalnum():
+                return False
+        elif not part.isalnum():
+            return False
+    joined = "".join(part.split("-", 1)[0] for part in parts)
     return any(ch.isalpha() for ch in joined) and any(ch.isdigit() for ch in joined)
 
 

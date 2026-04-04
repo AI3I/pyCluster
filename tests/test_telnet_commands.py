@@ -6,9 +6,11 @@ import json
 from pathlib import Path
 import pytest
 
+from pycluster import __version__
 from pycluster.auth import is_password_hash, verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.ctydat import load_cty, lookup
+from pycluster.wpxloc import load_wpxloc, lookup as wpx_lookup
 from pycluster.models import Spot
 from pycluster.telnet_server import Session, TelnetClusterServer
 from pycluster.store import SpotStore
@@ -50,6 +52,19 @@ def _write_cty(tmp_path: Path) -> str:
     return str(path)
 
 
+
+
+def _write_wpxloc(tmp_path: Path) -> str:
+    path = tmp_path / "wpxloc.raw"
+    path.write_text(
+        "K United-States 291 5 8 5.0 37 0 0 N 95 0 0 W @\n"
+        "& =K1ABC\n"
+        "UA European-Russia 054 29 16 -3.0 55 45 0 N 37 37 0 E @\n"
+        "& =RG65SM =RG65SA\n",
+        encoding="ascii",
+    )
+    return str(path)
+
 def test_dispatch_show_and_aliases(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "cmd.db")
@@ -66,7 +81,7 @@ def test_dispatch_show_and_aliases(tmp_path) -> None:
         try:
             keep, out = await srv._execute_command("N0CALL", "sh/version")
             assert keep is True
-            assert "pyCluster version 1.0.0" in out
+            assert f"pyCluster version {__version__}" in out
             assert "John D. Lewis (AI3I)" in out
             assert "https://github.com/AI3I/pyCluster" in out
 
@@ -332,7 +347,7 @@ def test_set_unset_flags(tmp_path) -> None:
 
         try:
             _, out = await srv._execute_command("N0CALL", "unset/echo")
-            assert "echo=off" in out
+            assert "Echo set to off for N0CALL." in out
             assert sess.echo is False
 
             _, out = await srv._execute_command("N0CALL", "set/language de")
@@ -340,7 +355,7 @@ def test_set_unset_flags(tmp_path) -> None:
             assert sess.language == "de"
 
             _, out = await srv._execute_command("N0CALL", "set/here")
-            assert "here=on" in out
+            assert "Here set to on for N0CALL." in out
             assert sess.here is True
 
             _, out = await srv._execute_command("N0CALL", "set/arcluster")
@@ -368,12 +383,15 @@ def test_set_maxconnect_command(tmp_path) -> None:
             connected_at=datetime.now(timezone.utc),
         )
         try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, privilege="sysop")
             _, out = await srv._execute_command("N0CALL", "set/maxconnect 2")
             assert "Maximum connections for N0CALL set to 2." in out
             assert await store.get_user_pref("N0CALL", "maxconnect") == "2"
 
             _, out = await srv._execute_command("N0CALL", "show/users")
-            assert "maxc=2" in out
+            assert "privilege sysop" in out
+            assert "max" in out and "connections 2" in out
         finally:
             await store.close()
 
@@ -396,20 +414,20 @@ def test_command_case_insensitive_and_abbrev_dispatch(tmp_path) -> None:
             assert out.strip() != ""
 
             _, out = await srv._execute_command("N0CALL", "Se/Ta")
-            assert "talk=on" in out
+            assert "Talk set to on for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "uNsE/tA")
-            assert "talk=off" in out
+            assert "Talk set to off for N0CALL." in out
 
             _, out = await srv._execute_command("N0CALL", "Sh/Dx")
             assert "No spots available" in out
 
             _, out = await srv._execute_command("N0CALL", "gE/KeP")
-            assert "get/keps: Ok" in out
+            assert "Keplerian elements request accepted." in out
 
             _, out = await srv._execute_command("N0CALL", "Sh/PrOtO-AcKs")
-            assert "No proto acks" in out
+            assert "No protocol alert acknowledgements." in out
             _, out = await srv._execute_command("N0CALL", "SH/PRACK")
-            assert "No proto acks" in out
+            assert "No protocol alert acknowledgements." in out
 
             _, out = await srv._execute_command("N0CALL", "s/dx")
             assert out == "?\r\n"
@@ -513,7 +531,7 @@ def test_show_shortcuts_catalog_and_execution(tmp_path) -> None:
             # Execute a few dynamic examples from generated catalog.
             show_proto_key = "show/protoack" if "show/protoack" in cat else "show/protoacks"
             _, out = await srv._execute_command("N0CALL", cat[show_proto_key])
-            assert "No proto acks" in out
+            assert "No protocol alert acknowledgements." in out
 
             now = int(datetime.now(timezone.utc).timestamp())
             await store.set_user_pref("N0CALL", "privilege", "sysop", now)
@@ -582,7 +600,7 @@ def test_all_token_shortcuts_across_command_families(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "set/protoack *")
             assert "Protocol alerts acknowledged for" in out
             _, out = await srv._execute_command("N0CALL", "show/protoalerts +a")
-            assert "health=acked" in out
+            assert "health acked" in out
             _, out = await srv._execute_command("N0CALL", "unset/protoack a")
             assert "Cleared protocol alert acknowledgements" in out
 
@@ -610,7 +628,8 @@ def test_top_level_prefix_resolution_and_group_safety(tmp_path) -> None:
             assert "disconnect" in out.lower() or "not connected" in out.lower()
 
             _, out = await srv._execute_command("N0CALL", "dbsho")
-            assert "dbshow: engine=sqlite" in out
+            assert "Database summary for" in out
+            assert "Registered Users:" in out
 
             # Ambiguous top-level prefix should not resolve.
             _, out = await srv._execute_command("N0CALL", "di")
@@ -618,7 +637,8 @@ def test_top_level_prefix_resolution_and_group_safety(tmp_path) -> None:
 
             # Separator-insensitive aliases should resolve.
             _, out = await srv._execute_command("N0CALL", "sendconfig")
-            assert "node_call=" in out
+            assert "Node configuration:" in out
+            assert "Node Call:" in out
             _, out = await srv._execute_command("N0CALL", "exportusers")
             assert "permission denied" in out
             _, out = await srv._execute_command("N0CALL", "sendc")
@@ -645,10 +665,10 @@ def test_show_shortcuts_includes_top_level_commands(tmp_path) -> None:
         try:
             _, out = await srv._execute_command("N0CALL", "show/shortcuts dbsho")
             assert "dbshow" in out
-            assert "=>" in out
-            row = next((ln for ln in out.splitlines() if "=>" in ln and "dbsho" in ln.lower()), "")
+            assert "runs" in out
+            row = next((ln for ln in out.splitlines() if "runs" in ln and "dbsho" in ln.lower()), "")
             assert row
-            rhs = row.split("=>", 1)[1].strip()
+            rhs = row.split("runs", 1)[1].strip()
             short = rhs.split()[0]
             assert srv._resolve_top_token(short) == "dbshow"
         finally:
@@ -677,8 +697,8 @@ def test_show_connect_uses_link_stats(tmp_path) -> None:
         try:
             _, out = await srv._execute_command("N0CALL", "show/connect")
             assert "peer1" in out
-            assert "rx=" in out and "tx=" in out
-            assert "profile=arcluster" in out
+            assert "RX 12" in out and "TX 0" in out
+            assert "profile arcluster" in out
             assert "inbound" in out
         finally:
             await store.close()
@@ -721,11 +741,16 @@ def test_show_connect_and_route_include_proto_peer_state(tmp_path) -> None:
         )
         try:
             _, out = await srv._execute_command("N0CALL", "show/connect")
-            assert "proto=pc24=OH8X:1|pc50=W3LPL:63|pc51=AI3I-15>WB3FFV-2:1" in out
+            assert "Protocol:" in out
+            assert "PC24 OH8X / 1" in out
+            assert "PC50 W3LPL / 63" in out
+            assert "PC51 AI3I-15 from WB3FFV-2 value 1" in out
 
             _, out = await srv._execute_command("N0CALL", "show/route")
-            assert "last=PC51" in out
-            assert "proto=pc24=OH8X:1|pc50=W3LPL:63|pc51=AI3I-15>WB3FFV-2:1" in out
+            assert "Last PC51" in out
+            assert "Protocol:" in out
+            assert "PC24 OH8X / 1" in out
+            assert "Reconnect:" not in out
         finally:
             await store.close()
 
@@ -756,6 +781,11 @@ def test_show_links_and_node_use_desired_peers_and_explicit_identity(tmp_path) -
                 "connected": True,
                 "desired": True,
                 "last_connect_epoch": int(datetime.now(timezone.utc).timestamp()),
+                "reconnect_enabled": True,
+                "retry_count": 0,
+                "next_retry_epoch": 0,
+                "pending_mail": 2,
+                "route_issues": 0,
             },
             {
                 "peer": "PYC-2",
@@ -763,6 +793,12 @@ def test_show_links_and_node_use_desired_peers_and_explicit_identity(tmp_path) -
                 "connected": False,
                 "desired": True,
                 "last_connect_epoch": 0,
+                "reconnect_enabled": True,
+                "retry_count": 2,
+                "next_retry_epoch": int(datetime.now(timezone.utc).timestamp()) + 300,
+                "last_error": "timed out",
+                "pending_mail": 3,
+                "route_issues": 1,
             },
         ]
 
@@ -793,12 +829,161 @@ def test_show_links_and_node_use_desired_peers_and_explicit_identity(tmp_path) -
             assert "DXSpider 1.57 build 633" in out
             assert "PYC-2" in out
             assert "down" in out
+            assert "Mail Queue: 2" in out
+            assert "Retry Count: 2" in out
+            assert "Route Issues: 1" in out
+            assert "Last Error: timed out" in out
 
             _, out = await srv._execute_command("N0CALL", "show/node")
             assert "Topology" in out
             assert cfg.node.node_call in out
             assert "AI3I-15 [up spider]" in out
             assert "PYC-2 [down pycluster]" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/route")
+            assert "Pending Mail: 2" in out
+            assert "Pending Mail: 3" in out
+            assert "Route Issues: 1" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_cluster_includes_wire_readback(tmp_path) -> None:
+    async def _stats():
+        return {
+            "peer1": {"parsed_frames": 12, "sent_frames": 3, "profile": "spider", "inbound": False},
+            "peer2": {"parsed_frames": 7, "sent_frames": 2, "profile": "pycluster", "inbound": True},
+        }
+
+    async def run() -> None:
+        db = str(tmp_path / "show_cluster.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), link_stats_fn=_stats)
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        srv._sessions[2] = Session(call="K1ABC", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            _, out = await srv._execute_command("N0CALL", "show/cluster")
+            assert "2 nodes, 2 local / 21 total users" in out
+            assert "Max users seen: 21" in out
+            assert "Uptime:" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_route_merges_peer_rows_case_insensitively(tmp_path) -> None:
+    async def _stats():
+        return {
+            "AI3I-15": {
+                "parsed_frames": 12,
+                "sent_frames": 4,
+                "dropped_frames": 0,
+                "policy_dropped": 0,
+                "policy_reasons": {},
+                "profile": "spider",
+                "inbound": False,
+                "last_pc_type": "PC11",
+                "last_rx_epoch": int(datetime.now(timezone.utc).timestamp()),
+            }
+        }
+
+    async def _desired():
+        return [
+            {
+                "peer": "ai3i-15",
+                "profile": "spider",
+                "connected": True,
+                "desired": True,
+                "reconnect_enabled": True,
+                "retry_count": 1,
+                "next_retry_epoch": 0,
+                "pending_mail": 2,
+                "route_issues": 1,
+                "last_error": "slow link",
+            }
+        ]
+
+    async def run() -> None:
+        db = str(tmp_path / "route_casefold.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(
+            cfg,
+            store,
+            datetime.now(timezone.utc),
+            link_stats_fn=_stats,
+            link_desired_peers_fn=_desired,
+        )
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            _, out = await srv._execute_command("N0CALL", "show/route")
+            assert out.count("AI3I-15") + out.count("ai3i-15") == 1
+            assert "Pending Mail: 2" in out
+            assert "Route Issues: 1" in out
+            assert "Last Error: slow link" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_links_and_node_merge_peer_rows_case_insensitively(tmp_path) -> None:
+    async def _stats():
+        return {
+            "AI3I-15": {
+                "parsed_frames": 12,
+                "sent_frames": 4,
+                "dropped_frames": 0,
+                "policy_dropped": 0,
+                "policy_reasons": {},
+                "profile": "spider",
+                "inbound": False,
+                "last_pc_type": "PC11",
+                "last_rx_epoch": int(datetime.now(timezone.utc).timestamp()),
+            }
+        }
+
+    async def _desired():
+        return [
+            {
+                "peer": "ai3i-15",
+                "profile": "spider",
+                "connected": True,
+                "desired": True,
+                "reconnect_enabled": True,
+                "retry_count": 1,
+                "next_retry_epoch": 0,
+                "pending_mail": 2,
+                "route_issues": 1,
+                "last_error": "slow link",
+            }
+        ]
+
+    async def run() -> None:
+        db = str(tmp_path / "links_casefold.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(
+            cfg,
+            store,
+            datetime.now(timezone.utc),
+            link_stats_fn=_stats,
+            link_desired_peers_fn=_desired,
+        )
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            _, out = await srv._execute_command("N0CALL", "show/links")
+            assert out.count("AI3I-15") + out.count("ai3i-15") == 1
+            assert "Mail Queue: 2" in out
+            assert "Route Issues: 1" in out
+            assert "Last Error: slow link" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/node")
+            assert out.count("AI3I-15 [up spider]") + out.count("ai3i-15 [up spider]") == 1
         finally:
             await store.close()
 
@@ -856,9 +1041,9 @@ def test_show_proto_command_reports_health_and_filter(tmp_path) -> None:
         try:
             _, out = await srv._execute_command("N0CALL", "show/proto")
             assert "Protocol peer state:" in out
-            assert "peer1" in out and "health=ok" in out
+            assert "peer1" in out and "health ok" in out
             assert "PC50  Call: W3LPL  Nodes: 63" in out
-            assert "peer2" in out and "health=degraded" in out
+            assert "peer2" in out and "health degraded" in out
 
             _, out = await srv._execute_command("N0CALL", "show/proto peer2")
             assert "peer2" in out
@@ -899,14 +1084,14 @@ def test_show_proto_stale_and_stat_proto(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "show/proto --stale-mins 1")
-            assert "peer2" in out and "health=stale" in out
-            assert "age_min=" in out
+            assert "peer2" in out and "health stale" in out
+            assert "age" in out and "minutes" in out
 
             _, out = await srv._execute_command("N0CALL", "show/proto --stale-mins x")
             assert "Usage: show/proto [peer] [--stale-mins <minutes>]" in out
 
             _, out = await srv._execute_command("N0CALL", "stat/proto")
-            assert "Protocol summary: peers=3 known=3 ok=2 degraded=0 flapping=0 stale=1 unknown=0" in out
+            assert "Protocol status: 3 peers, with 3 known, 2 ok, 0 degraded, 0 flapping, 1 stale, and 0 unknown." in out
         finally:
             await store.close()
 
@@ -934,11 +1119,11 @@ def test_show_proto_flapping_health(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "show/proto")
-            assert "health=flapping" in out
-            assert "changes=9 flap=5" in out
+            assert "health flapping" in out
+            assert "changes 9 flap score 5" in out
 
             _, out = await srv._execute_command("N0CALL", "stat/proto")
-            assert "Protocol summary: peers=1 known=1 ok=0 degraded=0 flapping=1 stale=0 unknown=0" in out
+            assert "Protocol status: 1 peers, with 1 known, 0 ok, 0 degraded, 1 flapping, 0 stale, and 0 unknown." in out
         finally:
             await store.close()
 
@@ -967,11 +1152,11 @@ def test_show_proto_ignores_expired_flap_scores(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "show/proto")
-            assert "health=ok" in out
-            assert "changes=9 flap=5" in out
+            assert "health ok" in out
+            assert "changes 9 flap score 5" in out
 
             _, out = await srv._execute_command("N0CALL", "stat/proto")
-            assert "Protocol summary: peers=1 known=1 ok=1 degraded=0 flapping=0 stale=0 unknown=0" in out
+            assert "Protocol status: 1 peers, with 1 known, 1 ok, 0 degraded, 0 flapping, 0 stale, and 0 unknown." in out
         finally:
             await store.close()
 
@@ -1007,7 +1192,7 @@ def test_show_proto_history_flag(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "show/proto --history")
-            assert "history:" in out
+            assert "History:" in out
             assert "pc24.flag 0 -> 1" in out
             assert "pc51.value 0 -> 1" in out
 
@@ -1082,9 +1267,9 @@ def test_stat_protohistory_command(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "stat/protohistory")
-            assert "Protocol history summary: peers=2 with_history=1 events=2 last_epoch=" in out
+            assert "Protocol history status: 2 peers, 1 with history, 2 events, and last epoch " in out
             _, out = await srv._execute_command("N0CALL", "stat/protohistory peer1")
-            assert "Protocol history summary: peers=1 with_history=1 events=2 last_epoch=" in out
+            assert "Protocol history status: 1 peers, 1 with history, 2 events, and last epoch " in out
         finally:
             await store.close()
 
@@ -1113,7 +1298,7 @@ def test_stat_protoevents_command(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "stat/protoevents")
-            assert "Protocol event summary: events=3 keys=2 top=pc24.flag:2,pc51.value:1" in out
+            assert "Protocol event status: 3 events across 2 keys. Top activity: pc24.flag:2,pc51.value:1." in out
         finally:
             await store.close()
 
@@ -1150,16 +1335,18 @@ def test_show_and_stat_protoalerts(tmp_path) -> None:
         try:
             _, out = await srv._execute_command("N0CALL", "show/protoalerts")
             assert "peer1" not in out
-            assert "peer2" in out and "health=flapping" in out
-            assert "peer3" in out and "health=stale" in out
+            assert "peer2" in out and "health flapping" in out
+            assert "peer3" in out and "health stale" in out
+            assert "last " in out
+            assert "age" in out and "minutes" in out
 
             _, out = await srv._execute_command("N0CALL", "show/protoalerts peer2")
             assert "peer2" in out and "peer1" not in out
 
             _, out = await srv._execute_command("N0CALL", "stat/protoalerts")
-            assert "Protocol alert summary: total=2 degraded=0 flapping=1 stale=1 acked=0" in out
+            assert "Protocol alert status: 2 total, 0 degraded, 1 flapping, 1 stale, and 0 acknowledged." in out
             _, out = await srv._execute_command("N0CALL", "stat/protoalerts peer2")
-            assert "Protocol alert summary: total=1 degraded=0 flapping=1 stale=0 acked=0" in out
+            assert "Protocol alert status: 1 total, 0 degraded, 1 flapping, 0 stale, and 0 acknowledged." in out
 
             _, out = await srv._execute_command("N0CALL", "set/protoack peer1")
             assert "permission denied" in out
@@ -1170,18 +1357,18 @@ def test_show_and_stat_protoalerts(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/protoalerts")
             assert "peer1" not in out
             _, out = await srv._execute_command("N0CALL", "show/protoalerts a")
-            assert "peer1" in out and "health=acked" in out
+            assert "peer1" in out and "health acked" in out
             _, out = await srv._execute_command("N0CALL", "show/protoack")
-            assert "peer1" in out and "suppressed=1" in out
+            assert "peer1" in out and "suppressed 1" in out
             _, out = await srv._execute_command("N0CALL", "show/protoacks peer2")
-            assert "No proto acks for filter 'peer2'" in out
+            assert "No protocol alert acknowledgements for filter 'peer2'" in out
 
             _, out = await srv._execute_command("N0CALL", "stat/protoalerts")
-            assert "acked=1" in out
+            assert "1 acknowledged." in out
             _, out = await srv._execute_command("N0CALL", "stat/protoack")
-            assert "Protocol ack summary: total=1 suppressed=1 expired=0" in out
+            assert "Protocol acknowledgement status: 1 total, 1 suppressed, and 0 expired." in out
             _, out = await srv._execute_command("N0CALL", "stat/protoalerts peer1")
-            assert "Protocol alert summary: total=1 degraded=0 flapping=0 stale=0 acked=1" in out
+            assert "Protocol alert status: 1 total, 0 degraded, 0 flapping, 0 stale, and 1 acknowledged." in out
             _, out = await srv._execute_command("N0CALL", "unset/prack *")
             assert "Cleared protocol alert acknowledgements for 1 peer(s)." in out
         finally:
@@ -1265,16 +1452,16 @@ def test_proto_threshold_commands_and_show(tmp_path) -> None:
             assert "Protocol threshold flap score set to 10." in out
 
             _, out = await srv._execute_command("N0CALL", "show/protoconfig")
-            assert "flap_score=10 (node)" in out
-            assert "stale_mins=30 (default)" in out
+            assert "flap_score: 10 (node)" in out
+            assert "stale_mins: 30 (default)" in out
 
             _, out = await srv._execute_command("N0CALL", "show/proto")
-            assert "health=ok" in out
+            assert "health ok" in out
 
             _, out = await srv._execute_command("N0CALL", "unset/protothreshold flap_score")
             assert "Protocol threshold flap score restored to default." in out
             _, out = await srv._execute_command("N0CALL", "show/proto")
-            assert "health=flapping" in out
+            assert "health flapping" in out
         finally:
             await store.close()
 
@@ -1302,9 +1489,9 @@ def test_proto_threshold_separator_compat(tmp_path) -> None:
             assert "Protocol threshold flap window secs set to 600." in out
 
             _, out = await srv._execute_command("N0CALL", "show/proto-thresholds")
-            assert "flap_score=10 (node)" in out
-            assert "stale_mins=45 (node)" in out
-            assert "flap_window_secs=600 (node)" in out
+            assert "flap_score: 10 (node)" in out
+            assert "stale_mins: 45 (node)" in out
+            assert "flap_window_secs: 600 (node)" in out
 
             _, out = await srv._execute_command("N0CALL", "unset/proto-thresholds flapwindowsecs")
             assert "Protocol threshold flap window secs restored to default." in out
@@ -1334,7 +1521,7 @@ def test_show_proto_thresholds_can_be_set_via_set_var(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "show/proto")
-            assert "health=flapping" in out
+            assert "health flapping" in out
 
             _, out = await srv._execute_command(
                 "N0CALL", f"set/var {cfg.node.node_call} proto.threshold.flap_score 10"
@@ -1342,7 +1529,7 @@ def test_show_proto_thresholds_can_be_set_via_set_var(tmp_path) -> None:
             assert f"Variable proto.threshold.flap_score updated for {cfg.node.node_call}." in out
 
             _, out = await srv._execute_command("N0CALL", "show/proto")
-            assert "health=ok" in out
+            assert "health ok" in out
         finally:
             await store.close()
 
@@ -1403,12 +1590,12 @@ def test_filter_commands_roundtrip(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "show/filter")
             assert "Filters for N0CALL" in out
-            assert "Echo=on" in out
+            assert "Echo on" in out
             assert "accept/spots 1 on 40m" in out
             assert "reject/spots 2 by K1" in out
 
             _, out = await srv._execute_command("N0CALL", "clear/spots 1")
-            assert "clear/spots" in out
+            assert "Cleared spots filters for N0CALL (slot 1)." in out
             _, out = await srv._execute_command("N0CALL", "show/filter")
             assert "accept/spots 1 on 40m" not in out
             assert "reject/spots 2 by K1" in out
@@ -1445,14 +1632,14 @@ def test_show_filter_sorted_and_preview_test_modes(tmp_path) -> None:
             assert "Decision: deny" in out
             _, out = await srv._execute_command("N0CALL", "show/filter test route --verbose east-hub")
             assert "Decision: allow" in out
-            assert "Winning Rule: matched=accept slot=2 expr=peer east*" in out
+            assert "Winning Rule: Accept rule matched in slot 2: peer east*" in out
             _, out = await srv._execute_command("N0CALL", "show/filter test route --verbose west-hub")
             assert "Decision: deny" in out
-            assert "Winning Rule: matched=reject slot=1 expr=peer west*" in out
+            assert "Winning Rule: Reject rule matched in slot 1: peer west*" in out
 
             _, out = await srv._execute_command("N0CALL", "show/filter test wx --verbose N0ABC local weather")
             assert "Decision: allow" in out
-            assert "Winning Rule: matched=accept slot=3 expr=by N0" in out
+            assert "Winning Rule: Accept rule matched in slot 3: by N0" in out
         finally:
             await store.close()
 
@@ -1542,7 +1729,7 @@ def test_spot_filters_support_call_zone_call_itu_and_call_dxcc(tmp_path) -> None
 
             _, out = await srv._execute_command("N0CALL", "show/filter test spots --verbose 14074 VE3XYZ K1AAA FT8")
             assert "Decision: allow" in out
-            assert "Winning Rule: matched=accept slot=1 expr=call_zone 5" in out
+            assert "Winning Rule: Accept rule matched in slot 1: call_zone 5" in out
 
             await srv._execute_command("N0CALL", "clear/spots")
             await srv._execute_command("N0CALL", "accept/spots 1 call_itu 9")
@@ -1555,7 +1742,7 @@ def test_spot_filters_support_call_zone_call_itu_and_call_dxcc(tmp_path) -> None
 
             _, out = await srv._execute_command("N0CALL", "show/filter test spots --verbose 14074 VE3XYZ K1AAA FT8")
             assert "Decision: allow" in out
-            assert "Winning Rule: matched=accept slot=1 expr=call_itu 9" in out
+            assert "Winning Rule: Accept rule matched in slot 1: call_itu 9" in out
 
             await srv._execute_command("N0CALL", "clear/spots")
             await srv._execute_command("N0CALL", "accept/spots 1 call_dxcc canada")
@@ -1568,7 +1755,7 @@ def test_spot_filters_support_call_zone_call_itu_and_call_dxcc(tmp_path) -> None
 
             _, out = await srv._execute_command("N0CALL", "show/filter test spots --verbose 14074 VE3XYZ K1AAA FT8")
             assert "Decision: allow" in out
-            assert "Winning Rule: matched=accept slot=1 expr=call_dxcc canada" in out
+            assert "Winning Rule: Accept rule matched in slot 1: call_dxcc canada" in out
 
             await srv._execute_command("N0CALL", "clear/spots")
             await srv._execute_command("N0CALL", "accept/spots 1 call_dxcc ve")
@@ -1674,7 +1861,7 @@ def test_show_dx_uses_session_profile_formatting(tmp_path) -> None:
             sess.peer_profile = "spider"
             _, spider = await srv._execute_command("N0CALL", "show/dx 1")
             assert "<K1ABC>" in spider
-            assert "-Mar-" in spider
+            assert datetime.now(timezone.utc).strftime("-%b-") in spider
             assert "TAIL" not in spider
 
             sess.peer_profile = "arcluster"
@@ -1797,7 +1984,7 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
             await store.upsert_user_registry("K1ABC", now, privilege="user")
             _, out = await srv._execute_command("N0CALL", "msg K1ABC hello there")
             assert "Message #" in out and "delivered to 1 session(s)." in out
-            assert "state=delivered" in out
+            assert "Delivery state: delivered" in out
             assert b"MSG#" in bytes(w2.buffer)
             assert b"N0CALL: hello there" in bytes(w2.buffer)
 
@@ -1815,7 +2002,7 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
             _, out = await srv._execute_command("K1ABC", "show/messages")
             assert "UNREAD" in out and "hello there" in out
             assert "delivered" in out
-            assert "via=-" in out
+            assert "via -" in out
             _, out = await srv._execute_command("K1ABC", "mail")
             assert "hello there" in out
 
@@ -1830,7 +2017,7 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
             _, out = await srv._execute_command("K1ABC", f"reply {msg_id} roger")
             assert "Reply #" in out
             assert "delivered to " in out
-            assert "state=delivered" in out
+            assert "Delivery state: delivered" in out
 
             _, out = await srv._execute_command("N0CALL", "read")
             assert "K1ABC" in out
@@ -1863,7 +2050,7 @@ def test_msg_to_remote_home_node_stays_pending_until_mail_transport_exists(tmp_p
 
             _, out = await srv._execute_command("N0CALL", "msg K1ABC hello remote")
             assert "Message #" in out
-            assert "state=pending" in out
+            assert "Delivery state: pending" in out
             msg_id = int(out.split("#", 1)[1].split()[0])
             row = await store.get_message(msg_id)
             assert row is not None
@@ -1872,12 +2059,91 @@ def test_msg_to_remote_home_node_stays_pending_until_mail_transport_exists(tmp_p
 
             _, out = await srv._execute_command("N0CALL", "show/msgstatus")
             assert "Outbox states:" in out
-            assert "pending=1" in out
+            assert "pending 1" in out
+            assert "Pending routes: PEER1: 1" in out
 
             _, out = await srv._execute_command("N0CALL", "show/outbox")
             assert "PEER1" in out
             assert "pending" in out
             assert "hello remote" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_msgstatus_and_outbox_surface_delivery_errors(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mail_errors.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, privilege="user")
+            msg_id = await store.add_message(
+                sender="N0CALL",
+                recipient="K1ABC",
+                epoch=now,
+                body="cannot route this",
+                origin_node=cfg.node.node_call,
+                route_node="PEER404",
+                delivery_state="undeliverable",
+                error_text="No configured route to that peer.",
+            )
+            await store.set_message_delivery(
+                msg_id,
+                "undeliverable",
+                route_node="PEER404",
+                error_text="No configured route to that peer.",
+            )
+
+            _, out = await srv._execute_command("N0CALL", "show/msgstatus")
+            assert "undeliverable 1" in out
+            assert "Latest outbox error: K1ABC via PEER404: No configured route to that peer." in out
+
+            _, out = await srv._execute_command("N0CALL", "show/outbox")
+            assert "PEER404" in out
+            assert "undeliver" in out.lower()
+            assert "error No configured route to that peer." in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_msgstatus_surfaces_reconnect_pending_context(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_msgstatus_reconnect.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(
+            call="N0CALL",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_message(
+                "N0CALL",
+                "K1ABC",
+                now,
+                "queued for reconnect",
+                origin_node=cfg.node.node_call,
+                route_node="PEER1",
+                delivery_state="pending",
+                error_text="Peer is disconnected and reconnect is disabled.",
+            )
+
+            _, out = await srv._execute_command("N0CALL", "show/msgstatus")
+            assert "Pending routes: PEER1: 1" in out
+            assert "Latest outbox error: K1ABC via PEER1: Peer is disconnected and reconnect is" in out
+            assert "disabled." in out
+
+            _, out = await srv._execute_command("N0CALL", "show/outbox")
+            assert "via PEER1" in out
+            assert "error Peer is disconnected and reconnect is disabled." in out
         finally:
             await store.close()
 
@@ -1901,11 +2167,11 @@ def test_mail_shorthand_aliases_work(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "s K1ABC quick test")
             assert "Message #" in out
-            assert "state=delivered" in out
+            assert "Delivery state: delivered" in out
 
             _, out = await srv._execute_command("N0CALL", "sp K1ABC another test")
             assert "Message #" in out
-            assert "state=delivered" in out
+            assert "Delivery state: delivered" in out
 
             _, out = await srv._execute_command("K1ABC", "r")
             assert "N0CALL" in out
@@ -1913,7 +2179,7 @@ def test_mail_shorthand_aliases_work(tmp_path) -> None:
             msg_id = int(out.splitlines()[0].split()[0])
             _, out = await srv._execute_command("K1ABC", f"rep {msg_id} roger copy")
             assert "Reply #" in out
-            assert "state=delivered" in out
+            assert "Delivery state: delivered" in out
 
             _, out = await srv._execute_command("N0CALL", "show/shortcuts")
             assert "Send" in out or "SEnd" in out
@@ -2032,7 +2298,8 @@ def test_show_aliases_mydx_newconfiguration_and_dxcc(tmp_path) -> None:
             assert "K1ABC" in out
 
             _, out = await srv._execute_command("N0CALL", "show/newconfiguration")
-            assert "node_call=" in out and "telnet=" in out and "web=" in out
+            assert "Node configuration:" in out
+            assert "Node Call:" in out and "Telnet Listener:" in out and "System Operator Web:" in out
 
             _, out = await srv._execute_command("N0CALL", "show/dxcc K1")
             assert "K1ABC" in out
@@ -2054,9 +2321,9 @@ def test_show_dxcc_uses_cty_data_when_available(tmp_path) -> None:
         try:
             _, out = await srv._execute_command("N0CALL", "show/dxcc K1")
             assert "DXCC K1: United States" in out
-            assert "continent=NA" in out
-            assert "cq=5" in out
-            assert "itu=8" in out
+            assert "Continent: NA" in out
+            assert "CQ Zone: 5" in out
+            assert "ITU Zone: 8" in out
         finally:
             await store.close()
 
@@ -2077,9 +2344,9 @@ def test_show_dx_appends_cty_suffix_when_enabled(tmp_path) -> None:
             await store.add_spot(Spot(14074.0, "K1ABC", now, "FT8", "JA1AAA", "AI3I-16", ""))
 
             _, out = await srv._execute_command("N0CALL", "set/dxcq")
-            assert "dxcq=on" in out
+            assert "DX CQ set to on for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "set/dxitu")
-            assert "dxitu=on" in out
+            assert "DX ITU set to on for N0CALL." in out
 
             _, out = await srv._execute_command("N0CALL", "show/dx 1")
             assert "CQ5 ITU8" in out
@@ -2122,13 +2389,13 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
             assert "K1XYZ" in out
 
             _, out = await srv._execute_command("N0CALL", "unset/rbn")
-            assert "rbn=off" in out
+            assert "RBN set to off for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "show/dx 10")
             assert "K1ABC" not in out
             assert "K1XYZ" in out
 
             _, out = await srv._execute_command("N0CALL", "set/rbn")
-            assert "rbn=on" in out
+            assert "RBN set to on for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "reject/rbn 2")
             assert "reject/rbn" in out
 
@@ -2140,7 +2407,7 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
             assert "K1XYZ" in live
 
             _, out = await srv._execute_command("N0CALL", "clear/rbn")
-            assert "clear/rbn" in out
+            assert "Cleared" in out and "rbn filter" in out
             before = len(writer.buffer)
             await srv.publish_spot(rbn_spot)
             live = bytes(writer.buffer[before:]).decode("utf-8", "replace")
@@ -2235,7 +2502,7 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
         )
         try:
             _, out = await srv._execute_command("N0CALL", "show/qra")
-            assert "QRA for N0CALL: (none)" in out
+            assert "QRA is not set for N0CALL." in out
 
             _, out = await srv._execute_command("N0CALL", "set/qra FN42")
             assert "QRA set to FN42 for N0CALL." in out
@@ -2271,8 +2538,9 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/commands sendconf")
             assert "send_config" in out
             _, out = await srv._execute_command("N0CALL", "show/capabilities")
-            assert "capabilities: commands=" in out
-            assert "show=" in out and "set=" in out and "stat=" in out
+            assert "Command capabilities:" in out
+            assert "Commands:" in out
+            assert "Show:" in out and "Set:" in out and "Stat:" in out
 
             _, out = await srv._execute_command("N0CALL", "show/sun")
             assert "Reference: QRA FN42" in out and "Solar Hour:" in out and "Phase:" in out
@@ -2280,6 +2548,10 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             assert "Reference: QRA FN42" in out and "Grayline status:" in out and ("sunrise in" in out or "sunset in" in out)
             _, out = await srv._execute_command("N0CALL", "show/moon")
             assert "Reference: QRA FN42" in out and "Age:" in out and "Illumination:" in out
+            _, out = await srv._execute_command("N0CALL", "show/heading G")
+            assert "Heading to " in out or "No heading data for G." in out
+            if "Heading to " in out:
+                assert "Reference: QRA FN42" in out or "Reference: location " in out
 
             _, out = await srv._execute_command("N0CALL", "show/muf")
             assert "MUF estimate unavailable" in out
@@ -2397,17 +2669,17 @@ def test_dup_controls_and_clear_dupefile(tmp_path) -> None:
             assert "Duplicate Ann set to on for N0CALL." in out
 
             _, out = await srv._execute_command("N0CALL", "show/dupspots")
-            assert "dup_spots=on" in out
+            assert "Duplicate Spots for N0CALL: on" in out
             _, out = await srv._execute_command("N0CALL", "show/dupann")
-            assert "dup_ann=on" in out
+            assert "Duplicate Ann for N0CALL: on" in out
 
             _, out = await srv._execute_command("N0CALL", "clear/dupefile")
             assert "Duplicate spot tracking reset" in out
             assert await store.spot_dupe_enabled() is False
             _, out = await srv._execute_command("N0CALL", "show/dupspots")
-            assert "dup_spots=off" in out
+            assert "Duplicate Spots for N0CALL: off" in out
             _, out = await srv._execute_command("N0CALL", "show/dupann")
-            assert "dup_ann=off" in out
+            assert "Duplicate Ann for N0CALL: off" in out
         finally:
             await store.close()
 
@@ -2444,16 +2716,16 @@ def test_set_named_var_validation_and_normalization(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "set/debug yes")
-            assert "debug=on" in out
+            assert "Debug set to on for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "set/debug 0")
-            assert "debug=off" in out
+            assert "Debug set to off for N0CALL." in out
 
             _, out = await srv._execute_command("N0CALL", "set/pinginterval nope")
             assert "Usage: set/pinginterval <integer>" in out
             _, out = await srv._execute_command("N0CALL", "set/pinginterval 2")
-            assert "pinginterval=5" in out
+            assert "Ping Interval set to 5 for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "set/obscount 50000")
-            assert "obscount=9999" in out
+            assert "Obscount set to 9999 for N0CALL." in out
         finally:
             await store.close()
 
@@ -2528,29 +2800,30 @@ def test_connect_disconnect_links_commands(tmp_path) -> None:
             assert "DXSpider 1.57 build 633" in out
 
             _, out = await srv._execute_command("N0CALL", "show/connect")
-            assert "policy_drop=" in out
-            assert "profile=spider" in out
+            assert "policy dropped 1" in out
+            assert "profile spider" in out
 
             _, out = await srv._execute_command("N0CALL", "show/route")
-            assert "rx=" in out and "tx=" in out and "last=PC92" in out
-            assert "reasons=relay_peer_chat_disabled:2,route_filter:1" in out
+            assert "RX     12" in out and "TX      8" in out and "Last PC92" in out
+            assert "Reasons: relay_peer_chat_disabled 2, route_filter 1" in out
 
             _, out = await srv._execute_command("N0CALL", "show/policydrop")
             assert "Policy drop reasons:" in out
-            assert "peer1: total=1" in out
-            assert "relay_peer_chat_disabled=2" in out
-            assert "route_filter=1" in out
+            assert "peer1: total 1" in out
+            assert "relay_peer_chat_disabled: 2" in out
+            assert "route_filter: 1" in out
 
             _, out = await srv._execute_command("N0CALL", "show/policydrop peer1")
-            assert "peer1: total=1" in out
+            assert "peer1: total 1" in out
             _, out = await srv._execute_command("N0CALL", "show/policydrop missing")
             assert "No policy drop data for peer filter 'missing'" in out
 
             _, out = await srv._execute_command("N0CALL", "show/hops")
-            assert "hop_metric=" in out and "policy_drop=" in out
+            assert "Hop metrics (1):" in out
+            assert "hop metric" in out and "policy drops" in out
 
             _, out = await srv._execute_command("N0CALL", "stat/route")
-            assert "stat/route: 1" in out
+            assert "There is 1 live peer link right now." in out
 
             _, out = await srv._execute_command("N0CALL", "disconnect peer1")
             assert "Disconnected peer1." in out
@@ -2619,8 +2892,8 @@ def test_show_policydrop_reset_requires_sysop_and_clears_counts(tmp_path) -> Non
         srv._sessions[1] = sess
         try:
             _, out = await srv._execute_command("N0CALL", "show/policydrop")
-            assert "peer1: total=3" in out
-            assert "peer2: total=1" in out
+            assert "peer1: total 3" in out
+            assert "peer2: total 1" in out
 
             _, out = await srv._execute_command("N0CALL", "show/policydrop --reset peer1")
             assert "requires sysop" in out
@@ -2629,10 +2902,10 @@ def test_show_policydrop_reset_requires_sysop_and_clears_counts(tmp_path) -> Non
             _, out = await srv._execute_command("N0CALL", "show/policydrop --reset")
             assert "requires <peer> or all|a|*" in out
             _, out = await srv._execute_command("N0CALL", "show/policydrop --reset peer1")
-            assert "policydrop reset peers=1 filter=peer1" in out
+            assert "Policy drop counters reset for 1 peer(s) matching peer1." in out
 
             _, out = await srv._execute_command("N0CALL", "show/policydrop --reset a")
-            assert "policydrop reset peers=1" in out
+            assert "Policy drop counters reset for 1 peer(s)." in out
 
             _, out = await srv._execute_command("N0CALL", "show/policydrop peer1")
             assert "No policy drop data for peer filter 'peer1'" in out
@@ -2665,6 +2938,10 @@ def test_misc_top_level_and_bulletin_commands(tmp_path) -> None:
         try:
             now = int(datetime.now(timezone.utc).timestamp())
             await store.upsert_user_registry("N0CALL", now, privilege="user")
+            _, out = await srv._execute_command("N0CALL", "show/version")
+            assert "pyCluster version" in out
+            assert "Author: John D. Lewis (AI3I)" in out
+            assert "Project: https://github.com/AI3I/pyCluster" in out
             _, out = await srv._execute_command("N0CALL", "ping K1ABC")
             assert "PONG K1ABC" in out
 
@@ -2674,12 +2951,12 @@ def test_misc_top_level_and_bulletin_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "status")
             assert "local /" in out and "Uptime" in out
             _, out = await srv._execute_command("N0CALL", "uptime")
-            assert "uptime=" in out and "started=" in out
+            assert "Uptime:" in out and "Started:" in out
             _, out = await srv._execute_command("N0CALL", "show/uptime")
-            assert "uptime=" in out and "now=" in out
+            assert "Uptime:" in out and "Now:" in out
 
             _, out = await srv._execute_command("N0CALL", "chat test room")
-            assert "chat delivered=1" in out
+            assert "Chat delivered to 1 session(s)." in out
             assert b"CHAT N0CALL: test room" in bytes(w2.buffer)
 
             _, out = await srv._execute_command("N0CALL", "wcy K=3 A=8")
@@ -2704,8 +2981,9 @@ def test_misc_top_level_and_bulletin_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "apropos route")
             assert "show/route" in out
             _, out = await srv._execute_command("N0CALL", "show/stats")
-            assert "Users=" in out and "Spots=" in out
-            assert "Messages=" in out and "Peers=" in out and "PolicyDrop=" in out
+            assert "Runtime summary:" in out
+            assert "Users:" in out and "Spots:" in out
+            assert "Messages:" in out and "Peers:" in out and "Policy Drops:" in out
         finally:
             await store.close()
 
@@ -2759,16 +3037,16 @@ def test_set_unset_and_extended_group_families(tmp_path) -> None:
         try:
             await store.set_user_pref("N0CALL", "privilege", "sysop", int(datetime.now(timezone.utc).timestamp()))
             _, out = await srv._execute_command("N0CALL", "set/talk")
-            assert "talk=on" in out
+            assert "Talk set to on for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "show/talk")
-            assert "talk=on" in out
+            assert "TALK for N0CALL: on" in out
             _, out = await srv._execute_command("N0CALL", "unset/talk")
-            assert "talk=off" in out
+            assert "Talk set to off for N0CALL." in out
 
             _, out = await srv._execute_command("N0CALL", "set/qra FN42")
             assert "QRA set to FN42 for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "show/station")
-            assert "qra=FN42" in out
+            assert "Grid Square (QRA): FN42" in out
 
             _, out = await srv._execute_command("N0CALL", "create/user W1AW")
             assert "User record created for W1AW." in out
@@ -2826,8 +3104,8 @@ def test_top_level_compat_batch_commands(tmp_path) -> None:
             assert "permission denied" in out
             await store.set_user_pref("N0CALL", "privilege", "sysop", int(datetime.now(timezone.utc).timestamp()))
             _, out = await srv._execute_command("N0CALL", "agwrestart")
-            assert "AGW restart requested at epoch" in out
-            assert "(count 1)." in out
+            assert "AGW restart requested at" in out
+            assert "Restart request count: 1." in out
 
             _, out = await srv._execute_command("N0CALL", "dbcreate")
             assert "Database structures verified:" in out
@@ -2837,39 +3115,43 @@ def test_top_level_compat_batch_commands(tmp_path) -> None:
             dump = str(tmp_path / "dump.sql")
             _, out = await srv._execute_command("N0CALL", f"dbexport {dump}")
             assert "Database export written to" in out
+            assert "Export size:" in out
             assert "dump.sql" in out
             assert Path(dump).exists()
 
             users_csv = str(tmp_path / "users.csv")
             _, out = await srv._execute_command("N0CALL", f"export_users {users_csv}")
             assert "User export written to" in out
+            assert "Exported " in out
             assert Path(users_csv).exists()
 
             _, out = await srv._execute_command("N0CALL", "send_config")
-            assert "node_call=" in out
+            assert "Node configuration:" in out
+            assert "Node Call:" in out
             cfg_out = str(tmp_path / "config.out")
             _, out = await srv._execute_command("N0CALL", f"send_config {cfg_out}")
             assert "Configuration snapshot written to" in out
             assert Path(cfg_out).exists()
             _, out = await srv._execute_command("N0CALL", "pc")
-            assert "pc: supported=" in out
+            assert "PC capability summary:" in out
             _, out = await srv._execute_command("N0CALL", "pc 24")
-            assert "pc24: supported=yes" in out
+            assert "PC24 support is available for dx" in out
             _, out = await srv._execute_command("N0CALL", "demonstrate show/time")
             assert "demonstrate: show/time" in out
             assert "Z" in out
 
             _, out = await srv._execute_command("N0CALL", "debug on")
-            assert "debug=on" in out
+            assert "Debug set to on for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "debug")
-            assert "debug=on" in out
+            assert "Debug for N0CALL: on" in out
             _, out = await srv._execute_command("N0CALL", "debug off")
-            assert "debug=off" in out
+            assert "Debug set to off for N0CALL." in out
 
             _, out = await srv._execute_command("N0CALL", "rcmd SH/DX 5")
-            assert "rcmd=SH/DX 5" in out
+            assert "Rcmd set to SH/DX 5 for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "rcmd")
-            assert "rcmd=SH/DX 5" in out
+            assert "Remote command settings for N0CALL:" in out
+            assert "Remote Command: SH/DX 5" in out
 
             _, out = await srv._execute_command("N0CALL", "privilege")
             assert "Access level for N0CALL: sysop" in out
@@ -2878,7 +3160,7 @@ def test_top_level_compat_batch_commands(tmp_path) -> None:
             assert "Saved " in out
 
             _, out = await srv._execute_command("N0CALL", "sysop")
-            assert "registered N0CALL" in out
+            assert "No registered user record was found for N0CALL." in out
 
             _, out = await srv._execute_command("N0CALL", "get/keps")
             assert "Keplerian elements request accepted." in out
@@ -2913,7 +3195,8 @@ def test_db_compat_commands(tmp_path) -> None:
                 "14074.0^K1ABC^1772337000^FT8^N0CALL^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42\n"
             )
             _, out = await srv._execute_command("N0CALL", f"dbimport {sample}")
-            assert "Database import complete: 1 imported, 0 skipped." in out
+            assert "Database import complete." in out
+            assert "Imported 1 record(s); skipped 0." in out
 
             _, out = await srv._execute_command("N0CALL", "set/user N0CALL")
             assert "User record created or updated for N0CALL." in out
@@ -2924,7 +3207,8 @@ def test_db_compat_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "dbremove user N0CALL")
             assert "Removed " in out
             assert "stored item(s) for N0CALL:" in out
-            assert "prefs=" in out
+            assert "preferences " in out
+            assert "variables " in out
             assert await store.list_user_prefs("N0CALL") == {}
             assert await store.list_user_vars("N0CALL") == {}
             assert await store.list_usdb_entries("N0CALL") == {}
@@ -3025,19 +3309,10 @@ def test_stat_queue_channel_aggregate_link_metrics(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "stat/queue")
-            assert "Queue summary: peers=2" in out
-            assert "queued=7" in out
-            assert "rx=15" in out
-            assert "tx=16" in out
-            assert "dropped=3" in out
-            assert "policy_drop=4" in out
+            assert "Queue status: there are 2 peers, 7 queued items, RX 15, TX 16, dropped 3, and 4 policy drops." in out
 
             _, out = await srv._execute_command("N0CALL", "stat/channel")
-            assert "Channel summary: peers=2" in out
-            assert "inbound=1" in out
-            assert "outbound=1" in out
-            assert "rx=15" in out
-            assert "tx=16" in out
+            assert "Channel status: there are 2 peers, with 1 accepted, 1 dial-out, RX 15, TX 16, dropped 3, and 4 policy drops." in out
         finally:
             await store.close()
 
@@ -3062,7 +3337,7 @@ def test_save_syncs_session_state(tmp_path) -> None:
         srv._sessions[1] = sess
         try:
             _, out = await srv._execute_command("N0CALL", "save")
-            assert "Saved " in out
+            assert "Saved " in out and "for N0CALL" in out
             assert await store.get_user_pref("N0CALL", "echo") == "off"
             assert await store.get_user_pref("N0CALL", "beep") == "on"
             assert await store.get_user_pref("N0CALL", "language") == "fr"
@@ -3086,20 +3361,19 @@ def test_pc_command_reflects_and_sets_relay_mapping(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             _, out = await srv._execute_command("N0CALL", "pc 24")
-            assert "pc24: supported=yes" in out
-            assert "feature=dx" in out
-            assert "state=on" in out
+            assert "PC24 support is available for dx" in out
+            assert "current state is on" in out
 
             _, out = await srv._execute_command("N0CALL", "pc 24 off")
-            assert "state=off" in out
+            assert "current state is off" in out
             assert await store.get_user_pref("N0CALL", "relay.spots") == "off"
 
             _, out = await srv._execute_command("N0CALL", "show/relay")
-            assert "SPOTS: off (user)" in out
+            assert "SPOTS: off from your setting." in out
 
             _, out = await srv._execute_command("N0CALL", "pc 61 on")
-            assert "feature=route" in out
-            assert "state=on" in out
+            assert "PC61 support is available for route" in out
+            assert "current state is on" in out
             assert await store.get_user_pref("N0CALL", "routepc19") == "on"
         finally:
             await store.close()
@@ -3155,21 +3429,23 @@ def test_show_named_gateways_and_dbshow_dbavail(tmp_path) -> None:
             await store.add_bulletin("announce", "N0CALL", "LOCAL", now, "contest soon")
 
             _, out = await srv._execute_command("N0CALL", "show/dxqsl")
-            assert "dxqsl status:" in out
-            assert "export_path=/tmp/dxqsl.out" in out
-            assert "ready=no" in out
+            assert "DXQSL status for N0CALL:" in out
+            assert "Export Path: /tmp/dxqsl.out" in out
+            assert "Ready: no" in out
 
             _, out = await srv._execute_command("N0CALL", "show/db0sdx")
             assert "db0sdx gateway status:" in out
-            assert "enabled=on" in out
-            assert "host=db0sdx.de" in out
+            assert "Enabled: on" in out
+            assert "Host: db0sdx.de" in out
 
             _, out = await srv._execute_command("N0CALL", "show/cmdcache")
-            assert "cmd_cache: commands=" in out
-            assert "state=warm" in out
+            assert "Command cache:" in out
+            assert "State: warm" in out
 
             _, out = await srv._execute_command("N0CALL", "load/dxqsl")
-            assert "DXQSL settings loaded for N0CALL: export=yes, import=no." in out
+            assert "DXQSL settings loaded for N0CALL:" in out
+            assert "Export Enabled: yes" in out
+            assert "Import Enabled: no" in out
 
             _, out = await srv._execute_command("N0CALL", "load/badwords")
             assert "Loaded 1 bad-word rule entry." in out
@@ -3179,15 +3455,15 @@ def test_show_named_gateways_and_dbshow_dbavail(tmp_path) -> None:
             assert "1 spots" in out or "1 spot" in out
 
             _, out = await srv._execute_command("N0CALL", "dbshow")
-            assert "Database summary: sqlite at " in out
-            assert "1 spots" in out
+            assert "Database summary for " in out
+            assert "Spots: 1" in out
 
             _, out = await srv._execute_command("N0CALL", "dbshow messages")
             assert "Messages: 1 total, 1 unread." in out
 
             _, out = await srv._execute_command("N0CALL", "dbavail")
             assert "SQLite database at " in out
-            assert "exists=yes" in out
+            assert "Status: available" in out
         finally:
             await store.close()
 
@@ -3209,11 +3485,11 @@ def test_safe_nested_dispatch_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "do show/time")
             assert "Z" in out
             _, out = await srv._execute_command("N0CALL", "run set/talk")
-            assert "talk=on" in out
+            assert "Talk set to on for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "type announce hello")
-            assert "blocked unsafe command" in out
+            assert "that command is not allowed" in out
             _, out = await srv._execute_command("N0CALL", "merge do show/time")
-            assert "nested control commands are disabled" in out
+            assert "nested control commands are not allowed" in out
             now = int(datetime.now(timezone.utc).timestamp())
             await store.set_user_pref("N0CALL", "privilege", "sysop", now)
             keep, out = await srv._execute_command("N0CALL", "shutdown")
@@ -3281,7 +3557,7 @@ def test_control_policy_toggle_and_show(tmp_path) -> None:
 
             keep, out = await srv._execute_command("N0CALL", "kill K1ABC")
             assert keep is True
-            assert "kill: disabled by control policy" in out
+            assert "kill is currently disabled by system control policy" in out
             assert len(srv._sessions) == 2
 
             _, out = await srv._execute_command("N0CALL", "show/control")
@@ -3297,6 +3573,7 @@ def test_control_policy_toggle_and_show(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "unset/control")
             assert "default enabled state" in out
+            assert "Overrides removed:" in out
             _, out = await srv._execute_command("N0CALL", "show/control")
             assert "System control is on." in out
         finally:
@@ -3325,12 +3602,14 @@ def test_show_control_reset_requires_sysop_and_clears(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/control")
             assert "set/control off" in out
             assert "set/control on" in out
+            assert "System control is on." in out
 
             _, out = await srv._execute_command("N0CALL", "show/control --reset")
-            assert "show/control --reset removed=" in out
+            assert "show/control --reset removed 2" in out
             _, out = await srv._execute_command("N0CALL", "show/control")
             assert "Recent control events: 1" in out
-            assert "show/control --reset removed=" in out
+            assert "show/control --reset removed 2" in out
+            assert "System control is on." in out
         finally:
             await store.close()
 
@@ -3350,9 +3629,9 @@ def test_relay_policy_commands(tmp_path) -> None:
         )
         try:
             _, out = await srv._execute_command("N0CALL", "show/relay")
-            assert "relay.spots=on (default)" in out
-            assert "relay.chat=on (default)" in out
-            assert "routepc19=off" in out
+            assert "SPOTS: on by default." in out
+            assert "CHAT: on by default." in out
+            assert "Route PC19: off" in out
 
             _, out = await srv._execute_command("N0CALL", "set/relay chat off")
             assert "Relay policy for chat set to off." in out
@@ -3363,9 +3642,9 @@ def test_relay_policy_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "unset/relay wcy")
             assert "Relay policy for wcy restored to default" in out
             _, out = await srv._execute_command("N0CALL", "show/relay")
-            assert "relay.spots=on (user)" in out
-            assert "relay.chat=on (user)" in out
-            assert "relay.wcy=on (default)" in out
+            assert "SPOTS: on from your setting." in out
+            assert "CHAT: on from your setting." in out
+            assert "WCY: on by default." in out
         finally:
             await store.close()
 
@@ -3387,7 +3666,7 @@ def test_dx_command_posts_and_show_shorthand_still_works(tmp_path) -> None:
             now = int(datetime.now(timezone.utc).timestamp())
             await store.upsert_user_registry("N0CALL", now, privilege="user")
             _, out = await srv._execute_command("N0CALL", "dx 14074.0 K1ABC FT8 test")
-            assert "dx posted 14074.0 K1ABC" in out
+            assert "Spot posted on 14074.0 kHz for K1ABC." in out
             assert await store.count_spots() == 1
             _, out = await srv._execute_command("N0CALL", "dx")
             assert "No spots available" not in out
@@ -3417,13 +3696,15 @@ def test_relaypeer_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "set/relaypeer peer2 chat off")
             assert "Relay policy for peer2 chat set to off." in out
             _, out = await srv._execute_command("N0CALL", "show/relaypeer peer1")
-            assert "all=off (user)" in out
+            assert "ALL: off from your setting." in out
+            _, out = await srv._execute_command("N0CALL", "show/relaypeer PEER1")
+            assert "ALL: off from your setting." in out
             _, out = await srv._execute_command("N0CALL", "show/relaypeer")
-            assert "relay.peer.peer1=off" in out
+            assert "relay.peer.peer1: off" in out
             _, out = await srv._execute_command("N0CALL", "unset/relaypeer peer2 chat")
             assert "Relay policy for peer2 chat restored to default" in out
             _, out = await srv._execute_command("N0CALL", "show/relaypeer peer2")
-            assert "chat=on (default)" in out
+            assert "CHAT: on by default." in out
         finally:
             await store.close()
 
@@ -3449,16 +3730,18 @@ def test_ingestpeer_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "set/ingestpeer peer2 wcy off")
             assert "Ingest policy for peer2 wcy set to off." in out
             _, out = await srv._execute_command("N0CALL", "show/ingestpeer peer1")
-            assert "all=off (user)" in out
+            assert "ALL: off from your setting." in out
+            _, out = await srv._execute_command("N0CALL", "show/ingestpeer PEER1")
+            assert "ALL: off from your setting." in out
             _, out = await srv._execute_command("N0CALL", "show/ingestpeer")
-            assert "ingest.peer.peer1=off" in out
+            assert "ingest.peer.peer1: off" in out
             _, out = await srv._execute_command("N0CALL", "unset/ingestpeer peer2 spots")
             assert "Ingest policy for peer2 spots restored to default" in out
             _, out = await srv._execute_command("N0CALL", "unset/ingestpeer peer2 wcy")
             assert "Ingest policy for peer2 wcy restored to default" in out
             _, out = await srv._execute_command("N0CALL", "show/ingestpeer peer2")
-            assert "spots=on (default)" in out
-            assert "wcy=on (default)" in out
+            assert "SPOTS: on by default." in out
+            assert "WCY: on by default." in out
         finally:
             await store.close()
 
@@ -3484,9 +3767,12 @@ def test_show_policy_command(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/policy")
             assert "Policy for N0CALL" in out
             assert "Route PC19: on" in out
-            assert "CHAT: off (user)" in out
+            assert "CHAT: off from your setting." in out
+            assert "SPOTS: on unless a peer override says otherwise." in out
             assert "Relay Peer Overrides: 1" in out
             assert "Ingest Peer Overrides: 1" in out
+            assert "relay.peer.peer1: off" in out
+            assert "ingest.peer.peer2.spots: off" in out
         finally:
             await store.close()
 
@@ -3517,13 +3803,13 @@ def test_load_and_stat_named_commands(tmp_path) -> None:
             assert "Message state loaded for N0CALL:" in out
 
             _, out = await srv._execute_command("N0CALL", "stat/msg")
-            assert "Message summary: total=" in out and "unread=" in out
+            assert "Message summary:" in out and "unread." in out
 
             _, out = await srv._execute_command("N0CALL", "stat/wcy")
-            assert "stat/wcy: 1" in out
+            assert "WCY summary: 1 stored entry." in out
 
             _, out = await srv._execute_command("N0CALL", "stat/db")
-            assert "Database summary: spots=" in out and "registry=" in out
+            assert "The database currently holds" in out and "registry record" in out
         finally:
             await store.close()
 
@@ -3553,13 +3839,13 @@ def test_stat_route_user_pc19list_and_load_aliases_bands_prefixes(tmp_path) -> N
             await store.add_spot(Spot(7020.0, "W1AW", now, "CW", "N0CALL", "N2WQ-1", ""))
 
             _, out = await srv._execute_command("N0CALL", "stat/routenode")
-            assert "Route nodes: total=2" in out and "inbound=1" in out and "outbound=1" in out
+            assert "There are 2 route nodes: 1 accepted and 1 dial-out." in out
 
             _, out = await srv._execute_command("N0CALL", "stat/routeuser")
-            assert "Route users: users=2" in out and "peers=2" in out
+            assert "There are 2 active user sessions across 2 peer links." in out
 
             _, out = await srv._execute_command("N0CALL", "stat/pc19list")
-            assert "PC19 routing enabled for 1 calls:" in out and "N0CALL" in out
+            assert "PC19 routing is enabled for 1 call:" in out and "N0CALL" in out
 
             _, out = await srv._execute_command("N0CALL", "load/bands")
             assert "band definitions" in out
@@ -3592,13 +3878,13 @@ def test_user_prefs_persist_across_server_instances(tmp_path) -> None:
             _, out = await srv1._execute_command("N0CALL", "set/language de")
             assert "Language set to de" in out
             _, out = await srv1._execute_command("N0CALL", "set/talk")
-            assert "talk=on" in out
+            assert "Talk set to on for N0CALL." in out
             _, out = await srv1._execute_command("N0CALL", "set/arcluster")
             assert "Profile for N0CALL set to arcluster." in out
             _, out = await srv1._execute_command("N0CALL", "set/beep")
-            assert "beep=on" in out
+            assert "Beep set to on for N0CALL." in out
             _, out = await srv1._execute_command("N0CALL", "set/qth Boston")
-            assert "qth=Boston" in out
+            assert "QTH set to Boston for N0CALL." in out
             _, out = await srv1._execute_command("N0CALL", "join vhf")
             assert "Joined group vhf." in out
         finally:
@@ -3623,9 +3909,10 @@ def test_user_prefs_persist_across_server_instances(tmp_path) -> None:
             assert sess2.vars.get("groups.joined") == "vhf"
 
             _, out = await srv2._execute_command("N0CALL", "show/talk")
-            assert "talk=on" in out
+            assert "TALK for N0CALL: on" in out
             _, out = await srv2._execute_command("N0CALL", "show/groups")
-            assert "groups.joined=vhf" in out
+            assert "Group settings for N0CALL:" in out
+            assert "Groups Joined: vhf" in out
             _, out = await srv2._execute_command("N0CALL", "show/filter")
             assert "Language set to de" in out
             assert "Profile for N0CALL set to arcluster." in out
@@ -3668,7 +3955,7 @@ def test_filter_rules_persist_across_server_instances(tmp_path) -> None:
             assert "reject/spots 2 by K1" in out
 
             _, out = await srv2._execute_command("N0CALL", "clear/spots 1")
-            assert "clear/spots" in out
+            assert "Cleared spots filters for N0CALL (slot 1)." in out
             _, out = await srv2._execute_command("N0CALL", "show/filter")
             assert "accept/spots 1 on 40m" not in out
             assert "reject/spots 2 by K1" in out
@@ -3709,9 +3996,9 @@ def test_bad_rule_commands_and_show_lists(tmp_path) -> None:
             assert "pirate" in out
 
             _, out = await srv._execute_command("N0CALL", "unset/baddx K1BAD*")
-            assert "removed=1" in out
+            assert "Removed 1 baddx entry." in out
             _, out = await srv._execute_command("N0CALL", "unset/badword all")
-            assert "removed=1" in out
+            assert "Removed 1 badword entry." in out
         finally:
             await store.close()
 
@@ -3828,8 +4115,8 @@ def test_var_commands_persist_across_server_instances(tmp_path) -> None:
             _, out = await srv1._execute_command("N0CALL", "set/var page=40")
             assert "Variable page updated for N0CALL." in out
             _, out = await srv1._execute_command("N0CALL", "show/var")
-            assert "color=blue" in out
-            assert "page=40" in out
+            assert "color: blue" in out
+            assert "page: 40" in out
         finally:
             await store1.close()
 
@@ -3842,17 +4129,17 @@ def test_var_commands_persist_across_server_instances(tmp_path) -> None:
         )
         try:
             _, out = await srv2._execute_command("N0CALL", "show/var")
-            assert "color=blue" in out
-            assert "page=40" in out
+            assert "color: blue" in out
+            assert "page: 40" in out
 
             _, out = await srv2._execute_command("N0CALL", "show/var color")
-            assert "color=blue" in out
+            assert "Variable color for N0CALL: blue" in out
 
             _, out = await srv2._execute_command("N0CALL", "unset/var color")
             assert "Variable color cleared for N0CALL." in out
             _, out = await srv2._execute_command("N0CALL", "show/var")
-            assert "color=blue" not in out
-            assert "page=40" in out
+            assert "color: blue" not in out
+            assert "page: 40" in out
         finally:
             await store2.close()
 
@@ -3880,9 +4167,9 @@ def test_user_registry_commands_persist_across_server_instances(tmp_path) -> Non
             _, out = await srv1._execute_command("N0CALL", "set/user K1ABC qth Cambridge")
             assert "qth updated for K1ABC." in out
             _, out = await srv1._execute_command("N0CALL", "show/registered K1ABC")
-            assert "registered K1ABC" in out
-            assert "name=Alice Example" in out
-            assert "qth=Cambridge" in out
+            assert "Registered user K1ABC" in out
+            assert "Name: Alice Example" in out
+            assert "Location (QTH): Cambridge" in out
         finally:
             await store1.close()
 
@@ -3901,9 +4188,51 @@ def test_user_registry_commands_persist_across_server_instances(tmp_path) -> Non
             _, out = await srv2._execute_command("N0CALL", "delete/user K1ABC")
             assert "User K1ABC removed." in out
             _, out = await srv2._execute_command("N0CALL", "show/registered K1ABC")
-            assert "(none)" in out
+            assert "No registered user record was found for K1ABC." in out
         finally:
             await store2.close()
+
+    asyncio.run(run())
+
+
+def test_show_registered_uses_registry_home_node_fallback(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "registry_home_node_detail.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry(
+                "K1ABC",
+                now,
+                display_name="Alice Example",
+                home_node="N2NODE",
+            )
+            _, out = await srv._execute_command("N0CALL", "show/registered K1ABC")
+            assert "Home Node: N2NODE" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_node_uses_registry_home_node_fallback(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_node_home_node.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("K1ABC", now, home_node="N2NODE")
+            _, out = await srv._execute_command("N0CALL", "show/node K1ABC")
+            assert "Home Node  : N2NODE" in out
+            assert "Node Family:" in out
+        finally:
+            await store.close()
 
     asyncio.run(run())
 
@@ -3924,11 +4253,11 @@ def test_home_node_preferences_persist_and_render(tmp_path) -> None:
             _, out = await srv1._execute_command("N0CALL", "set/user N0CALL")
             assert "User record created or updated for N0CALL." in out
             _, out = await srv1._execute_command("N0CALL", "set/homebbs K1BBS")
-            assert "homebbs=K1BBS" in out
+            assert "Homebbs set to K1BBS for N0CALL." in out or "Home BBS set to K1BBS for N0CALL." in out
             _, out = await srv1._execute_command("N0CALL", "set/homenode N2NODE")
-            assert "homenode=N2NODE" in out
+            assert "Homenode set to N2NODE for N0CALL." in out or "Home Node set to N2NODE for N0CALL." in out
             _, out = await srv1._execute_command("N0CALL", "set/node W3NODE")
-            assert "node=W3NODE" in out
+            assert "Node set to W3NODE for N0CALL." in out
         finally:
             await store1.close()
 
@@ -3941,14 +4270,20 @@ def test_home_node_preferences_persist_and_render(tmp_path) -> None:
         )
         try:
             _, out = await srv2._execute_command("N0CALL", "show/registered N0CALL")
-            assert "homebbs=K1BBS" in out
-            assert "homenode=N2NODE" in out
-            assert "node=W3NODE" in out
+            assert "Home BBS: K1BBS" in out
+            assert "Home Node: N2NODE" in out
+            assert "Node: W3NODE" in out
 
             _, out = await srv2._execute_command("N0CALL", "show/node N0CALL")
-            assert "homebbs   : K1BBS" in out
-            assert "homenode  : N2NODE" in out
-            assert "node      : W3NODE" in out
+            assert "Home BBS   : K1BBS" in out
+            assert "Home Node  : N2NODE" in out
+            assert "Node       : W3NODE" in out
+            assert "Node Family:" in out
+
+            _, out = await srv2._execute_command("N0CALL", "show/station")
+            assert "Home BBS: K1BBS" in out
+            assert "Home Node: N2NODE" in out
+            assert "Node: W3NODE" in out
         finally:
             await store2.close()
 
@@ -3993,6 +4328,7 @@ def test_sysop_namespace_handles_user_management(tmp_path) -> None:
         cfg = _mk_config(db)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda _rcpt, _subject, _body: None  # type: ignore[assignment]
         srv._sessions[1] = Session(
             call="AI3I",
             writer=_DummyWriter(),
@@ -4033,6 +4369,15 @@ def test_sysop_namespace_handles_user_management(tmp_path) -> None:
             _, out = await srv._execute_command("AI3I", "sysop/clearpassword K1ABC")
             assert "Password cleared for K1ABC." in out
             assert await store.get_user_pref("K1ABC", "password") is None
+
+            await store.set_user_pref("K1ABC", "mfa_email_otp", "required", now)
+            challenge_id, _expires = await srv._mfa.issue(call="K1ABC", email="k1abc@example.test", purpose="telnet")
+            assert await store.get_mfa_challenge(challenge_id) is not None
+            _, out = await srv._execute_command("AI3I", "sysop/clearmfa K1ABC")
+            assert "Email MFA reset for K1ABC." in out
+            assert "MFA is now off." in out
+            assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "off"
+            assert await store.get_mfa_challenge(challenge_id) is None
         finally:
             await store.close()
 
@@ -4291,12 +4636,12 @@ def test_sysop_path_reports_user_and_peer_paths(tmp_path) -> None:
 
             _, out = await srv._execute_command("AI3I", "sysop/path K1ABC")
             assert "Path for K1ABC:" in out
-            assert "path=telnet ipv4 198.51.100.24:54012 -> 198.51.100.5:7373" in out
+            assert "Path: telnet ipv4 198.51.100.24:54012 -> 198.51.100.5:7373" in out
 
             _, out = await srv._execute_command("AI3I", "sysop/path AI3I-16")
             assert "Path for peer AI3I-16:" in out
-            assert "transport=tcp" in out
-            assert "path=ipv4 203.0.113.10:53214 -> 198.51.100.5:7300" in out
+            assert "Transport: tcp" in out
+            assert "Path: ipv4 203.0.113.10:53214 -> 198.51.100.5:7300" in out
         finally:
             await store.close()
 
@@ -4332,18 +4677,18 @@ def test_contact_fields_persist_and_render(tmp_path) -> None:
         )
         try:
             _, out = await srv2._execute_command("N0CALL", "show/registered N0CALL")
-            assert "address=123 Main St" in out
-            assert "email=op@example.net" in out
+            assert "Address: 123 Main St" in out
+            assert "Email: op@example.net" in out
 
             _, out = await srv2._execute_command("N0CALL", "show/station")
-            assert "address=123 Main St" in out
-            assert "email=op@example.net" in out
+            assert "Address: 123 Main St" in out
+            assert "Email: op@example.net" in out
 
             _, out = await srv2._execute_command("N0CALL", "unset/email")
             assert "Email cleared for N0CALL." in out
             _, out = await srv2._execute_command("N0CALL", "show/registered N0CALL")
-            assert "email=" in out
-            assert "email=op@example.net" not in out
+            assert "Email: not set" in out
+            assert "Email: op@example.net" not in out
         finally:
             await store2.close()
 
@@ -4372,14 +4717,14 @@ def test_set_page_limits_long_outputs(tmp_path) -> None:
             assert "K1CCC" not in out
 
             _, out = await srv._execute_command("N0CALL", "set/var a 1")
-            assert "a=1" in out
+            assert "Variable a updated for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "set/var b 2")
-            assert "b=2" in out
+            assert "Variable b updated for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "set/var c 3")
-            assert "c=3" in out
+            assert "Variable c updated for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "show/var")
-            assert "a=1" in out and "b=2" in out
-            assert "c=3" not in out
+            assert "a: 1" in out and "b: 2" in out
+            assert "c: 3" not in out
 
             # produce several events, verify default page limit on log
             await srv._execute_command("N0CALL", "wcy A=3")
@@ -4426,10 +4771,13 @@ def test_logininfo_controls_registered_and_users_output(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "show/registered K1ABC")
             assert "Last Login:" in out
-            assert "Last Peer: ('203.0.113.1', 7300)" in out
+            assert "Last Peer: ipv4 203.0.113.1:7300" in out
 
             _, out = await srv._execute_command("N0CALL", "show/users")
-            assert "last=" in out or "Last " in out
+            assert "last login" in out or "Last " in out
+
+            _, out = await srv._execute_command("N0CALL", "show/registered")
+            assert "Last Login" in out.splitlines()[1]
         finally:
             await store.close()
 
@@ -4459,6 +4807,8 @@ def test_startup_commands_manage_and_execute(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "show/startup")
             assert "Startup for N0CALL: on" in out
+            assert "Startup for N0CALL: on" in out
+            assert "Startup Commands: 3" in out
             assert "show/time" in out and "show/date" in out
 
             outs = await srv._run_startup_commands("N0CALL")
@@ -4471,6 +4821,86 @@ def test_startup_commands_manage_and_execute(tmp_path) -> None:
             assert "Startup commands disabled for N0CALL." in out
             outs2 = await srv._run_startup_commands("N0CALL")
             assert outs2 == []
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_set_unset_status_commands_correlate_with_readback(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "status_command_readback.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(
+            call="N0CALL",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        try:
+            cases = [
+                ("set/dxcq", "show/dxcq", "DX CQ for N0CALL: on"),
+                ("set/dxitu", "show/dxitu", "DX ITU for N0CALL: on"),
+                ("set/dxgrid", "show/dxgrid", "DX Grid for N0CALL: on"),
+                ("set/logininfo", "show/logininfo", "Login Info for N0CALL: on"),
+                ("set/register", "show/register", "Register for N0CALL: on"),
+                ("set/prompt", "show/prompt", "Prompt for N0CALL: on"),
+                ("set/localnode", "show/localnode", "Local Node for N0CALL: on"),
+                ("set/passphrase secret words", "show/passphrase", "Passphrase for N0CALL: secret words"),
+                ("set/usstate MA", "show/usstate", "US State for N0CALL: MA"),
+            ]
+            for set_cmd, show_cmd, expected_show in cases:
+                _, out = await srv._execute_command("N0CALL", set_cmd)
+                assert "set to" in out
+                _, out = await srv._execute_command("N0CALL", show_cmd)
+                assert expected_show in out
+
+            unset_cases = [
+                ("unset/logininfo", "show/logininfo", "Login Info for N0CALL: off"),
+                ("unset/register", "show/register", "Register for N0CALL: off"),
+                ("unset/prompt", "show/prompt", "Prompt for N0CALL: off"),
+                ("unset/localnode", "show/localnode", "Local Node for N0CALL: off"),
+                ("unset/passphrase", "show/passphrase", "Passphrase for N0CALL: off"),
+                ("unset/usstate", "show/usstate", "US State for N0CALL: off"),
+            ]
+            for unset_cmd, show_cmd, expected_show in unset_cases:
+                _, out = await srv._execute_command("N0CALL", unset_cmd)
+                assert "set to off" in out or "cleared" in out.lower()
+                _, out = await srv._execute_command("N0CALL", show_cmd)
+                assert expected_show in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_registered_includes_location_detail_fields(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "registered_location.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry(
+                "K1ABC",
+                now,
+                display_name="Pat Example",
+                qth="Boston, MA",
+                qra="FN42LI",
+                email="pat@example.net",
+            )
+            await store.set_user_pref("K1ABC", "location", "Boston, MA", now)
+            await store.set_user_pref("K1ABC", "usstate", "MA", now)
+            _, out = await srv._execute_command("N0CALL", "show/registered K1ABC")
+            assert "Location Detail: Boston, MA" in out
+            assert "US State: MA" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/station K1ABC")
+            assert "Location Detail: Boston, MA" in out
+            assert "US State: MA" in out
         finally:
             await store.close()
 
@@ -4506,9 +4936,34 @@ def test_startup_commands_persist_across_server_instances(tmp_path) -> None:
         try:
             _, out = await srv2._execute_command("N0CALL", "show/startup")
             assert "Startup for N0CALL: on" in out
+            assert "Startup Commands: 2" in out
             assert "show/time" in out and "show/date" in out
         finally:
             await store2.close()
+
+    asyncio.run(run())
+
+
+def test_show_program_time_and_date_include_readback(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "program_time_date.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            _, out = await srv._execute_command("N0CALL", "show/program")
+            assert "Name: pyCluster" in out
+            assert "Mode: DXSpider compatibility" in out
+            assert "Version:" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/time")
+            assert "UTC time:" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/date")
+            assert "UTC date:" in out
+        finally:
+            await store.close()
 
     asyncio.run(run())
 
@@ -4551,6 +5006,7 @@ def test_maxconnect_enforced_on_login(tmp_path) -> None:
             await w2.drain()
             deny = await asyncio.wait_for(r2.read(4096), timeout=2.0)
             assert b"Too many connections for N0CALL" in deny
+            assert b"Maximum allowed: 1" in deny
 
             w2.close()
             await w2.wait_closed()
@@ -4594,18 +5050,18 @@ def test_uservar_commands_persist_and_render(tmp_path) -> None:
         )
         try:
             _, out = await srv2._execute_command("N0CALL", "show/registered N0CALL")
-            assert "uservar.monitor=all" in out
-            assert "uservar.color=amber" in out
+            assert "uservar.monitor: all" in out
+            assert "uservar.color: amber" in out
 
             _, out = await srv2._execute_command("N0CALL", "show/station")
-            assert "uservar.monitor=all" in out
-            assert "uservar.color=amber" in out
+            assert "uservar.monitor: all" in out
+            assert "uservar.color: amber" in out
 
             _, out = await srv2._execute_command("N0CALL", "unset/uservar monitor")
             assert "User variable monitor cleared for N0CALL." in out
             _, out = await srv2._execute_command("N0CALL", "show/registered N0CALL")
-            assert "uservar.monitor=all" not in out
-            assert "uservar.color=amber" in out
+            assert "uservar.monitor: all" not in out
+            assert "uservar.color: amber" in out
         finally:
             await store2.close()
 
@@ -4728,6 +5184,126 @@ def test_telnet_first_login_forces_password_creation(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_login_can_require_email_otp(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_mfa.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16"),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        sent: list[tuple[str, str, str]] = []
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        await store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user", email="n0call@example.test")
+        await store.set_user_pref("N0CALL", "password", "pw1", int(datetime.now(timezone.utc).timestamp()))
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"N0CALL\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"password: "), timeout=2.0)
+            w1.write(b"pw1\r\n")
+            await w1.drain()
+            otp_prompt = await asyncio.wait_for(r1.readuntil(b"otp: "), timeout=2.0)
+            assert b"otp:" in otp_prompt
+            challenge = next(iter(srv._mfa._challenges.values()))
+            assert sent and sent[0][0] == "n0call@example.test"
+            w1.write((challenge.code + "\r\n").encode("ascii"))
+            await w1.drain()
+            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            assert b"Welcome" in hello
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_login_honors_per_user_mfa_override(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_mfa_override.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16"),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = False
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        sent: list[tuple[str, str, str]] = []
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
+        await store.set_user_pref("N0CALL", "password", "pw1", now)
+        await store.set_user_pref("N0CALL", "mfa_email_otp", "required", now)
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"N0CALL\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"password: "), timeout=2.0)
+            w1.write(b"pw1\r\n")
+            await w1.drain()
+            otp_prompt = await asyncio.wait_for(r1.readuntil(b"otp: "), timeout=2.0)
+            assert b"otp:" in otp_prompt
+            challenge = next(iter(srv._mfa._challenges.values()))
+            w1.write((challenge.code + "\r\n").encode("ascii"))
+            await w1.drain()
+            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            assert b"Welcome" in hello
+            w1.close()
+            await w1.wait_closed()
+
+            await store.set_user_pref("N0CALL", "mfa_email_otp", "off", now)
+            r2, w2 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r2.readuntil(b"login: "), timeout=2.0)
+            w2.write(b"N0CALL\r\n")
+            await w2.drain()
+            await asyncio.wait_for(r2.readuntil(b"password: "), timeout=2.0)
+            w2.write(b"pw1\r\n")
+            await w2.drain()
+            hello2 = await asyncio.wait_for(r2.read(4096), timeout=2.0)
+            assert b"Welcome" in hello2
+            w2.close()
+            await w2.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_telnet_server_supports_multiple_listener_ports(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "multi_listener.db")
@@ -4786,6 +5362,34 @@ def test_sysop_spotlimit_enforces_telnet_post_throttle(tmp_path) -> None:
             _, out = await srv._execute_command("K1ABC", "dx 14076.0 N0TSV three")
             assert "rate limited" in out
             assert await store.count_spots() == 2
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_wpxloc_fixture_lookup_supports_exact_call(tmp_path) -> None:
+    path = _write_wpxloc(tmp_path)
+    load_wpxloc(path)
+    row = wpx_lookup("RG65SM")
+    assert row is not None
+    assert row.name == "European Russia"
+    assert row.cq_zone == 29
+    assert row.itu_zone == 16
+
+
+def test_show_heading_uses_wpxloc_when_cty_is_unavailable(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_heading_wpx.db")
+        cfg = _mk_config(db)
+        cfg.public_web.wpxloc_raw_path = _write_wpxloc(tmp_path)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.upsert_user_registry("N0CALL", now, qra="FN42LI")
+            _, out = await srv._execute_command("N0CALL", "show/heading RG65SM")
+            assert "Heading to European Russia (RG65SM):" in out
         finally:
             await store.close()
 

@@ -137,6 +137,18 @@ CREATE TABLE IF NOT EXISTS user_startup_commands (
     updated_epoch INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_startup_call_id ON user_startup_commands(call, id);
+
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    call TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    code TEXT NOT NULL,
+    expires_epoch INTEGER NOT NULL,
+    attempts_left INTEGER NOT NULL,
+    issued_epoch INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires ON mfa_challenges(expires_epoch);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_call_purpose ON mfa_challenges(call, purpose, issued_epoch DESC);
 """
 
 
@@ -368,6 +380,19 @@ class SpotStore:
             )
             return cur.fetchall()
 
+    async def spots_since_epoch(self, cutoff_epoch: int) -> list[sqlite3.Row]:
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT freq_khz, dx_call, epoch, info, spotter, source_node, raw
+                FROM spots
+                WHERE epoch >= ?
+                ORDER BY epoch DESC, id DESC
+                """,
+                (int(cutoff_epoch),),
+            )
+            return cur.fetchall()
+
     async def search_spots(self, query: ShDxQuery) -> list[sqlite3.Row]:
         clauses: list[str] = []
         params: list[object] = []
@@ -580,6 +605,43 @@ class SpotStore:
             )
             return cur.fetchone()
 
+    async def find_message_duplicate(
+        self,
+        *,
+        sender: str,
+        recipient: str,
+        body: str,
+        origin_node: str = "",
+        within_seconds: int = 7 * 86400,
+        now_epoch: int | None = None,
+    ) -> sqlite3.Row | None:
+        cutoff = 0
+        if now_epoch is not None:
+            cutoff = max(0, int(now_epoch) - max(0, int(within_seconds or 0)))
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id, sender, recipient, epoch, body, read_epoch, parent_id,
+                       origin_node, route_node, delivery_state, delivered_epoch, error_text
+                FROM messages
+                WHERE sender = ?
+                  AND recipient = ?
+                  AND body = ?
+                  AND origin_node = ?
+                  AND epoch >= ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    sender.upper(),
+                    recipient.upper(),
+                    body,
+                    origin_node.upper(),
+                    int(cutoff),
+                ),
+            )
+            return cur.fetchone()
+
     async def mark_message_read(self, msg_id: int, read_epoch: int) -> None:
         async with self._lock:
             self._conn.execute("UPDATE messages SET read_epoch = ? WHERE id = ?", (read_epoch, msg_id))
@@ -676,6 +738,23 @@ class SpotStore:
             rows = cur.fetchall()
             return {str(row["delivery_state"] or "local"): int(row["total"] or 0) for row in rows}
 
+    async def route_message_state_counts(self, route_node: str) -> dict[str, int]:
+        route = str(route_node or "").strip().upper()
+        if not route:
+            return {}
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT delivery_state, COUNT(*) AS total
+                FROM messages
+                WHERE route_node = ?
+                GROUP BY delivery_state
+                """,
+                (route,),
+            )
+            rows = cur.fetchall()
+            return {str(row["delivery_state"] or "local"): int(row["total"] or 0) for row in rows}
+
     async def add_bulletin(self, category: str, sender: str, scope: str, epoch: int, body: str) -> int:
         cat = category.strip().lower()
         if not cat:
@@ -690,6 +769,92 @@ class SpotStore:
             )
             self._conn.commit()
             return int(cur.lastrowid)
+
+    async def save_mfa_challenge(
+        self,
+        *,
+        challenge_id: str,
+        call: str,
+        purpose: str,
+        code: str,
+        expires_epoch: int,
+        attempts_left: int,
+        issued_epoch: int,
+    ) -> None:
+        async with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO mfa_challenges(
+                    challenge_id, call, purpose, code, expires_epoch, attempts_left, issued_epoch
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(challenge_id)
+                DO UPDATE SET
+                    call = excluded.call,
+                    purpose = excluded.purpose,
+                    code = excluded.code,
+                    expires_epoch = excluded.expires_epoch,
+                    attempts_left = excluded.attempts_left,
+                    issued_epoch = excluded.issued_epoch
+                """,
+                (
+                    challenge_id,
+                    call.upper(),
+                    purpose,
+                    code,
+                    int(expires_epoch),
+                    int(attempts_left),
+                    int(issued_epoch),
+                ),
+            )
+            self._conn.commit()
+
+    async def get_mfa_challenge(self, challenge_id: str) -> sqlite3.Row | None:
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT challenge_id, call, purpose, code, expires_epoch, attempts_left, issued_epoch
+                FROM mfa_challenges
+                WHERE challenge_id = ?
+                """,
+                (challenge_id,),
+            )
+            return cur.fetchone()
+
+    async def update_mfa_challenge_attempts(self, challenge_id: str, attempts_left: int) -> None:
+        async with self._lock:
+            self._conn.execute(
+                "UPDATE mfa_challenges SET attempts_left = ? WHERE challenge_id = ?",
+                (int(attempts_left), challenge_id),
+            )
+            self._conn.commit()
+
+    async def delete_mfa_challenge(self, challenge_id: str) -> None:
+        async with self._lock:
+            self._conn.execute("DELETE FROM mfa_challenges WHERE challenge_id = ?", (challenge_id,))
+            self._conn.commit()
+
+    async def delete_mfa_challenges_for_call(self, call: str, *, include_ssids: bool = True) -> int:
+        target = str(call or "").strip().upper()
+        if not target:
+            return 0
+        base = target.split("-", 1)[0]
+        async with self._lock:
+            if include_ssids:
+                cur = self._conn.execute(
+                    "DELETE FROM mfa_challenges WHERE call = ? OR call = ? OR call LIKE ?",
+                    (target, base, base + "-%"),
+                )
+            else:
+                cur = self._conn.execute("DELETE FROM mfa_challenges WHERE call = ?", (target,))
+            self._conn.commit()
+            return int(cur.rowcount or 0)
+
+    async def delete_expired_mfa_challenges(self, now_epoch: int) -> int:
+        async with self._lock:
+            cur = self._conn.execute("DELETE FROM mfa_challenges WHERE expires_epoch < ?", (int(now_epoch),))
+            self._conn.commit()
+            return int(cur.rowcount or 0)
 
     async def list_bulletins(self, category: str, limit: int = 20) -> list[sqlite3.Row]:
         cat = category.strip().lower()

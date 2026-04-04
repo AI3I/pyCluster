@@ -9,6 +9,7 @@ Typical production services:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-cty-refresh.timer`
+  - refreshes both `CTY.DAT` and `wpxloc.raw`
 - `pycluster-retention.timer`
 
 Validated operational environments so far:
@@ -42,7 +43,8 @@ Typical deployed paths:
 /usr/src/pyCluster                 # admin-managed checkout used for install/upgrade
 /home/pycluster/pyCluster/        # live runtime tree
 ├── config/
-│   ├── pycluster.toml            # active node config
+│   ├── pycluster.toml            # active base node config
+│   ├── pycluster.local.toml      # optional untracked local override
 │   └── strings.toml              # hot-reloadable operator text
 ├── data/
 │   └── pycluster.db              # live SQLite database
@@ -73,6 +75,8 @@ Supported operational scripts:
 - SQLite database path
 - CTY file path
 - CTY timer state
+- wpxloc.raw path
+- loaded dataset version/date shown in the System Operator Console and telnet `show/configuration`
 - fail2ban service state
 - SELinux state, when available
 - SYSOP bootstrap note presence
@@ -101,8 +105,9 @@ The node settings UI also reports the last cleanup run and the last removal coun
 At minimum, back up:
 
 - `config/pycluster.toml`
+- `config/pycluster.local.toml`
 - `data/pycluster.db`
-- local CTY overrides if you have any
+- local country-data overrides if you have any
 
 ## Resource Planning
 
@@ -125,9 +130,12 @@ Manual:
 python3 ./scripts/update_cty.py --config ./config/pycluster.toml
 ```
 
+This refreshes both `CTY.DAT` and `wpxloc.raw` unless you pass `--cty-only`.
+
 Automatic:
 
 - `pycluster-cty-refresh.timer`
+  - refreshes both `CTY.DAT` and `wpxloc.raw`
 
 ## Security Operations
 
@@ -186,6 +194,7 @@ Common operator tasks:
 - disconnect a peer
 - inspect `show/links`
 - inspect protocol history and policy drops
+- review suspicious spot calls in the System Console spot table
 
 The peer model distinguishes:
 
@@ -193,3 +202,10 @@ The peer model distinguishes:
 - `Accepted`
 
 That is about who initiated the link, not whether traffic is bidirectional.
+
+When spot ingest sees a callsign that is syntactically plausible but not recognized by the currently loaded prefix data, pyCluster ingests it and logs a `spot call review: ...` line instead of dropping it. The System Console spot table marks those rows with a `Review` badge.
+
+
+## Country Data Status
+
+When country/prefix data is missing or stale, pyCluster will still ingest plausible spots. The System Operator Console spot review will show an advisory about missing or stale prefix data rather than treating every unknown prefix as a suspicious callsign.

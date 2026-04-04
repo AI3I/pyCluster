@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import re
 
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
+from pycluster.mfa import EmailOtpManager
 from pycluster import __version__
 from pycluster.models import Spot
 from pycluster.public_web import PublicWebServer
@@ -22,6 +24,17 @@ def _mk_config(db_path: str, static_dir: str = "") -> AppConfig:
         store=StoreConfig(sqlite_path=db_path),
     )
 
+
+
+
+def _write_wpxloc(tmp_path: Path) -> str:
+    path = tmp_path / "wpxloc.raw"
+    path.write_text(
+        "UA European-Russia 054 29 16 -3.0 55 45 0 N 37 37 0 E @\n"
+        "& =RG65SM\n",
+        encoding="ascii",
+    )
+    return str(path)
 
 async def _http_request(
     srv: PublicWebServer,
@@ -179,6 +192,50 @@ def test_public_web_spot_endpoints_and_static_root(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_public_web_stats_and_history_are_not_capped_by_recent_spot_limit(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_stats_uncapped.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            for i in range(250):
+                await store.add_spot(
+                    Spot(
+                        14074.0 + (i % 5),
+                        f"K1{i:03d}",
+                        now - (i * 60),
+                        "FT8",
+                        "N0CALL",
+                        "AI3I-15",
+                        "",
+                    )
+                )
+
+            code, _, body = await _http_request(srv, "/api/stats?hours=24")
+            assert code == 200
+            stats = json.loads(body.decode("utf-8"))
+            assert stats["total"] == 250
+            assert stats["top_band"] == "20m"
+            assert stats["top_mode"] == "FT8"
+
+            code, _, body = await _http_request(srv, "/api/leaderboard?hours=24")
+            assert code == 200
+            board = json.loads(body.decode("utf-8"))
+            assert board["spotters"][0]["call"] == "N0CALL"
+            assert board["spotters"][0]["count"] == 250
+
+            code, _, body = await _http_request(srv, "/api/history")
+            assert code == 200
+            hist = json.loads(body.decode("utf-8"))
+            assert hist[0]["spots"] == 250
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_nodes_and_network_use_local_state(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_nodes.db")
@@ -295,6 +352,183 @@ def test_public_web_login_failure_logs_structured_authfail(tmp_path, caplog) -> 
             assert code == 401
             assert json.loads(body.decode("utf-8"))["error"] == "invalid credentials"
             assert "AUTHFAIL channel=public-web ip=203.0.113.77 call=AI3I reason=invalid_credentials" in caplog.text
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_login_can_require_email_otp(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_mfa.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+            await store.set_user_pref("AI3I", "password", "secret", now)
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert code == 202
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["mfa_required"] is True
+            assert sent and sent[0][0] == "ai3i@example.test"
+            challenge = next(iter(srv._mfa._challenges.values()))
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps(
+                    {
+                        "call": "AI3I",
+                        "password": "secret",
+                        "challenge_id": payload["challenge_id"],
+                        "otp": challenge.code,
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["token"]
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_login_honors_per_user_mfa_override(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_mfa_override.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = False
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+            await store.set_user_pref("AI3I", "password", "secret", now)
+            await store.set_user_pref("AI3I", "mfa_email_otp", "required", now)
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert code == 202
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["mfa_required"] is True
+            assert sent and sent[0][0] == "ai3i@example.test"
+
+            await store.set_user_pref("AI3I", "mfa_email_otp", "off", now)
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_email_otp_manager_enforces_resend_cooldown() -> None:
+    async def run() -> None:
+        sent: list[tuple[str, str, str]] = []
+        store = SpotStore("/tmp/unused.db")
+        cfg = _mk_config("/tmp/unused.db").mfa
+        cfg.enabled = True
+        cfg.resend_cooldown_seconds = 60
+        mgr = EmailOtpManager(cfg, lambda rcpt, subject, body: sent.append((rcpt, subject, body)), store)
+        try:
+            await mgr.issue(call="AI3I", email="ai3i@example.test", purpose="public-web")
+            try:
+                await mgr.issue(call="AI3I", email="ai3i@example.test", purpose="public-web")
+                assert False, "expected resend cooldown to block repeated issue"
+            except RuntimeError as exc:
+                assert str(exc) == "otp recently issued"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_mfa_challenge_survives_server_restart(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_mfa_restart.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        sent: list[tuple[str, str, str]] = []
+        srv1 = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv1._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+            await store.set_user_pref("AI3I", "password", "secret", now)
+
+            code, _, body = await _http_request_ex(
+                srv1,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert code == 202
+            payload = json.loads(body.decode("utf-8"))
+            assert sent
+            match = re.search(r"\b(\d{6,8})\b", sent[0][2])
+            assert match is not None
+            otp = match.group(1)
+
+            srv2 = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+            code, _, body = await _http_request_ex(
+                srv2,
+                "POST",
+                "/api/auth/login",
+                json.dumps(
+                    {
+                        "call": "AI3I",
+                        "password": "secret",
+                        "challenge_id": payload["challenge_id"],
+                        "otp": otp,
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
         finally:
             await store.close()
 
@@ -590,6 +824,32 @@ def test_public_web_spot_throttle_returns_429(tmp_path) -> None:
             assert resp["limit"]["max_per_window"] == 1
             assert resp["limit"]["window_seconds"] == 300
         finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_spot_payload_falls_back_to_wpxloc(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_wpx.db")
+        cfg = _mk_config(db)
+        cfg.public_web.wpxloc_raw_path = _write_wpxloc(tmp_path)
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            from pycluster.wpxloc import load_wpxloc
+            load_wpxloc(cfg.public_web.wpxloc_raw_path)
+            srv._wpx_loaded = True
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_spot(Spot(7168.0, "RG65SM", now, "CQ", "F8DRA", "PEER2", ""))
+            code, _, body = await _http_request(srv, "/api/spots?limit=10")
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert rows[0]["dx_entity"] == "European Russia"
+            assert rows[0]["dx_cqz"] == 29
+            assert rows[0]["dx_ituz"] == 16
+        finally:
+            await srv.stop()
             await store.close()
 
     asyncio.run(run())

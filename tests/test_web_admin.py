@@ -7,7 +7,9 @@ import logging
 from pathlib import Path
 import tomllib
 
+from pycluster import __version__
 import pycluster.web_admin as web_admin_mod
+from pycluster.ctydat import load_cty
 from pycluster.auth import is_password_hash, verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.models import Spot
@@ -148,6 +150,187 @@ def test_web_login_and_spot_post(tmp_path) -> None:
             assert await store.count_spots() == 1
             assert len(published) == 1
             assert len(relayed) == 1
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_api_spots_marks_suspicious_calls_for_review(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_spot_review.db")
+        cfg = _mk_config(db, admin_token="adm")
+        cty_file = tmp_path / "cty.dat"
+        cty_file.write_text("Testland: 05: 08: NA: 40.00: 75.00: 5.0: K:\n    K,=VER20260404;\n", encoding="ascii")
+        cfg.public_web.cty_dat_path = str(cty_file)
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        orig_lookup = web_admin_mod.cty_lookup
+        orig_loaded = web_admin_mod.cty_loaded
+        orig_wpx_lookup = web_admin_mod.wpx_lookup
+        orig_wpx_loaded = web_admin_mod.wpx_loaded
+        web_admin_mod.cty_lookup = lambda call: object() if call in {"K1ABC", "N0CALL"} else None
+        web_admin_mod.cty_loaded = lambda: True
+        web_admin_mod.wpx_lookup = lambda call: None
+        web_admin_mod.wpx_loaded = lambda: False
+        try:
+            await store.add_spot(Spot(14074.0, "K1ABC", now, "FT8", "N0CALL", "PEER1", ""))
+            await store.add_spot(Spot(7168.0, "RG65SM", now, "CQ", "F8DRA", "PEER2", ""))
+            code, _, body = await _http_request(srv, "GET", "/api/spots?limit=10", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert len(data) == 2
+            by_call = {row["dx_call"]: row for row in data}
+            assert by_call["K1ABC"]["dx_review"]["suspicious"] is False
+            assert by_call["RG65SM"]["dx_review"]["suspicious"] is True
+            assert "unrecognized_prefix" in by_call["RG65SM"]["dx_review"]["reasons"]
+        finally:
+            web_admin_mod.cty_lookup = orig_lookup
+            web_admin_mod.cty_loaded = orig_loaded
+            web_admin_mod.wpx_lookup = orig_wpx_lookup
+            web_admin_mod.wpx_loaded = orig_wpx_loaded
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_api_spots_uses_advisory_when_cty_data_is_unavailable(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_spot_review_advisory.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        orig_lookup = web_admin_mod.cty_lookup
+        orig_loaded = web_admin_mod.cty_loaded
+        orig_wpx_lookup = web_admin_mod.wpx_lookup
+        orig_wpx_loaded = web_admin_mod.wpx_loaded
+        web_admin_mod.cty_lookup = lambda call: None
+        web_admin_mod.cty_loaded = lambda: False
+        web_admin_mod.wpx_lookup = lambda call: None
+        web_admin_mod.wpx_loaded = lambda: False
+        try:
+            await store.add_spot(Spot(7168.0, "RG65SM", now, "CQ", "F8DRA", "PEER2", ""))
+            code, _, body = await _http_request(srv, "GET", "/api/spots?limit=10", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            review = data[0]["dx_review"]
+            assert review["suspicious"] is False
+            assert review["reasons"] == []
+            assert "prefix_data_unavailable" in review["advisory"]
+        finally:
+            web_admin_mod.cty_lookup = orig_lookup
+            web_admin_mod.cty_loaded = orig_loaded
+            web_admin_mod.wpx_lookup = orig_wpx_lookup
+            web_admin_mod.wpx_loaded = orig_wpx_loaded
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_login_can_require_email_otp(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_mfa.db")
+        cfg = _mk_config(db, admin_token="")
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_sysop = True
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "pw1", now)
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 202
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["mfa_required"] is True
+            assert sent and sent[0][0] == "ai3i@example.test"
+            challenge = next(iter(srv._mfa._challenges.values()))
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps(
+                    {
+                        "call": "AI3I",
+                        "password": "pw1",
+                        "challenge_id": payload["challenge_id"],
+                        "otp": challenge.code,
+                    }
+                ).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["sysop"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_login_honors_per_user_mfa_override(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_mfa_override.db")
+        cfg = _mk_config(db, admin_token="")
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_sysop = True
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "pw1", now)
+        await store.set_user_pref("AI3I", "mfa_email_otp", "off", now)
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["sysop"] is True
+            assert sent == []
         finally:
             await store.close()
 
@@ -600,6 +783,8 @@ def test_web_admin_maintenance_cleanup_runs_when_enabled(tmp_path) -> None:
         try:
             await store.set_user_pref(cfg.node.node_call, "retention.enabled", "on", now)
             await store.set_user_pref(cfg.node.node_call, "retention.spots_days", "30", now)
+            await store.set_user_pref(cfg.node.node_call, "retention.stale_users_enabled", "on", now)
+            await store.set_user_pref(cfg.node.node_call, "retention.stale_users_days", "30", now)
             await store.add_spot(
                 Spot(
                     freq_khz=14074.0,
@@ -611,6 +796,16 @@ def test_web_admin_maintenance_cleanup_runs_when_enabled(tmp_path) -> None:
                     raw="",
                 )
             )
+            await store.upsert_user_registry("K1OLD", old_epoch, display_name="Old User", privilege="user")
+            await store.record_login("K1OLD", old_epoch, "telnet")
+            await store.set_user_pref("K1OLD", "password", "pw-old", old_epoch)
+            await store.upsert_user_registry("K1LIVE", now, display_name="Recent User", privilege="user")
+            await store.record_login("K1LIVE", now, "telnet")
+            await store.upsert_user_registry("SYSOP", old_epoch, display_name="Sysop", privilege="sysop")
+            await store.record_login("SYSOP", old_epoch, "telnet")
+            await store.upsert_user_registry("K1BLOCK", old_epoch, display_name="Blocked User", privilege="user")
+            await store.record_login("K1BLOCK", old_epoch, "telnet")
+            await store.set_user_pref("K1BLOCK", "blocked_login", "on", old_epoch)
             code, _, body = await _http_request(
                 srv,
                 "POST",
@@ -621,7 +816,13 @@ def test_web_admin_maintenance_cleanup_runs_when_enabled(tmp_path) -> None:
             resp = json.loads(body.decode("utf-8"))
             assert resp["ok"] is True
             assert resp["removed"]["spots"] == 1
+            assert resp["removed"]["users"] == 1
             assert await store.count_spots() == 0
+            assert await store.get_user_registry("K1OLD") is None
+            assert await store.get_user_pref("K1OLD", "password") is None
+            assert await store.get_user_registry("K1LIVE") is not None
+            assert await store.get_user_registry("SYSOP") is not None
+            assert await store.get_user_registry("K1BLOCK") is not None
         finally:
             await store.close()
 
@@ -648,6 +849,8 @@ def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
                     "next_retry_epoch": 1773275000,
                     "last_connect_epoch": 1773274000,
                     "last_error": "timed out",
+                    "pending_mail": 3,
+                    "route_issues": 1,
                     "desired": True,
                     "connected": False,
                 }
@@ -673,6 +876,8 @@ def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
             assert row["reconnect_enabled"] is True
             assert row["retry_count"] == 2
             assert row["last_error"] == "timed out"
+            assert row["pending_mail"] == 3
+            assert row["route_issues"] == 1
             assert row["transport"] == "dxspider"
             assert row["path_hint"] == "host dxspider.ai3i.net:7300"
         finally:
@@ -751,6 +956,33 @@ def test_web_admin_user_notes_and_block_reason_round_trip(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_node_presentation_includes_dataset_status(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_node_datasets.db")
+        cty_path = Path(__file__).resolve().parents[1] / "fixtures" / "live" / "dxspider" / "cty.dat"
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.public_web.cty_dat_path = str(cty_path)
+        cfg.public_web.wpxloc_raw_path = str(tmp_path / "missing-wpxloc.raw")
+        load_cty(str(cty_path))
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            code, _, body = await _http_request(srv, "GET", "/api/node/presentation", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["datasets"]["cty"]["loaded"] is True
+            assert data["datasets"]["cty"]["version"].startswith("VER")
+            assert data["datasets"]["wpxloc"]["status"] == "missing"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
 def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_node_presentation.db")
@@ -817,6 +1049,9 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["node_call"] == "AI3I-15"
             assert data["welcome_title"] == "Welcome"
             assert data["motd"] == "Default MOTD"
+            assert data["software_version"] == f"pyCluster {__version__}"
+            assert data["retention_stale_users_enabled"] is False
+            assert data["retention_stale_users_days"] == 365
 
             payload = {
                 "node_call": "AI3I-7",
@@ -831,6 +1066,25 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
                 "login_tip": "Tip: try sh/dx 10",
                 "show_status_after_login": False,
                 "require_password": True,
+                "smtp_host": "smtp.example.test",
+                "smtp_port": 465,
+                "smtp_username": "mailer",
+                "smtp_password": "app-pass",
+                "smtp_from_addr": "pycluster@example.test",
+                "smtp_from_name": "pyCluster Ops",
+                "smtp_starttls": False,
+                "smtp_use_ssl": True,
+                "smtp_timeout_seconds": 15,
+                "mfa_enabled": True,
+                "mfa_require_for_sysop": True,
+                "mfa_require_for_users": False,
+                "mfa_issuer": "AI3I Cluster",
+                "mfa_otp_ttl_seconds": 900,
+                "mfa_otp_length": 8,
+                "mfa_max_attempts": 4,
+                "mfa_resend_cooldown_seconds": 45,
+                "retention_stale_users_enabled": True,
+                "retention_stale_users_days": 180,
                 "support_contact": "dxcluster@ai3i.net",
                 "website_url": "https://github.com/AI3I/pyCluster",
                 "motd": "Warm MOTD",
@@ -851,6 +1105,25 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["welcome_title"] == "Welcome back"
             assert data["show_status_after_login"] is False
             assert data["require_password"] is True
+            assert data["smtp_host"] == "smtp.example.test"
+            assert data["smtp_port"] == 465
+            assert data["smtp_username"] == "mailer"
+            assert data["smtp_password"] == "app-pass"
+            assert data["smtp_from_addr"] == "pycluster@example.test"
+            assert data["smtp_from_name"] == "pyCluster Ops"
+            assert data["smtp_starttls"] is False
+            assert data["smtp_use_ssl"] is True
+            assert data["smtp_timeout_seconds"] == 15
+            assert data["mfa_enabled"] is True
+            assert data["mfa_require_for_sysop"] is True
+            assert data["mfa_require_for_users"] is False
+            assert data["mfa_issuer"] == "AI3I Cluster"
+            assert data["mfa_otp_ttl_seconds"] == 900
+            assert data["mfa_otp_length"] == 8
+            assert data["mfa_max_attempts"] == 4
+            assert data["mfa_resend_cooldown_seconds"] == 45
+            assert data["retention_stale_users_enabled"] is True
+            assert data["retention_stale_users_days"] == 180
             assert data["motd"] == "Warm MOTD"
             assert data["prompt_template"] == "[{timestamp}] {node}{suffix}"
 
@@ -867,6 +1140,40 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert saved["node"]["require_password"] is True
             assert saved["node"]["prompt_template"] == "[{timestamp}] {node}{suffix}"
             assert saved["telnet"]["ports"] == [7300, 7373, 8000]
+            assert saved["smtp"]["host"] == "smtp.example.test"
+            assert saved["smtp"]["port"] == 465
+            assert saved["smtp"]["use_ssl"] is True
+            assert saved["mfa"]["enabled"] is True
+            assert saved["mfa"]["issuer"] == "AI3I Cluster"
+            assert saved["mfa"]["resend_cooldown_seconds"] == 45
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_console_page_includes_software_version_slot(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_console_page.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            code, _, body = await _http_request(srv, "GET", "/")
+            assert code == 200
+            html = body.decode("utf-8")
+            assert 'id="navVersion"' in html
+            assert "Software</label>" in html
+            assert 'id="retention_stale_users_enabled"' in html
+            assert 'id="smtp_host"' in html
+            assert 'id="mfa_enabled"' in html
+            assert 'class="tablewrap compact"' in html
+            assert 'id="userMailStatus"' in html
         finally:
             await store.close()
 
@@ -1296,6 +1603,10 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             await store.upsert_user_registry("AI3I", now, display_name="John", qth="PA", email="ai3i@example.org", privilege="sysop")
             await store.upsert_user_registry("K1ABC", now, display_name="Alice", qth="MA", privilege="user")
             await store.upsert_user_registry("W3XYZ", now, display_name="Bob", qth="MD", privilege="user")
+            await store.add_message("N0CALL", "K1ABC", now, "hello inbox", origin_node="AI3I-15", route_node="", delivery_state="delivered", delivered_epoch=now)
+            await store.add_message("K1ABC", "PEERCALL", now, "hello outbox", origin_node="AI3I-15", route_node="PEER1", delivery_state="pending")
+            sent_id = await store.add_message("K1ABC", "PEER404", now, "cannot route", origin_node="AI3I-15", route_node="PEER404", delivery_state="undeliverable", error_text="no configured route to peer")
+            await store.set_message_delivery(sent_id, "undeliverable", route_node="PEER404", error_text="no configured route to peer")
 
             code, _, body = await _http_request(srv, "GET", "/api/users?limit=2&offset=0", headers={"X-Admin-Token": "adm"})
             assert code == 200
@@ -1311,6 +1622,16 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             assert data["total"] == 1
             assert data["rows"][0]["call"] == "AI3I"
 
+            code, _, body = await _http_request(srv, "GET", "/api/users?search=K1ABC", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["rows"][0]["mail_inbox_total"] == 1
+            assert data["rows"][0]["mail_inbox_unread"] == 1
+            assert data["rows"][0]["mail_outbox_pending"] == 1
+            assert data["rows"][0]["mail_outbox_issues"] == 1
+            assert data["rows"][0]["mail_last_error"] == "no configured route to peer"
+            assert data["rows"][0]["mfa_email_otp"] == "default"
+
             code, _, body = await _http_request(
                 srv,
                 "POST",
@@ -1323,6 +1644,7 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
                         "qth": "Boston",
                         "email": "alice@example.org",
                         "privilege": "sysop",
+                        "mfa_email_otp": "required",
                     }
                 ).encode("utf-8"),
             )
@@ -1330,9 +1652,11 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             data = json.loads(body.decode("utf-8"))
             assert data["ok"] is True
             assert data["user"]["display_name"] == "Alice Updated"
+            assert data["user"]["mfa_email_otp"] == "required"
             row = await store.get_user_registry("K1ABC")
             assert row is not None
             assert str(row["privilege"]) == "sysop"
+            assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "required"
 
             code, _, body = await _http_request(
                 srv,
@@ -1347,6 +1671,42 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             assert await store.get_user_registry("W3XYZ") is None
         finally:
             web_admin_mod.resolve_location_to_coords = orig
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_can_send_smtp_test_email(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_mfa_test_email.db")
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[method-assign]
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/mfa/test-email",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "email": "ai3i@example.test"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["call"] == "AI3I"
+            assert data["email"] == "ai3i@example.test"
+            assert sent and sent[0][0] == "ai3i@example.test"
+            assert "SMTP test" in sent[0][1]
+        finally:
             await store.close()
 
     asyncio.run(run())
@@ -1394,6 +1754,50 @@ def test_web_users_password_set_and_clear(tmp_path) -> None:
             assert data["ok"] is True
             assert data["user"]["has_password"] is False
             assert await store.get_user_pref("AI3I", "password") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_users_can_reset_mfa(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_users_reset_mfa.db")
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_sysop = True
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        srv._mfa._sender = lambda _rcpt, _subject, _body: None  # type: ignore[assignment]
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
+            await store.set_user_pref("AI3I", "password", "pw123", now)
+            await store.set_user_pref("AI3I", "mfa_email_otp", "required", now)
+            challenge_id, _expires = await srv._mfa.issue(call="AI3I", email="ai3i@example.test", purpose="sysop-web")
+            assert await store.get_mfa_challenge(challenge_id) is not None
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/mfa/reset",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["principal"] == "AI3I"
+            assert data["user"]["mfa_email_otp"] == "off"
+            assert await store.get_user_pref("AI3I", "mfa_email_otp") == "off"
+            assert await store.get_mfa_challenge(challenge_id) is None
         finally:
             await store.close()
 
@@ -1732,6 +2136,50 @@ def test_web_proto_alerts_endpoint(tmp_path) -> None:
             assert code == 200
             assert json.loads(body.decode("utf-8"))["removed"] >= 1
         finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_api_spots_accepts_wpxloc_recognized_call_when_cty_is_missing(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_spot_review_wpx.db")
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.public_web.wpxloc_raw_path = str(tmp_path / "wpxloc.raw")
+        Path(cfg.public_web.wpxloc_raw_path).write_text(
+            "UA European-Russia 054 29 16 -3.0 55 45 0 N 37 37 0 E @\n& =RG65SM\n",
+            encoding="ascii",
+        )
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        orig_lookup = web_admin_mod.cty_lookup
+        orig_loaded = web_admin_mod.cty_loaded
+        orig_wpx_lookup = web_admin_mod.wpx_lookup
+        orig_wpx_loaded = web_admin_mod.wpx_loaded
+        web_admin_mod.cty_lookup = lambda call: None
+        web_admin_mod.cty_loaded = lambda: False
+        web_admin_mod.wpx_lookup = lambda call: object() if call == "RG65SM" else None
+        web_admin_mod.wpx_loaded = lambda: True
+        try:
+            await store.add_spot(Spot(7168.0, "RG65SM", now, "CQ", "F8DRA", "PEER2", ""))
+            code, _, body = await _http_request(srv, "GET", "/api/spots?limit=10", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            review = data[0]["dx_review"]
+            assert review["suspicious"] is False
+            assert review["reasons"] == []
+            assert review["advisory"] == []
+        finally:
+            web_admin_mod.cty_lookup = orig_lookup
+            web_admin_mod.cty_loaded = orig_loaded
+            web_admin_mod.wpx_lookup = orig_wpx_lookup
+            web_admin_mod.wpx_loaded = orig_wpx_loaded
             await store.close()
 
     asyncio.run(run())

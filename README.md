@@ -16,7 +16,7 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 
 - Telnet-first DX cluster workflow with modernized operator output
 - Public web UI for users and a dedicated web console for system operators
-- SQLite persistence, CTY refresh tooling, and fail2ban integration
+- SQLite persistence, CTY and wpxloc refresh tooling, and fail2ban integration
 - Validated deploy path across modern Debian, Ubuntu, Fedora, and Red Hat-family Linux
 
 ## 🧭 What pyCluster Does
@@ -29,7 +29,7 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 - ships with deployment tooling for systemd-based Linux hosts
 - integrates with fail2ban for login-abuse protection
 - supports age-based cleanup for spots, messages, and bulletins
-- maintains local CTY data with optional automatic refresh from Country Files
+- maintains local `CTY.DAT` and `wpxloc.raw` data with optional automatic refresh from Country Files
 
 ## Where pyCluster Improves on Legacy Cluster Software
 
@@ -66,6 +66,15 @@ In practice that means:
 ## 📌 Current Status
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
+
+Current release: `1.0.5`
+
+Recent highlights in `1.0.5`:
+
+- cleaner and more human-readable telnet/operator command replies
+- `CTY.DAT` and `wpxloc.raw` visibility plus refresh support
+- public web 24-hour spot stats that reflect real time windows
+- more complete MFA recovery, cluster-mail observability, and config-override documentation
 
 ## 🖥️ Interfaces
 
@@ -131,6 +140,8 @@ pip install -e .
 pycluster --config ./config/pycluster.toml serve
 ```
 
+Operator-local overrides can live in `./config/pycluster.local.toml`. When present, pyCluster loads `pycluster.toml` first and then layers `pycluster.local.toml` on top. Keep the tracked base file close to upstream and put host-specific changes in the local override file.
+
 Deploy on a supported Linux host:
 
 ```bash
@@ -149,6 +160,7 @@ Typical deployed layout:
 /home/pycluster/pyCluster/          # live runtime tree
 ├── config/
 │   ├── pycluster.toml              # active node configuration
+│   ├── pycluster.local.toml        # optional untracked local override
 │   └── strings.toml                # hot-reloadable operator text
 ├── data/
 │   └── pycluster.db                # live SQLite database
@@ -167,6 +179,8 @@ git pull --ff-only
 sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
+
+For git-based upgrades, move site-local changes out of the tracked `config/pycluster.toml` file and into `config/pycluster.local.toml` first. That keeps `git pull --ff-only` clean while preserving local runtime settings.
 
 For upgrades from `1.0.0` through `1.0.3`, `deploy/upgrade.sh` performs the required cumulative state conversion for older installs:
 
@@ -273,9 +287,18 @@ Auth-failure log retention:
 
 - shipped logrotate policy for `/var/log/pycluster/authfail.log`
 
-## 🌍 CTY Data
+## 🌍 Country Data
 
-pyCluster ships with a bundled `cty.dat`, and install/upgrade perform a best-effort refresh from Country Files.
+pyCluster supports both `CTY.DAT` and `wpxloc.raw`.
+
+That data is used for:
+
+- DXCC/entity and zone enrichment
+- heading and lookup fallbacks
+- operational review cues for unusual spot prefixes
+- sysop visibility into currently loaded country-data versions
+
+pyCluster ships with bundled country-data fixtures, and install/upgrade can perform a best-effort refresh from Country Files.
 
 Manual refresh:
 
@@ -283,9 +306,14 @@ Manual refresh:
 python3 ./scripts/update_cty.py --config ./config/pycluster.toml
 ```
 
+By default this refreshes both `CTY.DAT` and `wpxloc.raw`. Use `--cty-only` if you intentionally want to skip the `wpxloc.raw` update.
+
 Automatic refresh:
 
 - `pycluster-cty-refresh.timer`
+  - refreshes both `CTY.DAT` and `wpxloc.raw`
+
+The System Operator web console and telnet `show/configuration` also report dataset load state, path, and version/date when available.
 
 ## 🧹 Retention and Cleanup
 

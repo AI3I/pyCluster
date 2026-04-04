@@ -79,7 +79,7 @@ sysop_bootstrap="no"
 
 api_stats="unavailable"
 if [ "$service_state" = "active" ]; then
-  api_stats="$(curl -fsS http://127.0.0.1:8080/api/stats 2>/dev/null || printf 'unavailable')"
+  api_stats="$(curl -fsS http://127.0.0.1:8081/api/stats?hours=24 2>/dev/null || printf 'unavailable')"
 fi
 
 public_branding="unavailable"

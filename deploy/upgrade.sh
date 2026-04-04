@@ -15,6 +15,7 @@ ensure_layout
 sync_tree
 install_config_if_missing
 install_optional_config_if_missing "config/strings.toml" "strings.toml"
+install_optional_config_if_missing "config/pycluster.local.toml.example" "pycluster.local.toml.example"
 ensure_selinux_contexts
 install_or_refresh_service
 ensure_fail2ban_packages

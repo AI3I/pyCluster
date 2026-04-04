@@ -11,13 +11,18 @@ import subprocess
 import time
 from urllib.parse import parse_qs, urlparse
 
+from . import __version__
 from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, default_access_allowed
 from .auth import hash_password, is_password_hash, verify_password
 from .config import AppConfig, node_presentation_defaults, parse_telnet_ports, save_config
 from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .maidenhead import coords_to_locator, extract_locator
-from .models import Spot, is_valid_call, normalize_call
+from .mfa import EmailOtpManager, SMTPMailer
+from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
+from .ctydat import is_loaded as cty_loaded, load_cty, lookup as cty_lookup
+from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
+from .datafiles import describe_cty_file, describe_wpxloc_file
 from .pathmeta import describe_session_path, describe_transport_dsn, normalize_recorded_path
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
@@ -50,6 +55,28 @@ _CONFIG_AUTH_NODE_FIELDS = {
 def _is_valid_admin_record_call(call: str) -> bool:
     raw = str(call or "").strip().upper()
     return raw == "SYSOP" or is_valid_call(raw)
+
+
+def _spot_call_review(value: str, cty_status: dict[str, object] | None = None) -> dict[str, object]:
+    call = normalize_call(value)
+    reasons: list[str] = []
+    advisory: list[str] = []
+    cty_loaded = bool((cty_status or {}).get("loaded", False))
+    cty_stale = bool((cty_status or {}).get("stale", False))
+    if not is_plausible_spot_call(call):
+        reasons.append("malformed")
+    elif not cty_loaded and not wpx_loaded():
+        advisory.append("prefix_data_unavailable")
+    elif cty_stale and not wpx_loaded():
+        advisory.append("prefix_data_stale")
+    elif cty_lookup(call) is None and wpx_lookup(call) is None:
+        reasons.append("unrecognized_prefix")
+    return {
+        "call": call,
+        "suspicious": bool(reasons),
+        "reasons": reasons,
+        "advisory": advisory,
+    }
 
 
 class WebAdminServer:
@@ -102,6 +129,8 @@ class WebAdminServer:
         self.config_path = str(config_path).strip() if config_path else ""
         self._web_sessions: dict[str, tuple[str, int, bool]] = {}
         self._server: asyncio.AbstractServer | None = None
+        self._smtp = SMTPMailer(config.smtp)
+        self._mfa = EmailOtpManager(config.mfa, self._smtp.send_code, store)
 
     def _audit(self, category: str, text: str) -> None:
         if self.event_log_fn:
@@ -109,6 +138,12 @@ class WebAdminServer:
                 self.event_log_fn(category, text)
             except Exception:
                 LOG.exception("web admin audit log failed")
+
+    def _dataset_status(self) -> dict[str, dict[str, object]]:
+        return {
+            "cty": describe_cty_file(self.config.public_web.cty_dat_path, loaded=cty_loaded()).to_json(),
+            "wpxloc": describe_wpxloc_file(self.config.public_web.wpxloc_raw_path, loaded=wpx_loaded()).to_json(),
+        }
 
     async def _node_presentation(self) -> dict[str, str]:
         data = node_presentation_defaults(self.config.node)
@@ -124,13 +159,21 @@ class WebAdminServer:
                 return int(str(v or "").strip())
             except Exception:
                 return default
+        def _pref(*keys: str, default: str = "") -> str:
+            for key in keys:
+                if key in data:
+                    return str(data.get(key, "")).strip()
+            return default
+        branding_name = str(data.get("branding_name", "")).strip() or "pyCluster"
         return {
             "node_call": str(data.get("node_call", "")).strip(),
             "node_alias": str(data.get("node_alias", "")).strip(),
             "owner_name": str(data.get("owner_name", "")).strip(),
             "qth": str(data.get("qth", "")).strip(),
             "node_locator": str(data.get("node_locator", "")).strip().upper(),
-            "branding_name": str(data.get("branding_name", "")).strip(),
+            "branding_name": branding_name,
+            "software_version": f"{branding_name} {__version__}",
+            "datasets": self._dataset_status(),
             "welcome_title": str(data.get("welcome_title", "")).strip(),
             "welcome_body": str(data.get("welcome_body", "")).strip(),
             "login_tip": str(data.get("login_tip", "")).strip(),
@@ -144,12 +187,31 @@ class WebAdminServer:
                 str(data.get("telnet_ports", "")).strip()
                 or ",".join(str(p) for p in (self.config.telnet.ports or (self.config.telnet.port,)))
             ),
-            "retention_enabled": str(data.get("retention.enabled", "on")).strip().lower() in {"1", "on", "yes", "true"},
-            "retention_spots_days": max(1, min(3650, _to_int(data.get("retention.spots_days"), 30))),
-            "retention_messages_days": max(1, min(3650, _to_int(data.get("retention.messages_days"), 90))),
-            "retention_bulletins_days": max(1, min(3650, _to_int(data.get("retention.bulletins_days"), 30))),
-            "retention_last_run_epoch": _to_int(data.get("retention.last_run_epoch"), 0),
-            "retention_last_result": str(data.get("retention.last_result", "")).strip(),
+            "retention_enabled": _pref("retention.enabled", "retention_enabled", default="on").lower() in {"1", "on", "yes", "true"},
+            "retention_spots_days": max(1, min(3650, _to_int(_pref("retention.spots_days", "retention_spots_days", default="30"), 30))),
+            "retention_messages_days": max(1, min(3650, _to_int(_pref("retention.messages_days", "retention_messages_days", default="90"), 90))),
+            "retention_bulletins_days": max(1, min(3650, _to_int(_pref("retention.bulletins_days", "retention_bulletins_days", default="30"), 30))),
+            "retention_stale_users_enabled": _pref("retention.stale_users_enabled", "retention_stale_users_enabled", default="off").lower() in {"1", "on", "yes", "true"},
+            "retention_stale_users_days": max(1, min(3650, _to_int(_pref("retention.stale_users_days", "retention_stale_users_days", default="365"), 365))),
+            "retention_last_run_epoch": _to_int(_pref("retention.last_run_epoch", "retention_last_run_epoch", default="0"), 0),
+            "retention_last_result": _pref("retention.last_result", "retention_last_result"),
+            "smtp_host": self.config.smtp.host,
+            "smtp_port": int(self.config.smtp.port),
+            "smtp_username": self.config.smtp.username,
+            "smtp_password": self.config.smtp.password,
+            "smtp_from_addr": self.config.smtp.from_addr,
+            "smtp_from_name": self.config.smtp.from_name,
+            "smtp_starttls": bool(self.config.smtp.starttls),
+            "smtp_use_ssl": bool(self.config.smtp.use_ssl),
+            "smtp_timeout_seconds": int(self.config.smtp.timeout_seconds),
+            "mfa_enabled": bool(self.config.mfa.enabled),
+            "mfa_require_for_sysop": bool(self.config.mfa.require_for_sysop),
+            "mfa_require_for_users": bool(self.config.mfa.require_for_users),
+            "mfa_issuer": self.config.mfa.issuer,
+            "mfa_otp_ttl_seconds": int(self.config.mfa.otp_ttl_seconds),
+            "mfa_otp_length": int(self.config.mfa.otp_length),
+            "mfa_max_attempts": int(self.config.mfa.max_attempts),
+            "mfa_resend_cooldown_seconds": int(self.config.mfa.resend_cooldown_seconds),
         }
 
     async def _user_registry_json(self, row) -> dict[str, object]:
@@ -206,6 +268,21 @@ class WebAdminServer:
         else:
             online_status = "Offline"
         access = await self._access_snapshot(call)
+        inbox_total, inbox_unread = await self.store.message_counts(call)
+        inbox_states = await self.store.message_state_counts(call)
+        outbox_states = await self.store.sent_message_state_counts(call)
+        sent_rows = await self.store.list_sent_messages(call, limit=50)
+        outbox_pending = sum(1 for row in sent_rows if str(row["delivery_state"] or "").strip().lower() == "pending")
+        outbox_issues = sum(1 for row in sent_rows if str(row["delivery_state"] or "").strip().lower() in {"failed", "undeliverable"})
+        last_mail_error = ""
+        for msg_row in sent_rows:
+            err = str(msg_row["error_text"] or "").strip()
+            if err:
+                last_mail_error = err
+                break
+        mfa_email_otp = str(await self.store.get_user_pref(call, "mfa_email_otp") or "").strip().lower()
+        if mfa_email_otp not in {"required", "off"}:
+            mfa_email_otp = "default"
         return {
             "call": call,
             "display_name": str(row["display_name"] or ""),
@@ -228,12 +305,32 @@ class WebAdminServer:
             "access": access,
             "access_login_summary": self._access_login_summary(access),
             "access_post_summary": self._access_post_summary(access),
+            "mail_inbox_total": inbox_total,
+            "mail_inbox_unread": inbox_unread,
+            "mail_inbox_states": inbox_states,
+            "mail_outbox_states": outbox_states,
+            "mail_outbox_pending": outbox_pending,
+            "mail_outbox_issues": outbox_issues,
+            "mail_last_error": last_mail_error,
+            "mfa_email_otp": mfa_email_otp,
             "telnet_online": telnet_online,
             "web_online": web_online,
             "online_status": online_status,
         }
 
     async def start(self) -> None:
+        cty_path = self.config.public_web.cty_dat_path.strip()
+        if cty_path:
+            try:
+                load_cty(cty_path)
+            except Exception as exc:
+                LOG.warning("web admin cty load failed from %s: %s", cty_path, exc)
+        wpx_path = self.config.public_web.wpxloc_raw_path.strip()
+        if wpx_path:
+            try:
+                load_wpxloc(wpx_path)
+            except Exception as exc:
+                LOG.warning("web admin wpxloc load failed from %s: %s", wpx_path, exc)
         self._server = await asyncio.start_server(
             self._handle,
             host=self.config.web.host,
@@ -299,11 +396,60 @@ class WebAdminServer:
     def _authorized_call(self, headers: dict[str, str]) -> str:
         return self._admin_call_from_headers(headers) or "SYSOP"
 
+    async def _email_for_call(self, call: str) -> str:
+        row = await self.store.get_user_registry(call)
+        return str(row["email"] or "").strip() if row else ""
+
+    async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
+        base_call = call.split("-", 1)[0]
+        override = ""
+        for candidate in (call.upper(), base_call.upper()):
+            raw = await self.store.get_user_pref(candidate, "mfa_email_otp")
+            txt = str(raw or "").strip().lower()
+            if txt:
+                override = txt
+                break
+        if override == "required":
+            return True
+        if override == "off":
+            return False
+        return self._mfa.required_for(is_sysop=is_sysop)
+
     def _cleanup_web_sessions(self) -> None:
         now = int(time.time())
         stale = [k for k, (_call, exp, _is_sysop) in self._web_sessions.items() if exp <= now]
         for k in stale:
             self._web_sessions.pop(k, None)
+
+    def _stale_user_seen_epoch(self, row) -> int:
+        last_login = int(row["last_login_epoch"] or 0)
+        if last_login > 0:
+            return last_login
+        updated = int(row["updated_epoch"] or 0)
+        if updated > 0:
+            return updated
+        return int(row["registered_epoch"] or 0)
+
+    async def _prune_stale_users(self, now_epoch: int, *, stale_days: int) -> int:
+        cutoff = int(now_epoch - max(1, int(stale_days or 0)) * 86400)
+        removed = 0
+        rows = await self.store.list_user_registry(limit=5000, offset=0)
+        for row in rows:
+            call = str(row["call"] or "").strip().upper()
+            if not call or call == self.config.node.node_call.upper():
+                continue
+            privilege = str(row["privilege"] or "").strip().lower()
+            if privilege in {"sysop", "admin"}:
+                continue
+            user = await self._user_registry_json(row)
+            if bool(user.get("blocked_login")):
+                continue
+            seen_epoch = self._stale_user_seen_epoch(row)
+            if seen_epoch <= 0 or seen_epoch >= cutoff:
+                continue
+            removed += await self.store.delete_user_registry(call)
+            await self.store.delete_user_data(call)
+        return removed
 
     def _issue_web_token(self, call: str, ttl_seconds: int = 8 * 3600, *, is_sysop: bool = False) -> tuple[str, int]:
         tok = secrets.token_urlsafe(24)
@@ -917,6 +1063,46 @@ html.light .sidebar-panel{ box-shadow:0 10px 24px rgba(17,24,39,.06); }
 .sidebar-metric strong{
   font-size:22px;
 }
+.sidebar-metric.wide{
+  grid-column:span 2;
+}
+.dataset-pills{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:10px;
+}
+.dataset-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:4px 9px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  background:var(--panel-ink);
+  color:var(--text);
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.03em;
+}
+.dataset-pill.ok{
+  border-color:rgba(29,109,73,.45);
+  background:rgba(29,109,73,.14);
+  color:#9fe0ba;
+}
+.dataset-pill.warn{
+  border-color:rgba(201,107,73,.45);
+  background:rgba(201,107,73,.14);
+  color:#ffd1bb;
+}
+html.light .dataset-pill.ok{
+  color:#1d6d49;
+  background:rgba(29,109,73,.10);
+}
+html.light .dataset-pill.warn{
+  color:#8b472a;
+  background:rgba(185,87,50,.10);
+}
 .sidebar-heading{
   display:flex;
   align-items:center;
@@ -1186,42 +1372,17 @@ button.warn{
   border-color:#8c4529;
   color:#fff;
 }
-#newUser{
+button.good{
   background:#1d6d49;
   border-color:#1d6d49;
   color:#fff;
 }
-#saveUser{
-  background:#58a6ff;
-  border-color:#58a6ff;
-  color:#08111b;
-}
-#saveUserPassword{
-  background:#6f42c1;
-  border-color:#6f42c1;
-  color:#fff;
-}
-#accessAll{
-  background:#1d6d49;
-  border-color:#1d6d49;
-  color:#fff;
-}
-#accessNone{
-  background:#8c4529;
-  border-color:#8c4529;
-  color:#fff;
-}
-#peerSave{
-  background:#1d6d49;
-  border-color:#1d6d49;
-  color:#fff;
-}
-#newPeer{
+button.attention{
   background:#fbbf24;
   border-color:#f59e0b;
   color:#201102;
 }
-#reset{
+button.special{
   background:#6f42c1;
   border-color:#6f42c1;
   color:#fff;
@@ -1274,6 +1435,9 @@ button.warn{
   overflow:auto;
   border:1px solid var(--line);
   border-radius:12px;
+}
+.tablewrap.compact{
+  max-height:240px;
 }
 table{
   width:100%;
@@ -1439,6 +1603,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <header><h2>At A Glance</h2></header>
         <div class="body">
           <div class="sidebar-metrics">
+            <div class="sidebar-metric wide"><label>Software</label><strong id="navVersion">-</strong><div class="dataset-pills"><span class="dataset-pill warn" id="navCty">CTY.DAT · -</span><span class="dataset-pill warn" id="navWpx">wpxloc.raw · -</span></div></div>
             <div class="sidebar-metric"><label>Uptime</label><strong id="navUptime">-</strong></div>
             <div class="sidebar-metric"><label>Spots</label><strong id="navSpots">-</strong></div>
             <div class="sidebar-metric"><label>Telnet</label><strong id="navTelnet">-</strong></div>
@@ -1486,6 +1651,53 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </div>
           </div>
           <div class="form-grid" style="margin-top:12px">
+            <div class="field"><label for="smtp_host" title="SMTP host used to send MFA email codes.">SMTP Host</label><input id="smtp_host" placeholder="smtp.example.net" title="Node-wide SMTP relay hostname for MFA delivery."></div>
+            <div class="field"><label for="smtp_port" title="SMTP port for the configured relay.">SMTP Port</label><input id="smtp_port" type="number" min="1" max="65535" value="587" title="Typical values are 25, 465, or 587."></div>
+            <div class="field"><label for="smtp_username" title="Optional SMTP username when the relay requires authentication.">SMTP Username</label><input id="smtp_username" placeholder="mailer" title="Leave blank for relays that do not require SMTP AUTH."></div>
+            <div class="field"><label for="smtp_password" title="SMTP password or app password for the configured relay.">SMTP Password</label><input id="smtp_password" type="password" placeholder="SMTP password" title="Stored in local config for MFA delivery."></div>
+            <div class="field"><label for="smtp_from_addr" title="From address used in MFA email delivery.">From Address</label><input id="smtp_from_addr" placeholder="pycluster@example.net" title="Envelope/display sender for OTP messages."></div>
+            <div class="field"><label for="smtp_from_name" title="Display name used in MFA email delivery.">From Name</label><input id="smtp_from_name" placeholder="pyCluster" title="Display name shown with the MFA sender address."></div>
+            <div class="field"><label for="smtp_timeout_seconds" title="Socket timeout for SMTP delivery attempts.">SMTP Timeout (seconds)</label><input id="smtp_timeout_seconds" type="number" min="1" max="120" value="10" title="Keep this modest so failed relays do not hang login flows for long."></div>
+          </div>
+          <div class="checkgrid" style="margin-top:12px">
+            <div class="checkrow attention" title="Use STARTTLS after connecting to the SMTP relay.">
+              <input id="smtp_starttls" type="checkbox">
+              <label for="smtp_starttls">Use STARTTLS</label>
+            </div>
+            <div class="checkrow attention" title="Use implicit TLS from connect time, typically on port 465.">
+              <input id="smtp_use_ssl" type="checkbox">
+              <label for="smtp_use_ssl">Use implicit TLS (SSL)</label>
+            </div>
+          </div>
+          <div class="form-grid" style="margin-top:12px">
+            <div class="field">
+              <label for="mfa_enabled" title="Enable optional email OTP as a second factor for logins.">Email MFA</label>
+              <div class="checkrow attention" title="When enabled, web and telnet logins can require an emailed one-time code after password verification.">
+                <input id="mfa_enabled" type="checkbox">
+                <label for="mfa_enabled">Enable email OTP MFA</label>
+              </div>
+            </div>
+            <div class="field">
+              <label for="mfa_require_for_sysop" title="Require email OTP for System Operator logins.">System Operators</label>
+              <div class="checkrow attention" title="Strongly recommended. Applies to sysop web and sysop telnet logins.">
+                <input id="mfa_require_for_sysop" type="checkbox" checked>
+                <label for="mfa_require_for_sysop">Require MFA for sysops</label>
+              </div>
+            </div>
+            <div class="field">
+              <label for="mfa_require_for_users" title="Require email OTP for ordinary authenticated users too.">Authenticated Users</label>
+              <div class="checkrow attention" title="Enable only after confirming user email records and SMTP delivery are reliable.">
+                <input id="mfa_require_for_users" type="checkbox">
+                <label for="mfa_require_for_users">Require MFA for users</label>
+              </div>
+            </div>
+            <div class="field"><label for="mfa_issuer" title="Short label shown in OTP email subject lines and body text.">MFA Issuer</label><input id="mfa_issuer" placeholder="pyCluster" title="Brand or node label used in MFA email messages."></div>
+            <div class="field"><label for="mfa_otp_ttl_seconds" title="How long each emailed OTP remains valid.">OTP TTL (seconds)</label><input id="mfa_otp_ttl_seconds" type="number" min="60" max="3600" value="600" title="Validity window for issued one-time codes."></div>
+            <div class="field"><label for="mfa_otp_length" title="Number of digits generated for each OTP.">OTP Length</label><input id="mfa_otp_length" type="number" min="6" max="8" value="6" title="Recommended range is 6 to 8 digits."></div>
+            <div class="field"><label for="mfa_max_attempts" title="How many wrong OTP submissions are allowed before the challenge is invalidated.">OTP Attempts</label><input id="mfa_max_attempts" type="number" min="1" max="10" value="5" title="Maximum verification attempts per OTP challenge."></div>
+            <div class="field"><label for="mfa_resend_cooldown_seconds" title="Minimum delay before a new OTP can be issued for the same login purpose.">OTP Resend Cooldown (seconds)</label><input id="mfa_resend_cooldown_seconds" type="number" min="0" max="600" value="30" title="Prevents repeated password submissions from sending OTP emails too frequently."></div>
+          </div>
+          <div class="form-grid" style="margin-top:12px">
             <div class="field">
               <label for="retention_enabled" title="When enabled, pyCluster runs age-based cleanup daily using the day counts below.">Automatic Cleanup</label>
               <div class="checkrow attention" title="Enable daily retention cleanup for spots, messages, and bulletins.">
@@ -1496,11 +1708,19 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="field"><label for="retention_spots_days" title="Keep DX spots for this many days before purging old rows.">Keep Spots For (days)</label><input id="retention_spots_days" type="number" min="1" max="3650" value="30" title="Older spots are removed during the daily cleanup run."></div>
             <div class="field"><label for="retention_messages_days" title="Keep private messages for this many days before purging old rows.">Keep Messages For (days)</label><input id="retention_messages_days" type="number" min="1" max="3650" value="90" title="Older messages are removed during the daily cleanup run."></div>
             <div class="field"><label for="retention_bulletins_days" title="Keep bulletins for this many days before purging old rows.">Keep Bulletins For (days)</label><input id="retention_bulletins_days" type="number" min="1" max="3650" value="30" title="Older bulletins are removed during the daily cleanup run."></div>
+            <div class="field">
+              <label for="retention_stale_users_enabled" title="When enabled, cleanup also removes inactive non-sysop, non-blocked local users.">Stale User Cleanup</label>
+              <div class="checkrow attention" title="Remove non-sysop, non-blocked local users whose last login or last local update is older than the threshold below.">
+                <input id="retention_stale_users_enabled" type="checkbox">
+                <label for="retention_stale_users_enabled">Enable stale-user pruning</label>
+              </div>
+            </div>
+            <div class="field"><label for="retention_stale_users_days" title="Inactive local users older than this threshold are removed during cleanup when stale-user pruning is enabled.">Keep User Records For (days)</label><input id="retention_stale_users_days" type="number" min="1" max="3650" value="365" title="Based on last login when available, otherwise the last local record update."></div>
           </div>
-          <div class="subtle" id="retentionStatus" style="margin-top:8px">Automatic cleanup is disabled.</div>
+          <div class="subtle" id="retentionStatus" style="margin-top:8px;font-weight:700">Automatic cleanup is disabled.</div>
           <div class="actions" style="margin-top:12px">
-            <button id="saveNode" title="Persist these telnet presentation settings for this node.">Save Node Settings</button>
-            <button class="secondary" id="runCleanup" title="Run the current age-based cleanup settings immediately.">Run Cleanup Now</button>
+            <button class="good" id="saveNode" title="Persist these telnet presentation settings for this node.">Save Node Settings</button>
+            <button class="attention" id="runCleanup" title="Run the current age-based cleanup settings immediately.">Run Cleanup Now</button>
           </div>
         </div>
       </section>
@@ -1525,7 +1745,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               </div>
               <div class="tablewrap">
                 <table>
-                  <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>Post</th><th>Last Login</th><th>Last Path</th></tr></thead>
+                  <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
                   <tbody id="userRows"><tr><td colspan="8">Loading local users...</td></tr></tbody>
                 </table>
               </div>
@@ -1533,7 +1753,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <section>
               <h3>Blocked Users</h3>
               <div class="subtle" style="margin-bottom:12px">Calls blocked from login on this node, including matching SSID variants.</div>
-              <div class="tablewrap">
+              <div class="tablewrap compact">
               <table>
                   <thead><tr><th>Callsign</th><th>Home Node</th><th>Block Reason</th><th>Blocked</th><th>Last Path</th></tr></thead>
                   <tbody id="blockedRows"><tr><td colspan="5">Loading blocked users...</td></tr></tbody>
@@ -1542,7 +1762,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </section>
             <section>
               <h3>System Operators</h3>
-              <div class="tablewrap">
+              <div class="subtle" style="margin-bottom:12px">Compact operator list kept above the editor for quick access.</div>
+              <div class="tablewrap compact">
               <table>
                   <thead><tr><th>Callsign</th><th>Name</th><th>Email</th><th>Telnet</th><th>Web</th><th>Last Path</th></tr></thead>
                   <tbody id="sysopRows"><tr><td colspan="6">Loading System Operators...</td></tr></tbody>
@@ -1553,6 +1774,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <div class="users-editor" style="margin-top:14px">
             <section>
               <h3 id="userEditorTitle">User Details</h3>
+              <div class="subtle" id="userMailStatus" style="margin-bottom:10px">Mail status for the selected user will appear here.</div>
               <div class="form-grid">
                 <div class="field"><label for="user_call" title="Local callsign record to create or edit on this node.">Callsign</label><input id="user_call" placeholder="N0CALL" title="Use the base callsign or an SSID variant for the exact local record you want to manage."></div>
                 <div class="field"><label for="user_privilege" title="Access level on this node. Blocked prevents logins for this callsign and its SSIDs. System Operator grants access to the System Operator console and sysop commands.">Access Level</label><div class="select-shell"><select id="user_privilege" title="Choose Authenticated for ordinary local accounts, Non-Authenticated for local users without password-based authentication, Blocked to prevent logins for this callsign and its SSIDs, or System Operator for privileged operators on this node."><option value="">Non-Authenticated</option><option value="user">Authenticated</option><option value="sysop">System Operator</option><option value="blocked">Blocked</option></select></div></div>
@@ -1562,20 +1784,18 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <div class="field"><label for="user_email" title="Optional contact email for this local callsign record.">Email</label><input id="user_email" placeholder="operator@example.org" title="Optional contact address used for local account details and future federation/contact features."></div>
                 <div class="field"><label for="user_password" title="Change or set the local password for this callsign. Enter CLEAR to remove it.">Password</label><input id="user_password" type="password" placeholder="Change/Set or CLEAR to clear" title="Set or change the local password for this callsign. Enter CLEAR and then Set Password to remove it."></div>
                 <div class="field"><label for="user_home_node" title="Authoritative home node for this callsign. This maps to set/homenode.">Home Node</label><input id="user_home_node" placeholder="N0CALL-1" title="The home node is the source of truth for this callsign and will be used by future federation features."></div>
+                <div class="field"><label for="user_mfa_email_otp" title="Optional per-user override for email OTP MFA. Default follows the node-wide MFA policy.">Email MFA Override</label><div class="select-shell"><select id="user_mfa_email_otp" title="Use Default to follow node policy, Required to always require email OTP for this user, or Off to exempt this user."><option value="default">Default</option><option value="required">Required</option><option value="off">Off</option></select></div></div>
+                <div class="field"><label for="user_node_family" title="Use this only for node-to-node records. It controls trusted cluster-peer login behavior and password bypass.">Cluster Node Family</label><div class="select-shell"><select id="user_node_family" title="Leave this unset for normal people. Set a cluster node family only for sysop-managed node records such as DXSpider, DxNet, AR-Cluster, CLX, or pyCluster."><option value="">Not a cluster peer</option><option value="pycluster">pyCluster</option><option value="dxspider">DXSpider</option><option value="dxnet">DxNet</option><option value="arcluster">AR-Cluster</option><option value="clx">CLX</option></select></div></div>
                 <div class="field span2"><label for="user_block_reason" title="Short operator notes for this local user. If Access Level is Blocked, this text is also shown as the block reason.">Notes / Block Reason</label><input id="user_block_reason" maxlength="80" placeholder="General notes or a block reason" title="Keep this brief. It can hold general notes for the local user, and if Access Level is Blocked it will also be shown as the block reason."></div>
               </div>
               <div class="actions" style="margin-top:12px">
-                <button class="secondary" id="newUser">New User</button>
-                <button class="secondary" id="saveUser">Save User</button>
-                <button class="secondary" id="saveUserPassword">Set Password</button>
+                <button class="good" id="newUser">New User</button>
+                <button id="saveUser">Save User</button>
+                <button class="special" id="saveUserPassword">Set Password</button>
                 <button class="warn" id="deleteUser" disabled>Remove User</button>
+                <button class="attention" id="sendMfaTest">Send MFA Test Email</button>
+                <button class="attention" id="resetUserMfa">Reset MFA</button>
               </div>
-              <details style="margin-top:12px">
-                <summary class="subtle" style="cursor:pointer">Advanced Node Login (Only for Cluster Peers)</summary>
-                <div class="form-grid one" style="margin-top:12px">
-                <div class="field"><label for="user_node_family" title="Use this only for node-to-node records. It controls trusted cluster-peer login behavior and password bypass.">Cluster Node Family</label><div class="select-shell"><select id="user_node_family" title="Leave this unset for normal people. Set a cluster node family only for sysop-managed node records such as DXSpider, DxNet, AR-Cluster, CLX, or pyCluster."><option value="">Not a cluster peer</option><option value="pycluster">pyCluster</option><option value="dxspider">DXSpider</option><option value="dxnet">DxNet</option><option value="arcluster">AR-Cluster</option><option value="clx">CLX</option></select></div></div>
-                </div>
-              </details>
             </section>
             <section>
               <h3>Access Matrix</h3>
@@ -1595,8 +1815,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 </table>
               </div>
               <div class="actions" style="margin-top:12px">
-                <button class="secondary" id="accessAll">Add All</button>
-                <button class="secondary" id="accessNone">Remove All</button>
+                <button class="good" id="accessAll">Add All</button>
+                <button class="warn" id="accessNone">Remove All</button>
               </div>
             </section>
           </div>
@@ -1627,11 +1847,11 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </div>
           </div>
           <div class="actions" style="margin-top:12px">
-            <button id="newPeer" title="Clear the editor and create a new outbound peer definition.">New Peer</button>
+            <button class="attention" id="newPeer" title="Clear the editor and create a new outbound peer definition.">New Peer</button>
             <button id="peerSave" title="Save this outbound peer target without opening the link immediately.">Save Peer</button>
-            <button id="pconnect" title="Create an outbound node-link connection to the selected peer DSN.">Connect</button>
+            <button class="good" id="pconnect" title="Create an outbound node-link connection to the selected peer DSN.">Connect</button>
             <button class="warn" id="pdisconnect" title="Disconnect the selected live peer session.">Disconnect</button>
-            <button id="reset" title="Clear policy-drop counters, optionally limited by the current peer filter.">Reset Policy Drops</button>
+            <button class="special" id="reset" title="Clear policy-drop counters, optionally limited by the current peer filter.">Reset Policy Drops</button>
           </div>
           <div class="tablewrap" style="margin-top:14px">
             <table>
@@ -1657,9 +1877,9 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="field"><label for="phlim" title="Maximum number of protocol history rows to load into the history table.">History Limit</label><input id="phlim" value="20" title="Increase this when investigating a noisy or unstable peer."></div>
           </div>
           <div class="actions" style="margin-top:12px">
-            <button id="protoSave" title="Persist the current protocol health thresholds.">Save Thresholds</button>
-            <button class="secondary" id="phload" title="Reload protocol history using the current peer filter and history limit.">Reload History</button>
-            <button class="warn" id="phreset" title="Delete stored protocol history for the current peer filter, or for all peers if no filter is set.">Reset Proto History</button>
+            <button class="good" id="protoSave" title="Persist the current protocol health thresholds.">Save Thresholds</button>
+            <button id="phload" title="Reload protocol history using the current peer filter and history limit.">Reload History</button>
+            <button class="special" id="phreset" title="Delete stored protocol history for the current peer filter, or for all peers if no filter is set.">Reset Proto History</button>
           </div>
           <div class="proto-grid" style="margin-top:14px">
             <div class="proto-card"><label>Tracked Peers</label><strong id="protoTracked">-</strong></div>
@@ -1774,7 +1994,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <section style="margin-top:14px">
             <h3>Security</h3>
             <div class="actions" style="margin:8px 0 12px">
-              <button id="securityReload" title="Reload recent login failures and current fail2ban bans.">Reload Security</button>
+              <button class="secondary" id="securityReload" title="Reload recent login failures and current fail2ban bans.">Reload Security</button>
             </div>
             <div class="users-columns">
               <section>
@@ -2142,6 +2362,8 @@ function setPeerRows(peers) {
     const desired = peer.desired ? '<div class="mini">configured peer</div>' : '';
     const reconnect = peer.inbound ? 'no local retry' : (peer.reconnect_enabled ? 'auto retry' : 'manual retry');
     const retry = peer.inbound ? 'n/a' : (peer.next_retry_epoch ? `next ${fmtEpoch(peer.next_retry_epoch)}` : 'ready');
+    const queue = peer.inbound ? 'mail n/a' : `mail ${esc(String(peer.pending_mail || 0))} queued`;
+    const routeIssues = !peer.inbound && peer.route_issues ? `<div class="mini warntext">route issues ${esc(String(peer.route_issues))}</div>` : '';
     let err = '';
     if (peer.last_error) {
       let errText = String(peer.last_error);
@@ -2162,7 +2384,7 @@ function setPeerRows(peers) {
       <td><span class="tag">${peer.profile || 'dxspider'}</span><div class="mini">${esc(reconnect)}</div></td>
       <td>${frames}<div class="mini">rx ${esc(rxTypes)}</div><div class="mini">tx ${esc(txTypes)}</div></td>
       <td>${peer.policy_dropped || 0}</td>
-      <td>${healthBadge(peer.proto && peer.proto.health)} <div class="mini">${esc(healthText)}</div><div class="mini">${peer.inbound ? 'inbound link' : `retry ${esc(String(peer.retry_count || 0))} • ${esc(retry)}`}</div>${err}</td>
+      <td>${healthBadge(peer.proto && peer.proto.health)} <div class="mini">${esc(healthText)}</div><div class="mini">${peer.inbound ? 'inbound link' : `retry ${esc(String(peer.retry_count || 0))} • ${esc(retry)}`}</div><div class="mini">${queue}</div>${routeIssues}${err}</td>
     </tr>`;
   }).join('');
   bindSelectablePeerRows(body, peers);
@@ -2173,11 +2395,16 @@ function setSpotRows(spots) {
     body.innerHTML = '<tr><td colspan="6">No spots stored yet.</td></tr>';
     return;
   }
+  const reviewText = (review) => {
+    if (!review || !review.suspicious) return '';
+    const reasons = Array.isArray(review.reasons) ? review.reasons.join(', ') : 'needs review';
+    return ` <span class="tag warn" title="${esc(reasons)}">Review</span>`;
+  };
   body.innerHTML = spots.map((spot) => `<tr>
     <td>${esc(Number(spot.freq_khz || 0).toFixed(1))}</td>
-    <td><strong>${esc(spot.dx_call || '')}</strong></td>
+    <td><strong>${esc(spot.dx_call || '')}</strong>${reviewText(spot.dx_review)}</td>
     <td>${esc(fmtEpoch(spot.epoch))}</td>
-    <td>${esc(spot.spotter || '')}</td>
+    <td>${esc(spot.spotter || '')}${reviewText(spot.spotter_review)}</td>
     <td>${esc(spot.info || '')}</td>
     <td>${esc(spot.source_node || '-')}</td>
   </tr>`).join('');
@@ -2298,6 +2525,7 @@ function fillUserForm(row) {
   byId('user_grid').value = data.qra || '';
   byId('user_block_reason').value = data.user_note || data.blocked_reason || '';
   byId('user_node_family').value = data.node_family || '';
+  byId('user_mfa_email_otp').value = data.mfa_email_otp || 'default';
   byId('user_password').value = '';
   const access = data.access || {};
   ['telnet','web'].forEach((channel) => {
@@ -2307,6 +2535,15 @@ function fillUserForm(row) {
       if (el) el.checked = !!rowAccess[capability];
     });
   });
+  const inboxStates = Object.entries(data.mail_inbox_states || {}).map(([k, v]) => `${k}=${v}`).join(', ') || 'none';
+  const outboxStates = Object.entries(data.mail_outbox_states || {}).map(([k, v]) => `${k}=${v}`).join(', ') || 'none';
+  let mailStatus = `Inbox ${Number(data.mail_inbox_total || 0)} total, ${Number(data.mail_inbox_unread || 0)} unread`;
+  mailStatus += ` • inbox states: ${inboxStates}`;
+  mailStatus += ` • outbox states: ${outboxStates}`;
+  if (Number(data.mail_outbox_pending || 0) > 0) mailStatus += ` • pending routes: ${Number(data.mail_outbox_pending || 0)}`;
+  if (Number(data.mail_outbox_issues || 0) > 0) mailStatus += ` • delivery issues: ${Number(data.mail_outbox_issues || 0)}`;
+  if (data.mail_last_error) mailStatus += ` • last error: ${data.mail_last_error}`;
+  setText('userMailStatus', mailStatus);
   setText('userEditorTitle', selectedUserCall ? `Editing ${selectedUserCall}` : 'User Details');
   setText('saveUser', selectedUserCall ? 'Update User' : 'Save User');
   byId('deleteUser').disabled = !selectedUserCall;
@@ -2322,8 +2559,10 @@ function clearUserForm(defaultCall='') {
   byId('user_grid').value = '';
   byId('user_block_reason').value = '';
   byId('user_node_family').value = '';
+  byId('user_mfa_email_otp').value = 'default';
   byId('user_password').value = '';
   applyPrivilegeDefaults('');
+  setText('userMailStatus', 'Mail status for the selected user will appear here.');
   setText('userEditorTitle', 'User Details');
   setText('saveUser', 'Save User');
   byId('deleteUser').disabled = true;
@@ -2366,9 +2605,14 @@ function seenText(active, lastEpoch, activeTitle, inactiveTitle) {
       ? `<span class="presence idle" title="${esc(inactiveTitle || 'Last seen')}">${esc(fmtAgeEpoch(lastEpoch))}</span>`
       : `<span class="subtle" title="${esc(inactiveTitle || 'No current session')}">—</span>`);
 }
-function anyPostingEnabled(access) {
+function dxPostingEnabled(access) {
   const channels = ['telnet','web'];
-  const caps = ['spots','chat','announce','wx','wcy','wwv'];
+  const caps = ['spots','announce'];
+  return channels.some((channel) => caps.some((cap) => !!(((access || {})[channel] || {})[cap])));
+}
+function bulletinPostingEnabled(access) {
+  const channels = ['telnet','web'];
+  const caps = ['chat','wx','wcy','wwv'];
   return channels.some((channel) => caps.some((cap) => !!(((access || {})[channel] || {})[cap])));
 }
 function setSysopRows(rows) {
@@ -2462,7 +2706,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
   if (prevId && byId(prevId)) byId(prevId).disabled = offset <= 0;
   if (nextId && byId(nextId)) byId(nextId).disabled = offset + limit >= total;
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="8">${esc(emptyText)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9">${esc(emptyText)}</td></tr>`;
     return;
   }
   body.innerHTML = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
@@ -2471,7 +2715,8 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
     <td>${esc(row.home_node || '-')}</td>
     <td title="${esc(row.last_login_peer || 'No recorded telnet login path')}">${mark(!!(((row.access || {}).telnet || {}).login), 'Telnet login allowed', 'Telnet login blocked')}</td>
     <td title="${esc(row.last_login_peer || 'No recorded web login path')}">${mark(!!(((row.access || {}).web || {}).login), 'Web login allowed', 'Web login blocked')}</td>
-    <td>${mark(anyPostingEnabled(row.access), 'Posting allowed on one or more channels', 'Posting disabled on all channels')}</td>
+    <td>${mark(dxPostingEnabled(row.access), 'DX spots or announce traffic allowed on one or more channels', 'DX spots and announce traffic blocked on all channels')}</td>
+    <td>${mark(bulletinPostingEnabled(row.access), 'Chat, WX, WCY, or WWV traffic allowed on one or more channels', 'Chat and bulletin-style traffic blocked on all channels')}</td>
     <td title="${esc(row.last_login_peer || 'No recorded inbound path')}">${esc(fmtEpoch(row.last_login_epoch))}</td>
     <td>${esc(row.last_login_peer || '-')}</td>
   </tr>`).join('');
@@ -2479,27 +2724,61 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
 }
 function fillNodeForm(data) {
   if (!data) return;
-  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','motd','prompt_template'].forEach((key) => {
+  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','motd','prompt_template','smtp_host','smtp_username','smtp_password','smtp_from_addr','smtp_from_name','mfa_issuer'].forEach((key) => {
     if (byId(key) && data[key] !== undefined) byId(key).value = data[key];
   });
   byId('show_status_after_login').checked = !!data.show_status_after_login;
   byId('require_password').checked = !!data.require_password;
+  byId('smtp_starttls').checked = !!data.smtp_starttls;
+  byId('smtp_use_ssl').checked = !!data.smtp_use_ssl;
+  byId('mfa_enabled').checked = !!data.mfa_enabled;
+  byId('mfa_require_for_sysop').checked = !!data.mfa_require_for_sysop;
+  byId('mfa_require_for_users').checked = !!data.mfa_require_for_users;
   byId('retention_enabled').checked = !!data.retention_enabled;
+  byId('retention_stale_users_enabled').checked = !!data.retention_stale_users_enabled;
+  if (data.smtp_port !== undefined) byId('smtp_port').value = data.smtp_port;
+  if (data.smtp_timeout_seconds !== undefined) byId('smtp_timeout_seconds').value = data.smtp_timeout_seconds;
+  if (data.mfa_otp_ttl_seconds !== undefined) byId('mfa_otp_ttl_seconds').value = data.mfa_otp_ttl_seconds;
+  if (data.mfa_otp_length !== undefined) byId('mfa_otp_length').value = data.mfa_otp_length;
+  if (data.mfa_max_attempts !== undefined) byId('mfa_max_attempts').value = data.mfa_max_attempts;
+  if (data.mfa_resend_cooldown_seconds !== undefined) byId('mfa_resend_cooldown_seconds').value = data.mfa_resend_cooldown_seconds;
   if (data.retention_spots_days !== undefined) byId('retention_spots_days').value = data.retention_spots_days;
   if (data.retention_messages_days !== undefined) byId('retention_messages_days').value = data.retention_messages_days;
   if (data.retention_bulletins_days !== undefined) byId('retention_bulletins_days').value = data.retention_bulletins_days;
+  if (data.retention_stale_users_days !== undefined) byId('retention_stale_users_days').value = data.retention_stale_users_days;
   const lastRun = Number(data.retention_last_run_epoch || 0);
   let status = byId('retention_enabled').checked ? 'Automatic cleanup is enabled.' : 'Automatic cleanup is disabled.';
+  if (byId('retention_stale_users_enabled').checked) {
+    status += ` Stale-user pruning is enabled at ${Number(data.retention_stale_users_days || 365)} days.`;
+  }
+  let cleanupTail = '';
   if (lastRun > 0) {
-    status += ` Last run: ${fmtEpoch(lastRun)}.`;
+    cleanupTail += `Last run: ${fmtEpoch(lastRun)}.`;
   }
   if (data.retention_last_result) {
     try {
       const parsed = JSON.parse(data.retention_last_result);
-      status += ` Removed ${Number(parsed.spots || 0)} spots, ${Number(parsed.messages || 0)} messages, ${Number(parsed.bulletins || 0)} bulletins.`;
+      const removed = `Removed ${Number(parsed.spots || 0)} spots, ${Number(parsed.messages || 0)} messages, ${Number(parsed.bulletins || 0)} bulletins, and ${Number(parsed.users || 0)} users.`;
+      cleanupTail += cleanupTail ? ` ${removed}` : removed;
     } catch {}
   }
-  setText('retentionStatus', status);
+  byId('retentionStatus').innerHTML = cleanupTail ? `${status}<br>${cleanupTail}` : status;
+  const datasets = data.datasets || {};
+  const cty = datasets.cty || {};
+  const wpxloc = datasets.wpxloc || {};
+  const setDatasetPill = (id, label, row) => {
+    const el = byId(id);
+    if (!el) return;
+    const status = String((row && row.status) || 'unknown');
+    const version = String((row && (row.version || row.version_date)) || '').trim();
+    el.textContent = `${label} · ${version || status}`;
+    el.classList.remove('ok', 'warn');
+    el.classList.add(status === 'loaded' ? 'ok' : 'warn');
+    const note = String((row && row.note) || '').trim();
+    el.title = note || `${label}: ${status}`;
+  };
+  setDatasetPill('navCty', 'CTY.DAT', cty);
+  setDatasetPill('navWpx', 'wpxloc.raw', wpxloc);
 }
 async function load() {
   const peer = encodeURIComponent(byId('peer').value.trim());
@@ -2576,6 +2855,7 @@ async function load() {
     if (thresholds.flap_window_secs !== undefined) byId('pwindow').value = thresholds.flap_window_secs;
   }
   if (nodeUiRes.status === 'fulfilled') fillNodeForm(nodeUiRes.value);
+  if (nodeUiRes.status === 'fulfilled') setText('navVersion', (nodeUiRes.value && nodeUiRes.value.software_version) || '-');
   if (auditRes.status === 'fulfilled') setAuditRows(auditRes.value);
   if (securityRes.status === 'fulfilled') {
     setAuthFailRows((securityRes.value || {}).auth_failures || []);
@@ -2626,7 +2906,18 @@ byId('login').onclick = async () => {
     sayLogin('');
     const call = byId('call').value.trim();
     const password = byId('pass').value;
-    const r = await jw('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call, password}), skipAuthReset:true});
+    let payload = {call, password};
+    let r = await jw('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), skipAuthReset:true});
+    if (r && r.mfa_required) {
+      const otp = window.prompt('Enter the email OTP code for ' + call + ':', '');
+      if (!otp) {
+        sayLogin('Login cancelled before MFA code entry.', false);
+        say('Login cancelled before MFA code entry.', false);
+        return;
+      }
+      payload = {call, password, challenge_id: r.challenge_id, otp: String(otp).trim()};
+      r = await jw('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), skipAuthReset:true});
+    }
     if (r && r.ok) {
       webTok = r.token;
       webCall = r.call;
@@ -2683,10 +2974,29 @@ byId('saveNode').onclick = async () => {
         login_tip: byId('login_tip').value.trim(),
         show_status_after_login: byId('show_status_after_login').checked,
         require_password: byId('require_password').checked,
+        smtp_host: byId('smtp_host').value.trim(),
+        smtp_port: parseInt(byId('smtp_port').value.trim(), 10) || 587,
+        smtp_username: byId('smtp_username').value.trim(),
+        smtp_password: byId('smtp_password').value,
+        smtp_from_addr: byId('smtp_from_addr').value.trim(),
+        smtp_from_name: byId('smtp_from_name').value.trim(),
+        smtp_starttls: byId('smtp_starttls').checked,
+        smtp_use_ssl: byId('smtp_use_ssl').checked,
+        smtp_timeout_seconds: parseInt(byId('smtp_timeout_seconds').value.trim(), 10) || 10,
+        mfa_enabled: byId('mfa_enabled').checked,
+        mfa_require_for_sysop: byId('mfa_require_for_sysop').checked,
+        mfa_require_for_users: byId('mfa_require_for_users').checked,
+        mfa_issuer: byId('mfa_issuer').value.trim(),
+        mfa_otp_ttl_seconds: parseInt(byId('mfa_otp_ttl_seconds').value.trim(), 10) || 600,
+        mfa_otp_length: parseInt(byId('mfa_otp_length').value.trim(), 10) || 6,
+        mfa_max_attempts: parseInt(byId('mfa_max_attempts').value.trim(), 10) || 5,
+        mfa_resend_cooldown_seconds: parseInt(byId('mfa_resend_cooldown_seconds').value.trim(), 10) || 30,
         retention_enabled: byId('retention_enabled').checked,
         retention_spots_days: parseInt(byId('retention_spots_days').value.trim(), 10) || 30,
         retention_messages_days: parseInt(byId('retention_messages_days').value.trim(), 10) || 90,
         retention_bulletins_days: parseInt(byId('retention_bulletins_days').value.trim(), 10) || 30,
+        retention_stale_users_enabled: byId('retention_stale_users_enabled').checked,
+        retention_stale_users_days: parseInt(byId('retention_stale_users_days').value.trim(), 10) || 365,
         support_contact: byId('support_contact').value.trim(),
         website_url: byId('website_url').value.trim(),
         motd: byId('motd').value,
@@ -2703,7 +3013,7 @@ byId('saveNode').onclick = async () => {
 byId('runCleanup').onclick = async () => {
   const r = await j('/api/maintenance/cleanup', {method:'POST'});
   const removed = r && r.removed ? r.removed : {};
-  say(`Cleanup removed ${Number(removed.spots || 0)} spots, ${Number(removed.messages || 0)} messages, ${Number(removed.bulletins || 0)} bulletins.`, !!(r && r.ok));
+  say(`Cleanup removed ${Number(removed.spots || 0)} spots, ${Number(removed.messages || 0)} messages, ${Number(removed.bulletins || 0)} bulletins, and ${Number(removed.users || 0)} users.`, !!(r && r.ok));
   await load();
 };
 byId('userSearch').onclick = async () => {
@@ -2737,6 +3047,7 @@ byId('saveUser').onclick = async () => {
       display_name: byId('user_name').value.trim(),
       home_node: byId('user_home_node').value.trim(),
       node_family: byId('user_node_family').value.trim(),
+      mfa_email_otp: byId('user_mfa_email_otp').value.trim(),
       qth: byId('user_qth').value.trim(),
       qra: byId('user_grid').value.trim().toUpperCase(),
       email: byId('user_email').value.trim(),
@@ -2774,6 +3085,35 @@ byId('saveUserPassword').onclick = async () => {
     await load();
   } catch (err) {
     say('Password update failed: ' + errText(err), false);
+  }
+};
+byId('sendMfaTest').onclick = async () => {
+  const email = byId('user_email').value.trim();
+  const call = byId('user_call').value.trim();
+  if (!email) {
+    say('A user email is required before sending an MFA test email.', false);
+    return;
+  }
+  try {
+    const r = await j('/api/mfa/test-email', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email, call})});
+    say(r && r.ok ? 'MFA test email queued for ' + email + '.' : 'MFA test email failed.', !!(r && r.ok));
+  } catch (err) {
+    say('MFA test email failed: ' + errText(err), false);
+  }
+};
+byId('resetUserMfa').onclick = async () => {
+  const call = byId('user_call').value.trim();
+  if (!call) {
+    say('A callsign is required before resetting MFA.', false);
+    return;
+  }
+  try {
+    const r = await j('/api/users/mfa/reset', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
+    if (r && r.ok && r.user) fillUserForm(r.user);
+    say(r && r.ok ? 'MFA reset applied for ' + call + '.' : 'MFA reset failed.', !!(r && r.ok));
+    await load();
+  } catch (err) {
+    say('MFA reset failed: ' + errText(err), false);
   }
 };
 byId('accessAll').onclick = () => {
@@ -2974,6 +3314,35 @@ if (restoreWebSession()) {
                 is_sysop = has_real_password and verify_password(password, str(expected)) and await self._admin_privileged_call(call)
                 if has_real_password and not is_password_hash(str(expected)) and verify_password(password, str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
+                if await self._mfa_required_for_call(call, is_sysop=is_sysop):
+                    email = await self._email_for_call(call)
+                    if not email:
+                        self._log_auth_failure(writer, headers, "sysop-web", call, "mfa_email_missing")
+                        await self._write_response(writer, 401, self._json({"error": "mfa email not configured"}))
+                        return
+                    if not self._smtp.enabled():
+                        await self._write_response(writer, 503, self._json({"error": "mfa delivery not configured"}))
+                        return
+                    challenge_id = str(payload.get("challenge_id", "")).strip()
+                    otp = str(payload.get("otp", "")).strip()
+                    if not challenge_id or not otp:
+                        try:
+                            challenge_id, expires_epoch = await self._mfa.issue(call=call, email=email, purpose="sysop-web")
+                        except Exception:
+                            LOG.exception("sysop web mfa delivery failed call=%s", call)
+                            await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
+                            return
+                        await self._write_response(
+                            writer,
+                            202,
+                            self._json({"ok": False, "mfa_required": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
+                        )
+                        return
+                    ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="sysop-web", otp=otp)
+                    if not ok:
+                        self._log_auth_failure(writer, headers, "sysop-web", call, "mfa_" + reason.replace(" ", "_"))
+                        await self._write_response(writer, 401, self._json({"error": reason}))
+                        return
                 token, exp = self._issue_web_token(call, is_sysop=is_sysop)
                 await self.store.record_login(
                     call,
@@ -3071,32 +3440,84 @@ if (restoreWebSession()) {
                         "login_tip": "",
                         "show_status_after_login": "off",
                         "require_password": "on",
+                        "smtp_host": "",
+                        "smtp_port": "587",
+                        "smtp_username": "",
+                        "smtp_password": "",
+                        "smtp_from_addr": "",
+                        "smtp_from_name": "pyCluster",
+                        "smtp_starttls": "on",
+                        "smtp_use_ssl": "off",
+                        "smtp_timeout_seconds": "10",
+                        "mfa_enabled": "off",
+                        "mfa_require_for_sysop": "on",
+                        "mfa_require_for_users": "off",
+                        "mfa_issuer": "pyCluster",
+                        "mfa_otp_ttl_seconds": "600",
+                        "mfa_otp_length": "6",
+                        "mfa_max_attempts": "5",
+                        "mfa_resend_cooldown_seconds": "30",
                         "retention_enabled": "on",
                         "retention_spots_days": "30",
                         "retention_messages_days": "90",
                         "retention_bulletins_days": "30",
+                        "retention_stale_users_enabled": "off",
+                        "retention_stale_users_days": "365",
                         "support_contact": "",
                         "website_url": "",
                         "motd": "",
                         "prompt_template": "",
                     }
+                    pref_key_map = {
+                        "retention_enabled": "retention.enabled",
+                        "retention_spots_days": "retention.spots_days",
+                        "retention_messages_days": "retention.messages_days",
+                        "retention_bulletins_days": "retention.bulletins_days",
+                        "retention_stale_users_enabled": "retention.stale_users_enabled",
+                        "retention_stale_users_days": "retention.stale_users_days",
+                    }
                     old_node_call = self.config.node.node_call
                     cfg_updates: dict[str, object] = {}
+                    smtp_updates: dict[str, object] = {}
+                    mfa_updates: dict[str, object] = {}
                     telnet_ports_value: tuple[int, ...] | None = None
                     for key in fields:
                         if key not in payload:
                             continue
-                        if key in {"show_status_after_login", "require_password", "retention_enabled"}:
+                        if key in {"show_status_after_login", "require_password", "retention_enabled", "retention_stale_users_enabled", "smtp_starttls", "smtp_use_ssl", "mfa_enabled", "mfa_require_for_sysop", "mfa_require_for_users"}:
                             flag = bool(payload.get(key, False))
                             val = "on" if flag else "off"
                             if key in _CONFIG_AUTH_NODE_FIELDS:
                                 cfg_updates[key] = flag
-                        elif key in {"retention_spots_days", "retention_messages_days", "retention_bulletins_days"}:
+                            elif key.startswith("smtp_"):
+                                smtp_updates[key[5:]] = flag
+                            elif key.startswith("mfa_"):
+                                mfa_updates[key[4:]] = flag
+                        elif key in {"retention_spots_days", "retention_messages_days", "retention_bulletins_days", "retention_stale_users_days", "smtp_port", "smtp_timeout_seconds", "mfa_otp_ttl_seconds", "mfa_otp_length", "mfa_max_attempts", "mfa_resend_cooldown_seconds"}:
                             try:
-                                val = str(max(1, min(3650, int(payload.get(key, fields[key])))))
+                                number = int(payload.get(key, fields[key]))
                             except Exception:
                                 await self._write_response(writer, 400, self._json({"error": f"invalid {key}"}))
                                 return
+                            if key == "smtp_port":
+                                number = max(1, min(65535, number))
+                                smtp_updates["port"] = number
+                            elif key == "smtp_timeout_seconds":
+                                number = max(1, min(120, number))
+                                smtp_updates["timeout_seconds"] = number
+                            elif key == "mfa_otp_ttl_seconds":
+                                number = max(60, min(3600, number))
+                                mfa_updates["otp_ttl_seconds"] = number
+                            elif key == "mfa_otp_length":
+                                number = max(6, min(8, number))
+                                mfa_updates["otp_length"] = number
+                            elif key == "mfa_max_attempts":
+                                number = max(1, min(10, number))
+                                mfa_updates["max_attempts"] = number
+                            elif key == "mfa_resend_cooldown_seconds":
+                                number = max(0, min(600, number))
+                                mfa_updates["resend_cooldown_seconds"] = number
+                            val = str(number)
                         elif key == "telnet_ports":
                             try:
                                 ports = parse_telnet_ports(payload.get(key, ""), fallback=self.config.telnet.port)
@@ -3115,8 +3536,19 @@ if (restoreWebSession()) {
                                 return
                             if key in _CONFIG_AUTH_NODE_FIELDS:
                                 cfg_updates[key] = val
+                            elif key.startswith("smtp_"):
+                                smtp_updates[key[5:]] = val
+                            elif key.startswith("mfa_"):
+                                mfa_updates[key[4:]] = val
                         if key not in _CONFIG_AUTH_NODE_FIELDS:
-                            await self.store.set_user_pref(self.config.node.node_call, key, val, now)
+                            if not key.startswith("smtp_") and not key.startswith("mfa_"):
+                                await self.store.set_user_pref(
+                                    self.config.node.node_call,
+                                    pref_key_map.get(key, key),
+                                    val,
+                                    now,
+                                )
+                    config_changed = bool(cfg_updates or smtp_updates or mfa_updates)
                     if cfg_updates:
                         if "node_call" in cfg_updates:
                             new_node_call = str(cfg_updates["node_call"]).strip().upper()
@@ -3136,12 +3568,21 @@ if (restoreWebSession()) {
                                 continue
                             if hasattr(self.config.node, key):
                                 setattr(self.config.node, key, value)
-                        if self.config_path:
-                            try:
-                                save_config(self.config_path, self.config)
-                            except Exception as exc:
-                                await self._write_response(writer, 500, self._json({"error": f"config save failed: {exc}"}))
-                                return
+                    for key, value in smtp_updates.items():
+                        if hasattr(self.config.smtp, key):
+                            setattr(self.config.smtp, key, value)
+                    for key, value in mfa_updates.items():
+                        if hasattr(self.config.mfa, key):
+                            setattr(self.config.mfa, key, value)
+                    if smtp_updates or mfa_updates:
+                        self._smtp = SMTPMailer(self.config.smtp)
+                        self._mfa = EmailOtpManager(self.config.mfa, self._smtp.send_code, self.store)
+                    if config_changed and self.config_path:
+                        try:
+                            save_config(self.config_path, self.config)
+                        except Exception as exc:
+                            await self._write_response(writer, 500, self._json({"error": f"config save failed: {exc}"}))
+                            return
                     self._audit("config", f"{self._authorized_call(headers)} updated node presentation settings")
                     if "telnet_ports" in payload and self.telnet_rebind_fn:
                         try:
@@ -3179,6 +3620,13 @@ if (restoreWebSession()) {
                     messages_days=_to_int(node_cfg.get("retention.messages_days"), 90),
                     bulletins_days=_to_int(node_cfg.get("retention.bulletins_days"), 30),
                 )
+                stale_users_enabled = str(node_cfg.get("retention.stale_users_enabled", "")).strip().lower() in {"1", "on", "yes", "true"}
+                removed["users"] = 0
+                if stale_users_enabled:
+                    removed["users"] = await self._prune_stale_users(
+                        now,
+                        stale_days=_to_int(node_cfg.get("retention.stale_users_days"), 365),
+                    )
                 await self.store.set_user_pref(self.config.node.node_call, "retention.last_run_epoch", str(now), now)
                 await self.store.set_user_pref(
                     self.config.node.node_call,
@@ -3186,8 +3634,45 @@ if (restoreWebSession()) {
                     json.dumps(removed, separators=(",", ":"), ensure_ascii=True),
                     now,
                 )
-                self._audit("control", f"{self._authorized_call(headers)} ran retention cleanup spots={removed.get('spots', 0)} messages={removed.get('messages', 0)} bulletins={removed.get('bulletins', 0)}")
+                self._audit(
+                    "control",
+                    f"{self._authorized_call(headers)} ran retention cleanup spots={removed.get('spots', 0)} messages={removed.get('messages', 0)} bulletins={removed.get('bulletins', 0)} users={removed.get('users', 0)}",
+                )
                 await self._write_response(writer, 200, self._json({"ok": True, "removed": removed}))
+                return
+
+            if path == "/api/mfa/test-email":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                if not self._smtp.enabled():
+                    await self._write_response(writer, 503, self._json({"error": "smtp not configured"}))
+                    return
+                payload = self._parse_json_body(body)
+                email = str(payload.get("email", "")).strip()
+                call = normalize_call(str(payload.get("call", "")).strip()) or "UNKNOWN"
+                if "@" not in email or email.startswith("@") or email.endswith("@"):
+                    await self._write_response(writer, 400, self._json({"error": "valid email is required"}))
+                    return
+                issuer = self.config.mfa.issuer.strip() or "pyCluster"
+                try:
+                    self._smtp.send_code(
+                        email,
+                        f"{issuer} SMTP test for {call}",
+                        (
+                            f"This is a test email from {issuer} for {call}.\n\n"
+                            "Your SMTP configuration is working.\n"
+                        ),
+                    )
+                except Exception:
+                    LOG.exception("sysop smtp test email failed call=%s email=%s", call, email)
+                    await self._write_response(writer, 503, self._json({"error": "smtp delivery failed"}))
+                    return
+                self._audit("config", f"{self._authorized_call(headers)} sent SMTP test email to {call} <{email}>")
+                await self._write_response(writer, 200, self._json({"ok": True, "call": call, "email": email}))
                 return
 
             if path == "/api/users":
@@ -3309,6 +3794,10 @@ if (restoreWebSession()) {
                     else:
                         await self.store.delete_user_pref(call, "node_family")
                     blocked_reason = str(payload.get("blocked_reason", "")).strip()[:80]
+                    mfa_email_otp = str(payload.get("mfa_email_otp", "")).strip().lower()
+                    if mfa_email_otp not in {"", "default", "required", "off"}:
+                        await self._write_response(writer, 400, self._json({"error": "invalid mfa_email_otp"}))
+                        return
                     channels = self._access_channels()
                     capabilities = self._access_capabilities()
                     if original_base and original_base != base_call:
@@ -3351,6 +3840,14 @@ if (restoreWebSession()) {
                         else:
                             await self.store.delete_user_pref(target, "blocked_login")
                             await self.store.delete_user_pref(target, "blocked_reason")
+                    if mfa_email_otp in {"", "default"}:
+                        await self.store.delete_user_pref(call, "mfa_email_otp")
+                        if original_call and original_call != call:
+                            await self.store.delete_user_pref(original_call, "mfa_email_otp")
+                    else:
+                        await self.store.set_user_pref(call, "mfa_email_otp", mfa_email_otp, now)
+                        if original_call and original_call != call:
+                            await self.store.delete_user_pref(original_call, "mfa_email_otp")
                     row = await self.store.get_user_registry(call)
                     self._audit(
                         "sysop",
@@ -3443,6 +3940,7 @@ if (restoreWebSession()) {
                     return
                 limit = self._parse_limit(q, "limit", default=20, low=1, high=200)
                 rows = await self.store.latest_spots(limit=limit)
+                dataset_status = self._dataset_status().get("cty", {})
                 body = [
                     {
                         "freq_khz": r["freq_khz"],
@@ -3451,6 +3949,8 @@ if (restoreWebSession()) {
                         "info": r["info"],
                         "spotter": r["spotter"],
                         "source_node": r["source_node"],
+                        "dx_review": _spot_call_review(str(r["dx_call"] or ""), dataset_status),
+                        "spotter_review": _spot_call_review(str(r["spotter"] or ""), dataset_status),
                     }
                     for r in rows
                 ]
@@ -3503,6 +4003,8 @@ if (restoreWebSession()) {
                             "next_retry_epoch": int(desired.get("next_retry_epoch", 0) or 0),
                             "last_connect_epoch": int(desired.get("last_connect_epoch", 0) or 0),
                             "last_error": str(desired.get("last_error", "")),
+                            "pending_mail": int(desired.get("pending_mail", 0) or 0),
+                            "route_issues": int(desired.get("route_issues", 0) or 0),
                             "dsn": str(desired.get("dsn", "")),
                         }
                     )
@@ -4208,6 +4710,44 @@ if (restoreWebSession()) {
                     writer,
                     200,
                     self._json({"ok": True, "posted_by": call, "category": category, "scope": scope}),
+                )
+                return
+
+            if path == "/api/users/mfa/reset":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                if not _is_valid_admin_record_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                now = int(time.time())
+                base_call = call.split("-", 1)[0]
+                await self.store.upsert_user_registry(base_call, now)
+                await self.store.set_user_pref(base_call, "mfa_email_otp", "off", now)
+                if call != base_call:
+                    await self.store.delete_user_pref(call, "mfa_email_otp")
+                cleared = await self.store.delete_mfa_challenges_for_call(call, include_ssids=True)
+                row = await self.store.get_user_registry(call)
+                if row is None and call != base_call:
+                    row = await self.store.get_user_registry(base_call)
+                self._audit("sysop", f"{self._authorized_call(headers)} reset MFA for {call} challenges={cleared}")
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json(
+                        {
+                            "ok": True,
+                            "call": call,
+                            "principal": base_call,
+                            "challenges_cleared": cleared,
+                            "user": await self._user_registry_json(row) if row else {"call": call, "mfa_email_otp": "off"},
+                        }
+                    ),
                 )
                 return
 
