@@ -326,6 +326,25 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .call-spotter { color:var(--text-spotter); font-weight:500; font-size:.82rem; text-decoration:none; }
 .call-spotter:hover { color:var(--text-primary); text-decoration:underline; }
 .entity-cell  { font-size:.78rem; color:var(--text-entity); }
+.entity-flag-wrap {
+  display:inline-flex;
+  align-items:center;
+  gap:.28rem;
+  margin-right:.22rem;
+  vertical-align:middle;
+}
+.entity-flag-img {
+  width:16px;
+  height:12px;
+  border-radius:2px;
+  border:1px solid rgba(255,255,255,.12);
+  object-fit:cover;
+  vertical-align:middle;
+  background:rgba(255,255,255,.04);
+}
+.entity-flag-fallback {
+  display:none;
+}
 .cmt-cell     { font-size:.76rem; color:var(--text-comment); font-style:italic; }
 .cmt-tag      { display:inline-block; font-size:.58rem; font-weight:700; border-radius:3px; padding:1px 5px; margin-right:3px; vertical-align:middle; letter-spacing:.05em; white-space:nowrap; font-style:normal; }
 .ctag-btn     { display:inline-block; font-size:.60rem; font-weight:700; border-radius:4px; padding:2px 6px; margin:1px; vertical-align:middle; letter-spacing:.04em; white-space:nowrap; cursor:pointer; border:1px solid; background:transparent; font-family:inherit; transition:opacity .15s; opacity:.55; }
@@ -485,16 +504,24 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 }
 .footer-user-edit:hover { color:var(--accent); }
 .footer-user-login {
-  color:#fecaca;
+  color:#86efac;
   font-weight:700;
   text-transform:uppercase;
   letter-spacing:.06em;
   animation:footerLoginPulse 1.8s ease-in-out infinite;
 }
 .footer-user-login:hover {
-  color:#fca5a5;
+  color:#4ade80;
 }
-@keyframes footerLoginPulse {
+.footer-user-register {
+  color:#fecaca;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  animation:footerRegisterPulse 1.8s ease-in-out infinite;
+}
+.footer-user-register:hover { color:#fca5a5; }
+@keyframes footerRegisterPulse {
   0%, 100% {
     color:#fecaca;
     text-shadow:0 0 0 rgba(239,68,68,0);
@@ -502,6 +529,16 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
   50% {
     color:#ef4444;
     text-shadow:0 0 10px rgba(239,68,68,.45), 0 0 18px rgba(239,68,68,.2);
+  }
+}
+@keyframes footerLoginPulse {
+  0%, 100% {
+    color:#86efac;
+    text-shadow:0 0 0 rgba(34,197,94,0);
+  }
+  50% {
+    color:#22c55e;
+    text-shadow:0 0 10px rgba(34,197,94,.45), 0 0 18px rgba(34,197,94,.2);
   }
 }
 #footer a { color:var(--text-spotter); text-decoration:none; }
@@ -695,7 +732,7 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 
 /* ================================================================ toast */
 #toast-wrap {
-  position:fixed; bottom:36px; right:228px; z-index:9999;
+  position:fixed; bottom:36px; right:calc(240px + 20px); z-index:9999;
   display:flex; flex-direction:column-reverse; gap:6px; pointer-events:none;
 }
 .toast {
@@ -818,12 +855,27 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .profile-modal-status { margin-top:10px; font-size:0.68rem; color:var(--text-dim); }
 .profile-modal-status.ok { color:#3fb950; }
 .profile-modal-status.err { color:#f85149; }
+.profile-modal-status.warn { color:#ffd32a; }
 #profile-modal-bg {
   display:none; position:fixed; inset:0; z-index:6100;
   background:rgba(0,0,0,.55); backdrop-filter:blur(3px);
   align-items:center; justify-content:center;
 }
 #profile-modal-bg.open { display:flex; }
+#login-modal-bg {
+  display:none; position:fixed; inset:0; z-index:6100;
+  background:rgba(0,0,0,.55); backdrop-filter:blur(3px);
+  align-items:center; justify-content:center;
+}
+#login-modal-bg.open { display:flex; }
+#register-modal-bg {
+  display:none; position:fixed; inset:0; z-index:6100;
+  background:rgba(0,0,0,.55); backdrop-filter:blur(3px);
+  align-items:center; justify-content:center;
+}
+#register-modal-bg.open { display:flex; }
+.register-help { font-size:.72rem; color:var(--text-secondary); margin-top:8px; }
+.register-note { min-height:1.4em; font-size:.68rem; color:var(--text-muted); margin-top:6px; }
 
 /* ================================================================ band opening pills */
 .opening-pill {
@@ -914,6 +966,38 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 .cs-pill.cs-peer .cs-val { color:#3fb950; }
 .cs-pill.cs-home .cs-val { color:#ffd32a; }
 @media (max-width:980px) { .cluster-grid-2 { grid-template-columns:1fr; } }
+@media (max-width:1100px) {
+  #header { align-items:flex-start; padding:10px 14px; }
+  #header-left, #stats-bar { width:100%; }
+  #stats-bar { overflow-x:auto; flex-wrap:nowrap; padding-bottom:4px; }
+  .stat-pill { flex:0 0 auto; }
+  #page-nav { overflow-x:auto; padding:0 10px; }
+  .page-tab { flex:0 0 auto; padding:10px 14px; }
+  #content { flex-direction:column; }
+  #sidebar {
+    width:auto;
+    border-left:none;
+    border-top:1px solid var(--border-main);
+    overflow:visible;
+  }
+  #map-wrap { height:260px; }
+}
+@media (max-width:760px) {
+  html, body { font-size:17px; }
+  #header h1 { font-size:1.1rem; }
+  .header-meta { font-size:0.7rem; }
+  #map-wrap { height:210px; }
+  #toast-wrap { right:16px; bottom:84px; }
+  .stats-grid-2, .stats-grid-3, .trend-charts, .cluster-grid-2 { grid-template-columns:1fr; }
+  #footer { padding:8px 12px; flex-direction:column; align-items:flex-start; }
+  .footer-block { width:100%; }
+  .footer-user-line { gap:4px; }
+  .profile-modal-grid { grid-template-columns:1fr; }
+  #spot-modal { width:min(94vw, 420px); padding:18px 16px; }
+  .operate-actions button { flex:1 1 calc(50% - 6px); }
+  .watch-input-row { flex-wrap:wrap; }
+  .watch-type, .watch-input { width:100%; }
+}
 </style>
 </head>
 <body>
@@ -1024,8 +1108,8 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
       <div class="sb-tabs">
         <button class="sb-tab active" data-panel="filters">Filters</button>
         <button class="sb-tab" data-panel="metrics">Metrics</button>
-        <button class="sb-tab" data-panel="watch">Watch</button>
-        <button class="sb-tab" data-panel="operate">Operate</button>
+        <button class="sb-tab hidden" id="tab-watch" data-panel="watch">Watch</button>
+        <button class="sb-tab hidden" id="tab-operate" data-panel="operate">Operate</button>
       </div>
 
       <!-- ── Filters panel ── -->
@@ -1069,38 +1153,12 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 
         <div class="filter-section">
           <span class="filter-label">Mode</span>
-          <div class="filter-row">
-            <button class="active" data-ftype="mode" data-fval="ALL">All</button>
-            <button data-ftype="mode" data-fval="CW">CW</button>
-            <button data-ftype="mode" data-fval="WSPR">WSPR</button>
-            <button data-ftype="mode" data-fval="RTTY">RTTY</button>
-            <button data-ftype="mode" data-fval="FT8">FT8</button>
-            <button data-ftype="mode" data-fval="FT4">FT4</button>
-            <button data-ftype="mode" data-fval="FT2">FT2</button>
-            <button data-ftype="mode" data-fval="JS8">JS8</button>
-            <button data-ftype="mode" data-fval="JT9">JT9</button>
-            <button data-ftype="mode" data-fval="JT65">JT65</button>
-            <button data-ftype="mode" data-fval="SSB">SSB</button>
-            <button data-ftype="mode" data-fval="AM">AM</button>
-            <button data-ftype="mode" data-fval="FM">FM</button>
-          </div>
+          <div class="filter-row" id="mode-filter-row"></div>
         </div>
 
         <div class="filter-section">
           <span class="filter-label">Activity</span>
-          <div class="filter-row">
-            <button class="active" data-ftype="activity" data-fval="ALL">All</button>
-            <button data-ftype="activity" data-fval="RARE">RARE</button>
-            <button data-ftype="activity" data-fval="EME">EME</button>
-            <button data-ftype="activity" data-fval="SAT">SAT</button>
-            <button data-ftype="activity" data-fval="WWFF">WWFF</button>
-            <button data-ftype="activity" data-fval="SOTA">SOTA</button>
-            <button data-ftype="activity" data-fval="POTA">POTA</button>
-            <button data-ftype="activity" data-fval="IOTA">IOTA</button>
-            <button data-ftype="activity" data-fval="BOTA">BOTA</button>
-            <button data-ftype="activity" data-fval="LOTA">LOTA</button>
-            <button data-ftype="activity" data-fval="GMA">GMA</button>
-          </div>
+          <div class="filter-row" id="activity-filter-row"></div>
         </div>
 
         <div class="filter-section">
@@ -1175,15 +1233,18 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
       <div class="sb-panel" id="sb-panel-watch">
 
         <div class="filter-section">
-          <span class="filter-label">Watchlist <span style="font-weight:400;color:var(--text-muted)">alerts</span></span>
+          <span class="filter-label">Watchlist <span style="font-weight:400;color:var(--text-muted)">cluster-backed alerts</span></span>
           <div class="watch-input-row">
             <select id="watch-type" class="watch-type" title="What to match">
               <option value="call">Call</option>
+              <option value="spotter">Spotter</option>
               <option value="entity">Entity</option>
               <option value="prefix">Prefix</option>
               <option value="mode">Mode</option>
               <option value="band">Band</option>
               <option value="activity">Activity</option>
+              <option value="cqzone">CQ Zone</option>
+              <option value="ituzone">ITU Zone</option>
               <option value="comment">Comment</option>
             </select>
             <input id="watch-input" class="watch-input" type="text" placeholder="Value to watch…" maxlength="24" autocomplete="off">
@@ -1215,47 +1276,21 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
           <div id="watch-matches" class="watch-matches"></div>
         </div>
 
-        <hr class="sidebar-divider">
-
-        <div class="filter-section">
-          <span class="filter-label">My QTH <span style="font-weight:400;color:var(--text-muted)">profile</span></span>
-          <div class="qth-input-row">
-            <span class="qth-lbl">Call</span>
-            <input id="qth-call" class="qth-inp" type="text" placeholder="CALL" maxlength="12" autocomplete="off">
-          </div>
-          <div class="qth-input-row">
-            <span class="qth-lbl">Grid</span>
-            <input id="qth-grid" class="qth-inp" type="text" placeholder="FN31PR" maxlength="8" autocomplete="off">
-          </div>
-          <div id="qth-status"></div>
-        </div>
-
       </div><!-- sb-panel-watch -->
 
       <!-- ── Operate panel ── -->
       <div class="sb-panel" id="sb-panel-operate">
 
         <div class="filter-section">
-          <span class="filter-label">User Login</span>
+          <span class="filter-label">Posting Access</span>
           <div class="operate-card">
           <div class="operate-auth-row">
             <div id="op-auth-badge" class="operate-auth-badge off">Offline</div>
           </div>
-          <div class="operate-note">Sign in with your local callsign and password to post from the web UI.</div>
-          <div class="search-wrap" style="margin-bottom:6px">
-            <input id="op-call" class="search-box" type="text" placeholder="local callsign" autocomplete="username">
-          </div>
-          <div class="search-wrap" style="margin-bottom:6px">
-            <input id="op-pass" class="search-box" type="password" placeholder="password" autocomplete="current-password">
-          </div>
-          <div class="filter-row operate-actions">
-            <button id="op-login-btn">Log In</button>
-            <button id="op-logout-btn">Log Out</button>
-          </div>
-          <div class="operate-note" style="padding-top:6px">Allowed here</div>
+          <div class="operate-note">Allowed here</div>
           <div id="op-access" class="operate-access"></div>
           <div class="operate-note">Greyed-out actions are disabled by local node policy. Telnet and System Operator access are managed separately.</div>
-          <div id="op-status" style="font-size:.70rem;color:var(--text-dim);padding-top:4px">Not logged in</div>
+          <div id="op-status" style="font-size:.70rem;color:var(--text-dim);padding-top:4px">Posting tools are available after web login.</div>
           </div>
         </div>
 
@@ -1594,6 +1629,77 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
   </div>
 </div>
 
+<div id="login-modal-bg">
+  <div id="spot-modal">
+    <button class="sm-close" id="login-close">✕</button>
+    <h2>Web Login</h2>
+    <div class="register-help">Sign in with your local callsign and password to post from the web UI.</div>
+    <div class="profile-modal-grid">
+      <div class="field">
+        <label for="login-call">Callsign</label>
+        <input id="login-call" type="text" maxlength="12" placeholder="N0CALL" autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="login-pass">Password</label>
+        <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+      </div>
+    </div>
+    <div class="profile-modal-actions">
+      <button id="login-cancel" type="button">Cancel</button>
+      <button id="login-submit" class="primary" type="button">Log In</button>
+    </div>
+    <div id="login-status" class="profile-modal-status"></div>
+  </div>
+</div>
+
+<div id="register-modal-bg">
+  <div id="spot-modal">
+    <button class="sm-close" id="register-close">✕</button>
+    <h2>Request Registration</h2>
+    <div class="register-help">Use your real callsign and a working email address. A sysop will review the request after email verification.</div>
+    <div class="profile-modal-grid">
+      <div class="field">
+        <label for="register-call">Callsign</label>
+        <input id="register-call" type="text" maxlength="12" placeholder="N0CALL">
+      </div>
+      <div class="field">
+        <label for="register-name">Name</label>
+        <input id="register-name" type="text" maxlength="80" placeholder="Operator name">
+      </div>
+      <div class="field">
+        <label for="register-homenode">Home Node</label>
+        <input id="register-homenode" type="text" maxlength="16" placeholder="W1AW">
+      </div>
+      <div class="field">
+        <label for="register-qra">Grid Square</label>
+        <input id="register-qra" type="text" maxlength="16" placeholder="FN31PR">
+      </div>
+      <div class="field span-2">
+        <label for="register-qth">Location (QTH)</label>
+        <input id="register-qth" type="text" maxlength="80" placeholder="City, state, or region">
+      </div>
+      <div class="field span-2">
+        <label for="register-email">Email</label>
+        <input id="register-email" type="email" maxlength="120" placeholder="operator@example.org">
+      </div>
+      <div class="field span-2">
+        <label for="register-note">Note to Sysop</label>
+        <input id="register-note" type="text" maxlength="160" placeholder="Optional note">
+      </div>
+      <div class="field span-2" id="register-otp-row" style="display:none">
+        <label for="register-otp">Verification Code</label>
+        <input id="register-otp" type="text" maxlength="12" placeholder="Enter the emailed code">
+      </div>
+    </div>
+    <div class="profile-modal-actions">
+      <button id="register-cancel" type="button">Cancel</button>
+      <button id="register-submit" class="primary" type="button">Send Verification</button>
+    </div>
+    <div id="register-status" class="profile-modal-status"></div>
+    <div id="register-note-line" class="register-note"></div>
+  </div>
+</div>
+
 <script>
 // ================================================================ Config
 const API    = '/api/spots';
@@ -1602,9 +1708,11 @@ const STATS  = '/api/stats';
 const LEADER = '/api/leaderboard';
 const SOLAR  = '/api/solar';
 const BRAND  = '/api/public/branding';
+const TAXONOMY = '/api/public/taxonomy';
 const AUTH_LOGIN = '/api/auth/login';
 const AUTH_LOGOUT = '/api/auth/logout';
 const AUTH_ME = '/api/auth/me';
+const REGISTER_REQUEST = '/api/register/request';
 const PROFILE_SAVE = '/api/profile';
 const POST_SPOT = '/api/spot';
 const POST_CHAT = '/api/chat';
@@ -1744,7 +1852,53 @@ let webCall     = '';
 let webAccess   = {};
 let webProfile  = {};
 let opBusyCount = 0;
+let registerChallengeId = '';
 let liveStats   = null;
+
+function renderDynamicFilterRow(rowId, type, values) {
+  const row = document.getElementById(rowId);
+  if (!row) return;
+  const items = ['ALL', ...values.filter(v => v && v !== 'ALL')];
+  row.innerHTML = items.map((value) => {
+    const label = value === 'ALL' ? 'All' : value;
+    return `<button${value === 'ALL' ? ' class="active"' : ''} data-ftype="${type}" data-fval="${esc(value)}">${esc(label)}</button>`;
+  }).join('');
+}
+
+function bindSpotFilterButtons() {
+  document.querySelectorAll('[data-ftype]').forEach(btn => {
+    if (btn.dataset.bound === '1') return;
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => {
+      const type = btn.dataset.ftype;
+      document.querySelectorAll(`[data-ftype="${type}"]`).forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      filters[type] = btn.dataset.fval;
+      renderTable();
+    });
+  });
+}
+
+async function loadTaxonomy() {
+  try {
+    const data = await fetch(TAXONOMY).then(r => r.json());
+    MODE_FILTERS = Array.isArray(data.mode_filters) && data.mode_filters.length ? data.mode_filters : MODE_FILTERS;
+    ACTIVITY_FILTERS = Array.isArray(data.activity_filters) && data.activity_filters.length ? data.activity_filters : ACTIVITY_FILTERS;
+    COMMENT_TAGS = Array.isArray(data.comment_tags) && data.comment_tags.length ? data.comment_tags.map(t => ({
+      re: new RegExp(t.pattern, 'i'),
+      label: t.label,
+      col: t.color || '#58a6ff'
+    })) : COMMENT_TAGS;
+    RARE_ENTITIES = new Set(Array.isArray(data.rare_entities) && data.rare_entities.length ? data.rare_entities : Array.from(RARE_ENTITIES));
+  } catch (e) {
+    console.warn('taxonomy load failed', e);
+  }
+  renderDynamicFilterRow('mode-filter-row', 'mode', MODE_FILTERS);
+  renderDynamicFilterRow('activity-filter-row', 'activity', ACTIVITY_FILTERS);
+  bindSpotFilterButtons();
+  renderCommentTagButtons();
+  syncSpotFilterUi();
+}
 
 function activateMainPage(page) {
   const target = String(page || 'spots');
@@ -1759,18 +1913,33 @@ function activateMainPage(page) {
 }
 
 function activateSidebarPanel(panel) {
+  const operateTab = document.getElementById('tab-operate');
+  const watchTab = document.getElementById('tab-watch');
+  if (panel === 'operate' && operateTab && operateTab.classList.contains('hidden')) panel = 'filters';
+  if (panel === 'watch' && watchTab && watchTab.classList.contains('hidden')) panel = 'filters';
   document.querySelectorAll('.sb-tab').forEach(t => t.classList.toggle('active', t.dataset.panel === panel));
   document.querySelectorAll('.sb-panel').forEach(p => p.classList.toggle('active', p.id === `sb-panel-${panel}`));
 }
 
 function openOperateLogin() {
-  activateMainPage('spots');
-  activateSidebarPanel('operate');
-  const callEl = document.getElementById('op-call');
+  setLoginStatus('');
+  document.getElementById('login-modal-bg')?.classList.add('open');
+  const callEl = document.getElementById('login-call');
   if (callEl) {
     callEl.focus();
     callEl.select();
   }
+}
+
+function closeLoginModal() {
+  document.getElementById('login-modal-bg')?.classList.remove('open');
+}
+
+function setLoginStatus(msg, cls='') {
+  const el = document.getElementById('login-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.className = `profile-modal-status${cls ? ` ${cls}` : ''}`;
 }
 
 function opSetStatus(msg, ok=true) {
@@ -1851,8 +2020,9 @@ function updateFooterUser() {
   const el = document.getElementById('footer-user');
   if (!el) return;
   if (!(webToken && webCall)) {
-    el.innerHTML = '<span class="footer-user-line"><button id="footer-login" class="footer-user-edit footer-user-login" type="button">Log In</button> <span class="footer-user-note">(must be registered locally)</span></span>';
+    el.innerHTML = '<span class="footer-user-line"><button id="footer-login" class="footer-user-edit footer-user-login" type="button">Log In</button><span class="footer-sep">•</span><button id="footer-register" class="footer-user-edit footer-user-register" type="button">Register</button><span class="footer-user-note">(must be approved locally)</span></span>';
     document.getElementById('footer-login')?.addEventListener('click', openOperateLogin);
+    document.getElementById('footer-register')?.addEventListener('click', openRegisterModal);
     return;
   }
   const first = firstProfileName(webProfile);
@@ -1887,6 +2057,109 @@ function closeProfileModal() {
   document.getElementById('profile-modal-bg')?.classList.remove('open');
 }
 
+function setRegisterStatus(msg, cls='') {
+  const el = document.getElementById('register-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.className = `profile-modal-status${cls ? ` ${cls}` : ''}`;
+}
+
+function openRegisterModal() {
+  registerChallengeId = '';
+  ['register-call','register-name','register-homenode','register-qra','register-qth','register-email','register-note','register-otp'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  const otpRow = document.getElementById('register-otp-row');
+  if (otpRow) otpRow.style.display = 'none';
+  const submit = document.getElementById('register-submit');
+  if (submit) submit.textContent = 'Send Verification';
+  const note = document.getElementById('register-note-line');
+  if (note) note.textContent = '';
+  setRegisterStatus('');
+  document.getElementById('register-modal-bg')?.classList.add('open');
+  document.getElementById('register-call')?.focus();
+}
+
+function closeRegisterModal() {
+  document.getElementById('register-modal-bg')?.classList.remove('open');
+}
+
+async function submitRegisterRequest() {
+  const payload = {
+    call: (document.getElementById('register-call')?.value || '').trim().toUpperCase(),
+    name: (document.getElementById('register-name')?.value || '').trim(),
+    homenode: (document.getElementById('register-homenode')?.value || '').trim().toUpperCase(),
+    qth: (document.getElementById('register-qth')?.value || '').trim(),
+    qra: (document.getElementById('register-qra')?.value || '').trim().toUpperCase(),
+    email: (document.getElementById('register-email')?.value || '').trim(),
+    note: (document.getElementById('register-note')?.value || '').trim(),
+  };
+  if (!payload.call || !payload.email) {
+    setRegisterStatus('Callsign and email are required.', 'err');
+    return;
+  }
+  const submit = document.getElementById('register-submit');
+  try {
+    if (submit) submit.disabled = true;
+    if (!registerChallengeId) {
+      setRegisterStatus('Sending verification code...', 'warn');
+      const body = await fetch(REGISTER_REQUEST, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload),
+      }).then(async (r) => {
+        const text = await r.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch {}
+        if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+        return data;
+      });
+      if (body && body.verification_required && body.challenge_id) {
+        registerChallengeId = body.challenge_id;
+        const otpRow = document.getElementById('register-otp-row');
+        if (otpRow) otpRow.style.display = '';
+        if (submit) submit.textContent = 'Submit Request';
+        const note = document.getElementById('register-note-line');
+        if (note) note.textContent = 'Your request will remain pending until a sysop approves it.';
+        setRegisterStatus('Verification code sent. Enter it below to finish your request.', 'warn');
+        document.getElementById('register-otp')?.focus();
+      }
+      return;
+    }
+    payload.challenge_id = registerChallengeId;
+    payload.otp = (document.getElementById('register-otp')?.value || '').trim();
+    if (!payload.otp) {
+      setRegisterStatus('Enter the verification code first.', 'err');
+      return;
+    }
+    setRegisterStatus('Submitting request...', 'warn');
+    const body = await fetch(REGISTER_REQUEST, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload),
+    }).then(async (r) => {
+      const text = await r.text();
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch {}
+      if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+      return data;
+    });
+    if (body && body.ok) {
+      registerChallengeId = '';
+      if (submit) submit.textContent = 'Send Verification';
+      const note = document.getElementById('register-note-line');
+      if (note) note.textContent = 'Watch your email in case a sysop needs more information.';
+      setRegisterStatus('Registration request submitted. A sysop will review it.', 'ok');
+      setTimeout(() => closeRegisterModal(), 1200);
+    }
+  } catch (err) {
+    setRegisterStatus(err.message || 'Registration request failed.', 'err');
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+}
+
 async function saveProfile() {
   if (!(webToken && webCall)) return;
   const payload = {
@@ -1904,6 +2177,8 @@ async function saveProfile() {
     });
     webProfile = body.profile || {};
     saveWebSession();
+    syncServerWatchSeedFromProfile();
+    renderWatchlist();
     applyOperatorState();
     setProfileStatus('Profile updated.', 'ok');
     setTimeout(closeProfileModal, 500);
@@ -1914,15 +2189,17 @@ async function saveProfile() {
 
 function applyOperatorState() {
   const loggedIn = !!(webToken && webCall);
-  const loginBtn = document.getElementById('op-login-btn');
-  const logoutBtn = document.getElementById('op-logout-btn');
-  const callEl = document.getElementById('op-call');
-  const passEl = document.getElementById('op-pass');
+  const operateTab = document.getElementById('tab-operate');
+  const watchTab = document.getElementById('tab-watch');
   const busy = opBusyCount > 0;
-  if (loginBtn) loginBtn.disabled = loggedIn || busy;
-  if (logoutBtn) logoutBtn.disabled = !loggedIn;
-  if (callEl) callEl.disabled = loggedIn || busy;
-  if (passEl) passEl.disabled = loggedIn || busy;
+  if (operateTab) operateTab.classList.toggle('hidden', !loggedIn);
+  if (watchTab) watchTab.classList.toggle('hidden', !loggedIn);
+  if (!loggedIn) {
+    const activeRestricted = document.querySelector(
+      '.sb-tab.active[data-panel="operate"], .sb-panel.active#sb-panel-operate, .sb-tab.active[data-panel="watch"], .sb-panel.active#sb-panel-watch'
+    );
+    if (activeRestricted) activateSidebarPanel('filters');
+  }
   const spotAllowed = loggedIn && webAccess.spots !== false;
   const chatAllowed = loggedIn && webAccess.chat !== false;
   const announceAllowed = loggedIn && webAccess.announce !== false;
@@ -2042,7 +2319,10 @@ async function webJson(url, opts={}) {
     webToken = '';
     webCall = '';
     webAccess = {};
+    webProfile = {};
     saveWebSession();
+    syncServerWatchSeedFromProfile();
+    renderWatchlist();
     applyOperatorState();
     opSetWarn('Your web session expired. Please log in again.');
   }
@@ -2052,6 +2332,8 @@ async function webJson(url, opts={}) {
 
 async function restoreWebSession() {
   loadWebSession();
+  syncServerWatchSeedFromProfile();
+  renderWatchlist();
   if (!webToken) { applyOperatorState(); return; }
   try {
     const me = await webJson(AUTH_ME);
@@ -2066,14 +2348,14 @@ async function restoreWebSession() {
     webProfile = {};
     saveWebSession();
   }
+  syncServerWatchSeedFromProfile();
+  renderWatchlist();
   applyOperatorState();
 }
 
-async function loginOperator() {
-  const call = (document.getElementById('op-call')?.value || '').trim().toUpperCase();
-  const password = document.getElementById('op-pass')?.value || '';
+async function performOperatorLogin(call, password, setStatus, clearPassword) {
   if (!call || !password) {
-    opSetStatus('Callsign and password are required.', false);
+    setStatus('Callsign and password are required.', false);
     return;
   }
   try {
@@ -2088,13 +2370,40 @@ async function loginOperator() {
     webAccess = body.access || {};
     webProfile = body.profile || {};
     saveWebSession();
+    syncServerWatchSeedFromProfile();
+    renderWatchlist();
     applyOperatorState();
-    document.getElementById('op-pass').value = '';
-    opSetStatus(`Logged in as ${webCall}.`, true);
+    clearPassword();
+    setStatus(`Logged in as ${webCall}.`, true);
+    return true;
   } catch (err) {
-    opSetStatus(err.message || 'Login failed.', false);
+    setStatus(err.message || 'Login failed.', false);
   } finally {
     setOperateBusy(false);
+  }
+  return false;
+}
+
+async function loginOperator() {
+  const call = (document.getElementById('op-call')?.value || '').trim().toUpperCase();
+  const password = document.getElementById('op-pass')?.value || '';
+  await performOperatorLogin(call, password, opSetStatus, () => {
+    const pass = document.getElementById('op-pass');
+    if (pass) pass.value = '';
+  });
+}
+
+async function loginOperatorFromModal() {
+  const call = (document.getElementById('login-call')?.value || '').trim().toUpperCase();
+  const password = document.getElementById('login-pass')?.value || '';
+  const ok = await performOperatorLogin(call, password, (msg, good=true) => {
+    setLoginStatus(msg, good ? 'ok' : 'err');
+  }, () => {
+    const pass = document.getElementById('login-pass');
+    if (pass) pass.value = '';
+  });
+  if (ok) {
+    setTimeout(() => closeLoginModal(), 400);
   }
 }
 
@@ -2108,6 +2417,8 @@ async function logoutOperator() {
   webAccess = {};
   webProfile = {};
   saveWebSession();
+  syncServerWatchSeedFromProfile();
+  renderWatchlist();
   applyOperatorState();
   opSetStatus('Logged out.', true);
   setOperateBusy(false);
@@ -2167,37 +2478,37 @@ async function submitPublicAction(kind) {
   }
 }
 
-const COMMENT_TAGS = [
+let COMMENT_TAGS = [
   // ── Calling / Status ─────────────────────────────────────────────────
-  { re:/\bcq\b|\bcqing\b|\bcalling\b|\blistening\b/i,                   label:'🗣️ CQ',        col:'#10b981' },
-  { re:/\bsplit\b|\bspilt\b|\bup\b|\bqsx|\bdn\b/i,                      label:'❗ QSX',       col:'#f59e0b' },
-  { re:/\bqsy\b/i,                                                       label:'🔄 QSY',       col:'#67e8f9' },
-  { re:/\bqrt\b/i,                                                       label:'💤 QRT',       col:'#94a3b8' },
+  { re:/\bcq\b|\bcqing\b|\bcalling\b|\blistening\b/i,                   label:'CQ',          col:'#10b981' },
+  { re:/\bsplit\b|\bspilt\b|\bup\b|\bqsx|\bdn\b/i,                      label:'QSX',         col:'#f59e0b' },
+  { re:/\bqsy\b/i,                                                       label:'QSY',         col:'#67e8f9' },
+  { re:/\bqrt\b/i,                                                       label:'QRT',         col:'#94a3b8' },
   // ── Mode ─────────────────────────────────────────────────────────────
-  { re:/\bcw\b|\bskcc\b|\bfists\b|\bhst\b/i,                            label:'⚡ CW',         col:'#facc15' },
-  { re:/\bft8\b|\bft4\b|\bft2\b|\bq65\b|\bmsk144\b|\bfsk441\b|\brtty\b|\bjs8\b|\bjt65\b|\bjt9\b|\bwspr\b|\bmfsk\b|\bolivia\b|\bdomino(?:ex)?\b|\bthor\b|\bhell(?:schreiber)?\b|\bros\b|\bvara\b|\bpactor\b|\bwinmor\b|\bardop\b|\bpsk\b|\bfax\b|\bsstv\b|\batv\b|\bdata\b|\bdigi(?:tal)?\b/i, label:'⌨️ DIGITAL', col:'#a78bfa' },
-  { re:/\bssb\b|\bam\b|\bfm\b/i,                                        label:'🎙️ VOICE',     col:'#34d399' },
+  { re:/\bcw\b|\bskcc\b|\bfists\b|\bhst\b/i,                            label:'CW',          col:'#facc15' },
+  { re:/\bft8\b|\bft4\b|\bft2\b|\bq65\b|\bmsk144\b|\bfsk441\b|\brtty\b|\bjs8\b|\bjt65\b|\bjt9\b|\bwspr\b|\bmfsk\b|\bolivia\b|\bdomino(?:ex)?\b|\bthor\b|\bhell(?:schreiber)?\b|\bros\b|\bvara\b|\bpactor\b|\bwinmor\b|\bardop\b|\bpsk\b|\bfax\b|\bsstv\b|\batv\b|\bdata\b|\bdigi(?:tal)?\b/i, label:'DIGITAL', col:'#a78bfa' },
+  { re:/\bssb\b|\bam\b|\bfm\b/i,                                        label:'VOICE',       col:'#34d399' },
   { re:/\busb\b/i,                                                       label:'↑ USB',        col:'#818cf8' },
   { re:/\blsb\b/i,                                                       label:'↓ LSB',        col:'#6ee7b7' },
   { re:/\bqrm\b/i,                                                       label:'📣 QRM',       col:'#f87171' },
   { re:/\bqrp\b/i,                                                       label:'🐭 QRP',       col:'#a78bfa' },
   { re:/\bqro\b/i,                                                       label:'🦁 QRO',       col:'#fb923c' },
-  { re:/\beme\b|\bmoonbounce\b/i,                                        label:'🌙 EME',        col:'#c084fc' },
-  { re:/\bsat\b|\bsatellite\b/i,                                         label:'🛰️ SAT',        col:'#67e8f9' },
+  { re:/\beme\b|\bmoonbounce\b/i,                                        label:'EME',         col:'#c084fc' },
+  { re:/\bsat\b|\bsatellite\b/i,                                         label:'SAT',         col:'#67e8f9' },
   // ── Event / Operation ────────────────────────────────────────────────
   { re:/\bcontest\b|\bqso\s+party\b|\bparty\b|qp\b|\bcqww\b|\barrl\b|\bwpx\b|\bfield\s*day\b|\bwfd\b|\bfd\b|\bwas\b/i, label:'🏆 CONTEST', col:'#f472b6' },
   { re:/\bpile.?up\b/i,                                                  label:'👥 PILEUP',    col:'#ff9f43' },
   { re:/\bdxped/i,                                                       label:'✈️ DXPED',     col:'#e879f9' },
   { re:/\blong\s+path\b/i,                                               label:'🌐 LONG PATH', col:'#a3e635' },
-  { re:/\bportable\b/i,                                                  label:'📻 PORTABLE',  col:'#14b8a6' },
-  { re:/\bmobile\b/i,                                                    label:'🚗 MOBILE',    col:'#06b6d4' },
-  { re:/\bmaritime\b/i,                                                  label:'⛵ MARITIME',  col:'#0ea5e9' },
+  { re:/\bportable\b/i,                                                  label:'PORTABLE',    col:'#14b8a6' },
+  { re:/\bmobile\b/i,                                                    label:'MOBILE',      col:'#06b6d4' },
+  { re:/\bmaritime\b/i,                                                  label:'MARITIME',    col:'#0ea5e9' },
   { re:/\bnet\b/i,                                                       label:'🕸️ NET',       col:'#34d399' },
   { re:/\bpirate\b/i,                                                    label:'🏴 PIRATE',    col:'#f97316' },
   // ── Rarity / Notable ─────────────────────────────────────────────────
   { re:/\bdx\b|\bdistance\b/i,                                           label:'🌍 DX',        col:'#3b82f6' },
-  { re:/\batno\b/i,                                                      label:'🎯 ATNO',      col:'#f85149' },
-  { re:/\bnew\s*one\b|\bnew\s+ctry\b|\bnew\s+country\b|\bnewone\b/i,   label:'✨ NEW ONE',    col:'#f85149' },
+  { re:/\batno\b/i,                                                      label:'ATNO',        col:'#f85149' },
+  { re:/\bnew\s*one\b|\bnew\s+ctry\b|\bnew\s+country\b|\bnewone\b/i,   label:'NEW ONE',      col:'#f85149' },
   { re:/\bspecial\b|\baward\b|\byear\b|\bday\b|\bses\b/i,               label:'🎖️ SPECIAL',   col:'#c084fc' },
   // ── Info / Courtesy ──────────────────────────────────────────────────
   { re:/\b59\b|\brst\s*59\b|\b5\/9\b|\b5-9\b/i,                        label:'💯 5/9',       col:'#3fb950' },
@@ -2208,8 +2519,8 @@ const COMMENT_TAGS = [
   { re:/\bwwff\b/i,                                                      label:'🌿 WWFF',      col:'#e8d44d' },
   { re:/\bgma\b/i,                                                       label:'🏔️ GMA',       col:'#6ee7b7' },
   { re:/\bsota\b/i,                                                      label:'⛰️ SOTA',      col:'#3fb950' },
-  { re:/\bpota\b|\bparks?\b/i,                                           label:'🏕️ POTA',      col:'#58a6ff' },
-  { re:/\biota\b/i,                                                      label:'🏝️ IOTA',      col:'#a78bfa' },
+  { re:/\bpota\b|\bparks?\b/i,                                           label:'POTA',        col:'#58a6ff' },
+  { re:/\biota\b/i,                                                      label:'IOTA',        col:'#a78bfa' },
   { re:/\bbota\b/i,                                                      label:'🌉 BOTA',      col:'#f97316' },
   { re:/\blota\b/i,                                                      label:'🔦 LOTA',      col:'#fde68a' },
 ];
@@ -2221,7 +2532,7 @@ function parseCommentTags(comment) {
     .join('');
 }
 
-const RARE_ENTITIES = new Set([
+let RARE_ENTITIES = new Set([
   'North Korea','Bouvet Island','Peter 1 Island','Crozet Island','Heard Island',
   'Macquarie Island','Kerguelen Island','Amsterdam & St. Paul Is.','South Georgia Is.',
   'South Sandwich Islands','South Shetland Islands','South Orkney Islands',
@@ -2233,6 +2544,8 @@ const RARE_ENTITIES = new Set([
   'Austral Islands','Clipperton Island','Malpelo Island','Juan Fernandez Islands',
   'Easter Island','Agalega & St. Brandon Is.','Glorioso Islands','Tromelin Island',
 ]);
+let MODE_FILTERS = ['CW','WSPR','RTTY','FT8','FT4','FT2','JS8','JT9','JT65','SSB','AM','FM'];
+let ACTIVITY_FILTERS = ['RARE','EME','SAT','WWFF','SOTA','POTA','IOTA','BOTA','LOTA','GMA'];
 
 // ================================================================ Map
 const map = L.map('map', { center:[40.75,-79.55], zoom:3, zoomControl:true, attributionControl:false });
@@ -2619,14 +2932,19 @@ const ENTITY_ISO = {
   'Dominica':'DM','St. Vincent':'VC','Antigua & Barbuda':'AG','St. Kitts & Nevis':'KN',
   'Bermuda':'BM','Bahamas':'BS','Cayman Islands':'KY','Aruba':'AW','Curacao':'CW','Bonaire':'BQ',
 };
-function isoToFlag(iso) {
-  if (!iso||iso.length!==2) return '';
-  const b=0x1F1E6-65;
-  try { return String.fromCodePoint(b+iso.charCodeAt(0),b+iso.charCodeAt(1)); } catch { return ''; }
-}
-function entityFlag(name) {
+function entityIso(name) {
   const iso = ENTITY_ISO[name];
-  return iso ? isoToFlag(iso)+'\u202F' : '';
+  return (iso && iso.length===2) ? iso.toUpperCase() : '';
+}
+function entityFlagText(name) {
+  const iso = entityIso(name);
+  return '';
+}
+function entityFlagMarkup(name) {
+  const iso = entityIso(name);
+  if (!iso) return '';
+  const lower = iso.toLowerCase();
+  return `<span class="entity-flag-wrap" title="${esc(name)}"><img class="entity-flag-img" src="https://flagcdn.com/16x12/${lower}.png" alt="" aria-hidden="true" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()"><span class="entity-flag-fallback">[${iso}]</span></span>`;
 }
 
 // ================================================================ QTH / geodesic helpers
@@ -2695,7 +3013,7 @@ function updateBearingBar(spot) {
 
 function showSpotModal(spot) {
   document.getElementById('sm-call').textContent    = spot.dx_call;
-  document.getElementById('sm-entity').textContent  = entityFlag(spot.dx_entity)+(spot.dx_entity||'—');
+  document.getElementById('sm-entity').textContent  = entityFlagText(spot.dx_entity)+(spot.dx_entity||'—');
   document.getElementById('sm-cont').textContent    = spot.dx_continent||'—';
   document.getElementById('sm-cqz').textContent     = spot.dx_cqz||'—';
   document.getElementById('sm-freq').textContent    = `${fmtFreq(spot.freq)} kHz · ${spot.band||'?'}`;
@@ -2705,9 +3023,9 @@ function showSpotModal(spot) {
   const selfTag2 = spot.dx_call.toUpperCase()===spot.spotter.toUpperCase() ? `<span class="cmt-tag" style="background:#f9731622;color:#f97316;border:1px solid #f9731655">SELF</span>` : '';
   const sfx2 = spot.dx_call.match(/\/(MM|M|P)$/i);
   const suffixTag2 = sfx2 ? (
-    sfx2[1].toUpperCase()==='MM' ? `<span class="cmt-tag" style="background:#0ea5e922;color:#0ea5e9;border:1px solid #0ea5e955">⛵ MARITIME</span>` :
-    sfx2[1].toUpperCase()==='M'  ? `<span class="cmt-tag" style="background:#06b6d422;color:#06b6d4;border:1px solid #06b6d455">🚗 MOBILE</span>` :
-                                    `<span class="cmt-tag" style="background:#14b8a622;color:#14b8a6;border:1px solid #14b8a655">📻 PORTABLE</span>`
+    sfx2[1].toUpperCase()==='MM' ? `<span class="cmt-tag" style="background:#0ea5e922;color:#0ea5e9;border:1px solid #0ea5e955">MARITIME</span>` :
+    sfx2[1].toUpperCase()==='M'  ? `<span class="cmt-tag" style="background:#06b6d422;color:#06b6d4;border:1px solid #06b6d455">MOBILE</span>` :
+                                    `<span class="cmt-tag" style="background:#14b8a622;color:#14b8a6;border:1px solid #14b8a655">PORTABLE</span>`
   ) : '';
   const tags = selfTag2 + suffixTag2 + parseCommentTags(spot.comment);
   cmtEl.innerHTML = tags + esc(spot.comment||'—');
@@ -2761,16 +3079,22 @@ function freqToBand(khz) {
 }
 
 function buildRow(spot) {
-  const band   = spot.band || freqToBand(spot.freq);
+  const dxCall = String(spot.dx_call || '');
+  const spotterCall = String(spot.spotter || '');
+  const dxEntity = String(spot.dx_entity || '');
+  const spotterEntity = String(spot.spotter_entity || '');
+  const comment = String(spot.comment || '');
+  const mode = String(spot.mode || '');
+  const band   = String(spot.band || freqToBand(spot.freq) || '');
   const col    = BAND_COLORS[band]||'#888';
   const actB   = spot.activity ? `<span class="act-badge act-${spot.activity}">${spot.activity}</span>` : '';
-  const rareB  = RARE_ENTITIES.has(spot.dx_entity) ? `<span class="badge-rare">RARE</span>` : '';
-  const selfTag= spot.dx_call.toUpperCase()===spot.spotter.toUpperCase() ? `<span class="cmt-tag" style="background:#f9731622;color:#f97316;border:1px solid #f9731655">SELF</span>` : '';
-  const sfx = spot.dx_call.match(/\/(MM|M|P)$/i);
+  const rareB  = RARE_ENTITIES.has(dxEntity) ? `<span class="badge-rare">RARE</span>` : '';
+  const selfTag= dxCall && dxCall.toUpperCase()===spotterCall.toUpperCase() ? `<span class="cmt-tag" style="background:#f9731622;color:#f97316;border:1px solid #f9731655">SELF</span>` : '';
+  const sfx = dxCall.match(/\/(MM|M|P)$/i);
   const suffixTag = sfx ? (
-    sfx[1].toUpperCase()==='MM' ? `<span class="cmt-tag" style="background:#0ea5e922;color:#0ea5e9;border:1px solid #0ea5e955">⛵ MARITIME</span>` :
-    sfx[1].toUpperCase()==='M'  ? `<span class="cmt-tag" style="background:#06b6d422;color:#06b6d4;border:1px solid #06b6d455">🚗 MOBILE</span>` :
-                                   `<span class="cmt-tag" style="background:#14b8a622;color:#14b8a6;border:1px solid #14b8a655">📻 PORTABLE</span>`
+    sfx[1].toUpperCase()==='MM' ? `<span class="cmt-tag" style="background:#0ea5e922;color:#0ea5e9;border:1px solid #0ea5e955">MARITIME</span>` :
+    sfx[1].toUpperCase()==='M'  ? `<span class="cmt-tag" style="background:#06b6d422;color:#06b6d4;border:1px solid #06b6d455">MOBILE</span>` :
+                                   `<span class="cmt-tag" style="background:#14b8a622;color:#14b8a6;border:1px solid #14b8a655">PORTABLE</span>`
   ) : '';
   const ageMin = (Date.now()-new Date(spot.time).getTime())/60000;
   const opacity= Math.max(0.38, 1-(Math.min(ageMin,60)/60)*0.62);
@@ -2785,12 +3109,12 @@ function buildRow(spot) {
     <td class="time-cell">${fmtTime(spot.time)}</td>
     <td>${bandPill}</td>
     <td class="freq-cell">${fmtFreq(spot.freq)}</td>
-    <td class="mode-cell">${esc(spot.mode)}</td>
-    <td><a class="call-link" href="#" data-spotid="${spot.id}">${esc(spot.dx_call)}</a>${actB}${rareB}</td>
-    <td class="entity-cell" title="${esc(spot.dx_entity)}">${entityFlag(spot.dx_entity)}${esc(spot.dx_entity)||'—'}</td>
-    <td><a class="call-spotter" href="https://www.qrz.com/db/${esc(spot.spotter)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(spot.spotter)}</a></td>
-    <td class="entity-cell" title="${esc(spot.spotter_entity)}">${entityFlag(spot.spotter_entity)}${esc(spot.spotter_entity)||'—'}</td>
-    <td class="cmt-cell" title="${esc(spot.comment)}">${selfTag}${suffixTag}${parseCommentTags(spot.comment)}${esc(spot.comment)}</td>`;
+    <td class="mode-cell">${esc(mode)}</td>
+    <td><a class="call-link" href="#" data-spotid="${spot.id}">${esc(dxCall)}</a>${actB}${rareB}</td>
+    <td class="entity-cell" title="${esc(dxEntity)}">${entityFlagMarkup(dxEntity)}${esc(dxEntity)||'—'}</td>
+    <td><a class="call-spotter" href="https://www.qrz.com/db/${esc(spotterCall)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(spotterCall)}</a></td>
+    <td class="entity-cell" title="${esc(spotterEntity)}">${entityFlagMarkup(spotterEntity)}${esc(spotterEntity)||'—'}</td>
+    <td class="cmt-cell" title="${esc(comment)}">${selfTag}${suffixTag}${parseCommentTags(comment)}${esc(comment)}</td>`;
   if (latLonValid(spot.dx_lat, spot.dx_lon) && isNearGreyline(spot.dx_lat, spot.dx_lon))
     tr.classList.add('tr-greyline');
   tr.querySelector('[data-spotid]')?.addEventListener('click', e => {
@@ -2818,13 +3142,11 @@ function filteredSpots() {
     if (filters.band    !=='ALL'&&s.band    !==filters.band)    return false;
     if (filters.mode    !=='ALL'&&s.mode    !==filters.mode)    return false;
     if (filters.activity!=='ALL') {
-      if      (filters.activity==='RARE') { if (!RARE_ENTITIES.has(s.dx_entity)) return false; }
-      else if (filters.activity==='BOTA') { if (!/\bbota\b/i.test(s.comment)) return false; }
-      else if (filters.activity==='GMA')  { if (!/\bgma\b/i.test(s.comment)) return false; }
-      else if (filters.activity==='LOTA') { if (!/\blota\b/i.test(s.comment)) return false; }
-      else if (filters.activity==='EME')  { if (!/\beme\b|\bmoonbounce\b/i.test(s.comment)) return false; }
-      else if (filters.activity==='SAT')  { if (!/\bsat\b|\bsatellite\b/i.test(s.comment)) return false; }
-      else if (s.activity!==filters.activity) return false;
+      if (filters.activity==='RARE') {
+        if (!RARE_ENTITIES.has(s.dx_entity)) return false;
+      } else if (s.activity!==filters.activity) {
+        return false;
+      }
     }
     if (cqzFilter && s.dx_cqz !== cqzFilter) return false;
     if (ituFilter && s.dx_ituz !== ituFilter) return false;
@@ -2901,13 +3223,22 @@ function renderTable(flash=false) {
   const spots = filteredSpots();
   tbody.innerHTML = '';
   const frag = document.createDocumentFragment();
+  let rendered = 0;
   spots.slice(0,300).forEach((s,i) => {
-    const tr = buildRow(s);
-    if (flash&&i===0) tr.classList.add('new-spot');
-    frag.appendChild(tr);
+    try {
+      const tr = buildRow(s);
+      if (flash&&i===0) tr.classList.add('new-spot');
+      frag.appendChild(tr);
+      rendered += 1;
+    } catch (e) {
+      console.error('renderRow', e, s);
+    }
   });
   tbody.appendChild(frag);
   rebuildMap(spots);
+  if (!rendered && spots.length) {
+    console.error('renderTable: no rows rendered from non-empty spot list');
+  }
   // Update spot count label
   const lbl = document.getElementById('spot-count-lbl');
   if (lbl) {
@@ -2937,15 +3268,6 @@ document.querySelectorAll('thead th.sortable').forEach(th => {
 document.querySelector('thead th[data-sort="time"]')?.classList.add('sort-desc');
 
 // ================================================================ Filters
-document.querySelectorAll('[data-ftype]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const type = btn.dataset.ftype;
-    document.querySelectorAll(`[data-ftype="${type}"]`).forEach(b=>b.classList.remove('active'));
-    btn.classList.add('active');
-    filters[type] = btn.dataset.fval;
-    renderTable();
-  });
-});
 let searchTimer;
 document.getElementById('search-box').addEventListener('input', e => {
   clearTimeout(searchTimer);
@@ -3151,7 +3473,7 @@ function renderStatsPage() {
   // Entities table
   renderRankTable('st-entities', d.entities, (e,i,max)=>`
     <td class="rn">${i+1}</td>
-    <td><span class="rent">${entityFlag(e.entity)}${e.entity}</span></td>
+    <td><span class="rent">${entityFlagMarkup(e.entity)}${e.entity}</span></td>
     <td class="rct">${e.count.toLocaleString()}</td>
     <td class="rbar"><div class="rbar-track"><div class="rbar-fill" style="width:${Math.round(e.count/max*100)}%"></div></div></td>`);
 
@@ -3328,10 +3650,63 @@ let watchlist = JSON.parse(localStorage.getItem('watchlist') || '[]').map(item =
 });
 let watchMatches = JSON.parse(localStorage.getItem('watchMatches') || '[]');
 let watchProfiles = JSON.parse(localStorage.getItem('watchProfiles') || '[]');
+let serverWatchSeed = [];
 
 function saveWatchlist() { localStorage.setItem('watchlist', JSON.stringify(watchlist)); }
 function saveWatchMatches() { localStorage.setItem('watchMatches', JSON.stringify(watchMatches.slice(0,10))); }
 function saveWatchProfiles() { localStorage.setItem('watchProfiles', JSON.stringify(watchProfiles)); }
+
+function ruleKey(rule) {
+  return `${String(rule.type || '').toLowerCase()}|${String(rule.value || '').toUpperCase()}`;
+}
+
+function watchLabel(type) {
+  const labels = {
+    call: 'call',
+    spotter: 'spotter',
+    entity: 'entity',
+    prefix: 'prefix',
+    mode: 'mode',
+    band: 'band',
+    activity: 'activity',
+    cqzone: 'CQ zone',
+    ituzone: 'ITU zone',
+    comment: 'comment',
+  };
+  return labels[String(type || '').toLowerCase()] || String(type || 'rule');
+}
+
+function syncServerWatchSeedFromProfile() {
+  const raw = Array.isArray(webProfile?.watch_seed) ? webProfile.watch_seed : [];
+  serverWatchSeed = raw.map(item => ({
+    type: String(item.type || '').toLowerCase(),
+    value: String(item.value || '').toUpperCase(),
+    source: String(item.source || 'cluster').trim(),
+    inherited: true,
+    hits: 0,
+    last: '',
+    sound: false,
+    toast: true,
+  })).filter(item => item.type && item.value);
+}
+
+function effectiveWatchlist() {
+  const merged = [];
+  const seen = new Set();
+  watchlist.forEach(item => {
+    const key = ruleKey(item);
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(Object.assign({ source:'local', inherited:false }, item));
+  });
+  serverWatchSeed.forEach(item => {
+    const key = ruleKey(item);
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(item);
+  });
+  return merged;
+}
 
 function renderWatchMatches() {
   const el = document.getElementById('watch-matches');
@@ -3393,38 +3768,56 @@ function renderWatchProfiles() {
 function renderWatchlist() {
   const el = document.getElementById('watch-list');
   el.innerHTML = '';
-  watchlist.forEach((item, i) => {
+  if (!(webToken && webCall)) {
+    el.innerHTML = `<div class="watch-item"><div class="watch-body"><div class="watch-meta">Watch tools are available after login and use your cluster-backed watch and filter data.</div></div></div>`;
+    return;
+  }
+  const rules = effectiveWatchlist();
+  if (!rules.length) {
+    el.innerHTML = `<div class="watch-item"><div class="watch-body"><div class="watch-meta">No watch rules yet. Cluster-linked rules from buddies and spot filters will appear here after login.</div></div></div>`;
+    return;
+  }
+  rules.forEach((item) => {
     const div = document.createElement('div');
     div.className = 'watch-item';
+    const sourceText = item.inherited ? `Cluster · ${item.source}` : 'Local';
     div.innerHTML = `
       <div class="watch-body">
         <div class="watch-top">
-          <span class="watch-type-badge">${item.type}</span>
+          <span class="watch-type-badge">${watchLabel(item.type)}</span>
           <span class="watch-call">${item.value}</span>
         </div>
         <div class="watch-meta">
+          <span>${sourceText}</span>
           <span>Hits ${item.hits || 0}</span>
           <span>${item.last ? `Last ${item.last}` : 'No match yet'}</span>
         </div>
-        <div class="watch-flags">
+        ${item.inherited ? '' : `<div class="watch-flags">
           <button class="watch-flag ${item.sound ? 'on' : ''}" data-flag="sound">Sound</button>
           <button class="watch-flag ${item.toast ? 'on' : ''}" data-flag="toast">Toast</button>
-        </div>
+        </div>`}
       </div>
-      <button class="watch-rm" title="Remove">✕</button>`;
-    div.querySelector('[data-flag="sound"]').addEventListener('click', () => {
-      item.sound = !item.sound;
-      saveWatchlist();
-      renderWatchlist();
-    });
-    div.querySelector('[data-flag="toast"]').addEventListener('click', () => {
-      item.toast = !item.toast;
-      saveWatchlist();
-      renderWatchlist();
-    });
-    div.querySelector('.watch-rm').addEventListener('click', () => {
-      watchlist.splice(i, 1); saveWatchlist(); renderWatchlist();
-    });
+      ${item.inherited ? '<button class="watch-rm" title="Managed by cluster policy" disabled>•</button>' : '<button class="watch-rm" title="Remove">✕</button>'}`;
+    if (!item.inherited) {
+      div.querySelector('[data-flag="sound"]').addEventListener('click', () => {
+        item.sound = !item.sound;
+        saveWatchlist();
+        renderWatchlist();
+      });
+      div.querySelector('[data-flag="toast"]').addEventListener('click', () => {
+        item.toast = !item.toast;
+        saveWatchlist();
+        renderWatchlist();
+      });
+      div.querySelector('.watch-rm').addEventListener('click', () => {
+        const idx = watchlist.findIndex(w => ruleKey(w) === ruleKey(item));
+        if (idx >= 0) {
+          watchlist.splice(idx, 1);
+          saveWatchlist();
+          renderWatchlist();
+        }
+      });
+    }
     el.appendChild(div);
   });
 }
@@ -3477,7 +3870,8 @@ document.getElementById('watch-profile-name').addEventListener('keydown', e => {
 });
 
 function checkWatchlist(spot) {
-  if (!watchlist.length) return;
+  const rules = effectiveWatchlist();
+  if (!rules.length) return;
   const call = (spot.dx_call || '').toUpperCase();
   const entity = (spot.dx_entity || '').toUpperCase();
   const spotter = (spot.spotter || '').toUpperCase();
@@ -3485,24 +3879,31 @@ function checkWatchlist(spot) {
   const mode = (spot.mode || '').toUpperCase();
   const band = (spot.band || '').toUpperCase();
   const activity = (spot.activity || '').toUpperCase();
-  const matched = watchlist.find(w => {
-    if (w.type === 'call') return call.includes(w.value) || spotter.includes(w.value);
+  const cqzone = String(spot.dx_cqz || '').toUpperCase();
+  const ituzone = String(spot.dx_ituz || '').toUpperCase();
+  const matched = rules.find(w => {
+    if (w.type === 'call') return call.includes(w.value);
+    if (w.type === 'spotter') return spotter.includes(w.value);
     if (w.type === 'entity') return entity.includes(w.value);
     if (w.type === 'prefix') return call.startsWith(w.value) || spotter.startsWith(w.value);
     if (w.type === 'mode') return mode === w.value;
     if (w.type === 'band') return band === w.value;
     if (w.type === 'activity') return activity === w.value;
+    if (w.type === 'cqzone') return cqzone === w.value;
+    if (w.type === 'ituzone') return ituzone === w.value;
     if (w.type === 'comment') return comment.includes(w.value);
     return false;
   });
   if (!matched) return;
-  matched.hits = Number(matched.hits || 0) + 1;
-  matched.last = spot.time || '';
-  saveWatchlist();
+  if (!matched.inherited) {
+    matched.hits = Number(matched.hits || 0) + 1;
+    matched.last = spot.time || '';
+    saveWatchlist();
+  }
   renderWatchlist();
   watchMatches.unshift({
     dx_call: spot.dx_call,
-    rule_type: matched.type,
+    rule_type: watchLabel(matched.type),
     rule_value: matched.value,
     band: spot.band || '',
     mode: spot.mode || '',
@@ -3536,6 +3937,7 @@ function checkWatchlist(spot) {
   }
 }
 
+syncServerWatchSeedFromProfile();
 renderWatchlist();
 renderWatchMatches();
 renderWatchProfiles();
@@ -3803,11 +4205,14 @@ function exportADIF() {
 
 // ================================================================ QTH profile
 function saveQthProfile() {
-  qthCall = document.getElementById('qth-call').value.trim().toUpperCase();
-  qthGrid = document.getElementById('qth-grid').value.trim().toUpperCase();
+  const callEl = document.getElementById('qth-call');
+  const gridEl = document.getElementById('qth-grid');
+  const status = document.getElementById('qth-status');
+  if (!callEl || !gridEl || !status) return;
+  qthCall = callEl.value.trim().toUpperCase();
+  qthGrid = gridEl.value.trim().toUpperCase();
   localStorage.setItem('qthCall', qthCall);
   localStorage.setItem('qthGrid', qthGrid);
-  const status = document.getElementById('qth-status');
   if (qthGrid.length>=4) {
     const pos = maidenheadToLatLon(qthGrid);
     if (pos) {
@@ -3837,16 +4242,33 @@ document.getElementById('profile-save').addEventListener('click', saveProfile);
 document.getElementById('profile-modal-bg').addEventListener('click', e => {
   if (e.target.id==='profile-modal-bg') closeProfileModal();
 });
+document.getElementById('login-modal-bg').addEventListener('click', e => {
+  if (e.target.id==='login-modal-bg') closeLoginModal();
+});
+document.getElementById('register-close').addEventListener('click', closeRegisterModal);
+document.getElementById('register-cancel').addEventListener('click', closeRegisterModal);
+document.getElementById('register-submit').addEventListener('click', submitRegisterRequest);
+document.getElementById('register-modal-bg').addEventListener('click', e => {
+  if (e.target.id==='register-modal-bg') closeRegisterModal();
+});
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeSpotModal(); });
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeProfileModal(); });
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeLoginModal(); });
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeRegisterModal(); });
 
 ['qth-call','qth-grid'].forEach(id => {
-  document.getElementById(id).addEventListener('blur', saveQthProfile);
-  document.getElementById(id).addEventListener('keydown', e => { if(e.key==='Enter') saveQthProfile(); });
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('blur', saveQthProfile);
+  el.addEventListener('keydown', e => { if(e.key==='Enter') saveQthProfile(); });
 });
-document.getElementById('qth-call').value = qthCall;
-document.getElementById('qth-grid').value = qthGrid;
-if (qthGrid) saveQthProfile();
+const qthCallEl = document.getElementById('qth-call');
+const qthGridEl = document.getElementById('qth-grid');
+if (qthCallEl && qthGridEl) {
+  qthCallEl.value = qthCall;
+  qthGridEl.value = qthGrid;
+  if (qthGrid) saveQthProfile();
+}
 
 let cqzTimer;
 document.getElementById('cqz-input').addEventListener('input', e => {
@@ -3863,8 +4285,10 @@ document.getElementById('cqz-clear').addEventListener('click', () => {
 });
 
 // ================================================================ Comment tag filter buttons (generated from COMMENT_TAGS)
-(function() {
+function renderCommentTagButtons() {
   const row = document.getElementById('ctag-filter-row');
+  if (!row) return;
+  row.innerHTML = '';
   // All button
   const allBtn = document.createElement('button');
   allBtn.className = 'ctag-btn ctag-all active';
@@ -3882,15 +4306,17 @@ document.getElementById('cqz-clear').addEventListener('click', () => {
     btn.style.background = t.col + '18';
     row.appendChild(btn);
   });
-  row.addEventListener('click', e => {
+  row.onclick = e => {
     const btn = e.target.closest('.ctag-btn');
     if (!btn) return;
     row.querySelectorAll('.ctag-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     commentTagFilter = btn.dataset.ctag;
     renderTable();
-  });
-})();
+  };
+}
+
+renderCommentTagButtons();
 
 document.getElementById('csv-export-btn').addEventListener('click', exportCSV);
 document.getElementById('adif-export-btn').addEventListener('click', exportADIF);
@@ -3922,7 +4348,7 @@ function playSpotSound(spot) {
     // Activation: pleasant ascending two-tone
     playBeep(880, 0.08, 0.12);
     setTimeout(() => playBeep(1100, 0.06, 0.10), 130);
-  } else if (/\beme\b|\bsatellite\b|\bsat\b/i.test(comment)) {
+  } else if (spot.activity === 'EME' || spot.activity === 'SAT') {
     // EME/SAT: descending space-like two-tone
     playBeep(1100, 0.07, 0.10);
     setTimeout(() => playBeep(660, 0.10, 0.08), 120);
@@ -4178,12 +4604,11 @@ document.getElementById('preset-name-input').addEventListener('keydown', e => {
 renderFilterPresets();
 
 // ================================================================ Operator actions
-document.getElementById('op-login-btn')?.addEventListener('click', () => {
-  loginOperator();
+document.getElementById('login-submit')?.addEventListener('click', () => {
+  loginOperatorFromModal();
 });
-document.getElementById('op-logout-btn')?.addEventListener('click', () => {
-  logoutOperator();
-});
+document.getElementById('login-close')?.addEventListener('click', closeLoginModal);
+document.getElementById('login-cancel')?.addEventListener('click', closeLoginModal);
 document.getElementById('post-spot-btn')?.addEventListener('click', () => {
   submitPublicAction('spot');
 });
@@ -4211,8 +4636,8 @@ document.querySelectorAll('#bulletin-toolbar [data-bcat]').forEach(btn => {
     renderBulletinsPage();
   });
 });
-document.getElementById('op-pass')?.addEventListener('keydown', e => {
-  if (e.key === 'Enter') loginOperator();
+document.getElementById('login-pass')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') loginOperatorFromModal();
 });
 document.getElementById('post-info')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') submitPublicAction('spot');
@@ -4228,6 +4653,7 @@ document.getElementById('post-text')?.addEventListener('keydown', e => {
   applyOperatorState();
   await restoreWebSession();
   await loadBranding();
+  await loadTaxonomy();
   await fetchSpots();
   await loadBulletins();
   loadStats();

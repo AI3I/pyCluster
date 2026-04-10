@@ -46,6 +46,8 @@ config_ok="no"
 
 db_path=""
 cty_path=""
+wpx_path=""
+wpx_note=""
 if [ -f "$PYCLUSTER_CONFIG_DEST" ]; then
   readarray -t cfg_values < <("${PYCLUSTER_PYTHON_LINK:-/usr/bin/python3}" - <<PY
 import tomllib
@@ -54,10 +56,12 @@ p = Path("$PYCLUSTER_CONFIG_DEST")
 cfg = tomllib.loads(p.read_text(encoding="utf-8"))
 print(cfg.get("store", {}).get("sqlite_path", ""))
 print(cfg.get("public_web", {}).get("cty_dat_path", ""))
+print(cfg.get("public_web", {}).get("wpxloc_raw_path", ""))
 PY
 )
   db_path="${cfg_values[0]:-}"
   cty_path="${cfg_values[1]:-}"
+  wpx_path="${cfg_values[2]:-}"
 fi
 
 if [ -n "$db_path" ] && [ "${db_path#/}" = "$db_path" ]; then
@@ -68,11 +72,23 @@ if [ -n "$cty_path" ] && [ "${cty_path#/}" = "$cty_path" ]; then
   cty_path="$PYCLUSTER_APP_DIR/${cty_path#./}"
 fi
 
+if [ -z "$wpx_path" ] && [ -n "$cty_path" ]; then
+  wpx_path="$(dirname "$cty_path")/wpxloc.raw"
+  wpx_note="derived from cty.dat sibling path"
+fi
+
+if [ -n "$wpx_path" ] && [ "${wpx_path#/}" = "$wpx_path" ]; then
+  wpx_path="$PYCLUSTER_APP_DIR/${wpx_path#./}"
+fi
+
 db_ok="no"
 [ -n "$db_path" ] && [ -f "$db_path" ] && db_ok="yes"
 
 cty_ok="no"
 [ -n "$cty_path" ] && [ -f "$cty_path" ] && cty_ok="yes"
+
+wpx_ok="no"
+[ -n "$wpx_path" ] && [ -f "$wpx_path" ] && wpx_ok="yes"
 
 sysop_bootstrap="no"
 [ -f "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE" ] && sysop_bootstrap="yes"
@@ -92,6 +108,7 @@ status "app dir" "$PYCLUSTER_APP_DIR"
 status "config" "$PYCLUSTER_CONFIG_DEST ($config_ok)"
 status "database" "${db_path:-unset} ($db_ok)"
 status "cty.dat" "${cty_path:-unset} ($cty_ok)"
+status "wpxloc.raw" "${wpx_path:-unset} ($wpx_ok)${wpx_note:+ [$wpx_note]}"
 status "core service" "$PYCLUSTER_SERVICE_NAME ($service_state)"
 status "web service" "$PYCLUSTER_WEB_SERVICE_NAME ($web_service_state)"
 status "cty timer" "$PYCLUSTER_CTY_REFRESH_TIMER_NAME ($cty_timer_state)"

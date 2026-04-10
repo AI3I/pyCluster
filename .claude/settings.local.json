@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh -T git@github.com)",
+      "Read(//home/jdlewis/.ssh/**)",
+      "Bash(ssh-add -l)",
+      "Bash(ssh -T -p 443 git@ssh.github.com)",
+      "Bash(ssh-keyscan -H github.com)",
+      "Bash(gh auth:*)",
+      "Bash(git config:*)",
+      "Bash(git init:*)",
+      "Bash(git remote:*)",
+      "Bash(git fetch:*)",
+      "Bash(git branch:*)",
+      "Bash(git reset:*)",
+      "Bash(git checkout:*)",
+      "Bash(git symbolic-ref:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

@@ -89,6 +89,89 @@ async def _http_request(
     return code, rh, out
 
 
+def test_web_admin_static_includes_mobile_breakpoints() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert "@media (max-width: 900px)" in text
+    assert ".actions button{flex:1 1 160px}" in text
+    assert ".tablewrap table{min-width:720px}" in text
+
+
+def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'data-user-browser="local"' in text
+    assert 'data-user-browser="blocked"' in text
+    assert 'data-user-browser="clusters"' in text
+    assert 'data-user-browser="sysops"' in text
+    assert 'data-user-browser="requests"' in text
+    assert 'id="user-browser-local"' in text
+    assert 'id="user-browser-blocked"' in text
+    assert 'id="user-browser-clusters"' in text
+    assert 'id="user-browser-sysops"' in text
+    assert 'id="user-browser-requests"' in text
+    assert 'data-telemetry-panel="overview"' in text
+    assert 'data-telemetry-panel="audit"' in text
+    assert 'data-telemetry-panel="security"' in text
+    assert 'id="telemetry-panel-overview"' in text
+    assert 'id="telemetry-panel-audit"' in text
+    assert 'id="telemetry-panel-security"' in text
+    assert "function setUserBrowserPanel(panel)" in text
+    assert "function setTelemetryPanel(panel)" in text
+
+
+def test_web_admin_static_uses_full_width_user_action_bar() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert ".users-actionbar{" in text
+    assert 'class="users-actionbar"' in text
+    assert 'class="users-action-group"' in text
+    assert "display:flex;" in text
+    assert "flex-wrap:wrap;" in text
+
+
+def test_web_admin_static_peer_table_uses_content_width_columns() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert ".peer-table{" in text
+    assert "width:max-content;" in text
+    assert "table-layout:auto;" in text
+    assert 'class="peer-table"' in text
+
+
+def test_web_admin_static_shows_registration_state_controls() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'id="user_verified_state" type="checkbox" disabled' in text
+    assert 'id="user_unlocked_state" type="checkbox" disabled' in text
+    assert '<label for="user_unlocked_state">Locked</label>' in text
+    assert 'id="markVerified">Verify Now<' not in text
+    assert 'id="unlockRegistration">Unlock Now<' not in text
+    assert '<h3>Access Matrix</h3>' in text
+    assert text.index('<h3>Access Matrix</h3>') < text.index('id="user_verified_state"')
+    assert text.index('<h3>Access Matrix</h3>') < text.index('id="user_mfa_email_otp"')
+    assert text.index('<h3>Access Matrix</h3>') < text.index('id="user_privilege"')
+    assert "function setRegistrationActionState(verified, locked, enabled)" in text
+    assert "verifiedState.checked = !!verified" in text
+    assert "unlockedState.checked = !!locked" in text
+
+
+def test_web_admin_static_switches_to_editor_when_user_selected() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'id="userEditorTitle"' in text
+    assert 'id="userMailStatus"' in text
+    assert 'id="userRegistrationStatus"' in text
+    assert "Select a user below to open the editor." in text
+
+
+def test_web_admin_static_uses_five_row_user_pages_and_fixed_browser_geometry() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert "const USER_PAGE_SIZE = 5;" in text
+    assert ".users-browser-stage{" in text
+    assert "min-height:248px;" in text
+    assert ".users-browser-stage .tablewrap{" in text
+    assert "min-height:176px;" in text
+    assert 'class="browser-toolbar"' in text
+    assert 'id="userSearch"' in text
+    assert 'id="userPrev"' in text
+    assert 'id="userNext"' in text
+
+
 def test_web_login_and_spot_post(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_spot.db")
@@ -114,7 +197,8 @@ def test_web_login_and_spot_post(tmp_path) -> None:
         )
         now = int(datetime.now(timezone.utc).timestamp())
         await store.set_user_pref("N0CALL", "password", "pw1", now)
-        await store.upsert_user_registry("N0CALL", now, privilege="user")
+        await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
         try:
             code, _, body = await _http_request(
                 srv,
@@ -200,6 +284,33 @@ def test_api_spots_marks_suspicious_calls_for_review(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_proto_state_counts_pc18_handshake_as_known(tmp_path) -> None:
+    db = str(tmp_path / "web_proto_pc18.db")
+    cfg = _mk_config(db, admin_token="adm")
+    store = SpotStore(db)
+    srv = WebAdminServer(
+        config=cfg,
+        store=store,
+        started_at=datetime.now(timezone.utc),
+        session_count_fn=lambda: 0,
+    )
+    now = int(datetime.now(timezone.utc).timestamp())
+    node_cfg = {
+        "proto.peer.kc9gwk-1.pc18.family": "pycluster",
+        "proto.peer.kc9gwk-1.pc18.proto": "5457",
+        "proto.peer.kc9gwk-1.pc18.software": "pyCluster 1.0.6",
+        "proto.peer.kc9gwk-1.last_epoch": str(now),
+        "proto.peer.kc9gwk-1.last_pc_type": "PC18",
+    }
+    try:
+        proto = srv._proto_state_for_peer(node_cfg, "KC9GWK-1", now)
+        assert proto["known"] is True
+        assert proto["health"] == "ok"
+        assert proto["last_pc_type"] == "PC18"
+    finally:
+        asyncio.run(store.close())
+
+
 def test_api_spots_uses_advisory_when_cty_data_is_unavailable(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_spot_review_advisory.db")
@@ -259,6 +370,7 @@ def test_web_admin_login_can_require_email_otp(tmp_path) -> None:
         now = int(datetime.now(timezone.utc).timestamp())
         await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
         await store.set_user_pref("AI3I", "password", "pw1", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
         try:
             code, _, body = await _http_request(
                 srv,
@@ -318,6 +430,7 @@ def test_web_admin_login_honors_per_user_mfa_override(tmp_path) -> None:
         await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
         await store.set_user_pref("AI3I", "password", "pw1", now)
         await store.set_user_pref("AI3I", "mfa_email_otp", "off", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
         try:
             code, _, body = await _http_request(
                 srv,
@@ -337,6 +450,112 @@ def test_web_admin_login_honors_per_user_mfa_override(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_login_requires_registration_and_valid_email(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_registration_required.db")
+        cfg = _mk_config(db, admin_token="")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.set_user_pref("AI3I", "password", "pw1", now)
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "registration required"
+
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="")
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "valid email required"
+
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+            await store.delete_user_pref("AI3I", "password")
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "email verification required"
+
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "password setup required"
+
+            await store.set_user_pref("AI3I", "password", "pw1", now)
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_sysop_login_bypasses_email_verification_gate(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_sysop_email_gate.db")
+        cfg = _mk_config(db, admin_token="")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="sysop", email="")
+            await store.set_user_pref("AI3I", "password", "pw1", now)
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 200
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["ok"] is True
+            assert payload["sysop"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_admin_spot_throttle_returns_429(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_admin_spot_throttle.db")
@@ -349,8 +568,9 @@ def test_web_admin_spot_throttle_returns_429(tmp_path) -> None:
             session_count_fn=lambda: 0,
         )
         now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry("N0CALL", now, privilege="user")
+        await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
         await store.set_user_pref("N0CALL", "password", "pw1", now)
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
         await store.set_user_pref(cfg.node.node_call, "spot_throttle.max_per_window", "1", now)
         await store.set_user_pref(cfg.node.node_call, "spot_throttle.window_seconds", "300", now)
         try:
@@ -402,6 +622,8 @@ def test_web_access_policy_controls_login_and_posting(tmp_path) -> None:
         )
         now = int(datetime.now(timezone.utc).timestamp())
         await store.set_user_pref("N0CALL", "password", "pw1", now)
+        await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
         try:
             await store.set_user_pref("N0CALL", "access.web.login", "off", now)
             code, _, body = await _http_request(
@@ -480,8 +702,8 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
         async def _clear(_peer: str | None) -> int:
             return 1
 
-        async def _connect(peer: str, dsn: str, profile: str = "dxspider") -> None:
-            ops.append(("connect", peer, dsn, profile))
+        async def _connect(peer: str, dsn: str, profile: str = "dxspider", persist: bool = True, password: str = "") -> None:
+            ops.append(("connect", peer, dsn, profile, persist, password))
 
         async def _disconnect(peer: str) -> bool:
             ops.append(("disconnect", peer, ""))
@@ -491,8 +713,8 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             ops.append(("profile", peer, profile))
             return peer == "peer1"
 
-        async def _save(peer: str, dsn: str, profile: str = "dxspider", reconnect: bool = True) -> None:
-            ops.append(("save", peer, dsn, profile, reconnect))
+        async def _save(peer: str, dsn: str, profile: str = "dxspider", reconnect: bool = True, password: str = "") -> None:
+            ops.append(("save", peer, dsn, profile, reconnect, password))
 
         srv = WebAdminServer(
             config=cfg,
@@ -512,7 +734,8 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
 
             now = int(datetime.now(timezone.utc).timestamp())
             await store.set_user_pref("K1SYS", "password", "pw2", now)
-            await store.upsert_user_registry("K1SYS", now, privilege="sysop")
+            await store.upsert_user_registry("K1SYS", now, privilege="sysop", email="k1sys@example.test")
+            await store.set_user_pref("K1SYS", "email_verified_epoch", str(now), now)
             code, _, body = await _http_request(
                 srv,
                 "POST",
@@ -581,7 +804,7 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
                 "POST",
                 "/api/peer/save",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
-                body=json.dumps({"peer": "peer1", "dsn": "tcp://127.0.0.1:7300", "profile": "dxspider"}).encode("utf-8"),
+                body=json.dumps({"peer": "peer1", "dsn": "tcp://127.0.0.1:7300", "password": "sekret", "profile": "dxspider"}).encode("utf-8"),
             )
             assert code == 200
             assert json.loads(body.decode("utf-8"))["ok"] is True
@@ -591,7 +814,7 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
                 "POST",
                 "/api/peer/connect",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
-                body=json.dumps({"peer": "peer1", "dsn": "tcp://127.0.0.1:7300", "profile": "dxspider"}).encode("utf-8"),
+                body=json.dumps({"peer": "peer1", "dsn": "tcp://127.0.0.1:7300", "password": "sekret", "profile": "dxspider"}).encode("utf-8"),
             )
             assert code == 200
             assert json.loads(body.decode("utf-8"))["ok"] is True
@@ -615,8 +838,8 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             )
             assert code == 200
             assert json.loads(body.decode("utf-8"))["ok"] is True
-            assert ("save", "peer1", "tcp://127.0.0.1:7300", "dxspider", True) in ops
-            assert ("connect", "peer1", "tcp://127.0.0.1:7300", "dxspider") in ops
+            assert ("save", "peer1", "tcp://127.0.0.1:7300", "dxspider", True, "sekret") in ops
+            assert ("connect", "peer1", "tcp://127.0.0.1:7300", "dxspider", True, "sekret") in ops
             assert ("profile", "peer1", "arcluster") in ops
             assert ("disconnect", "peer1", "") in ops
         finally:
@@ -641,8 +864,10 @@ def test_web_admin_callsign_login_requires_sysop_for_admin_endpoints(tmp_path) -
         try:
             await store.set_user_pref("N0CALL", "password", "pw1", now)
             await store.set_user_pref("K1SYS", "password", "pw2", now)
-            await store.upsert_user_registry("N0CALL", now, privilege="user")
-            await store.upsert_user_registry("K1SYS", now, privilege="sysop")
+            await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
+            await store.upsert_user_registry("K1SYS", now, privilege="sysop", email="k1sys@example.test")
+            await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
+            await store.set_user_pref("K1SYS", "email_verified_epoch", str(now), now)
 
             code, _, body = await _http_request(
                 srv,
@@ -702,7 +927,8 @@ def test_web_admin_logout_revokes_sysop_token(tmp_path) -> None:
         )
         try:
             await store.set_user_pref("K1SYS", "password", "pw2", now)
-            await store.upsert_user_registry("K1SYS", now, privilege="sysop")
+            await store.upsert_user_registry("K1SYS", now, privilege="sysop", email="k1sys@example.test")
+            await store.set_user_pref("K1SYS", "email_verified_epoch", str(now), now)
             code, _, body = await _http_request(
                 srv,
                 "POST",
@@ -836,14 +1062,22 @@ def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
         store = SpotStore(db)
 
         async def _stats():
-            return {}
+            return {
+                "AI3I-15": {
+                    "profile": "spider",
+                    "inbound": False,
+                    "parsed_frames": 1,
+                    "sent_frames": 1,
+                    "policy_dropped": 0,
+                }
+            }
 
         async def _desired():
             return [
                 {
                     "peer": "AI3I-15",
-                    "dsn": "dxspider://dxspider.ai3i.net:7300?login=AI3I-16&client=AI3I-15",
-                    "profile": "spider",
+                    "dsn": "pycluster://dxspider.ai3i.net:7300?login=AI3I-16&client=AI3I-15",
+                    "profile": "pycluster",
                     "reconnect_enabled": True,
                     "retry_count": 2,
                     "next_retry_epoch": 1773275000,
@@ -864,6 +1098,8 @@ def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
             link_stats_fn=_stats,
             link_desired_peers_fn=_desired,
         )
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.ai3i-15.pc18.summary", "pyCluster 1.0.6", now)
         try:
             code, _, body = await _http_request(srv, "GET", "/api/peers", headers={"X-Admin-Token": "adm"})
             assert code == 200
@@ -872,14 +1108,16 @@ def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
             row = rows[0]
             assert row["peer"] == "AI3I-15"
             assert row["desired"] is True
-            assert row["connected"] is False
+            assert row["connected"] is True
             assert row["reconnect_enabled"] is True
             assert row["retry_count"] == 2
             assert row["last_error"] == "timed out"
             assert row["pending_mail"] == 3
             assert row["route_issues"] == 1
-            assert row["transport"] == "dxspider"
+            assert row["profile"] == "pycluster"
+            assert row["transport"] == "pycluster"
             assert row["path_hint"] == "host dxspider.ai3i.net:7300"
+            assert row["proto"]["pc18_summary"] == "pyCluster 1.0.6"
         finally:
             await store.close()
 
@@ -1066,6 +1304,10 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
                 "login_tip": "Tip: try sh/dx 10",
                 "show_status_after_login": False,
                 "require_password": True,
+                "registration_required": True,
+                "verified_email_required_for_web": True,
+                "verified_email_required_for_telnet": True,
+                "initial_grace_logins": 5,
                 "smtp_host": "smtp.example.test",
                 "smtp_port": 465,
                 "smtp_username": "mailer",
@@ -1105,6 +1347,10 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["welcome_title"] == "Welcome back"
             assert data["show_status_after_login"] is False
             assert data["require_password"] is True
+            assert data["registration_required"] is True
+            assert data["verified_email_required_for_web"] is True
+            assert data["verified_email_required_for_telnet"] is True
+            assert data["initial_grace_logins"] == 5
             assert data["smtp_host"] == "smtp.example.test"
             assert data["smtp_port"] == 465
             assert data["smtp_username"] == "mailer"
@@ -1138,6 +1384,10 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert saved["node"]["node_locator"] == "FN00FS"
             assert saved["node"]["welcome_title"] == "Welcome back"
             assert saved["node"]["require_password"] is True
+            assert saved["node"]["registration_required"] is True
+            assert saved["node"]["verified_email_required_for_web"] is True
+            assert saved["node"]["verified_email_required_for_telnet"] is True
+            assert saved["node"]["initial_grace_logins"] == 5
             assert saved["node"]["prompt_template"] == "[{timestamp}] {node}{suffix}"
             assert saved["telnet"]["ports"] == [7300, 7373, 8000]
             assert saved["smtp"]["host"] == "smtp.example.test"
@@ -1146,6 +1396,55 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert saved["mfa"]["enabled"] is True
             assert saved["mfa"]["issuer"] == "AI3I Cluster"
             assert saved["mfa"]["resend_cooldown_seconds"] == 45
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_user_email_change_resets_verification_state(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_email_reset.db")
+        cfg = _mk_config(db, admin_token="")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.upsert_user_registry("K1ABC", now, privilege="user", email="old@example.test")
+            await store.set_user_pref("K1ABC", "email_verified_epoch", str(now), now)
+            await store.set_user_pref("K1ABC", "registration_state", "verified", now)
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps(
+                    {
+                        "call": "K1ABC",
+                        "display_name": "",
+                        "home_node": "",
+                        "address": "",
+                        "qth": "",
+                        "qra": "",
+                        "email": "new@example.test",
+                        "privilege": "user",
+                        "blocked_reason": "",
+                        "mfa_email_otp": "default",
+                    }
+                ).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["email"] == "new@example.test"
+            assert await store.get_user_pref("K1ABC", "email_verified_epoch") is None
+            assert await store.get_user_pref("K1ABC", "registration_state") == "pending"
+            assert await store.get_user_pref("K1ABC", "grace_logins_remaining") == str(cfg.node.initial_grace_logins)
         finally:
             await store.close()
 
@@ -1172,8 +1471,92 @@ def test_web_admin_console_page_includes_software_version_slot(tmp_path) -> None
             assert 'id="retention_stale_users_enabled"' in html
             assert 'id="smtp_host"' in html
             assert 'id="mfa_enabled"' in html
+            assert 'data-node-group="general"' in html
+            assert 'data-node-group="auth"' in html
+            assert 'data-node-group="smtp"' in html
+            assert 'data-node-group="maintenance"' in html
+            assert 'id="node-group-general"' in html
+            assert 'id="node-group-auth"' in html
+            assert 'id="node-group-smtp"' in html
+            assert 'id="node-group-maintenance"' in html
+            assert 'id="upgradeStatus"' in html
+            assert 'id="checkUpgrade"' in html
+            assert 'id="runUpgrade"' in html
             assert 'class="tablewrap compact"' in html
             assert 'id="userMailStatus"' in html
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_upgrade_status_and_request(tmp_path, monkeypatch) -> None:
+    async def run() -> None:
+        repo_root = tmp_path / "repo"
+        (repo_root / "config").mkdir(parents=True)
+        cfg_path = repo_root / "config" / "pycluster.toml"
+        cfg_path.write_text("", encoding="utf-8")
+        db = str(tmp_path / "web_upgrade.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+            config_path=str(cfg_path),
+        )
+        monkeypatch.setattr("pycluster.web_admin.detect_upgrade_availability", lambda repo_root, current_version: {
+            "current_version": current_version,
+            "latest_local_tag": "v1.0.6",
+            "latest_remote_tag": "v1.0.7",
+            "available": True,
+            "available_version": "1.0.7",
+            "remote_checked": True,
+            "remote_error": "",
+        })
+        monkeypatch.setattr("pycluster.web_admin.migration_hooks", lambda repo_root: ["run_upgrade_1_0_1"])
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "GET",
+                "/api/upgrade/status",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["availability"]["available"] is True
+            assert data["availability"]["available_version"] == "1.0.7"
+            assert data["migrations"] == ["run_upgrade_1_0_1"]
+            assert data["status"]["state"] == "idle"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/upgrade/request",
+                headers={"X-Admin-Token": "adm", "X-Web-Token": "tok"},
+                body=b"{}",
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            queued = json.loads((repo_root / "data" / "upgrade-request.json").read_text(encoding="utf-8"))
+            assert queued["current_version"] == __version__
+
+            (repo_root / "data").mkdir(parents=True, exist_ok=True)
+            (repo_root / "data" / "upgrade-status.json").write_text(
+                json.dumps({"state": "running", "requested_by": "AI3I", "log_path": "/tmp/upgrade.log"}),
+                encoding="utf-8",
+            )
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/upgrade/request",
+                headers={"X-Admin-Token": "adm", "X-Web-Token": "tok"},
+                body=b"{}",
+            )
+            assert code == 409
+            assert json.loads(body.decode("utf-8"))["error"] == "upgrade already running"
         finally:
             await store.close()
 
@@ -1229,8 +1612,9 @@ def test_web_admin_login_failure_logs_structured_authfail(tmp_path, caplog) -> N
         )
         try:
             now = int(datetime.now(timezone.utc).timestamp())
-            await store.upsert_user_registry("AI3I", now, privilege="sysop")
+            await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
             await store.set_user_pref("AI3I", "password", "correct", now)
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
             with caplog.at_level(logging.WARNING, logger="pycluster.web_admin"):
                 code, _, body = await _http_request(
                     srv,
@@ -1323,13 +1707,15 @@ def test_web_chat_and_bulletin_posts(tmp_path) -> None:
             relay_bulletin_fn=_relay_b,
         )
         now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry("N0CALL", now, privilege="user")
+        await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
+        await store.set_user_pref("N0CALL", "password", "pw1", now)
         code, _, body = await _http_request(
             srv,
             "POST",
             "/api/auth/login",
             headers={"Content-Type": "application/json"},
-            body=json.dumps({"call": "N0CALL", "password": ""}).encode("utf-8"),
+            body=json.dumps({"call": "N0CALL", "password": "pw1"}).encode("utf-8"),
         )
         assert code == 200
         tok = json.loads(body.decode("utf-8"))["token"]
@@ -1631,6 +2017,19 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             assert data["rows"][0]["mail_outbox_issues"] == 1
             assert data["rows"][0]["mail_last_error"] == "no configured route to peer"
             assert data["rows"][0]["mfa_email_otp"] == "default"
+            assert data["rows"][0]["principal_call"] == "K1ABC"
+            assert data["rows"][0]["registration_state"] == "pending"
+            assert data["rows"][0]["email_verified"] is False
+            assert data["rows"][0]["grace_logins_remaining"] == 0
+
+            await store.set_user_pref("K1ABC", "node_family", "pycluster", now)
+            code, _, body = await _http_request(srv, "GET", "/api/users?clusters=1", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["clusters"] is True
+            assert len(data["rows"]) == 1
+            assert data["rows"][0]["call"] == "K1ABC"
+            assert data["rows"][0]["node_family"] == "pycluster"
 
             code, _, body = await _http_request(
                 srv,
@@ -1798,6 +2197,158 @@ def test_web_users_can_reset_mfa(tmp_path) -> None:
             assert data["user"]["mfa_email_otp"] == "off"
             assert await store.get_user_pref("AI3I", "mfa_email_otp") == "off"
             assert await store.get_mfa_challenge(challenge_id) is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_users_can_send_verify_and_unlock_registration(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_users_verify_unlock.db")
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        sent: list[tuple[str, str, str]] = []
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
+            await store.set_user_pref("AI3I", "registration_state", "locked", now)
+            await store.set_user_pref("AI3I", "grace_logins_remaining", "0", now)
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/verification/send",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["principal"] == "AI3I"
+            assert sent and sent[0][0] == "ai3i@example.test"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/verification/unlock",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["user"]["registration_state"] == "pending"
+            assert data["user"]["email_verified"] is False
+            assert data["user"]["grace_logins_remaining"] == cfg.node.initial_grace_logins
+            assert await store.get_user_pref("AI3I", "email_verified_epoch") is None
+            assert await store.get_user_pref("AI3I", "registration_state") == "pending"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/verification/verify",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["user"]["registration_state"] == "verified"
+            assert data["user"]["email_verified"] is True
+            assert await store.get_user_pref("AI3I", "registration_state") == "verified"
+            assert await store.get_user_pref("AI3I", "email_verified_epoch") is not None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_registration_queue_can_list_approve_and_deny(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_registration_queue.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            await store.upsert_registration_request(
+                "N1NEW",
+                now,
+                display_name="New User",
+                home_node="W1AW",
+                qth="Hartford",
+                qra="FN31",
+                email="new@example.test",
+                note="Please approve",
+                source="public-web",
+                email_verified=True,
+                status="pending",
+            )
+            await store.upsert_registration_request(
+                "N1DENY",
+                now,
+                display_name="Denied User",
+                email="deny@example.test",
+                source="telnet",
+                email_verified=True,
+                status="pending",
+            )
+
+            code, _, body = await _http_request(srv, "GET", "/api/registrations?status=pending", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["total"] == 2
+            assert {row["call"] for row in data["rows"]} == {"N1NEW", "N1DENY"}
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/registrations/approve",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "N1NEW"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["user"]["email"] == "new@example.test"
+            assert data["user"]["registration_state"] == "verified"
+            row = await store.get_user_registry("N1NEW")
+            assert row is not None
+            assert str(row["display_name"]) == "New User"
+            assert await store.get_user_pref("N1NEW", "email_verified_epoch") is not None
+            req = await store.get_registration_request("N1NEW")
+            assert req is not None
+            assert str(req["status"]) == "approved"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/registrations/deny",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "N1DENY"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            req = await store.get_registration_request("N1DENY")
+            assert req is not None
+            assert str(req["status"]) == "denied"
+            assert await store.get_user_registry("N1DENY") is None
         finally:
             await store.close()
 
@@ -2135,6 +2686,37 @@ def test_web_proto_alerts_endpoint(tmp_path) -> None:
             )
             assert code == 200
             assert json.loads(body.decode("utf-8"))["removed"] >= 1
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_protocol_page_focuses_on_alerts_and_history(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_proto_page.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            code, headers, body = await _http_request(srv, "GET", "/")
+            assert code == 200
+            assert headers.get("content-type", "").startswith("text/html")
+            html = body.decode("utf-8")
+            assert "Protocol Health" in html
+            assert "Protocol Alerts" in html
+            assert "Protocol History" in html
+            assert 'id="protoPeers"' in html
+            assert 'id="protoAlertSummary"' in html
+            assert "Policy Drops" in html
+            assert "Loading policy drops..." in html
+            assert "j('/api/proto/summary')" in html
+            assert "j('/api/policydrop' + (peer ? '?peer=' + peer : ''))" in html
         finally:
             await store.close()
 

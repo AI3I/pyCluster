@@ -1,0 +1,10 @@
+[Unit]
+Description=pyCluster on-demand upgrade worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/pycluster/pyCluster
+Environment=PYTHONPATH=/home/pycluster/pyCluster/src
+ExecStart=/usr/local/bin/pycluster-python /home/pycluster/pyCluster/scripts/run_upgrade_request.py --repo-root /home/pycluster/pyCluster --owner pycluster:pycluster

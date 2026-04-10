@@ -81,3 +81,17 @@ def test_load_config_merges_sibling_local_override(tmp_path: Path) -> None:
     assert cfg.public_web.enabled is True
     assert cfg.store.sqlite_path == "./data/pycluster.db"
     assert cfg.qrz.username == "AI3I"
+
+
+def test_load_config_defaults_wpxloc_to_cty_sibling(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    base = config_dir / "pycluster.toml"
+    _write_base_config(base)
+    text = base.read_text(encoding="utf-8").replace("cty_dat_path = \"\"", "cty_dat_path = \"./fixtures/live/dxspider/cty.dat\"")
+    base.write_text(text, encoding="utf-8")
+
+    cfg = load_config(base)
+
+    assert cfg.public_web.cty_dat_path == "./fixtures/live/dxspider/cty.dat"
+    assert cfg.public_web.wpxloc_raw_path == "fixtures/live/dxspider/wpxloc.raw" or cfg.public_web.wpxloc_raw_path == "./fixtures/live/dxspider/wpxloc.raw"

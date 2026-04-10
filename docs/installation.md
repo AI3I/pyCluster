@@ -104,6 +104,20 @@ Recommended layout for a host-level install:
 
 There is no separate pre-install account creation step for the operator to perform.
 
+Interactive installs now also offer to run nginx setup before finishing. That prompt asks for:
+
+- the public hostname for the user web UI
+- an optional separate hostname for the sysop web UI
+- whether nginx should publish ports `80` and `443`
+- whether to use Let's Encrypt or self-signed TLS
+- the email address required by Let's Encrypt
+
+If you skip nginx setup, pyCluster still installs and starts cleanly, but:
+
+- the sysop web UI stays on `127.0.0.1:8080`
+- the public web UI stays on `127.0.0.1:8081`
+- those listeners are local-only until you publish them with nginx or another reverse proxy
+
 This installs:
 
 - application tree under `/home/pycluster/pyCluster`
@@ -125,12 +139,13 @@ sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
 
-For upgrades from `1.0.0` through `1.0.3`, `deploy/upgrade.sh` performs the cumulative state conversion needed by older installs:
+For upgrades from any release below `1.0.6`, `deploy/upgrade.sh` runs the cumulative migration chain required by older installs before services restart. The current chain includes:
 
-- hashes any legacy plaintext passwords still stored in the local SQLite `user_prefs` table
-- seeds `config/strings.toml` if it is missing
-- preserves compatibility with older `pycluster.toml` files by supplying defaults for newer optional config sections such as `[qrz]`
-- preserves the existing `config/pycluster.toml`, data, and logs in place
+- `run_upgrade_1_0_1`
+  - hash legacy plaintext user passwords
+  - seed `config/strings.toml` when it is missing
+- `run_upgrade_1_0_6`
+  - move any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
 
 Recommended before future upgrades:
 
@@ -227,6 +242,44 @@ systemctl restart pycluster.service pyclusterweb.service
 
 Replace `AI3I` with the principal/base sysop callsign you are recovering. If needed, also reset the password through the existing bootstrap or direct SQLite recovery path.
 
+## Registration Recovery
+
+Ordinary-user registration now tracks:
+
+- registration state
+- verified email status
+- grace logins remaining before lockout
+
+Normal operator recovery paths:
+
+- System Console user editor:
+  - `Send Verification`
+  - `Mark Verified`
+  - `Unlock Account`
+
+If an account is locked or stuck pending verification and you need to recover it locally on the host:
+
+```bash
+cd /home/pycluster/pyCluster
+sqlite3 data/pycluster.db "
+DELETE FROM mfa_challenges;
+DELETE FROM user_prefs WHERE call='AI3I' AND pref_key IN ('email_verified_epoch','registration_state','grace_logins_remaining');
+INSERT INTO user_prefs(call,pref_key,pref_value,updated_epoch)
+VALUES('AI3I','registration_state','pending',strftime('%s','now'))
+ON CONFLICT(call,pref_key) DO UPDATE SET
+  pref_value=excluded.pref_value,
+  updated_epoch=excluded.updated_epoch;
+INSERT INTO user_prefs(call,pref_key,pref_value,updated_epoch)
+VALUES('AI3I','grace_logins_remaining','5',strftime('%s','now'))
+ON CONFLICT(call,pref_key) DO UPDATE SET
+  pref_value=excluded.pref_value,
+  updated_epoch=excluded.updated_epoch;
+"
+systemctl restart pycluster.service pyclusterweb.service
+```
+
+Replace `AI3I` with the principal/base callsign and adjust `5` to match your configured `initial_grace_logins` policy if needed.
+
 ## Retention and Cleanup
 
 pyCluster supports scheduled age-based cleanup for:
@@ -254,6 +307,32 @@ That policy rotates weekly, keeps compressed history, and prevents the auth-fail
 - telnet: `7300`
 - sysop web: `8080`
 - public web: `8081`
+
+Default bind behavior:
+
+- telnet listens publicly unless you change `telnet.host`
+- the sysop web service listens on `127.0.0.1:8080`
+- the public web service listens on `127.0.0.1:8081`
+
+That localhost binding is intentional. A fresh install is not meant to expose the web UI directly until you finish reverse-proxy setup.
+
+## Reverse Proxy Setup
+
+The supported reverse-proxy path is:
+
+```bash
+sudo ./deploy/setup-nginx.sh
+```
+
+You can also let `deploy/install.sh` call that for you interactively during first install.
+
+Typical nginx setup choices:
+
+- `--public-host cluster.example.net`
+- optional `--sysop-host sysop.example.net`
+- `--tls-mode none`
+- `--tls-mode self-signed`
+- `--tls-mode letsencrypt --email admin@example.net`
 
 ## Optional Dependencies
 

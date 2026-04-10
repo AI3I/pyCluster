@@ -229,7 +229,7 @@ def test_public_web_stats_and_history_are_not_capped_by_recent_spot_limit(tmp_pa
             code, _, body = await _http_request(srv, "/api/history")
             assert code == 200
             hist = json.loads(body.decode("utf-8"))
-            assert hist[0]["spots"] == 250
+            assert sum(int(day["spots"]) for day in hist) == 250
         finally:
             await store.close()
 
@@ -328,6 +328,15 @@ def test_public_dxweb_frequency_formatter_preserves_100hz_resolution() -> None:
     assert "return truncated.toFixed(1);" in text
 
 
+def test_public_dxweb_static_includes_footer_register_modal() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert 'id="register-modal-bg"' in text
+    assert 'id="footer-register"' in text
+    assert "const REGISTER_REQUEST = '/api/register/request';" in text
+    assert "@media (max-width:1100px)" in text
+    assert "@media (max-width:760px)" in text
+
+
 def test_public_web_login_failure_logs_structured_authfail(tmp_path, caplog) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_authfail.db")
@@ -336,8 +345,9 @@ def test_public_web_login_failure_logs_structured_authfail(tmp_path, caplog) -> 
         now = int(datetime.now(timezone.utc).timestamp())
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
         try:
-            await store.upsert_user_registry("AI3I", now, privilege="user")
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
             await store.set_user_pref("AI3I", "password", "correct", now)
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
             with caplog.at_level(logging.WARNING, logger="pycluster.public_web"):
                 code, _, body = await _http_request_ex(
                     srv,
@@ -374,6 +384,7 @@ def test_public_web_login_can_require_email_otp(tmp_path) -> None:
         try:
             await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
             await store.set_user_pref("AI3I", "password", "secret", now)
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -429,6 +440,7 @@ def test_public_web_login_honors_per_user_mfa_override(tmp_path) -> None:
             await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
             await store.set_user_pref("AI3I", "password", "secret", now)
             await store.set_user_pref("AI3I", "mfa_email_otp", "required", now)
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -496,6 +508,7 @@ def test_public_web_mfa_challenge_survives_server_restart(tmp_path) -> None:
         try:
             await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
             await store.set_user_pref("AI3I", "password", "secret", now)
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
 
             code, _, body = await _http_request_ex(
                 srv1,
@@ -564,6 +577,60 @@ def test_public_web_detects_additional_modes(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_public_web_taxonomy_comes_from_strings_catalog(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_taxonomy.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        strings_path = tmp_path / "strings.toml"
+        strings_path.write_text(
+            """
+[public_web.taxonomy]
+mode_order = ["TRX"]
+rare_entities = ["Castle Island"]
+
+[[public_web.taxonomy.mode_rules]]
+pattern = '\\bTRX\\b'
+value = "TRX"
+button = "TRX"
+
+[[public_web.taxonomy.activity_rules]]
+pattern = '\\bCASTLE\\b'
+value = "CASTLE"
+button = "CASTLE"
+
+[[public_web.taxonomy.comment_tags]]
+pattern = '\\bCASTLE\\b'
+label = "CASTLE"
+color = "#123456"
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        now = int(datetime(2026, 3, 11, 12, 0, tzinfo=timezone.utc).timestamp())
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc), strings_path=str(strings_path))
+        try:
+            await store.add_spot(Spot(14074.0, "K1ABC", now, "TRX CASTLE", "N0CALL", "N2WQ-1", ""))
+
+            code, _, body = await _http_request(srv, "/api/spots?limit=5")
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert rows[0]["mode"] == "TRX"
+            assert rows[0]["activity"] == "CASTLE"
+
+            code, _, body = await _http_request(srv, "/api/public/taxonomy")
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["mode_filters"] == ["TRX"]
+            assert data["activity_filters"] == ["RARE", "CASTLE"]
+            assert data["comment_tags"][0]["label"] == "CASTLE"
+            assert data["rare_entities"] == ["Castle Island"]
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_stop_closes_tracked_ws_clients(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_ws_stop.db")
@@ -603,8 +670,9 @@ def test_public_web_auth_and_posting(tmp_path) -> None:
         cfg = _mk_config(db)
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry("AI3I", now, privilege="user")
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
         await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
         try:
             code, _, body = await _http_request_ex(
@@ -669,14 +737,65 @@ def test_public_web_auth_and_posting(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_public_web_profile_exposes_watch_seed_from_buddies_and_spot_filters(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_watch_seed.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+        await store.add_buddy("AI3I", "K1ABC", now)
+        await store.set_filter_rule("AI3I", "spots", "accept", 1, "on 20m", now)
+        await store.set_filter_rule("AI3I", "spots", "accept", 2, "by W3LPL", now)
+        await store.set_filter_rule("AI3I", "spots", "accept", 3, "call_zone 5", now)
+        await store.set_filter_rule("AI3I", "spots", "accept", 4, "call_dxcc canada", now)
+        await store.set_filter_rule("AI3I", "spots", "reject", 5, "by N0CALL", now)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            seed = data["profile"]["watch_seed"]
+            assert {"type": "call", "value": "K1ABC", "source": "buddy"} in seed
+            assert {"type": "band", "value": "20M", "source": "accept/spots 1"} in seed
+            assert {"type": "spotter", "value": "W3LPL", "source": "accept/spots 2"} in seed
+            assert {"type": "cqzone", "value": "5", "source": "accept/spots 3"} in seed
+            assert {"type": "entity", "value": "CANADA", "source": "accept/spots 4"} in seed
+            assert not any(item["value"] == "N0CALL" for item in seed)
+
+            token = data["token"]
+            code, _, body = await _http_request_ex(
+                srv,
+                "GET",
+                "/api/auth/me",
+                headers={"X-Web-Token": token},
+            )
+            assert code == 200
+            me = json.loads(body.decode("utf-8"))
+            assert me["profile"]["watch_seed"] == seed
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_access_policy_controls_login_and_posting(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_access.db")
         cfg = _mk_config(db)
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry("AI3I", now, privilege="user")
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
         await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
         await store.set_user_pref("AI3I", "access.web.login", "off", now)
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
         try:
@@ -719,14 +838,157 @@ def test_public_web_access_policy_controls_login_and_posting(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_public_web_login_requires_registration_and_valid_email(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_auth_registration_required.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            await store.set_user_pref("AI3I", "password", "secret", now)
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "registration required"
+
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="")
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "valid email required"
+
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+            await store.delete_user_pref("AI3I", "password")
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "email verification required"
+
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "password setup required"
+
+            await store.set_user_pref("AI3I", "password", "secret", now)
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_registration_request_verifies_email_and_queues_pending_request(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_registration_request.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I", now, privilege="sysop", email="sysop@example.test")
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(
+                    {
+                        "call": "N1NEW",
+                        "name": "New User",
+                        "homenode": "W1AW",
+                        "qth": "Hartford",
+                        "qra": "FN31",
+                        "email": "new@example.test",
+                        "note": "Please approve me",
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 202
+            data = json.loads(body.decode("utf-8"))
+            challenge_id = data["challenge_id"]
+            row = await store.get_mfa_challenge(challenge_id)
+            assert row is not None
+            otp = str(row["code"])
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(
+                    {
+                        "call": "N1NEW",
+                        "name": "New User",
+                        "homenode": "W1AW",
+                        "qth": "Hartford",
+                        "qra": "FN31",
+                        "email": "new@example.test",
+                        "note": "Please approve me",
+                        "challenge_id": challenge_id,
+                        "otp": otp,
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            req = await store.get_registration_request("N1NEW")
+            assert req is not None
+            assert str(req["status"]) == "pending"
+            assert str(req["email"]) == "new@example.test"
+            assert int(req["email_verified"]) == 1
+            assert any(rcpt == "sysop@example.test" for rcpt, _subject, _body in sent)
+            assert any(rcpt == "new@example.test" for rcpt, _subject, _body in sent)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_non_authenticated_users_are_read_only_by_default(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_access_default.db")
         cfg = _mk_config(db)
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry("AI3I", now, privilege="")
+        await store.upsert_user_registry("AI3I", now, privilege="", email="ai3i@example.test")
         await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
         try:
             code, _, body = await _http_request_ex(
@@ -760,8 +1022,9 @@ def test_public_web_blocked_login_is_denied(tmp_path) -> None:
         cfg = _mk_config(db)
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry("AI3I", now, privilege="user")
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
         await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
         await store.set_user_pref("AI3I", "blocked_login", "on", now)
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
         try:
@@ -786,8 +1049,9 @@ def test_public_web_spot_throttle_returns_429(tmp_path) -> None:
         cfg = _mk_config(db)
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry("AI3I", now, privilege="user")
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
         await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
         await store.set_user_pref(cfg.node.node_call, "spot_throttle.max_per_window", "1", now)
         await store.set_user_pref(cfg.node.node_call, "spot_throttle.window_seconds", "300", now)
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
