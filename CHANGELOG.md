@@ -2,6 +2,26 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.6 - 2026-04-10
+
+### Added
+
+- Geomagnetic data parsing (`WcyReading`, `WwvReading`) extracted into dedicated `geomag` module
+- User registration state management (`registration` module) with email validation and state normalization
+- In-place upgrade manager (`upgrade_manager`) with systemd path/service units for zero-touch upgrades via `deploy/systemd/pycluster-upgrade.{path,service}`
+- Bundled `CTY.DAT` (VER20260404) and `wpxloc.raw` fixtures updated so fresh installs start with current country data
+
+### Changed
+
+- Deploy tooling (`install.sh`, `upgrade.sh`, `repair.sh`, `setup-nginx.sh`, `doctor.sh`, `lib.sh`) updated for 1.0.6 upgrade paths
+- `config/pycluster.toml` and `config/strings.toml` refreshed
+- Documentation updated across configuration, installation, node-linking, operations, public-web, sysop-web, and user-manual pages
+- README updated
+
+### Fixed
+
+- Various protocol, transport, web-admin, and telnet command improvements carried forward from staging
+
 ## 1.0.5 - 2026-04-04
 
 ### Changed
