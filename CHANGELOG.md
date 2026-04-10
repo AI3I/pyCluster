@@ -20,6 +20,8 @@ All notable changes to pyCluster should be recorded here.
 
 ### Fixed
 
+- PC20 keepalive now sent to all connected peers (inbound and outbound), preventing false stale/disconnected state on low-traffic links
+- Receiving a PC20 ping from a peer now refreshes its activity timestamp
 - Various protocol, transport, web-admin, and telnet command improvements carried forward from staging
 
 ## 1.0.5 - 2026-04-04
