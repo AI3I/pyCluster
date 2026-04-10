@@ -26,6 +26,20 @@ Important fields:
 - `motd`
 - `support_contact`
 - `website_url`
+- `require_password`
+- `registration_required`
+- `verified_email_required_for_web`
+- `verified_email_required_for_telnet`
+- `initial_grace_logins`
+
+Auth policy notes:
+
+- `registration_required` is now the primary ordinary-user gate.
+- When `registration_required = true`, ordinary human users must have a local record before account activation.
+- When `verified_email_required_for_web = true`, ordinary web login requires a verified email address.
+- When `verified_email_required_for_telnet = true`, ordinary telnet login requires a verified email address and unverified users are driven through telnet email verification.
+- `initial_grace_logins` controls how many failed or skipped telnet verification attempts are allowed before the pending account is locked.
+- `require_password` is now a narrower legacy telnet-password toggle. For ordinary human users, the stronger registration policy effectively implies passworded access.
 
 ### `[telnet]`
 
@@ -52,6 +66,7 @@ Important fields:
 Note:
 - the sysop console uses callsign/password auth
 - keep it on `127.0.0.1` behind a reverse proxy unless you have a reason not to
+- a default install does exactly that; it does not expose the sysop web listener publicly by itself
 
 ### `[public_web]`
 
@@ -65,6 +80,11 @@ Important fields:
 - `static_dir`
 - `cty_dat_path`
 - `wpxloc_raw_path`
+
+Note:
+- the public web listener is local by default at `127.0.0.1:8081`
+- expose it through nginx or another reverse proxy when you want public access
+- `deploy/install.sh` can now call `deploy/setup-nginx.sh` interactively during first install
 
 ### `[store]`
 
@@ -118,11 +138,13 @@ Default deployed layout:
 ## Operational Advice
 
 - keep web listeners local and publish them through a reverse proxy
+- use `config/pycluster.local.toml` for hostnames, SMTP credentials, QRZ credentials, and any other host-local settings you do not want overwritten during repo updates
 - use realistic `max_clients` values for your hardware
 - back up the base config, local override, and SQLite DB together
 - do not hand-edit the live CTY file unless you need an emergency local override
 - keep SMTP credentials in `config/pycluster.local.toml`, not the tracked base config
 - CTY data is used for enrichment and review cues such as suspicious spot-prefix flags in the sysop web UI; it is not treated as a complete worldwide legal callsign authority
+- ordinary user access should be managed through the registration and verified-email policy, not by relying only on the older `require_password` toggle
 
 
 ## Dataset Status

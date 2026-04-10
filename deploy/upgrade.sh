@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=deploy/lib.sh
+PYCLUSTER_PKG_AUTO_INSTALL="${PYCLUSTER_PKG_AUTO_INSTALL:-0}"
 . "$SCRIPT_DIR/lib.sh"
 
 require_root
@@ -23,6 +24,7 @@ install_or_refresh_fail2ban
 install_or_refresh_logrotate
 enable_service
 run_upgrade_1_0_1
+run_upgrade_1_0_6
 refresh_cty_best_effort
 restart_service_hard
 restart_web_service_hard

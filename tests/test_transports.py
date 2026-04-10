@@ -34,6 +34,16 @@ def test_parse_dxspider_dsn() -> None:
     assert spec.params.get("client") == "AI3I-15"
 
 
+def test_parse_pycluster_dsn() -> None:
+    spec = parse_transport_dsn("pycluster://127.0.0.1:7300?login=AI3I-16&client=AI3I-15")
+    assert spec.scheme == "pycluster"
+    assert spec.host == "127.0.0.1"
+    assert spec.port == 7300
+    assert spec.params is not None
+    assert spec.params.get("login") == "AI3I-16"
+    assert spec.params.get("client") == "AI3I-15"
+
+
 def test_parse_ax25_dsn() -> None:
     spec = parse_transport_dsn("ax25://N0DEST?source=N0SRC&via=RLY1,RLY2")
     assert spec.scheme == "ax25_socket"
@@ -142,7 +152,7 @@ def test_dxspider_connect_accepts_direct_pc_banner_without_client_command() -> N
                 assert line == "PC18^DXSpider Version: 1.55 Build: 0.203 Git: 448838ed[r] pc9x^5455^"
                 assert seen == [
                     "AI3I-16",
-                    "PC18^DXSpider Version: 1.57 Build: 46 Git: pyCluster/1.0.5^5455^",
+                    "PC18^pyCluster 1.0.6^5455^",
                     "PC20^",
                 ]
             finally:
@@ -189,7 +199,7 @@ def test_dxspider_connect_direct_pc18_keeps_followup_init_frames() -> None:
                 assert await conn.readline() == "PC19^1^AI3I-15^0^1057^H96^"
                 assert seen == [
                     "AI3I-16",
-                    "PC18^DXSpider Version: 1.57 Build: 46 Git: pyCluster/1.0.5^5455^",
+                    "PC18^pyCluster 1.0.6^5455^",
                     "PC20^",
                 ]
             finally:

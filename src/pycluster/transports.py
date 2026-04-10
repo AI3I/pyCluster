@@ -11,8 +11,6 @@ from . import __version__
 from .pathmeta import describe_socket_path
 
 DXSPIDER_COMPAT_VERSION = "1.57"
-DXSPIDER_COMPAT_BUILD = "46"
-
 
 class LinkConnection(Protocol):
     name: str
@@ -31,11 +29,7 @@ class LinkListener(Protocol):
 
 
 def dxspider_compat_pc18(proto: str = "5457") -> str:
-    software = (
-        f"DXSpider Version: {DXSPIDER_COMPAT_VERSION} "
-        f"Build: {DXSPIDER_COMPAT_BUILD} "
-        f"Git: pyCluster/{__version__}"
-    )
+    software = f"pyCluster {__version__}"
     return f"PC18^{software}^{proto}^"
 
 
@@ -135,10 +129,11 @@ def parse_transport_dsn(dsn: str) -> TransportSpec:
             raise ValueError("tcp dsn must include host and port")
         return TransportSpec(scheme=scheme, host=u.hostname, port=u.port, params=q)
 
-    if scheme in {"dxspider", "spidertelnet"}:
+    if scheme in {"pycluster", "dxspider", "spidertelnet"}:
         if not u.hostname or u.port is None:
-            raise ValueError("dxspider dsn must include host and port")
-        return TransportSpec(scheme="dxspider", host=u.hostname, port=u.port, params=q)
+            raise ValueError(f"{scheme} dsn must include host and port")
+        mapped = "pycluster" if scheme == "pycluster" else "dxspider"
+        return TransportSpec(scheme=mapped, host=u.hostname, port=u.port, params=q)
 
     if scheme in {"kiss", "kiss_serial"}:
         path = u.path or ""
@@ -579,20 +574,21 @@ async def _tcp_connect(name: str, host: str, port: int) -> LinkConnection:
 async def _dxspider_connect(name: str, spec: TransportSpec) -> LinkConnection:
     assert spec.host is not None and spec.port is not None
     params = spec.params or {}
+    scheme = str(spec.scheme or "dxspider").strip().lower() or "dxspider"
     login = (params.get("login") or "").strip().upper()
     client = (params.get("client") or "").strip().upper()
     password = params.get("password", "")
     timeout = float(params.get("timeout", "10"))
     if not login:
-        raise ValueError("dxspider dsn requires ?login=CALL")
+        raise ValueError(f"{scheme} dsn requires ?login=CALL")
     if not client:
-        raise ValueError("dxspider dsn requires ?client=PEERCALL")
+        raise ValueError(f"{scheme} dsn requires ?client=PEERCALL")
     reader, writer = await asyncio.open_connection(spec.host, spec.port)
     conn = _DxSpiderTelnetConnection(
         name=name,
         reader=reader,
         writer=writer,
-        transport="dxspider",
+        transport=scheme,
         path_hint=describe_socket_path(writer.get_extra_info("peername"), writer.get_extra_info("sockname")),
     )
     try:
@@ -746,7 +742,7 @@ async def connect_from_dsn(name: str, dsn: str) -> LinkConnection:
         assert spec.host is not None and spec.port is not None
         return await _tcp_connect(name, spec.host, spec.port)
 
-    if spec.scheme == "dxspider":
+    if spec.scheme in {"pycluster", "dxspider"}:
         return await _dxspider_connect(name, spec)
 
     if spec.scheme == "kiss_serial":

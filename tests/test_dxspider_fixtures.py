@@ -67,7 +67,7 @@ def test_parse_real_dxspider_wcy_archive_line() -> None:
     assert rec.expk == 121
     assert rec.sender == "DK0WCY"
     assert rec.source_node == "DB0SUE-7"
-    assert rec.body == "SFI=162 A=16 K=4 spots=0 expk=121 aurora=act xray=act storm=no"
+    assert rec.body == "SFI=162 A=16 K=4 ExpK=121 R=0 SA=act GMF=act Aurora=no"
 
 
 def test_show_wcy_and_wwv_accept_real_dxspider_fixture_bodies(tmp_path) -> None:

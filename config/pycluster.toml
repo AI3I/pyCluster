@@ -5,8 +5,19 @@ owner_name = "Example Operator"
 qth = "Example City"
 node_locator = "FN31PR"
 motd = "Welcome to pyCluster on N0CALL-1"
+branding_name = "pyCluster"
+welcome_title = "Welcome"
+welcome_body = ""
+login_tip = "Tip: help shows commands, sh/dx shows recent spots."
+show_status_after_login = true
+require_password = true
+registration_required = true
+verified_email_required_for_web = true
+verified_email_required_for_telnet = true
+initial_grace_logins = 5
 support_contact = "sysop@example.org"
 website_url = "https://github.com/AI3I/pyCluster"
+prompt_template = "[{timestamp}] {node}{suffix}"
 
 [telnet]
 host = "0.0.0.0"
@@ -26,7 +37,7 @@ host = "127.0.0.1"
 port = 8081
 static_dir = "./web/public_dxweb/static"
 cty_dat_path = "./fixtures/live/dxspider/cty.dat"
-wpxloc_raw_path = ""
+wpxloc_raw_path = "./fixtures/live/dxspider/wpxloc.raw"
 
 [store]
 sqlite_path = "./data/pycluster.db"

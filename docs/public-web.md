@@ -51,11 +51,13 @@ Shows:
 
 ### Watch
 
-User watch/alerting page.
+Authenticated user watch/alerting page.
 
 Features:
 
-- rule-based watch entries
+- only available after login
+- cluster-backed watch seeds from buddies and positive spot filters
+- local saved watch rules layered on top of those inherited cluster watch seeds
 - recent matches
 - hit counts
 - saved watch profiles
@@ -67,9 +69,11 @@ Authenticated posting and user actions.
 
 Features:
 
-- callsign/password login
+- available only after login
 - permission-aware posting controls
-- footer `Edit Profile` popup
+- footer `Log In` popup for authentication
+- footer `Register` popup for new registration requests
+- footer `Edit Profile` popup after login
 
 Profile fields:
 

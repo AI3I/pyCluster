@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import secrets
 import time
+import tomllib
 from urllib.parse import parse_qs, unquote, urlparse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -24,10 +25,12 @@ from .ctydat import load_cty, lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
+from .geomag import canonicalize_wcy_text, canonicalize_wwv_text
 from .maidenhead import coords_to_locator, extract_locator
 from .mfa import EmailOtpManager, SMTPMailer
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path
+from .registration import has_valid_email, registration_state
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
 
@@ -45,6 +48,10 @@ _CONFIG_AUTH_NODE_FIELDS = {
     "login_tip",
     "show_status_after_login",
     "require_password",
+    "registration_required",
+    "verified_email_required_for_web",
+    "verified_email_required_for_telnet",
+    "initial_grace_logins",
     "support_contact",
     "website_url",
     "motd",
@@ -52,47 +59,102 @@ _CONFIG_AUTH_NODE_FIELDS = {
     "telnet_ports",
 }
 
-_MODE_ORDER = ["CW", "WSPR", "RTTY", "FT8", "FT4", "FT2", "JS8", "JT9", "JT65", "SSB", "AM", "FM", "PSK"]
-
-_MODE_RE = [
-    (re.compile(r"\bFT8\b", re.I), "FT8"),
-    (re.compile(r"\bFT4\b", re.I), "FT4"),
-    (re.compile(r"\bFT2\b", re.I), "FT2"),
-    (re.compile(r"\bQ65\b", re.I), "Q65"),
-    (re.compile(r"\bMSK144\b", re.I), "MSK144"),
-    (re.compile(r"\bFSK441\b", re.I), "FSK441"),
-    (re.compile(r"\bJS8\b", re.I), "JS8"),
-    (re.compile(r"\bJT65\b", re.I), "JT65"),
-    (re.compile(r"\bJT9\b", re.I), "JT9"),
-    (re.compile(r"\bWSPR\b", re.I), "WSPR"),
-    (re.compile(r"\bRTTY\b", re.I), "RTTY"),
-    (re.compile(r"\bMFSK\b", re.I), "MFSK"),
-    (re.compile(r"\bOLIVIA\b", re.I), "OLIVIA"),
-    (re.compile(r"\bDOMINO(?:EX)?\b", re.I), "DOMINO"),
-    (re.compile(r"\bTHOR\b", re.I), "THOR"),
-    (re.compile(r"\bHELL(?:SCHREIBER)?\b", re.I), "HELL"),
-    (re.compile(r"\bROS\b", re.I), "ROS"),
-    (re.compile(r"\bVARA\b", re.I), "VARA"),
-    (re.compile(r"\bPACTOR\b", re.I), "PACTOR"),
-    (re.compile(r"\bWINMOR\b", re.I), "WINMOR"),
-    (re.compile(r"\bARDOP\b", re.I), "ARDOP"),
-    (re.compile(r"\bPSK\d*\b", re.I), "PSK"),
-    (re.compile(r"\bFAX\b", re.I), "FAX"),
-    (re.compile(r"\bSSTV\b", re.I), "SSTV"),
-    (re.compile(r"\bATV\b", re.I), "ATV"),
-    (re.compile(r"\bDATA\b", re.I), "DATA"),
-    (re.compile(r"\bDIGI(?:TAL)?\b", re.I), "DATA"),
-    (re.compile(r"\bCW\b", re.I), "CW"),
-    (re.compile(r"\b(LSB|USB|SSB)\b", re.I), "SSB"),
-    (re.compile(r"\bAM\b", re.I), "AM"),
-    (re.compile(r"\bFM\b", re.I), "FM"),
+_DEFAULT_MODE_ORDER = ["CW", "WSPR", "RTTY", "FT8", "FT4", "FT2", "JS8", "JT9", "JT65", "Q65", "MSK144", "SSB", "AM", "FM", "PSK"]
+_DEFAULT_MODE_RULES = [
+    {"pattern": r"\bFT8\b", "value": "FT8", "button": "FT8"},
+    {"pattern": r"\bFT4\b", "value": "FT4", "button": "FT4"},
+    {"pattern": r"\bFT2\b", "value": "FT2", "button": "FT2"},
+    {"pattern": r"\bQ65\b", "value": "Q65", "button": "Q65"},
+    {"pattern": r"\bMSK144\b", "value": "MSK144", "button": "MSK144"},
+    {"pattern": r"\bFSK441\b", "value": "FSK441"},
+    {"pattern": r"\bJS8\b", "value": "JS8", "button": "JS8"},
+    {"pattern": r"\bJT65\b", "value": "JT65", "button": "JT65"},
+    {"pattern": r"\bJT9\b", "value": "JT9", "button": "JT9"},
+    {"pattern": r"\bWSPR\b", "value": "WSPR", "button": "WSPR"},
+    {"pattern": r"\bRTTY\b", "value": "RTTY", "button": "RTTY"},
+    {"pattern": r"\bMFSK\b", "value": "MFSK"},
+    {"pattern": r"\bOLIVIA\b", "value": "OLIVIA"},
+    {"pattern": r"\bDOMINO(?:EX)?\b", "value": "DOMINO"},
+    {"pattern": r"\bTHOR\b", "value": "THOR"},
+    {"pattern": r"\bHELL(?:SCHREIBER)?\b", "value": "HELL"},
+    {"pattern": r"\bROS\b", "value": "ROS"},
+    {"pattern": r"\bVARA\b", "value": "VARA"},
+    {"pattern": r"\bPACTOR\b", "value": "PACTOR"},
+    {"pattern": r"\bWINMOR\b", "value": "WINMOR"},
+    {"pattern": r"\bARDOP\b", "value": "ARDOP"},
+    {"pattern": r"\bPSK\d*\b", "value": "PSK"},
+    {"pattern": r"\bFAX\b", "value": "FAX"},
+    {"pattern": r"\bSSTV\b", "value": "SSTV"},
+    {"pattern": r"\bATV\b", "value": "ATV"},
+    {"pattern": r"\bDATA\b", "value": "DATA"},
+    {"pattern": r"\bDIGI(?:TAL)?\b", "value": "DATA"},
+    {"pattern": r"\bCW\b", "value": "CW", "button": "CW"},
+    {"pattern": r"\b(LSB|USB|SSB)\b", "value": "SSB", "button": "SSB"},
+    {"pattern": r"\bAM\b", "value": "AM", "button": "AM"},
+    {"pattern": r"\bFM\b", "value": "FM", "button": "FM"},
 ]
-_ACT_RE = [
-    (re.compile(r"\bSOTA\b", re.I), "SOTA"),
-    (re.compile(r"\bPOTA\b|\bparks?\b", re.I), "POTA"),
-    (re.compile(r"\bIOTA\b", re.I), "IOTA"),
-    (re.compile(r"\bWWFF\b", re.I), "WWFF"),
-    (re.compile(r"\bBOTA\b", re.I), "BOTA"),
+_DEFAULT_ACTIVITY_RULES = [
+    {"pattern": r"\bEME\b|\bMOONBOUNCE\b", "value": "EME", "button": "EME"},
+    {"pattern": r"\bSAT\b|\bSATELLITE\b", "value": "SAT", "button": "SAT"},
+    {"pattern": r"\bWWFF\b", "value": "WWFF", "button": "WWFF"},
+    {"pattern": r"\bGMA\b", "value": "GMA", "button": "GMA"},
+    {"pattern": r"\bSOTA\b", "value": "SOTA", "button": "SOTA"},
+    {"pattern": r"\bPOTA\b|\bPARKS?\b", "value": "POTA", "button": "POTA"},
+    {"pattern": r"\bIOTA\b", "value": "IOTA", "button": "IOTA"},
+    {"pattern": r"\bBOTA\b", "value": "BOTA", "button": "BOTA"},
+    {"pattern": r"\bLOTA\b", "value": "LOTA", "button": "LOTA"},
+]
+_DEFAULT_COMMENT_TAGS = [
+    {"pattern": r"\bcq\b|\bcqing\b|\bcalling\b|\blistening\b", "label": "CQ", "color": "#10b981"},
+    {"pattern": r"\bsplit\b|\bspilt\b|\bup\b|\bqsx|\bdn\b", "label": "QSX", "color": "#f59e0b"},
+    {"pattern": r"\bqsy\b", "label": "QSY", "color": "#67e8f9"},
+    {"pattern": r"\bqrt\b", "label": "QRT", "color": "#94a3b8"},
+    {"pattern": r"\bcw\b|\bskcc\b|\bfists\b|\bhst\b", "label": "CW", "color": "#facc15"},
+    {"pattern": r"\bft8\b|\bft4\b|\bft2\b|\bq65\b|\bmsk144\b|\bfsk441\b|\brtty\b|\bjs8\b|\bjt65\b|\bjt9\b|\bwspr\b|\bmfsk\b|\bolivia\b|\bdomino(?:ex)?\b|\bthor\b|\bhell(?:schreiber)?\b|\bros\b|\bvara\b|\bpactor\b|\bwinmor\b|\bardop\b|\bpsk\b|\bfax\b|\bsstv\b|\batv\b|\bdata\b|\bdigi(?:tal)?\b", "label": "DIGITAL", "color": "#a78bfa"},
+    {"pattern": r"\bssb\b|\bam\b|\bfm\b", "label": "VOICE", "color": "#34d399"},
+    {"pattern": r"\busb\b", "label": "USB", "color": "#818cf8"},
+    {"pattern": r"\blsb\b", "label": "LSB", "color": "#6ee7b7"},
+    {"pattern": r"\bqrm\b", "label": "QRM", "color": "#f87171"},
+    {"pattern": r"\bqrp\b", "label": "QRP", "color": "#a78bfa"},
+    {"pattern": r"\bqro\b", "label": "QRO", "color": "#fb923c"},
+    {"pattern": r"\beme\b|\bmoonbounce\b", "label": "EME", "color": "#c084fc"},
+    {"pattern": r"\bsat\b|\bsatellite\b", "label": "SAT", "color": "#67e8f9"},
+    {"pattern": r"\bcontest\b|\bqso\s+party\b|\bparty\b|qp\b|\bcqww\b|\barrl\b|\bwpx\b|\bfield\s*day\b|\bwfd\b|\bfd\b|\bwas\b", "label": "CONTEST", "color": "#f472b6"},
+    {"pattern": r"\bpile.?up\b", "label": "PILEUP", "color": "#ff9f43"},
+    {"pattern": r"\bdxped", "label": "DXPED", "color": "#e879f9"},
+    {"pattern": r"\blong\s+path\b", "label": "LONG PATH", "color": "#a3e635"},
+    {"pattern": r"\bportable\b", "label": "PORTABLE", "color": "#14b8a6"},
+    {"pattern": r"\bmobile\b", "label": "MOBILE", "color": "#06b6d4"},
+    {"pattern": r"\bmaritime\b", "label": "MARITIME", "color": "#0ea5e9"},
+    {"pattern": r"\bnet\b", "label": "NET", "color": "#34d399"},
+    {"pattern": r"\bpirate\b", "label": "PIRATE", "color": "#f97316"},
+    {"pattern": r"\bdx\b|\bdistance\b", "label": "DX", "color": "#3b82f6"},
+    {"pattern": r"\batno\b", "label": "ATNO", "color": "#f85149"},
+    {"pattern": r"\bnew\s*one\b|\bnew\s+ctry\b|\bnew\s+country\b|\bnewone\b", "label": "NEW ONE", "color": "#f85149"},
+    {"pattern": r"\bspecial\b|\baward\b|\byear\b|\bday\b|\bses\b", "label": "SPECIAL", "color": "#c084fc"},
+    {"pattern": r"\b59\b|\brst\s*59\b|\b5\/9\b|\b5-9\b", "label": "5/9", "color": "#3fb950"},
+    {"pattern": r"\blotw\b", "label": "LoTW", "color": "#58a6ff"},
+    {"pattern": r"\bbeacon\b", "label": "BEACON", "color": "#fbbf24"},
+    {"pattern": r"\btnx\b|\bthx\b|\btks\b|\bthank|\b73\b", "label": "TNX", "color": "#fb7185"},
+    {"pattern": r"\bwwff\b", "label": "WWFF", "color": "#e8d44d"},
+    {"pattern": r"\bgma\b", "label": "GMA", "color": "#6ee7b7"},
+    {"pattern": r"\bsota\b", "label": "SOTA", "color": "#3fb950"},
+    {"pattern": r"\bpota\b|\bparks?\b", "label": "POTA", "color": "#58a6ff"},
+    {"pattern": r"\biota\b", "label": "IOTA", "color": "#a78bfa"},
+    {"pattern": r"\bbota\b", "label": "BOTA", "color": "#f97316"},
+    {"pattern": r"\blota\b", "label": "LOTA", "color": "#fde68a"},
+]
+_DEFAULT_RARE_ENTITIES = [
+    "North Korea", "Bouvet Island", "Peter 1 Island", "Crozet Island", "Heard Island",
+    "Macquarie Island", "Kerguelen Island", "Amsterdam & St. Paul Is.", "South Georgia Is.",
+    "South Sandwich Islands", "South Shetland Islands", "South Orkney Islands",
+    "Scarborough Reef", "Pratas Island", "Spratly Islands", "Andaman & Nicobar Is.",
+    "Lakshadweep Is.", "Navassa Island", "Desecheo Island", "Baker & Howland Is.",
+    "Johnston Island", "Palmyra & Jarvis Is.", "Kure Island", "Midway Island",
+    "Minami Torishima", "Mount Athos", "Annobon Island", "Market Reef",
+    "Willis Island", "Mellish Reef", "Chesterfield Islands", "Ducie Island",
+    "Austral Islands", "Clipperton Island", "Malpelo Island", "Juan Fernandez Islands",
+    "Easter Island", "Agalega & St. Brandon Is.", "Glorioso Islands", "Tromelin Island",
 ]
 _CW_RANGES = [
     (1.800, 1.840), (3.500, 3.600), (7.000, 7.040), (10.100, 10.150),
@@ -107,8 +169,6 @@ _BANDS = [
     ("33cm", 902.0, 928.0),
     ("70cm", 430.0, 450.0), ("23cm", 1240.0, 1300.0),
 ]
-
-
 def freq_to_band(freq_khz: float) -> str:
     mhz = freq_khz / 1000.0
     for name, lo, hi in _BANDS:
@@ -116,24 +176,6 @@ def freq_to_band(freq_khz: float) -> str:
             return name
     if mhz > 1300.0:
         return "SHF"
-    return ""
-
-
-def detect_mode(comment: str, freq_khz: float) -> str:
-    for rx, mode in _MODE_RE:
-        if rx.search(comment):
-            return mode
-    mhz = freq_khz / 1000.0
-    for lo, hi in _CW_RANGES:
-        if lo <= mhz <= hi:
-            return "CW"
-    return ""
-
-
-def detect_activity(comment: str) -> str:
-    for rx, act in _ACT_RE:
-        if rx.search(comment):
-            return act
     return ""
 
 
@@ -152,6 +194,7 @@ class PublicWebServer:
         publish_bulletin_fn=None,
         relay_bulletin_fn=None,
         event_log_fn=None,
+        strings_path: str | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -173,6 +216,131 @@ class PublicWebServer:
         self._web_sessions: dict[str, tuple[str, int]] = {}
         self._smtp = SMTPMailer(config.smtp)
         self._mfa = EmailOtpManager(config.mfa, self._smtp.send_code, store)
+        if not strings_path:
+            bundled = Path(__file__).resolve().parents[2] / "config" / "strings.toml"
+            strings_path = str(bundled) if bundled.exists() else None
+        self._strings_path = Path(strings_path) if strings_path else None
+        self._taxonomy_mtime_ns: int | None = None
+        self._taxonomy_key = ""
+        self._mode_rules: list[tuple[re.Pattern[str], str]] = []
+        self._activity_rules: list[tuple[re.Pattern[str], str]] = []
+        self._mode_filters: list[str] = []
+        self._activity_filters: list[str] = []
+        self._comment_tags: list[dict[str, object]] = []
+        self._rare_entities: set[str] = set()
+        self._mode_order: list[str] = list(_DEFAULT_MODE_ORDER)
+
+    def _refresh_taxonomy(self) -> None:
+        raw = {
+            "mode_order": _DEFAULT_MODE_ORDER,
+            "mode_rules": _DEFAULT_MODE_RULES,
+            "activity_rules": _DEFAULT_ACTIVITY_RULES,
+            "comment_tags": _DEFAULT_COMMENT_TAGS,
+            "rare_entities": _DEFAULT_RARE_ENTITIES,
+        }
+        if self._strings_path:
+            try:
+                stat = self._strings_path.stat()
+            except OSError:
+                stat = None
+            if stat is not None and self._taxonomy_mtime_ns == stat.st_mtime_ns and self._taxonomy_key:
+                return
+            if stat is not None and self._taxonomy_mtime_ns != stat.st_mtime_ns:
+                try:
+                    text = self._strings_path.read_text(encoding="utf-8")
+                    marker = "[public_web.taxonomy]"
+                    idx = text.find(marker)
+                    if idx >= 0:
+                        parsed = tomllib.loads(text[idx:])
+                        node = parsed.get("public_web", {}).get("taxonomy", {})
+                        if isinstance(node, dict):
+                            raw = {
+                                "mode_order": node.get("mode_order", _DEFAULT_MODE_ORDER),
+                                "mode_rules": node.get("mode_rules", _DEFAULT_MODE_RULES),
+                                "activity_rules": node.get("activity_rules", _DEFAULT_ACTIVITY_RULES),
+                                "comment_tags": node.get("comment_tags", _DEFAULT_COMMENT_TAGS),
+                                "rare_entities": node.get("rare_entities", _DEFAULT_RARE_ENTITIES),
+                            }
+                except Exception:
+                    LOG.warning("public web taxonomy load failed for %s", self._strings_path, exc_info=True)
+                self._taxonomy_mtime_ns = stat.st_mtime_ns
+        key = json.dumps(raw, sort_keys=True)
+        if key == self._taxonomy_key:
+            return
+        self._taxonomy_key = key
+        self._mode_order = [str(item).strip().upper() for item in raw["mode_order"] if str(item).strip()]
+        self._mode_rules = []
+        self._activity_rules = []
+        self._mode_filters = []
+        self._activity_filters = []
+        self._comment_tags = []
+        self._rare_entities = {str(item).strip() for item in raw["rare_entities"] if str(item).strip()}
+        for row in raw["mode_rules"]:
+            if not isinstance(row, dict):
+                continue
+            pattern = str(row.get("pattern", "")).strip()
+            value = str(row.get("value", "")).strip().upper()
+            if not pattern or not value:
+                continue
+            self._mode_rules.append((re.compile(pattern, re.I), value))
+            button = str(row.get("button", value)).strip().upper()
+            if button and button not in self._mode_filters:
+                self._mode_filters.append(button)
+        for row in raw["activity_rules"]:
+            if not isinstance(row, dict):
+                continue
+            pattern = str(row.get("pattern", "")).strip()
+            value = str(row.get("value", "")).strip().upper()
+            if not pattern or not value:
+                continue
+            self._activity_rules.append((re.compile(pattern, re.I), value))
+            button = str(row.get("button", value)).strip().upper()
+            if button and button not in self._activity_filters:
+                self._activity_filters.append(button)
+        for row in raw["comment_tags"]:
+            if not isinstance(row, dict):
+                continue
+            pattern = str(row.get("pattern", "")).strip()
+            label = str(row.get("label", "")).strip()
+            color = str(row.get("color", "")).strip() or "#58a6ff"
+            if not pattern or not label:
+                continue
+            self._comment_tags.append({
+                "pattern": pattern,
+                "label": label,
+                "color": color,
+                "button": str(row.get("button", label)).strip() or label,
+            })
+
+    def _detect_mode(self, comment: str, freq_khz: float) -> str:
+        self._refresh_taxonomy()
+        for rx, mode in self._mode_rules:
+            if rx.search(comment):
+                return mode
+        mhz = freq_khz / 1000.0
+        for lo, hi in _CW_RANGES:
+            if lo <= mhz <= hi:
+                return "CW"
+        return ""
+
+    def _detect_activity(self, comment: str) -> str:
+        self._refresh_taxonomy()
+        for rx, act in self._activity_rules:
+            if rx.search(comment):
+                return act
+        return ""
+
+    def _taxonomy_payload(self) -> dict[str, object]:
+        self._refresh_taxonomy()
+        return {
+            "mode_filters": self._mode_filters,
+            "activity_filters": ["RARE", *self._activity_filters],
+            "comment_tags": [
+                {"label": str(row["label"]), "button": str(row["button"]), "pattern": str(row["pattern"]), "color": str(row["color"])}
+                for row in self._comment_tags
+            ],
+            "rare_entities": sorted(self._rare_entities),
+        }
 
     def _audit(self, category: str, text: str) -> None:
         if self.event_log_fn:
@@ -184,6 +352,82 @@ class PublicWebServer:
     async def _email_for_call(self, call: str) -> str:
         row = await self.store.get_user_registry(call)
         return str(row["email"] or "").strip() if row else ""
+
+    async def _sysop_notification_emails(self) -> list[str]:
+        rows = await self.store.list_user_registry(limit=200, privilege="sysop")
+        out: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            email = str(row["email"] or "").strip()
+            low = email.lower()
+            if has_valid_email(email) and low not in seen:
+                seen.add(low)
+                out.append(email)
+        return out
+
+    async def _submit_registration_request(
+        self,
+        *,
+        call: str,
+        display_name: str,
+        home_node: str,
+        qth: str,
+        qra: str,
+        email: str,
+        note: str,
+        source: str,
+        email_verified: bool,
+    ) -> None:
+        now = int(time.time())
+        await self.store.upsert_registration_request(
+            call,
+            now,
+            display_name=display_name,
+            home_node=home_node,
+            qth=qth,
+            qra=qra,
+            email=email,
+            note=note,
+            source=source,
+            email_verified=email_verified,
+            status="pending",
+        )
+        if not self._smtp.enabled():
+            return
+        sysops = await self._sysop_notification_emails()
+        subject = f"pyCluster registration request for {call}"
+        body = (
+            f"A new pyCluster registration request is pending for {call}.\n\n"
+            f"Name: {display_name or '-'}\n"
+            f"Home node: {home_node or '-'}\n"
+            f"QTH: {qth or '-'}\n"
+            f"Grid: {qra or '-'}\n"
+            f"Email: {email or '-'}\n"
+            f"Source: {source}\n"
+            f"Email verified: {'yes' if email_verified else 'no'}\n"
+            f"Note: {note or '-'}\n"
+        )
+        for rcpt in sysops:
+            try:
+                self._smtp.send_code(rcpt, subject, body)
+            except Exception:
+                LOG.exception("public web registration notification failed rcpt=%s call=%s", rcpt, call)
+        try:
+            self._smtp.send_code(
+                email,
+                f"pyCluster registration request received for {call}",
+                (
+                    f"Your pyCluster registration request for {call} has been received.\n\n"
+                    "A system operator will review it. You may not have posting or login "
+                    "privileges until it is approved.\n"
+                ),
+            )
+        except Exception:
+            LOG.exception("public web registration acknowledgement failed call=%s email=%s", call, email)
+
+    @staticmethod
+    def _has_valid_email(email: str) -> bool:
+        return has_valid_email(email)
 
     async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
         base_call = call.split("-", 1)[0]
@@ -523,8 +767,8 @@ class PublicWebServer:
             "spotter": spotter,
             "comment": comment,
             "band": freq_to_band(freq),
-            "mode": detect_mode(comment, freq),
-            "activity": detect_activity(comment),
+            "mode": self._detect_mode(comment, freq),
+            "activity": self._detect_activity(comment),
             "dx_entity": dx_ent.name if dx_ent else "",
             "dx_continent": dx_ent.continent if dx_ent else "",
             "dx_cqz": dx_ent.cq_zone if dx_ent else 0,
@@ -557,7 +801,85 @@ class PublicWebServer:
         ctype, _ = mimetypes.guess_type(str(target))
         return target.read_bytes(), (ctype or "application/octet-stream")
 
-    async def _web_profile_snapshot(self, call: str) -> dict[str, str]:
+    def _watch_rule_from_filter_expr(self, expr: str, *, slot: int) -> dict[str, str] | None:
+        text = str(expr or "").strip()
+        if not text:
+            return None
+        toks = text.split()
+        if not toks:
+            return None
+        first = toks[0].lower()
+        rest = " ".join(toks[1:]).strip()
+        source = f"accept/spots {slot}"
+        if first == "on" and rest:
+            return {"type": "band", "value": rest.split()[0].upper(), "source": source}
+        if first == "by" and rest:
+            return {"type": "spotter", "value": rest.upper(), "source": source}
+        if first in {"dx", "call"} and rest:
+            return {"type": "call", "value": rest.upper(), "source": source}
+        if first == "call_zone" and rest:
+            rules: list[dict[str, str]] = []
+            for token in re.split(r"[,\s]+", rest):
+                token = token.strip()
+                if token.isdigit():
+                    rules.append({"type": "cqzone", "value": token, "source": source})
+            return rules[0] if len(rules) == 1 else {"type": "multi", "value": json.dumps(rules), "source": source}
+        if first == "call_itu" and rest:
+            rules = []
+            for token in re.split(r"[,\s]+", rest):
+                token = token.strip()
+                if token.isdigit():
+                    rules.append({"type": "ituzone", "value": token, "source": source})
+            return rules[0] if len(rules) == 1 else {"type": "multi", "value": json.dumps(rules), "source": source}
+        if first == "call_dxcc" and rest:
+            values = [token.strip().upper() for token in re.split(r"[,\s]+", rest) if token.strip()]
+            return {"type": "entity", "value": values[0], "source": source} if len(values) == 1 else {
+                "type": "multi",
+                "value": json.dumps([{"type": "entity", "value": v, "source": source} for v in values]),
+                "source": source,
+            }
+        if first == "info" and rest:
+            return {"type": "comment", "value": rest.upper(), "source": source}
+        return None
+
+    async def _watch_seed_for_call(self, call: str) -> list[dict[str, str]]:
+        seeds: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for buddy in await self.store.list_buddies(call):
+            item = {"type": "call", "value": str(buddy or "").strip().upper(), "source": "buddy"}
+            key = (item["type"], item["value"], item["source"])
+            if item["value"] and key not in seen:
+                seen.add(key)
+                seeds.append(item)
+        for row in await self.store.list_filter_rules(call):
+            if str(row["family"] or "").strip().lower() != "spots":
+                continue
+            if str(row["action"] or "").strip().lower() != "accept":
+                continue
+            mapped = self._watch_rule_from_filter_expr(str(row["expr"] or ""), slot=int(row["slot"] or 0))
+            if not mapped:
+                continue
+            items = []
+            if mapped.get("type") == "multi":
+                try:
+                    items = [item for item in json.loads(mapped["value"]) if isinstance(item, dict)]
+                except Exception:
+                    items = []
+            else:
+                items = [mapped]
+            for item in items:
+                rule = {
+                    "type": str(item.get("type") or "").strip().lower(),
+                    "value": str(item.get("value") or "").strip().upper(),
+                    "source": str(item.get("source") or f"accept/spots {int(row['slot'] or 0)}").strip(),
+                }
+                key = (rule["type"], rule["value"], rule["source"])
+                if rule["type"] and rule["value"] and key not in seen:
+                    seen.add(key)
+                    seeds.append(rule)
+        return seeds
+
+    async def _web_profile_snapshot(self, call: str) -> dict[str, object]:
         reg = await self.store.get_user_registry(call)
         row = dict(reg) if reg is not None else {}
         return {
@@ -565,6 +887,7 @@ class PublicWebServer:
             "qth": str(row.get("qth") or "").strip(),
             "qra": str(row.get("qra") or "").strip().upper(),
             "homenode": str(await self.store.get_user_pref(call, "homenode") or "").strip().upper(),
+            "watch_seed": await self._watch_seed_for_call(call),
         }
 
     async def _api_spots(self, q: dict[str, list[str]]) -> list[dict[str, object]]:
@@ -633,11 +956,12 @@ class PublicWebServer:
                 modes[mode] = modes.get(mode, 0) + 1
             if entity:
                 entities.add(entity)
-        mode_rank = {mode: idx for idx, mode in enumerate(_MODE_ORDER)}
+        self._refresh_taxonomy()
+        mode_rank = {mode: idx for idx, mode in enumerate(self._mode_order)}
         band_rows = [{"band": k, "count": v} for k, v in sorted(bands.items(), key=lambda kv: (-kv[1], kv[0]))]
         mode_rows = [
             {"mode": k, "count": v}
-            for k, v in sorted(modes.items(), key=lambda kv: (mode_rank.get(kv[0], len(_MODE_ORDER)), -kv[1], kv[0]))
+            for k, v in sorted(modes.items(), key=lambda kv: (mode_rank.get(kv[0], len(self._mode_order)), -kv[1], kv[0]))
         ]
         return {
             "hours": hours,
@@ -961,6 +1285,63 @@ class PublicWebServer:
                     return
                 await self._write_response(writer, 200, self._json({"ok": True}))
                 return
+            if path == "/api/register/request":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._smtp.enabled():
+                    await self._write_response(writer, 503, self._json({"error": "registration requests unavailable"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                display_name = str(payload.get("name", "")).strip()[:80]
+                home_node = normalize_call(str(payload.get("homenode", "")).strip())[:16]
+                qth = str(payload.get("qth", "")).strip()[:80]
+                qra = extract_locator(str(payload.get("qra", "")).strip().upper())[:16]
+                email = str(payload.get("email", "")).strip()
+                note = str(payload.get("note", "")).strip()[:160]
+                if not is_valid_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                if not has_valid_email(email):
+                    await self._write_response(writer, 400, self._json({"error": "valid email required"}))
+                    return
+                reg = await self.store.get_user_registry(call)
+                if reg is not None:
+                    await self._write_response(writer, 409, self._json({"error": "callsign is already registered"}))
+                    return
+                challenge_id = str(payload.get("challenge_id", "")).strip()
+                otp = str(payload.get("otp", "")).strip()
+                if not challenge_id or not otp:
+                    try:
+                        challenge_id, expires_epoch = await self._mfa.issue(call=call, email=email, purpose="public-register")
+                    except Exception:
+                        LOG.exception("public registration verification delivery failed call=%s", call)
+                        await self._write_response(writer, 503, self._json({"error": "verification delivery failed"}))
+                        return
+                    await self._write_response(
+                        writer,
+                        202,
+                        self._json({"ok": False, "verification_required": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
+                    )
+                    return
+                ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="public-register", otp=otp)
+                if not ok:
+                    await self._write_response(writer, 401, self._json({"error": reason}))
+                    return
+                await self._submit_registration_request(
+                    call=call,
+                    display_name=display_name,
+                    home_node=home_node,
+                    qth=qth,
+                    qra=qra,
+                    email=email,
+                    note=note,
+                    source="public-web",
+                    email_verified=True,
+                )
+                await self._write_response(writer, 200, self._json({"ok": True, "call": call, "pending": True}))
+                return
             if path == "/api/auth/login":
                 if method != "POST":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
@@ -981,14 +1362,32 @@ class PublicWebServer:
                     self._log_auth_failure(writer, headers, "public-web", call, "web_login_not_allowed")
                     await self._write_response(writer, 403, self._json({"error": "web login not allowed"}))
                     return
+                reg = await self.store.get_user_registry(call)
+                if reg is None:
+                    self._log_auth_failure(writer, headers, "public-web", call, "registration_required")
+                    await self._write_response(writer, 403, self._json({"error": "registration required"}))
+                    return
+                if not self._has_valid_email(str(reg["email"] or "")):
+                    self._log_auth_failure(writer, headers, "public-web", call, "valid_email_required")
+                    await self._write_response(writer, 403, self._json({"error": "valid email required"}))
+                    return
+                if self.config.node.verified_email_required_for_web:
+                    state, verified_epoch, _remaining = await registration_state(self.store, call)
+                    if verified_epoch <= 0 or state != "verified":
+                        self._log_auth_failure(writer, headers, "public-web", call, "email_verification_required")
+                        await self._write_response(writer, 403, self._json({"error": "email verification required"}))
+                        return
                 expected = await self.store.get_user_pref(call, "password")
-                if expected is None or not str(expected).strip() or not verify_password(password, str(expected)):
+                if expected is None or not str(expected).strip():
+                    self._log_auth_failure(writer, headers, "public-web", call, "password_setup_required")
+                    await self._write_response(writer, 403, self._json({"error": "password setup required"}))
+                    return
+                if not verify_password(password, str(expected)):
                     self._log_auth_failure(writer, headers, "public-web", call, "invalid_credentials")
                     await self._write_response(writer, 401, self._json({"error": "invalid credentials"}))
                     return
                 if not is_password_hash(str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
-                reg = await self.store.get_user_registry(call)
                 is_sysop = str(reg["privilege"] or "").strip().lower() in {"sysop", "admin"} if reg is not None else False
                 if await self._mfa_required_for_call(call, is_sysop=is_sysop):
                     email = await self._email_for_call(call)
@@ -1175,6 +1574,12 @@ class PublicWebServer:
                     return
                 await self._write_response(writer, 200, self._json(await self._branding()))
                 return
+            if path == "/api/public/taxonomy":
+                if method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                await self._write_response(writer, 200, self._json(self._taxonomy_payload()))
+                return
             if path == "/api/spot":
                 if method != "POST":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
@@ -1283,6 +1688,10 @@ class PublicWebServer:
                 if not await self._access_allowed(call, "web", category):
                     await self._write_response(writer, 403, self._json({"error": f"{category} posting not allowed via web"}))
                     return
+                if category == "wcy":
+                    text = canonicalize_wcy_text(text) or text
+                elif category == "wwv":
+                    text = canonicalize_wwv_text(text) or text
                 scope = str(payload.get("scope", "LOCAL")).strip().upper() or "LOCAL"
                 if category != "announce":
                     scope = "LOCAL"

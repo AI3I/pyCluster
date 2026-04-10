@@ -243,6 +243,46 @@ def test_prompt_supports_callsign_token(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_write_prompt_for_session_starts_on_new_line_after_async_output(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "prompt_async_line.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        sess = Session(
+            call="N0CALL",
+            writer=writer,
+            connected_at=datetime.now(timezone.utc),
+            async_line_open=True,
+        )
+        try:
+            await srv._write_prompt_for_session(sess)
+            rendered = writer.buffer.decode("utf-8", errors="replace")
+            assert rendered.startswith("\r\n[")
+            assert sess.async_line_open is False
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_execute_blank_line_does_not_emit_prompt_output(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "blank_prompt.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            keep, out = await srv._execute_command("N0CALL", "")
+            assert keep is True
+            assert out == ""
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_bridge_node_login_promotes_client_handshake(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "bridge_node_login.db")
@@ -2611,6 +2651,49 @@ def test_dxspider_shorthand_slash_forms_and_muf_history(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_show_muf_dxspider_style_path_report(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "muf_dxspider_path.db")
+        cty_path = _write_cty(tmp_path)
+        wpx_path = _write_wpxloc(tmp_path)
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16", node_locator="FN20"),
+            telnet=TelnetConfig(),
+            web=WebConfig(),
+            public_web=PublicWebConfig(cty_dat_path=cty_path, wpxloc_raw_path=wpx_path),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(
+            call="N0CALL",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, qra="FN42")
+            await store.add_bulletin("wwv", "WWV", "LOCAL", now, "SFI=150 A=6 K=2 Quiet")
+            await store.add_bulletin("wwv", "WWV", "LOCAL", now - 3600, "SFI=145 A=5 K=1 No Storms")
+
+            _, out = await srv._execute_command("N0CALL", "show/muf K 2")
+            assert "RxSens: -128 dBM SFI:" in out
+            assert "Power :   26 dBW" in out
+            assert "Location                       Lat / Long           Azim" in out
+            assert "United States" in out
+            assert "UT LT  MUF Zen" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/muf RG65SM 2 long")
+            assert "RxSens: -128 dBM SFI:" in out
+            assert "Location                       Lat / Long           Azim" in out
+            assert "European Russia" in out
+            assert "UT LT  MUF Zen" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_help_and_nowrap_behavior(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "help_nowrap.db")
@@ -2942,6 +3025,17 @@ def test_misc_top_level_and_bulletin_commands(tmp_path) -> None:
             assert "pyCluster version" in out
             assert "Author: John D. Lewis (AI3I)" in out
             assert "Project: https://github.com/AI3I/pyCluster" in out
+            _, out = await srv._execute_command("N0CALL", "show/spout")
+            assert "The itsy bitsy DXSpider climbed up the telnet spout," in out
+            assert "Out came pyCluster and dried up all the bugs," in out
+            _, out = await srv._execute_command("N0CALL", "show/n9jr")
+            assert "In Honor of Mr. Joseph E. (Joe) Reed, N9JR:" in out
+            assert "Behind every polished piece of software stands someone" in out
+            assert "Thank you, Joe." in out
+            _, out = await srv._execute_command("N0CALL", "show/ai3i")
+            assert "A Word About the Author - John D. Lewis, AI3I:" in out
+            assert "he was the one to build it." in out
+            assert "assuming the cluster is up." in out
             _, out = await srv._execute_command("N0CALL", "ping K1ABC")
             assert "PONG K1ABC" in out
 
@@ -2960,9 +3054,9 @@ def test_misc_top_level_and_bulletin_commands(tmp_path) -> None:
             assert b"CHAT N0CALL: test room" in bytes(w2.buffer)
 
             _, out = await srv._execute_command("N0CALL", "wcy K=3 A=8")
-            assert "accepted (local-safe)" in out
+            assert "WCY accepted" in out
             _, out = await srv._execute_command("N0CALL", "wwv SFI=150")
-            assert "accepted (local-safe)" in out
+            assert "WWV accepted" in out
             _, out = await srv._execute_command("N0CALL", "wx here 72F")
             assert "accepted (local-safe)" in out
             _, out = await srv._execute_command("N0CALL", "announce full ops notice")
@@ -3003,7 +3097,7 @@ def test_bulletins_persist_across_server_restart(tmp_path) -> None:
         )
         try:
             _, out = await srv1._execute_command("N0CALL", "wcy A=12 K=4")
-            assert "accepted (local-safe)" in out
+            assert "WCY accepted" in out
         finally:
             await store1.close()
 
@@ -3019,6 +3113,36 @@ def test_bulletins_persist_across_server_restart(tmp_path) -> None:
             assert "A=12 K=4" in out
         finally:
             await store2.close()
+
+    asyncio.run(run())
+
+
+def test_dxspider_wcy_and_wwv_command_syntax_is_canonicalized(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "dxspider_geomag_cmds.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            _, out = await srv._execute_command("N0CALL", "wcy k=3,expk=2,a=18,r=105,sf=120,sa=qui,gmf=maj,au=no")
+            assert "WCY accepted" in out
+            _, out = await srv._execute_command("N0CALL", "wwv sf=120,a=24,k=4,Moderate w/G2 -> Minor w/G1")
+            assert "WWV accepted" in out
+
+            rows = await store.list_bulletins("wcy", limit=1)
+            assert str(rows[0]["body"]) == "SFI=120 A=18 K=3 ExpK=2 R=105 SA=qui GMF=maj Aurora=no"
+            rows = await store.list_bulletins("wwv", limit=1)
+            assert str(rows[0]["body"]) == "SFI=120 A=24 K=4 Moderate w/G2 -> Minor w/G1"
+
+            _, out = await srv._execute_command("N0CALL", "show/wcy 1")
+            assert "Date        Hour   SFI   A   K Exp.K   R SA    GMF   Aurora   Logger" in out
+            assert "105 qui" in out
+            _, out = await srv._execute_command("N0CALL", "show/wwv 1")
+            assert "Date        Hour   SFI   A   K Forecast" in out
+            assert "Moderate w/G2 -> Minor w/G1" in out
+        finally:
+            await store.close()
 
     asyncio.run(run())
 
@@ -4536,7 +4660,7 @@ def test_telnet_login_denied_when_telnet_access_disabled(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "login_access.db")
         cfg = AppConfig(
-            node=NodeConfig(node_call="AI3I-16"),
+            node=NodeConfig(node_call="AI3I-16", registration_required=False, verified_email_required_for_telnet=False),
             telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
             web=WebConfig(host="127.0.0.1", port=0),
             public_web=PublicWebConfig(),
@@ -5184,6 +5308,273 @@ def test_telnet_first_login_forces_password_creation(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_login_without_required_password_skips_first_time_password_setup(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "login_optional_password.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16", require_password=False, registration_required=False, verified_email_required_for_telnet=False),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"N0CALL\r\n")
+            await w1.drain()
+            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            assert b"new password:" not in hello
+            assert b"password:" not in hello
+            assert b"Welcome" in hello
+            assert await store.get_user_pref("N0CALL", "password") is None
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_registration_required_implies_password_even_if_toggle_off(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "registration_implies_password.db")
+        cfg = AppConfig(
+            node=NodeConfig(
+                node_call="AI3I-16",
+                require_password=False,
+                registration_required=True,
+                verified_email_required_for_telnet=False,
+            ),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"N0CALL\r\n")
+            await w1.drain()
+            first = await asyncio.wait_for(r1.readuntil(b"new password: "), timeout=2.0)
+            assert b"A password is required before continuing." in first
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_registration_required_can_queue_registration_request(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_registration_request.db")
+        cfg = AppConfig(
+            node=NodeConfig(
+                node_call="AI3I-16",
+                require_password=False,
+                registration_required=True,
+                verified_email_required_for_telnet=False,
+            ),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="sysop", email="sysop@example.test")
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda _rcpt, _subject, _body: None  # type: ignore[assignment]
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"N1NEW\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"[Y/n]: "), timeout=2.0)
+            w1.write(b"y\r\n")
+            await w1.drain()
+            for answer in (
+                b"New User\r\n",
+                b"W1AW\r\n",
+                b"Hartford\r\n",
+                b"FN31\r\n",
+                b"new@example.test\r\n",
+                b"Please approve me\r\n",
+            ):
+                await asyncio.sleep(0)
+                w1.write(answer)
+                await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"verification code: "), timeout=2.0)
+            rows = await store.list_registration_requests(status="pending", limit=5, offset=0)
+            assert rows == []
+            async with store._lock:
+                pending = store._conn.execute(
+                    "SELECT challenge_id, code FROM mfa_challenges WHERE call = ? AND purpose = ? ORDER BY issued_epoch DESC LIMIT 1",
+                    ("N1NEW", "telnet-register"),
+                ).fetchone()
+            assert pending is not None
+            otp = str(pending["code"])
+            w1.write((otp + "\r\n").encode("ascii"))
+            await w1.drain()
+            final = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            assert b"Registration request submitted for N1NEW." in final
+            req = await store.get_registration_request("N1NEW")
+            assert req is not None
+            assert str(req["status"]) == "pending"
+            assert str(req["email"]) == "new@example.test"
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "first_login_registration_interview.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16", require_password=False, registration_required=False, verified_email_required_for_telnet=False),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, privilege="user", email="")
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"N0CALL\r\n")
+            await w1.drain()
+            hello = await asyncio.wait_for(r1.readuntil(b"Name: "), timeout=2.0)
+            assert b"Welcome" in hello
+            assert b"Let's finish your registration profile for N0CALL." in hello
+            w1.write(b"Alice Example\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"Home node: "), timeout=2.0)
+            w1.write(b"W1AW\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"QTH / location: "), timeout=2.0)
+            w1.write(b"\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"Grid square: "), timeout=2.0)
+            w1.write(b"FN42\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"Email address: "), timeout=2.0)
+            w1.write(b"alice@example.test\r\n")
+            await w1.drain()
+            tail = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            assert b"Registration interview complete." in tail
+            assert b"Registration checklist for N0CALL:" in tail
+            assert b"QTH: set/qth" in tail
+            assert b"Password: set/password" in tail
+            row = await store.get_user_registry("N0CALL")
+            assert row is not None
+            assert str(row["display_name"]) == "Alice Example"
+            assert str(row["home_node"]) == "W1AW"
+            assert str(row["qra"]) == "FN42"
+            assert str(row["email"]) == "alice@example.test"
+            assert await store.get_user_pref("N0CALL", "homenode") == "W1AW"
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_password_prompt_sends_echo_negotiation(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "login_echo_negotiation.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-15", require_password=True),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        await store.set_user_pref("N0CALL", "password", "pw1", int(datetime.now(timezone.utc).timestamp()))
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"N0CALL\r\n")
+            await w1.drain()
+            pw = await asyncio.wait_for(r1.readuntil(b"password: "), timeout=2.0)
+            assert b"password:" in pw
+            assert b"\xff\xfb\x01" in pw
+            w1.write(b"pw1\r\n")
+            await w1.drain()
+            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            assert b"\xff\xfc\x01" in hello
+            assert b"Welcome" in hello
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_telnet_login_can_require_email_otp(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "telnet_mfa.db")
@@ -5203,7 +5594,9 @@ def test_telnet_login_can_require_email_otp(tmp_path) -> None:
         sent: list[tuple[str, str, str]] = []
         srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
         await store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user", email="n0call@example.test")
-        await store.set_user_pref("N0CALL", "password", "pw1", int(datetime.now(timezone.utc).timestamp()))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.set_user_pref("N0CALL", "password", "pw1", now)
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
         try:
             await srv.start()
         except OSError:
@@ -5259,6 +5652,7 @@ def test_telnet_login_honors_per_user_mfa_override(tmp_path) -> None:
         await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
         await store.set_user_pref("N0CALL", "password", "pw1", now)
         await store.set_user_pref("N0CALL", "mfa_email_otp", "required", now)
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
         try:
             await srv.start()
         except OSError:
@@ -5297,6 +5691,56 @@ def test_telnet_login_honors_per_user_mfa_override(tmp_path) -> None:
             assert b"Welcome" in hello2
             w2.close()
             await w2.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_login_requires_email_verification_for_unverified_user(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_email_verification.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16", require_password=False, initial_grace_logins=5),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        sent: list[tuple[str, str, str]] = []
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"N0CALL\r\n")
+            await w1.drain()
+            verify_prompt = await asyncio.wait_for(r1.readuntil(b"verification code: "), timeout=2.0)
+            assert b"A verification code has been sent" in verify_prompt
+            challenge = next(iter(srv._mfa._challenges.values()))
+            assert sent and sent[0][0] == "n0call@example.test"
+            w1.write((challenge.code + "\r\n").encode("ascii"))
+            await w1.drain()
+            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            assert b"Email address verified for N0CALL." in hello
+            assert b"Welcome" in hello
+            assert await store.get_user_pref("N0CALL", "email_verified_epoch") is not None
+            w1.close()
+            await w1.wait_closed()
         finally:
             await srv.stop()
             await store.close()

@@ -149,6 +149,25 @@ CREATE TABLE IF NOT EXISTS mfa_challenges (
 );
 CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires ON mfa_challenges(expires_epoch);
 CREATE INDEX IF NOT EXISTS idx_mfa_challenges_call_purpose ON mfa_challenges(call, purpose, issued_epoch DESC);
+
+CREATE TABLE IF NOT EXISTS registration_requests (
+    call TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL DEFAULT '',
+    home_node TEXT NOT NULL DEFAULT '',
+    qth TEXT NOT NULL DEFAULT '',
+    qra TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    email_verified INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    requested_epoch INTEGER NOT NULL,
+    reviewed_epoch INTEGER NOT NULL DEFAULT 0,
+    reviewer TEXT NOT NULL DEFAULT '',
+    review_note TEXT NOT NULL DEFAULT '',
+    updated_epoch INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_registration_requests_status_epoch ON registration_requests(status, requested_epoch DESC);
 """
 
 
@@ -770,6 +789,39 @@ class SpotStore:
             self._conn.commit()
             return int(cur.lastrowid)
 
+    async def find_recent_bulletin_duplicate(
+        self,
+        category: str,
+        sender: str,
+        scope: str,
+        body: str,
+        *,
+        since_epoch: int,
+    ) -> int | None:
+        cat = category.strip().lower()
+        snd = sender.strip().upper()
+        scp = scope.strip().upper()
+        txt = body.strip()
+        if not cat or not snd or not scp or not txt:
+            return None
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id
+                FROM bulletins
+                WHERE category = ?
+                  AND sender = ?
+                  AND scope = ?
+                  AND body = ?
+                  AND epoch >= ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (cat, snd, scp, txt, int(since_epoch)),
+            )
+            row = cur.fetchone()
+            return int(row["id"]) if row else None
+
     async def save_mfa_challenge(
         self,
         *,
@@ -1096,6 +1148,153 @@ class SpotStore:
                 (c,),
             )
             return [str(r["buddy_call"]) for r in cur.fetchall()]
+
+    async def upsert_registration_request(
+        self,
+        call: str,
+        epoch: int,
+        *,
+        display_name: str = "",
+        home_node: str = "",
+        qth: str = "",
+        qra: str = "",
+        email: str = "",
+        note: str = "",
+        source: str = "",
+        email_verified: bool = False,
+        status: str = "pending",
+        reviewer: str = "",
+        review_note: str = "",
+        reviewed_epoch: int = 0,
+    ) -> None:
+        c = call.strip().upper()
+        if not c:
+            return
+        stat = str(status or "pending").strip().lower()
+        if stat not in {"pending", "approved", "denied"}:
+            stat = "pending"
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT requested_epoch
+                FROM registration_requests
+                WHERE call = ?
+                LIMIT 1
+                """,
+                (c,),
+            )
+            row = cur.fetchone()
+            requested_epoch = int(row["requested_epoch"]) if row is not None else int(epoch)
+            self._conn.execute(
+                """
+                INSERT INTO registration_requests(
+                    call, display_name, home_node, qth, qra, email, note, source,
+                    email_verified, status, requested_epoch, reviewed_epoch,
+                    reviewer, review_note, updated_epoch
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(call)
+                DO UPDATE SET
+                    display_name = excluded.display_name,
+                    home_node = excluded.home_node,
+                    qth = excluded.qth,
+                    qra = excluded.qra,
+                    email = excluded.email,
+                    note = excluded.note,
+                    source = excluded.source,
+                    email_verified = excluded.email_verified,
+                    status = excluded.status,
+                    requested_epoch = excluded.requested_epoch,
+                    reviewed_epoch = excluded.reviewed_epoch,
+                    reviewer = excluded.reviewer,
+                    review_note = excluded.review_note,
+                    updated_epoch = excluded.updated_epoch
+                """,
+                (
+                    c,
+                    display_name.strip(),
+                    home_node.strip().upper(),
+                    qth.strip(),
+                    qra.strip().upper(),
+                    email.strip(),
+                    note.strip(),
+                    source.strip().lower(),
+                    1 if email_verified else 0,
+                    stat,
+                    requested_epoch,
+                    int(reviewed_epoch or 0),
+                    reviewer.strip().upper(),
+                    review_note.strip(),
+                    int(epoch),
+                ),
+            )
+            self._conn.commit()
+
+    async def get_registration_request(self, call: str) -> sqlite3.Row | None:
+        c = call.strip().upper()
+        if not c:
+            return None
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT call, display_name, home_node, qth, qra, email, note, source,
+                       email_verified, status, requested_epoch, reviewed_epoch,
+                       reviewer, review_note, updated_epoch
+                FROM registration_requests
+                WHERE call = ?
+                LIMIT 1
+                """,
+                (c,),
+            )
+            return cur.fetchone()
+
+    async def list_registration_requests(self, *, status: str = "", limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
+        lim = max(1, min(limit, 1000))
+        off = max(0, int(offset))
+        stat = str(status or "").strip().lower()
+        params: list[object] = []
+        where = ""
+        if stat:
+            where = "WHERE status = ?"
+            params.append(stat)
+        async with self._lock:
+            cur = self._conn.execute(
+                f"""
+                SELECT call, display_name, home_node, qth, qra, email, note, source,
+                       email_verified, status, requested_epoch, reviewed_epoch,
+                       reviewer, review_note, updated_epoch
+                FROM registration_requests
+                {where}
+                ORDER BY requested_epoch DESC, call
+                LIMIT ? OFFSET ?
+                """,
+                (*params, lim, off),
+            )
+            return cur.fetchall()
+
+    async def set_registration_request_status(
+        self,
+        call: str,
+        *,
+        status: str,
+        epoch: int,
+        reviewer: str = "",
+        review_note: str = "",
+    ) -> int:
+        c = call.strip().upper()
+        stat = str(status or "").strip().lower()
+        if not c or stat not in {"pending", "approved", "denied"}:
+            return 0
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE registration_requests
+                SET status = ?, reviewed_epoch = ?, reviewer = ?, review_note = ?, updated_epoch = ?
+                WHERE call = ?
+                """,
+                (stat, int(epoch), reviewer.strip().upper(), review_note.strip(), int(epoch), c),
+            )
+            self._conn.commit()
+            return int(cur.rowcount or 0)
 
     async def set_usdb_entry(self, call: str, field: str, value: str, epoch: int) -> None:
         c = call.strip().upper()

@@ -76,6 +76,7 @@ Supported operational scripts:
 - CTY file path
 - CTY timer state
 - wpxloc.raw path
+- whether the reported `wpxloc.raw` path is explicitly configured or derived from the `cty.dat` sibling path
 - loaded dataset version/date shown in the System Operator Console and telnet `show/configuration`
 - fail2ban service state
 - SELinux state, when available

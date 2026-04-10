@@ -11,6 +11,7 @@ TLS_MODE="${TLS_MODE:-self-signed}"
 LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-}"
 NGINX_CONFIG_DIR="${NGINX_CONFIG_DIR:-/etc/nginx/conf.d}"
 SSL_DIR="${SSL_DIR:-/etc/ssl/pycluster}"
+INTERACTIVE=0
 
 usage() {
   cat <<EOF
@@ -21,6 +22,7 @@ Options:
   --sysop-host HOST          Optional sysop web hostname
   --tls-mode MODE            one of: none, self-signed, letsencrypt
   --email EMAIL              Required for letsencrypt mode
+  --interactive              Prompt for nginx/TLS settings
 EOF
 }
 
@@ -42,6 +44,10 @@ while [ "$#" -gt 0 ]; do
       LETSENCRYPT_EMAIL="$2"
       shift 2
       ;;
+    --interactive)
+      INTERACTIVE=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -53,6 +59,34 @@ while [ "$#" -gt 0 ]; do
 done
 
 require_root
+
+if [ "$INTERACTIVE" = "1" ]; then
+  if ! is_interactive_tty; then
+    die "--interactive requires a TTY"
+  fi
+  PUBLIC_HOST="$(prompt_value "Public hostname for the user web UI (for example: cluster.example.net):" "${PUBLIC_HOST:-}")"
+  [ -n "$PUBLIC_HOST" ] || die "public hostname is required"
+  if prompt_yes_no "Expose the sysop web UI through nginx on its own hostname?" "${SYSOP_HOST:+y}"; then
+    SYSOP_HOST="$(prompt_value "Sysop hostname (for example: sysop.example.net):" "${SYSOP_HOST:-}")"
+    [ -n "$SYSOP_HOST" ] || die "sysop hostname is required"
+  else
+    SYSOP_HOST=""
+  fi
+  if prompt_yes_no "Configure HTTPS on ports 80/443?" "y"; then
+    if prompt_yes_no "Use Let's Encrypt certificates?" "y"; then
+      TLS_MODE="letsencrypt"
+      LETSENCRYPT_EMAIL="$(prompt_value "Email address for Let's Encrypt notices:" "${LETSENCRYPT_EMAIL:-}")"
+      [ -n "$LETSENCRYPT_EMAIL" ] || die "letsencrypt mode requires an email address"
+    else
+      TLS_MODE="self-signed"
+      LETSENCRYPT_EMAIL=""
+    fi
+  else
+    TLS_MODE="none"
+    LETSENCRYPT_EMAIL=""
+  fi
+fi
+
 case "$TLS_MODE" in
   none|self-signed|letsencrypt) ;;
   *) die "invalid TLS mode: $TLS_MODE" ;;

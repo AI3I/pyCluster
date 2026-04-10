@@ -8,15 +8,18 @@ import logging
 from pathlib import Path
 import re
 import signal
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from .config import AppConfig
 from .ctydat import is_loaded as cty_loaded, lookup as cty_lookup
 from .wpxloc import is_loaded as wpx_loaded, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
+from .geomag import WcyReading, WwvReading, canonicalize_wcy_text, canonicalize_wwv_text, parse_wcy_text, parse_wwv_text
 from .maidenhead import extract_locator
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
 from .node_link import NodeLinkEngine
-from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc93Message, WirePcFrame
+from .peer_profiles import normalize_profile
+from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame
 from .store import SpotStore
 from .strings import StringCatalog
 from .telnet_server import TelnetClusterServer
@@ -25,7 +28,9 @@ from .public_web import PublicWebServer
 from .web_admin import WebAdminServer
 
 LOG = logging.getLogger(__name__)
+_BULLETIN_DEDUPE_WINDOW_SECONDS = 900
 _PC93_PREFIX_RE = re.compile(r"^\[(ANNOUNCE|WCY|WWV|WX)/(LOCAL|FULL|SYSOP)\]\s*(.*)$", re.IGNORECASE)
+_VIA_SUFFIX_RE = re.compile(r"\s*\[via:[^\]]+\]\s*$", re.IGNORECASE)
 _DXSPIDER_PC19_VERSION = "5457"
 _PEER_PREF_PREFIX = "peer.outbound."
 _RECONNECT_BASE_SECS = 5
@@ -40,6 +45,36 @@ _PROTO_FLAP_KEYS = {
 
 
 class ClusterApp:
+    @staticmethod
+    def _split_peer_password(dsn: str) -> tuple[str, str]:
+        raw = str(dsn or "").strip()
+        if not raw:
+            return "", ""
+        parsed = urlparse(raw)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        password = ""
+        if "password" in params and params["password"]:
+            password = str(params["password"][0] or "")
+            params.pop("password", None)
+        clean_query = urlencode([(k, v) for k, values in params.items() for v in values], doseq=True)
+        clean = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, clean_query, parsed.fragment))
+        return clean, password
+
+    @staticmethod
+    def _merge_peer_password(dsn: str, password: str) -> str:
+        raw = str(dsn or "").strip()
+        if not raw:
+            return raw
+        parsed = urlparse(raw)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        secret = str(password or "").strip()
+        if secret:
+            params["password"] = [secret]
+        else:
+            params.pop("password", None)
+        merged_query = urlencode([(k, v) for k, values in params.items() for v in values], doseq=True)
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, merged_query, parsed.fragment))
+
     def __init__(self, config: AppConfig, config_path: str | None = None) -> None:
         self.config = config
         self.started_at = datetime.now(timezone.utc)
@@ -110,6 +145,7 @@ class ClusterApp:
             publish_bulletin_fn=self.telnet.publish_bulletin,
             relay_bulletin_fn=self._relay_bulletin_to_links,
             event_log_fn=self.telnet.record_event,
+            strings_path=strings_path,
         )
         self._node_ingest_task: asyncio.Task[None] | None = None
         self._peer_reconnect_task: asyncio.Task[None] | None = None
@@ -143,11 +179,20 @@ class ClusterApp:
         slug = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
         return f"{_PEER_PREF_PREFIX}{slug}.{field}"
 
-    async def _persist_peer_target(self, name: str, dsn: str, profile: str = "dxspider", reconnect: bool = True) -> None:
+    async def _persist_peer_target(
+        self,
+        name: str,
+        dsn: str,
+        profile: str = "dxspider",
+        reconnect: bool = True,
+        password: str = "",
+    ) -> None:
         now = int(datetime.now(timezone.utc).timestamp())
         p = profile.strip().lower() or "dxspider"
+        clean_dsn, embedded_password = self._split_peer_password(dsn)
+        secret = str(password or embedded_password or "").strip()
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "name"), name, now)
-        await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "dsn"), dsn, now)
+        await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "dsn"), clean_dsn, now)
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "profile"), p, now)
         await self.store.set_user_pref(
             self.config.node.node_call,
@@ -155,18 +200,30 @@ class ClusterApp:
             "on" if reconnect else "off",
             now,
         )
+        if secret:
+            await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "password"), secret, now)
+        else:
+            await self.store.delete_user_pref(self.config.node.node_call, self._peer_pref_key(name, "password"))
         await self.store.delete_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_error"))
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "retry_count"), "0", now)
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "next_retry_epoch"), "0", now)
 
-    async def save_peer_target(self, name: str, dsn: str, profile: str = "dxspider", reconnect: bool = True) -> None:
-        await self._persist_peer_target(name, dsn, profile=profile, reconnect=reconnect)
+    async def save_peer_target(
+        self,
+        name: str,
+        dsn: str,
+        profile: str = "dxspider",
+        reconnect: bool = True,
+        password: str = "",
+    ) -> None:
+        await self._persist_peer_target(name, dsn, profile=profile, reconnect=reconnect, password=password)
 
     async def _forget_peer_target(self, name: str) -> None:
         keys = [
             "name",
             "dsn",
             "profile",
+            "password",
             "reconnect",
             "retry_count",
             "next_retry_epoch",
@@ -197,11 +254,21 @@ class ClusterApp:
             desired[name] = row
         return desired
 
-    async def connect_peer(self, name: str, dsn: str, profile: str = "dxspider", persist: bool = True) -> None:
+    async def connect_peer(
+        self,
+        name: str,
+        dsn: str,
+        profile: str = "dxspider",
+        persist: bool = True,
+        password: str = "",
+    ) -> None:
+        clean_dsn, embedded_password = self._split_peer_password(dsn)
+        secret = str(password or embedded_password or "").strip()
         if persist:
-            await self._persist_peer_target(name, dsn, profile=profile, reconnect=True)
-        wire_profile = "spider" if dsn.strip().lower().startswith("dxspider://") and profile == "dxspider" else profile
-        await self.node_link.connect_dsn(name, dsn, profile=wire_profile)
+            await self._persist_peer_target(name, clean_dsn, profile=profile, reconnect=True, password=secret)
+        effective_dsn = self._merge_peer_password(clean_dsn, secret)
+        wire_profile = "spider" if clean_dsn.strip().lower().startswith("dxspider://") and profile == "dxspider" else profile
+        await self.node_link.connect_dsn(name, effective_dsn, profile=wire_profile)
         await self._reset_mail_transport_state(name, "peer session refreshed")
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_connect_epoch"), str(now), now)
@@ -223,6 +290,8 @@ class ClusterApp:
         out: list[dict[str, object]] = []
         for name in sorted(desired):
             row = desired[name]
+            clean_dsn, embedded_password = self._split_peer_password(str(row.get("dsn", "")).strip())
+            secret = str(row.get("password", "") or embedded_password).strip()
             reconnect_raw = str(row.get("reconnect", "on")).strip().lower()
             enabled = reconnect_raw in {"1", "on", "yes", "true"}
             try:
@@ -243,8 +312,9 @@ class ClusterApp:
             out.append(
                 {
                     "peer": name,
-                    "dsn": str(row.get("dsn", "")).strip(),
+                    "dsn": clean_dsn,
                     "profile": str(row.get("profile", "dxspider")).strip().lower() or "dxspider",
+                    "password": secret,
                     "reconnect_enabled": enabled,
                     "retry_count": retry_count,
                     "next_retry_epoch": next_retry_epoch,
@@ -404,9 +474,10 @@ class ClusterApp:
             if next_retry > now:
                 continue
             dsn = row.get("dsn", "").strip()
+            password = row.get("password", "").strip()
             profile = row.get("profile", "dxspider").strip().lower() or "dxspider"
             try:
-                await self.connect_peer(name, dsn, profile=profile, persist=False)
+                await self.connect_peer(name, dsn, profile=profile, persist=False, password=password)
             except Exception as exc:
                 retry_count_raw = row.get("retry_count", "0").strip()
                 try:
@@ -471,10 +542,11 @@ class ClusterApp:
     def _classify_pc93_bulletin(self, sender: str, text: str) -> tuple[str, str, str]:
         category = "chat"
         scope = "LOCAL"
-        body = text
+        body = _VIA_SUFFIX_RE.sub("", text).strip()
         m = _PC93_PREFIX_RE.match(text)
         if m:
-            return m.group(1).strip().lower(), m.group(2).strip().upper(), (m.group(3) or "").strip() or text
+            raw_body = (m.group(3) or "").strip() or text
+            return m.group(1).strip().lower(), m.group(2).strip().upper(), (_VIA_SUFFIX_RE.sub("", raw_body).strip() or raw_body)
         sender_u = normalize_call(sender)
         body_u = text.upper()
         if sender_u == "DK0WCY" or ("SPOTS=" in body_u and "EXPK=" in body_u):
@@ -482,6 +554,88 @@ class ClusterApp:
         elif sender_u == "WWV" or re.search(r"\bSFI\s*=\s*\d+\b", body_u):
             category = "wwv"
         return category, scope, body
+
+    async def _ingest_bulletin_from_peer(
+        self,
+        peer_name: str,
+        *,
+        category: str,
+        scope: str,
+        sender: str,
+        body: str,
+        duplicate_reason: str,
+    ) -> None:
+        if not body:
+            return
+        if not await self._ingest_peer_enabled(peer_name, category):
+            await self.node_link.mark_policy_drop(peer_name, f"ingest_{category}_disabled")
+            return
+        sender_norm = normalize_call(sender) if sender else normalize_call(peer_name)
+        if not is_valid_call(sender_norm):
+            sender_norm = normalize_call(peer_name)
+        now = int(datetime.now(timezone.utc).timestamp())
+        duplicate = await self.store.find_recent_bulletin_duplicate(
+            category,
+            sender_norm,
+            scope,
+            body,
+            since_epoch=now - _BULLETIN_DEDUPE_WINDOW_SECONDS,
+        )
+        if duplicate is not None:
+            await self.node_link.mark_policy_drop(peer_name, duplicate_reason)
+            return
+        await self.store.add_bulletin(category, sender_norm, scope, now, body)
+        if category == "chat":
+            await self.telnet.publish_chat(sender_norm, body)
+        else:
+            await self.telnet.publish_bulletin(category, sender_norm, scope, body)
+
+    async def _live_peer_profiles(self) -> dict[str, str]:
+        profiles: dict[str, str] = {}
+        stats = await self.node_link.stats()
+        for name, row in stats.items():
+            profiles[name] = normalize_profile(str(row.get("profile", "dxspider")))
+        return profiles
+
+    def _build_dxspider_wwv_frame(self, sender: str, reading: WwvReading) -> WirePcFrame:
+        now = datetime.now(timezone.utc)
+        return WirePcFrame(
+            "PC23",
+            Pc23Message(
+                date_token=now.strftime("%-d-%b-%Y"),
+                hour_token=now.strftime("%H"),
+                sfi=str(reading.sfi),
+                a_index=str(reading.a_index),
+                k_index=str(reading.k_index),
+                forecast=reading.forecast,
+                sender=normalize_call(sender),
+                source_node=normalize_call(self.config.node.node_call),
+                hops_token="H1",
+                trailer="",
+            ).to_fields(),
+        )
+
+    def _build_dxspider_wcy_frame(self, sender: str, reading: WcyReading) -> WirePcFrame:
+        now = datetime.now(timezone.utc)
+        return WirePcFrame(
+            "PC73",
+            Pc73Message(
+                date_token=now.strftime("%-d-%b-%Y"),
+                hour_token=now.strftime("%H"),
+                sfi=str(reading.sfi),
+                a_index=str(reading.a_index),
+                k_index=str(reading.k_index),
+                expk=str(reading.expk),
+                sunspots=str(reading.sunspots),
+                sun_activity=reading.sun_activity,
+                geomagnetic_field=reading.geomagnetic_field,
+                aurora=reading.aurora,
+                sender=normalize_call(sender),
+                source_node=normalize_call(self.config.node.node_call),
+                hops_token="H1",
+                trailer="",
+            ).to_fields(),
+        )
 
     async def _send_legacy_init_config(self, peer_name: str) -> None:
         node_call = self.config.node.node_call.upper()
@@ -654,7 +808,7 @@ class ClusterApp:
         )
 
     async def _handle_node_link_item(self, peer_name: str, frame: WirePcFrame, typed: object | None) -> None:
-        if frame.pc_type in {"PC10", "PC11", "PC12", "PC16", "PC17", "PC18", "PC19", "PC21", "PC22", "PC23", "PC24", "PC28", "PC29", "PC30", "PC31", "PC32", "PC33", "PC50", "PC51", "PC61", "PC93"}:
+        if frame.pc_type in {"PC10", "PC11", "PC12", "PC16", "PC17", "PC18", "PC19", "PC21", "PC22", "PC23", "PC24", "PC28", "PC29", "PC30", "PC31", "PC32", "PC33", "PC50", "PC51", "PC61", "PC73", "PC93"}:
             await self._touch_proto_activity(peer_name, frame.pc_type)
 
         if frame.pc_type == "PC18":
@@ -863,15 +1017,71 @@ class ClusterApp:
             if not is_valid_call(sender):
                 sender = normalize_call(peer_name)
             category, scope, body = self._classify_pc93_bulletin(sender, text)
-            if not await self._ingest_peer_enabled(peer_name, category):
-                await self.node_link.mark_policy_drop(peer_name, f"ingest_{category}_disabled")
-                return
-            now = int(datetime.now(timezone.utc).timestamp())
-            await self.store.add_bulletin(category, sender, scope, now, body)
             if category == "chat":
-                await self.telnet.publish_chat(sender, body)
+                await self._ingest_bulletin_from_peer(
+                    peer_name,
+                    category="chat",
+                    scope=scope,
+                    sender=sender,
+                    body=body,
+                    duplicate_reason="ingest_pc93_duplicate",
+                )
             else:
-                await self.telnet.publish_bulletin(category, sender, scope, body)
+                await self._ingest_bulletin_from_peer(
+                    peer_name,
+                    category=category,
+                    scope=scope,
+                    sender=sender,
+                    body=body,
+                    duplicate_reason="ingest_pc93_duplicate",
+                )
+            return
+
+        if frame.pc_type == "PC23":
+            msg = typed if isinstance(typed, Pc23Message) else Pc23Message.from_fields(frame.payload_fields)
+            body = canonicalize_wwv_text(
+                f"SFI={msg.sfi} A={msg.a_index} K={msg.k_index} {str(msg.forecast or '').strip()}".strip()
+            )
+            if not body:
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc23_invalid")
+                return
+            await self._ingest_bulletin_from_peer(
+                peer_name,
+                category="wwv",
+                scope="LOCAL",
+                sender=msg.sender,
+                body=body,
+                duplicate_reason="ingest_pc23_duplicate",
+            )
+            return
+
+        if frame.pc_type == "PC73":
+            msg = typed if isinstance(typed, Pc73Message) else Pc73Message.from_fields(frame.payload_fields)
+            body = canonicalize_wcy_text(
+                ",".join(
+                    [
+                        f"k={msg.k_index}",
+                        f"expk={msg.expk}",
+                        f"a={msg.a_index}",
+                        f"r={msg.sunspots}",
+                        f"sf={msg.sfi}",
+                        f"sa={msg.sun_activity}",
+                        f"gmf={msg.geomagnetic_field}",
+                        f"au={msg.aurora}",
+                    ]
+                )
+            )
+            if not body:
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc73_invalid")
+                return
+            await self._ingest_bulletin_from_peer(
+                peer_name,
+                category="wcy",
+                scope="LOCAL",
+                sender=msg.sender,
+                body=body,
+                duplicate_reason="ingest_pc73_duplicate",
+            )
             return
 
         if frame.pc_type == "PC10":
@@ -1047,15 +1257,14 @@ class ClusterApp:
                 return
             category = "wx" if (msg.wx_flag or "").strip() == "1" else "announce"
             scope = "SYSOP" if (msg.sysop_flag or "").strip() == "*" else "FULL"
-            if not await self._ingest_peer_enabled(peer_name, category):
-                await self.node_link.mark_policy_drop(peer_name, f"ingest_{category}_disabled")
-                return
-            sender = normalize_call(msg.from_call) if msg.from_call else normalize_call(peer_name)
-            if not is_valid_call(sender):
-                sender = normalize_call(peer_name)
-            now = int(datetime.now(timezone.utc).timestamp())
-            await self.store.add_bulletin(category, sender, scope, now, body)
-            await self.telnet.publish_bulletin(category, sender, scope, body)
+            await self._ingest_bulletin_from_peer(
+                peer_name,
+                category=category,
+                scope=scope,
+                sender=(msg.from_call or peer_name),
+                body=body,
+                duplicate_reason="ingest_pc12_duplicate",
+            )
 
     async def _routepc19_enabled(self, call: str) -> bool:
         v = (await self.store.get_user_pref(call, "routepc19") or "").strip().lower()
@@ -1189,22 +1398,86 @@ class ClusterApp:
             return
         if not await self._relay_category_enabled(sender, category):
             return
-        prefix = category.upper()
-        body = f"[{prefix}/{scope.upper()}] {text} [via:{self.config.node.node_call}]"
-        msg = Pc93Message(
-            node_call=self.config.node.node_call,
-            metric="0",
-            star1="*",
-            origin_call=sender,
-            star2="*",
-            text=body,
-            extra="",
-            ip="127.0.0.1",
-            hops_token="H1",
-            trailer="",
-        )
-        frame = WirePcFrame("PC93", msg.to_fields())
-        await self._broadcast_with_policy(sender, category, frame)
+        names = await self.node_link.peer_names()
+        profiles = await self._live_peer_profiles()
+        sent = 0
+        for name in names:
+            if not await self._route_filter_allows_peer(sender, name):
+                await self.node_link.mark_policy_drop(name, "route_filter")
+                continue
+            if not await self._relay_peer_enabled(sender, name, category):
+                await self.node_link.mark_policy_drop(name, f"relay_peer_{category}_disabled")
+                continue
+            frame: WirePcFrame
+            peer_profile = profiles.get(name, "dxspider")
+            if peer_profile == "dxspider" and category in {"wwv", "wcy"}:
+                if category == "wwv":
+                    reading = parse_wwv_text(text)
+                    if reading is not None:
+                        frame = self._build_dxspider_wwv_frame(sender, reading)
+                    else:
+                        prefix = category.upper()
+                        body = f"[{prefix}/{scope.upper()}] {text} [via:{self.config.node.node_call}]"
+                        frame = WirePcFrame(
+                            "PC93",
+                            Pc93Message(
+                                node_call=self.config.node.node_call,
+                                metric="0",
+                                star1="*",
+                                origin_call=sender,
+                                star2="*",
+                                text=body,
+                                extra="",
+                                ip="127.0.0.1",
+                                hops_token="H1",
+                                trailer="",
+                            ).to_fields(),
+                        )
+                else:
+                    reading = parse_wcy_text(text)
+                    if reading is not None:
+                        frame = self._build_dxspider_wcy_frame(sender, reading)
+                    else:
+                        prefix = category.upper()
+                        body = f"[{prefix}/{scope.upper()}] {text} [via:{self.config.node.node_call}]"
+                        frame = WirePcFrame(
+                            "PC93",
+                            Pc93Message(
+                                node_call=self.config.node.node_call,
+                                metric="0",
+                                star1="*",
+                                origin_call=sender,
+                                star2="*",
+                                text=body,
+                                extra="",
+                                ip="127.0.0.1",
+                                hops_token="H1",
+                                trailer="",
+                            ).to_fields(),
+                        )
+            else:
+                prefix = category.upper()
+                body = f"[{prefix}/{scope.upper()}] {text} [via:{self.config.node.node_call}]"
+                frame = WirePcFrame(
+                    "PC93",
+                    Pc93Message(
+                        node_call=self.config.node.node_call,
+                        metric="0",
+                        star1="*",
+                        origin_call=sender,
+                        star2="*",
+                        text=body,
+                        extra="",
+                        ip="127.0.0.1",
+                        hops_token="H1",
+                        trailer="",
+                    ).to_fields(),
+                )
+            try:
+                await self.node_link.send(name, frame)
+            except Exception:
+                LOG.exception("relay send failed peer=%s category=%s", name, category)
+        return
 
     def _next_mail_stream(self) -> str:
         self._mail_stream_seq += 1

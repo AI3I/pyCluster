@@ -8,7 +8,7 @@ from pycluster.app import ClusterApp
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.models import Spot
 from pycluster.node_link import LinkPeer, NodeLinkEngine
-from pycluster.protocol import Pc10Message, Pc11Message, Pc12Message, Pc24Message, Pc50Message, Pc51Message, Pc61Message, Pc93Message, WirePcFrame
+from pycluster.protocol import Pc10Message, Pc11Message, Pc12Message, Pc23Message, Pc24Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame
 from pycluster.telnet_server import Session
 
 
@@ -166,7 +166,7 @@ def test_accept_inbound_node_login_sends_legacy_banner_and_init(tmp_path) -> Non
             assert ok is True
             assert accepted == [("AI3I-16", "dxspider")]
             assert legacy_init == ["AI3I-16"]
-            assert "PC18^DXSpider Version: 1.57 Build: 46 Git: pyCluster/" in text
+            assert "PC18^pyCluster 1.0.6^" in text
             assert "PC20^" in text
         finally:
             await app.store.close()
@@ -286,6 +286,53 @@ def test_desired_peer_status_includes_mail_queue_and_route_issues(tmp_path) -> N
             assert row["pending_mail"] == 1
             assert row["route_issues"] == 1
             assert row["connected"] is False
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_peer_password_is_stored_separately_from_dsn_and_injected_on_connect(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "peer_password_separate.db")
+        app = ClusterApp(_mk_config(db))
+        connected: list[tuple[str, str, str]] = []
+        try:
+            async def _connect(name: str, dsn: str, profile: str = "dxspider") -> None:
+                connected.append((name, dsn, profile))
+
+            app.node_link.connect_dsn = _connect  # type: ignore[method-assign]
+            await app.save_peer_target(
+                "AI3I-16",
+                "dxspider://dxspider.ai3i.net:7300?login=AI3I-15&client=AI3I-16",
+                profile="dxspider",
+                reconnect=True,
+                password="sekret",
+            )
+
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            assert prefs["peer.outbound.ai3i-16.dsn"] == "dxspider://dxspider.ai3i.net:7300?login=AI3I-15&client=AI3I-16"
+            assert prefs["peer.outbound.ai3i-16.password"] == "sekret"
+
+            rows = await app.desired_peer_status()
+            assert len(rows) == 1
+            assert rows[0]["dsn"] == "dxspider://dxspider.ai3i.net:7300?login=AI3I-15&client=AI3I-16"
+            assert rows[0]["password"] == "sekret"
+
+            await app.connect_peer(
+                "AI3I-16",
+                "dxspider://dxspider.ai3i.net:7300?login=AI3I-15&client=AI3I-16",
+                profile="dxspider",
+                persist=False,
+                password="sekret",
+            )
+            assert connected == [
+                (
+                    "AI3I-16",
+                    "dxspider://dxspider.ai3i.net:7300?login=AI3I-15&client=AI3I-16&password=sekret",
+                    "spider",
+                )
+            ]
         finally:
             await app.store.close()
 
@@ -949,6 +996,50 @@ def test_ingest_pc93_prefixed_announce_maps_to_announce_bulletin(tmp_path) -> No
     asyncio.run(run())
 
 
+def test_ingest_pc93_suppresses_recent_duplicate_bulletin(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc93_duplicate.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            app.node_link._peers["PEER2"] = LinkPeer(name="PEER2", conn=_DummyConn(), inbound=False)
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.add_bulletin("announce", "W1AW", "FULL", now, "net tonight")
+            msg = Pc93Message.from_fields(
+                ["N0NODE-1", "0", "*", "W1AW", "*", "[ANNOUNCE/FULL] net tonight [via:PEER2]", "", "127.0.0.1", "H1", ""]
+            )
+            await app._handle_node_link_item("PEER2", WirePcFrame("PC93", msg.to_fields()), msg)
+            rows = await app.store.list_bulletins("announce", limit=5)
+            assert len(rows) == 1
+            stats = await app.node_link.stats()
+            assert stats["PEER2"]["policy_reasons"]["ingest_pc93_duplicate"] == 1
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc93_suppresses_recent_duplicate_chat(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc93_duplicate_chat.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            app.node_link._peers["PEER2"] = LinkPeer(name="PEER2", conn=_DummyConn(), inbound=False)
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.add_bulletin("chat", "W1AW", "LOCAL", now, "hello dupes")
+            msg = Pc93Message.from_fields(
+                ["N0NODE-1", "0", "*", "W1AW", "*", "hello dupes [via:PEER2]", "", "127.0.0.1", "H1", ""]
+            )
+            await app._handle_node_link_item("PEER2", WirePcFrame("PC93", msg.to_fields()), msg)
+            rows = await app.store.list_bulletins("chat", limit=5)
+            assert len(rows) == 1
+            stats = await app.node_link.stats()
+            assert stats["PEER2"]["policy_reasons"]["ingest_pc93_duplicate"] == 1
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_ingest_pc12_maps_to_announce_bulletin(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_pc12_announce.db")
@@ -970,6 +1061,28 @@ def test_ingest_pc12_maps_to_announce_bulletin(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_ingest_pc12_suppresses_recent_duplicate_bulletin(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc12_duplicate.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            app.node_link._peers["PEER2"] = LinkPeer(name="PEER2", conn=_DummyConn(), inbound=False)
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.add_bulletin("announce", "AI3I", "FULL", now, "reverse announce")
+            msg = Pc12Message.from_fields(
+                ["AI3I", "*", "reverse announce", " ", "AI3I-15", "0", "H30", "~"]
+            )
+            await app._handle_node_link_item("PEER2", WirePcFrame("PC12", msg.to_fields()), msg)
+            rows = await app.store.list_bulletins("announce", limit=5)
+            assert len(rows) == 1
+            stats = await app.node_link.stats()
+            assert stats["PEER2"]["policy_reasons"]["ingest_pc12_duplicate"] == 1
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_ingest_pc12_wx_maps_to_wx_bulletin(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_pc12_wx.db")
@@ -985,6 +1098,44 @@ def test_ingest_pc12_wx_maps_to_wx_bulletin(tmp_path) -> None:
             assert rows[0]["sender"] == "AI3I"
             assert rows[0]["scope"] == "FULL"
             assert "weather update" in str(rows[0]["body"])
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc23_maps_to_wwv_bulletin(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc23_wwv.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            msg = Pc23Message.from_fields(
+                ["14-Mar-2026", "18", "120", "24", "4", "Moderate w/G2 -> Minor w/G1", "W0MU", "AI3I-16", "H96", ""]
+            )
+            await app._handle_node_link_item("PEER2", WirePcFrame("PC23", msg.to_fields()), msg)
+            rows = await app.store.list_bulletins("wwv", limit=5)
+            assert len(rows) == 1
+            assert rows[0]["sender"] == "W0MU"
+            assert "SFI=120 A=24 K=4 Moderate w/G2 -> Minor w/G1" == str(rows[0]["body"])
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc73_maps_to_wcy_bulletin(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc73_wcy.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            msg = Pc73Message.from_fields(
+                ["14-Mar-2026", "20", "120", "18", "3", "2", "105", "qui", "maj", "no", "DK0WCY", "AI3I-16", "H96", ""]
+            )
+            await app._handle_node_link_item("PEER2", WirePcFrame("PC73", msg.to_fields()), msg)
+            rows = await app.store.list_bulletins("wcy", limit=5)
+            assert len(rows) == 1
+            assert rows[0]["sender"] == "DK0WCY"
+            assert "SFI=120 A=18 K=3 ExpK=2 R=105 SA=qui GMF=maj Aurora=no" == str(rows[0]["body"])
         finally:
             await app.store.close()
 
@@ -1047,6 +1198,36 @@ def test_outbound_bulletin_relay_with_category_prefix(tmp_path) -> None:
             assert any("[ANNOUNCE/FULL] test relay" in t for t in texts)
             assert any("[WCY/LOCAL] A=8 K=2" in t for t in texts)
             assert all("via:" in t for t in texts)
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_outbound_wcy_and_wwv_use_dxspider_frames_for_dxspider_peers(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "relay_dxspider_geomag.db")
+        app = ClusterApp(_mk_config(db))
+        captured = []
+
+        async def _peer_names():
+            return ["peer1"]
+
+        async def _send(_peer, frame):
+            captured.append(frame)
+
+        async def _stats():
+            return {"peer1": {"profile": "dxspider"}}
+
+        app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+        app.node_link.send = _send  # type: ignore[method-assign]
+        app.node_link.stats = _stats  # type: ignore[method-assign]
+        app.telnet._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            await app.telnet._execute_command("N0CALL", "set/routepc19")
+            await app.telnet._execute_command("N0CALL", "wcy k=3,expk=2,a=18,r=105,sf=120,sa=qui,gmf=maj,au=no")
+            await app.telnet._execute_command("N0CALL", "wwv sf=120,a=24,k=4,Moderate w/G2 -> Minor w/G1")
+            assert [frame.pc_type for frame in captured] == ["PC73", "PC23"]
         finally:
             await app.store.close()
 
