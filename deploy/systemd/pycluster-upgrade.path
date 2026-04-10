@@ -1,0 +1,9 @@
+[Unit]
+Description=pyCluster upgrade request watcher
+
+[Path]
+PathExists=/home/pycluster/pyCluster/data/upgrade-request.json
+Unit=pycluster-upgrade.service
+
+[Install]
+WantedBy=multi-user.target

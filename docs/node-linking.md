@@ -11,6 +11,7 @@ How pyCluster opens the connection.
 Examples:
 
 - `tcp://host:port`
+- `pycluster://host:port?login=LOCALNODE-1&client=PEERNODE-1`
 - `dxspider://host:port?login=LOCALNODE-1&client=PEERNODE-1`
 - `kiss:///dev/ttyUSB0?baud=9600`
 - `ax25://DESTCALL?source=MYCALL&via=DIGI1,DIGI2`
@@ -49,6 +50,18 @@ These do not require:
 - a DSN/transport address on the local side
 - local retry logic
 
+## pyCluster DSN Example
+
+```text
+pycluster://example.net:7300?login=LOCALNODE-1&client=PEERNODE-1
+```
+
+If the remote peer requires a password:
+
+```text
+pycluster://example.net:7300?login=LOCALNODE-1&client=PEERNODE-1&password=secret
+```
+
 ## DXSpider DSN Example
 
 ```text
@@ -73,6 +86,8 @@ Useful sysop commands:
 
 - `sysop/connect`
 - `sysop/disconnect`
+
+In the System Operator web console, the `Peers and Links` editor now exposes `Cluster Family` as an explicit selector, including `pyCluster` for pyCluster-to-pyCluster links.
 
 ## Notes
 

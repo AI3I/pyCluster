@@ -8,11 +8,13 @@ from pycluster.peer_profiles import (
 
 
 def test_normalize_profile() -> None:
+    assert normalize_profile("pycluster") == "pycluster"
     assert normalize_profile("ARCLUSTER") == "arcluster"
-    assert normalize_profile("unknown") == "dxspider"
+    assert normalize_profile("unknown") == "pycluster"
 
 
 def test_allowed_types() -> None:
+    assert profile_allows_pc("pycluster", "PC24") is True
     assert profile_allows_pc("dxspider", "PC24") is True
     assert profile_allows_pc("dxnet", "PC61") is True
     assert profile_allows_pc("dxnet", "PC24") is False
@@ -65,3 +67,27 @@ def test_format_live_dx_line_keeps_suffix_within_80_columns() -> None:
     assert line.startswith("DX de JA1AAA:")
     assert line.endswith("2152Z CQ5 ITU8")
     assert len(line) <= 80
+
+
+def test_format_dx_line_normalizes_nbsp_mojibake() -> None:
+    line = format_live_dx_line_for_profile(
+        "dxspider",
+        freq_khz=14276.0,
+        dx_call="W1XZZ",
+        when="1341Z",
+        info="US-8382\u00a0Rehoboth State Forest",
+        spotter="KK4WP",
+    )
+    assert "US-8382 Rehoboth State Forest" in line
+    assert "\u00a0" not in line
+
+    line = format_live_dx_line_for_profile(
+        "dxspider",
+        freq_khz=14276.0,
+        dx_call="W1XZZ",
+        when="1341Z",
+        info="US-8382ï¿½Rehoboth State Forest",
+        spotter="KK4WP",
+    )
+    assert "US-8382 Rehoboth State Forest" in line
+    assert "ï¿½" not in line

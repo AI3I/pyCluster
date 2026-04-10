@@ -67,14 +67,16 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current release: `1.0.5`
+Current release: `1.0.6`
 
-Recent highlights in `1.0.5`:
+Recent highlights in `1.0.6`:
 
 - cleaner and more human-readable telnet/operator command replies
 - `CTY.DAT` and `wpxloc.raw` visibility plus refresh support
 - public web 24-hour spot stats that reflect real time windows
 - more complete MFA recovery, cluster-mail observability, and config-override documentation
+- stronger registration/auth policy with verified-email gates for ordinary users
+- telnet email verification flow plus sysop verification/unlock controls in the System Operator Console
 
 ## 🖥️ Interfaces
 
@@ -93,7 +95,8 @@ User-facing browser interface.
 - spot list and filters
 - cluster view
 - watch lists and recent matches
-- operate tab for login and posting
+- footer `Log In` and `Register` modals for account access and requests
+- operate controls appear only after login
 - profile editing for normal users
 
 ### System Operator Web UI
@@ -102,6 +105,7 @@ Operator-facing browser console.
 
 - node presentation and MOTD
 - user and access management
+- registration state, verification, and unlock controls for local users
 - peer and link management
 - protocol health and policy drops
 - audit and security views
@@ -149,6 +153,14 @@ sudo ./deploy/install.sh
 sudo ./deploy/doctor.sh
 ```
 
+Interactive installs now offer to run `deploy/setup-nginx.sh` for you. That flow asks for:
+
+- the public hostname to publish
+- an optional separate sysop hostname
+- whether nginx should expose ports `80` and `443`
+- whether to use Let's Encrypt or self-signed TLS
+- the email address required for Let's Encrypt
+
 For a host-level install, cloning into `/usr/src/pyCluster` is the recommended layout.
 The deploy scripts create the `pycluster` system user and group automatically; the installer does not require the operator to create that account first.
 The installed runtime tree is placed under `/home/pycluster/pyCluster`.
@@ -182,18 +194,27 @@ sudo ./deploy/doctor.sh
 
 For git-based upgrades, move site-local changes out of the tracked `config/pycluster.toml` file and into `config/pycluster.local.toml` first. That keeps `git pull --ff-only` clean while preserving local runtime settings.
 
-For upgrades from `1.0.0` through `1.0.3`, `deploy/upgrade.sh` performs the required cumulative state conversion for older installs:
+For upgrades from any release below `1.0.6`, `deploy/upgrade.sh` performs the required cumulative migration chain before services restart:
 
-- hashes any legacy plaintext passwords still stored in `user_prefs`
-- seeds `config/strings.toml` if it is missing
-- preserves compatibility with older `pycluster.toml` files by supplying defaults for newer optional config sections such as `[qrz]`
-- preserves the existing `config/pycluster.toml`, data, and logs in place
+- `run_upgrade_1_0_1`
+  - hashes any legacy plaintext passwords still stored in `user_prefs`
+  - seeds `config/strings.toml` if it is missing
+- `run_upgrade_1_0_6`
+  - moves any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
+
+The upgrade path still preserves the existing `config/pycluster.toml`, local overrides, data, and logs in place.
 
 Default listeners:
 
 - telnet: 0.0.0.0:7300
 - sysop web: 127.0.0.1:8080
 - public web: 127.0.0.1:8081
+
+Important:
+
+- unless you publish nginx or another reverse proxy in front of them, the two web listeners stay bound to localhost only
+- a fresh install is intentionally not public on ports `8080` or `8081`
+- `deploy/install.sh` now offers to finish that nginx setup during the install
 
 ## 🛠️ Deployment
 

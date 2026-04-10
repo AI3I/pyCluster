@@ -17,6 +17,7 @@ from .auth import hash_password, is_password_hash, verify_password
 from .config import AppConfig, node_presentation_defaults, parse_telnet_ports, save_config
 from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
+from .geomag import canonicalize_wcy_text, canonicalize_wwv_text
 from .maidenhead import coords_to_locator, extract_locator
 from .mfa import EmailOtpManager, SMTPMailer
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
@@ -24,8 +25,11 @@ from .ctydat import is_loaded as cty_loaded, load_cty, lookup as cty_lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
 from .pathmeta import describe_session_path, describe_transport_dsn, normalize_recorded_path
+from .peer_profiles import normalize_profile
+from .registration import has_valid_email, mark_email_unverified, mark_email_verified, registration_state
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
+from .upgrade_manager import detect_upgrade_availability, migration_hooks, queue_upgrade_request, read_upgrade_status, repo_root_from_config, upgrade_paths
 
 
 LOG = logging.getLogger(__name__)
@@ -44,6 +48,10 @@ _CONFIG_AUTH_NODE_FIELDS = {
     "login_tip",
     "show_status_after_login",
     "require_password",
+    "registration_required",
+    "verified_email_required_for_web",
+    "verified_email_required_for_telnet",
+    "initial_grace_logins",
     "support_contact",
     "website_url",
     "motd",
@@ -55,6 +63,10 @@ _CONFIG_AUTH_NODE_FIELDS = {
 def _is_valid_admin_record_call(call: str) -> bool:
     raw = str(call or "").strip().upper()
     return raw == "SYSOP" or is_valid_call(raw)
+
+
+def _has_valid_email(email: str) -> bool:
+    return has_valid_email(email)
 
 
 def _spot_call_review(value: str, cty_status: dict[str, object] | None = None) -> dict[str, object]:
@@ -127,6 +139,8 @@ class WebAdminServer:
         self.event_log_fn = event_log_fn
         self.audit_rows_fn = audit_rows_fn
         self.config_path = str(config_path).strip() if config_path else ""
+        self.repo_root = repo_root_from_config(self.config_path)
+        self._upgrade_paths = upgrade_paths(self.repo_root)
         self._web_sessions: dict[str, tuple[str, int, bool]] = {}
         self._server: asyncio.AbstractServer | None = None
         self._smtp = SMTPMailer(config.smtp)
@@ -152,6 +166,19 @@ class WebAdminServer:
             prefs.pop(key, None)
         data.update(prefs)
         return data
+
+    def _upgrade_status_json(self) -> dict[str, object]:
+        state = read_upgrade_status(self._upgrade_paths.status_path)
+        availability = detect_upgrade_availability(self.repo_root, __version__)
+        return {
+            "status": state,
+            "availability": availability,
+            "migrations": migration_hooks(self.repo_root),
+            "request_path": str(self._upgrade_paths.request_path),
+            "log_path": str(self._upgrade_paths.log_path),
+            "service_unit": "pycluster-upgrade.service",
+            "watch_unit": "pycluster-upgrade.path",
+        }
 
     def _node_presentation_json(self, data: dict[str, str]) -> dict[str, object]:
         def _to_int(v: str | object, default: int = 0) -> int:
@@ -179,6 +206,10 @@ class WebAdminServer:
             "login_tip": str(data.get("login_tip", "")).strip(),
             "show_status_after_login": str(data.get("show_status_after_login", "")).strip().lower() in {"1", "on", "yes", "true"},
             "require_password": str(data.get("require_password", "")).strip().lower() in {"1", "on", "yes", "true"},
+            "registration_required": str(data.get("registration_required", "")).strip().lower() in {"1", "on", "yes", "true"},
+            "verified_email_required_for_web": str(data.get("verified_email_required_for_web", "")).strip().lower() in {"1", "on", "yes", "true"},
+            "verified_email_required_for_telnet": str(data.get("verified_email_required_for_telnet", "")).strip().lower() in {"1", "on", "yes", "true"},
+            "initial_grace_logins": max(0, min(100, _to_int(data.get("initial_grace_logins", "5"), 5))),
             "support_contact": str(data.get("support_contact", "")).strip(),
             "website_url": str(data.get("website_url", "")).strip(),
             "motd": str(data.get("motd", "")).rstrip(),
@@ -283,8 +314,10 @@ class WebAdminServer:
         mfa_email_otp = str(await self.store.get_user_pref(call, "mfa_email_otp") or "").strip().lower()
         if mfa_email_otp not in {"required", "off"}:
             mfa_email_otp = "default"
+        reg_state, email_verified_epoch, grace_logins_remaining = await registration_state(self.store, base_call)
         return {
             "call": call,
+            "principal_call": base_call,
             "display_name": str(row["display_name"] or ""),
             "home_node": str(homenode_pref or row["home_node"] or ""),
             "node_family": node_family,
@@ -313,6 +346,11 @@ class WebAdminServer:
             "mail_outbox_issues": outbox_issues,
             "mail_last_error": last_mail_error,
             "mfa_email_otp": mfa_email_otp,
+            "registration_state": reg_state,
+            "email_verified": email_verified_epoch > 0 and reg_state == "verified",
+            "email_verified_epoch": email_verified_epoch,
+            "grace_logins_remaining": grace_logins_remaining,
+            "registration_locked": reg_state == "locked",
             "telnet_online": telnet_online,
             "web_online": web_online,
             "online_status": online_status,
@@ -736,6 +774,10 @@ class WebAdminServer:
         ptag = re.sub(r"[^a-z0-9_.-]", "_", peer_name.lower())
         pfx = f"proto.peer.{ptag}."
         state = {
+            "pc18_family": node_cfg.get(pfx + "pc18.family", ""),
+            "pc18_proto": node_cfg.get(pfx + "pc18.proto", ""),
+            "pc18_software": node_cfg.get(pfx + "pc18.software", ""),
+            "pc18_summary": node_cfg.get(pfx + "pc18.summary", ""),
             "pc24_call": node_cfg.get(pfx + "pc24.call", ""),
             "pc24_flag": node_cfg.get(pfx + "pc24.flag", ""),
             "pc50_call": node_cfg.get(pfx + "pc50.call", ""),
@@ -758,7 +800,22 @@ class WebAdminServer:
                 return default
 
         thresholds = self._proto_thresholds(node_cfg)
-        known = any(state[k] for k in ("pc24_call", "pc24_flag", "pc50_call", "pc50_count", "pc51_to", "pc51_from", "pc51_value"))
+        known = any(
+            state[k]
+            for k in (
+                "pc18_family",
+                "pc18_proto",
+                "pc18_software",
+                "pc18_summary",
+                "pc24_call",
+                "pc24_flag",
+                "pc50_call",
+                "pc50_count",
+                "pc51_to",
+                "pc51_from",
+                "pc51_value",
+            )
+        )
         health = "unknown"
         last_change_epoch = _to_int(state["last_change_epoch"], 0)
         flap_active = (
@@ -799,6 +856,10 @@ class WebAdminServer:
             "age_min": age_min,
             "last_epoch": last_epoch,
             "last_pc_type": state["last_pc_type"],
+            "pc18_family": state["pc18_family"],
+            "pc18_proto": state["pc18_proto"],
+            "pc18_software": state["pc18_software"],
+            "pc18_summary": state["pc18_summary"],
             "change_count": _to_int(state["change_count"], 0),
             "flap_score": _to_int(state["flap_score"], 0),
             "last_change_epoch": last_change_epoch,
@@ -1387,6 +1448,14 @@ button.special{
   border-color:#6f42c1;
   color:#fff;
 }
+.users-statusrow{
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+}
+.users-statusrow .checkrow{
+  min-width:180px;
+}
 .themebtn{
   background:var(--theme-bg);
   border-color:var(--theme-border);
@@ -1421,15 +1490,161 @@ button.special{
   grid-template-columns:repeat(2,minmax(0,1fr));
   gap:18px;
 }
+.node-tabs{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-bottom:14px;
+}
+.subtabs{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-bottom:14px;
+}
+.node-tab{
+  background:var(--panel-soft);
+  color:var(--text);
+}
+.subtab{
+  background:var(--panel-soft);
+  color:var(--text);
+}
+.node-tab.active{
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#fff;
+}
+.subtab.active{
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#fff;
+}
+.node-group{
+  display:none;
+}
+.node-group.active{
+  display:block;
+}
+.subpanel{
+  display:none;
+}
+.subpanel.active{
+  display:block;
+}
 .users-editor{
+  display:grid;
+  gap:18px;
+}
+.users-editor-side{
   display:grid;
   grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr);
   gap:18px;
+}
+.users-actionbar{
+  display:grid;
+  gap:10px;
+  margin-top:12px;
+}
+.users-actionbar .users-action-group{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
 }
 .users-columns{
   display:grid;
   gap:18px;
   margin-top:14px;
+}
+.protocol-glance{
+  display:grid;
+  grid-template-columns:repeat(6,minmax(0,1fr));
+  gap:12px;
+}
+.protocol-glance .card{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  padding:12px 14px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--panel-soft);
+  min-width:0;
+}
+.protocol-glance .label{
+  display:block;
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.protocol-glance strong{
+  display:block;
+  font-size:20px;
+  line-height:1.2;
+  color:var(--text);
+}
+.protocol-glance .subtle{
+  display:block;
+  margin-top:2px;
+  line-height:1.4;
+}
+.protocol-glance .card.compact{
+  grid-column:span 1;
+}
+.protocol-glance .card.summary{
+  grid-column:span 2;
+}
+.protocol-glance .card.summary.wide{
+  grid-column:span 3;
+}
+.users-browser-tabs{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-bottom:12px;
+}
+.users-browser-stage{
+  min-height:248px;
+}
+.users-browser-stage .tablewrap{
+  min-height:176px;
+}
+.users-browser-panel{
+  display:none;
+}
+.users-browser-panel.active{
+  display:block;
+}
+.browser-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  padding:6px 0 0;
+}
+.browser-toolbar .browser-search{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex:1 1 auto;
+}
+.browser-toolbar .browser-nav{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-left:auto;
+}
+.browser-toolbar button{
+  padding:6px 10px;
+}
+.browser-toolbar .subtle{
+  margin:0;
+}
+.browser-toolbar input{
+  max-width:320px;
+  flex:1 1 280px;
 }
 .tablewrap{
   overflow:auto;
@@ -1443,6 +1658,21 @@ table{
   width:100%;
   border-collapse:collapse;
   background:var(--panel);
+}
+.peer-table{
+  width:max-content;
+  min-width:100%;
+  table-layout:auto;
+}
+.peer-table th,
+.peer-table td{
+  white-space:nowrap;
+}
+.peer-table td:nth-child(2),
+.peer-table td:nth-child(3),
+.peer-table td:nth-child(5),
+.peer-table td:nth-child(6){
+  white-space:normal;
 }
 th,td{
   padding:10px 11px;
@@ -1463,6 +1693,14 @@ html.light tbody tr:hover{ background:rgba(29,111,164,.07); }
 tbody tr.clickable{ cursor:pointer; }
 tbody tr.selected{ background:rgba(88,166,255,.12); }
 html.light tbody tr.selected{ background:rgba(29,111,164,.14); }
+tbody tr.filler:hover,
+html.light tbody tr.filler:hover,
+tbody tr.filler.selected{
+  background:transparent;
+}
+tbody tr.filler td{
+  color:transparent;
+}
 .tag{
   display:inline-block;
   padding:2px 7px;
@@ -1481,28 +1719,6 @@ html.light tbody tr.selected{ background:rgba(29,111,164,.14); }
 .presence.off{ color:#8b2e2e; }
 .presence.now{ color:#d4a72c; }
 .presence.idle{ color:var(--text); font-size:12px; font-weight:600; }
-.proto-grid{
-  display:grid;
-  grid-template-columns:repeat(4,minmax(0,1fr));
-  gap:10px;
-}
-.proto-card{
-  padding:12px;
-  border:1px solid var(--line);
-  border-radius:12px;
-  background:var(--panel-soft);
-}
-.proto-card label{
-  display:block;
-  margin-bottom:6px;
-  font-size:11px;
-  text-transform:uppercase;
-  letter-spacing:.06em;
-  color:var(--muted);
-}
-.proto-card strong{
-  font-size:20px;
-}
 .mini{
   font-size:12px;
   color:var(--muted);
@@ -1557,13 +1773,42 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   .workspace,.split{grid-template-columns:1fr}
   .sidebar{position:static}
   .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .proto-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .proto-grid,.protocol-glance{grid-template-columns:repeat(2,minmax(0,1fr))}
   .users-editor,.users-columns{grid-template-columns:1fr}
 }
+@media (max-width: 900px){
+  .shell{padding:12px 12px 24px}
+  .mast{
+    padding:16px 16px;
+    align-items:flex-start;
+    flex-direction:column;
+  }
+  .mast-actions{
+    width:100%;
+    min-width:0;
+    align-items:stretch;
+  }
+  .sidebar-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .actions{flex-wrap:wrap}
+  .actions button{flex:1 1 160px}
+  .tablewrap{
+    overflow:auto;
+    -webkit-overflow-scrolling:touch;
+  }
+}
 @media (max-width: 720px){
+  .shell{padding:10px 10px 20px}
   .mast{padding:16px}
   .mast-actions{align-items:stretch}
-  .metric-grid,.form-grid,.checkgrid,.proto-grid{grid-template-columns:1fr}
+  .mast h1{font-size:24px}
+  .sidebar-panel header,.sidebar-panel .body,.panel .body{padding-left:12px;padding-right:12px}
+  .sidebar-nav a{padding:10px}
+  .sidebar-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .metric-grid,.form-grid,.checkgrid,.proto-grid,.protocol-glance{grid-template-columns:1fr}
+  .actions button{flex:1 1 100%; width:100%}
+  input,textarea,select{font-size:16px}
+  .tablewrap table{min-width:720px}
+  .tablewrap.compact table{min-width:640px}
 }
 </style>
 </head>
@@ -1622,105 +1867,133 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
         </header>
         <div class="body">
-          <div class="form-grid">
-            <div class="field"><label for="node_call" title="Displayed node callsign and SSID used in the telnet prompt and welcome text.">Node Call / SSID</label><input id="node_call" placeholder="Node callsign" title="This changes the operator-facing node identity shown in the prompt and welcome flow."></div>
-            <div class="field"><label for="node_alias" title="Short alias for the node, useful for UI and descriptive displays.">Node Alias</label><input id="node_alias" placeholder="Short alias" title="A shorter alias for the node; distinct from the full prompt callsign if desired."></div>
-            <div class="field"><label for="owner_name" title="Name of the system operator or primary operator shown in node identity details.">Owner Name (QRA)</label><input id="owner_name" placeholder="Primary operator" title="Primary operator or system operator name for this node."></div>
-            <div class="field"><label for="qth" title="Displayed node location used in the welcome text and status views.">Location (QTH)</label><input id="qth" placeholder="Location" title="Operator-facing location string for the node."></div>
-            <div class="field"><label for="node_locator" title="Node Maidenhead grid square shown in public branding and node details.">Grid Square</label><input id="node_locator" placeholder="Grid square" title="Displayed in the public footer and operator-facing node identity details."></div>
-            <div class="field"><label for="telnet_ports" title="Comma-separated list of telnet listener ports the cluster should bind.">Telnet Ports</label><input id="telnet_ports" placeholder="7300,7373,8000" title="Comma-separated list of listener ports. Saving applies the listener set live if the new ports can be bound."></div>
-            <div class="field"><label for="branding_name" title="Short product or node brand shown in the telnet welcome experience.">Node Brand</label><input id="branding_name" placeholder="Node brand" title="Short product or node brand shown in the telnet welcome experience."></div>
-            <div class="field"><label for="welcome_title" title="First line shown to a telnet user after successful login.">Welcome Title</label><input id="welcome_title" placeholder="Short welcome line" title="Keep this short and warm; it is prepended to the connecting callsign."></div>
-            <div class="field"><label for="website_url" title="Optional URL shown in the telnet welcome block and useful for directing operators to documentation or a public site.">Website URL</label><input id="website_url" placeholder="https://example.org" title="Shown as a reference URL in the login welcome text if set."></div>
-            <div class="field"><label for="support_contact" title="Contact string displayed to operators who need help with the node.">Support Contact</label><input id="support_contact" placeholder="support@example.org" title="Email address or other support contact shown in the telnet welcome block."></div>
-            <div class="field"><label for="prompt_template" title="Prompt format shown to telnet operators. Available tokens: {timestamp}, {node}, {callsign}, {suffix}.">Prompt Template</label><input id="prompt_template" placeholder="[{timestamp}] {node}{suffix}" title="Use {timestamp}, {node}, {callsign}, and {suffix}. Example: [{timestamp}] {node}{suffix}"></div>
+          <div class="node-tabs" role="tablist" aria-label="Node Settings groups">
+            <button class="node-tab active" type="button" data-node-group="general">General</button>
+            <button class="node-tab" type="button" data-node-group="auth">Authentication</button>
+            <button class="node-tab" type="button" data-node-group="smtp">Mail (SMTP)</button>
+            <button class="node-tab" type="button" data-node-group="maintenance">Maintenance</button>
           </div>
-          <div class="form-grid one" style="margin-top:12px">
-            <div class="field"><label for="welcome_body" title="Main human-facing introduction shown after login and before the MOTD.">Welcome Body</label><textarea id="welcome_body" placeholder="Short human introduction shown after login." title="Use this for a friendly introduction, operating notes, or local node character."></textarea></div>
-            <div class="field"><label for="motd" title="Message of the day shown in telnet and by show/motd.">MOTD</label><textarea id="motd" placeholder="Node notices and operating guidance." title="Operational notes, etiquette, maintenance notices, or other important daily information."></textarea></div>
-            <div class="field"><label for="login_tip" title="Short tip line shown near the end of the telnet welcome flow.">Login Tip</label><input id="login_tip" placeholder="Short operator tip" title="Keep this to one concise sentence with a useful first-step hint."></div>
-          </div>
-          <div class="checkgrid" style="margin-top:12px">
-            <div class="checkrow attention" title="When enabled, telnet users see a short node status line after the MOTD.">
-              <input id="show_status_after_login" type="checkbox">
-              <label for="show_status_after_login">Show node status after MOTD</label>
+          <div class="node-group active" id="node-group-general">
+            <div class="form-grid">
+              <div class="field"><label for="node_call" title="Displayed node callsign and SSID used in the telnet prompt and welcome text.">Node Call / SSID</label><input id="node_call" placeholder="Node callsign" title="This changes the operator-facing node identity shown in the prompt and welcome flow."></div>
+              <div class="field"><label for="node_alias" title="Short alias for the node, useful for UI and descriptive displays.">Node Alias</label><input id="node_alias" placeholder="Short alias" title="A shorter alias for the node; distinct from the full prompt callsign if desired."></div>
+              <div class="field"><label for="owner_name" title="Name of the system operator or primary operator shown in node identity details.">Owner Name (QRA)</label><input id="owner_name" placeholder="Primary operator" title="Primary operator or system operator name for this node."></div>
+              <div class="field"><label for="qth" title="Displayed node location used in the welcome text and status views.">Location (QTH)</label><input id="qth" placeholder="Location" title="Operator-facing location string for the node."></div>
+              <div class="field"><label for="node_locator" title="Node Maidenhead grid square shown in public branding and node details.">Grid Square</label><input id="node_locator" placeholder="Grid square" title="Displayed in the public footer and operator-facing node identity details."></div>
+              <div class="field"><label for="telnet_ports" title="Comma-separated list of telnet listener ports the cluster should bind.">Telnet Ports</label><input id="telnet_ports" placeholder="7300,7373,8000" title="Comma-separated list of listener ports. Saving applies the listener set live if the new ports can be bound."></div>
+              <div class="field"><label for="branding_name" title="Short product or node brand shown in the telnet welcome experience.">Node Brand</label><input id="branding_name" placeholder="Node brand" title="Short product or node brand shown in the telnet welcome experience."></div>
+              <div class="field"><label for="welcome_title" title="First line shown to a telnet user after successful login.">Welcome Title</label><input id="welcome_title" placeholder="Short welcome line" title="Keep this short and warm; it is prepended to the connecting callsign."></div>
+              <div class="field"><label for="website_url" title="Optional URL shown in the telnet welcome block and useful for directing operators to documentation or a public site.">Website URL</label><input id="website_url" placeholder="https://example.org" title="Shown as a reference URL in the login welcome text if set."></div>
+              <div class="field"><label for="support_contact" title="Contact string displayed to operators who need help with the node.">Support Contact</label><input id="support_contact" placeholder="support@example.org" title="Email address or other support contact shown in the telnet welcome block."></div>
+              <div class="field"><label for="prompt_template" title="Prompt format shown to telnet operators. Available tokens: {timestamp}, {node}, {callsign}, {suffix}.">Prompt Template</label><input id="prompt_template" placeholder="[{timestamp}] {node}{suffix}" title="Use {timestamp}, {node}, {callsign}, and {suffix}. Example: [{timestamp}] {node}{suffix}"></div>
+              <div class="field">
+                <label title="Optional telnet presentation behavior for the node welcome flow.">Options</label>
+                <div class="checkrow attention" title="When enabled, telnet users see a short node status line after the MOTD.">
+                  <input id="show_status_after_login" type="checkbox">
+                  <label for="show_status_after_login">Show node status after MOTD</label>
+                </div>
+              </div>
             </div>
-            <div class="checkrow attention" title="Default behavior. Existing telnet users are prompted for their password. First-time users without one are sent through password creation instead. Node-classified callsigns skip this path.">
-              <input id="require_password" type="checkbox">
-              <label for="require_password">Require telnet passwords for users</label>
-            </div>
-          </div>
-          <div class="form-grid" style="margin-top:12px">
-            <div class="field"><label for="smtp_host" title="SMTP host used to send MFA email codes.">SMTP Host</label><input id="smtp_host" placeholder="smtp.example.net" title="Node-wide SMTP relay hostname for MFA delivery."></div>
-            <div class="field"><label for="smtp_port" title="SMTP port for the configured relay.">SMTP Port</label><input id="smtp_port" type="number" min="1" max="65535" value="587" title="Typical values are 25, 465, or 587."></div>
-            <div class="field"><label for="smtp_username" title="Optional SMTP username when the relay requires authentication.">SMTP Username</label><input id="smtp_username" placeholder="mailer" title="Leave blank for relays that do not require SMTP AUTH."></div>
-            <div class="field"><label for="smtp_password" title="SMTP password or app password for the configured relay.">SMTP Password</label><input id="smtp_password" type="password" placeholder="SMTP password" title="Stored in local config for MFA delivery."></div>
-            <div class="field"><label for="smtp_from_addr" title="From address used in MFA email delivery.">From Address</label><input id="smtp_from_addr" placeholder="pycluster@example.net" title="Envelope/display sender for OTP messages."></div>
-            <div class="field"><label for="smtp_from_name" title="Display name used in MFA email delivery.">From Name</label><input id="smtp_from_name" placeholder="pyCluster" title="Display name shown with the MFA sender address."></div>
-            <div class="field"><label for="smtp_timeout_seconds" title="Socket timeout for SMTP delivery attempts.">SMTP Timeout (seconds)</label><input id="smtp_timeout_seconds" type="number" min="1" max="120" value="10" title="Keep this modest so failed relays do not hang login flows for long."></div>
-          </div>
-          <div class="checkgrid" style="margin-top:12px">
-            <div class="checkrow attention" title="Use STARTTLS after connecting to the SMTP relay.">
-              <input id="smtp_starttls" type="checkbox">
-              <label for="smtp_starttls">Use STARTTLS</label>
-            </div>
-            <div class="checkrow attention" title="Use implicit TLS from connect time, typically on port 465.">
-              <input id="smtp_use_ssl" type="checkbox">
-              <label for="smtp_use_ssl">Use implicit TLS (SSL)</label>
+            <div class="form-grid one" style="margin-top:12px">
+              <div class="field"><label for="welcome_body" title="Main human-facing introduction shown after login and before the MOTD.">Welcome Body</label><textarea id="welcome_body" placeholder="Short human introduction shown after login." title="Use this for a friendly introduction, operating notes, or local node character."></textarea></div>
+              <div class="field"><label for="motd" title="Message of the day shown in telnet and by show/motd.">MOTD</label><textarea id="motd" placeholder="Node notices and operating guidance." title="Operational notes, etiquette, maintenance notices, or other important daily information."></textarea></div>
+              <div class="field"><label for="login_tip" title="Short tip line shown near the end of the telnet welcome flow.">Login Tip</label><input id="login_tip" placeholder="Short operator tip" title="Keep this to one concise sentence with a useful first-step hint."></div>
             </div>
           </div>
-          <div class="form-grid" style="margin-top:12px">
-            <div class="field">
-              <label for="mfa_enabled" title="Enable optional email OTP as a second factor for logins.">Email MFA</label>
-              <div class="checkrow attention" title="When enabled, web and telnet logins can require an emailed one-time code after password verification.">
+          <div class="node-group" id="node-group-auth">
+            <div class="checkgrid">
+              <div class="checkrow attention" title="Telnet-only fallback password policy. This affects older telnet login paths when the stronger registration model is not already requiring a password. Node-classified callsigns skip this path.">
+                <input id="require_password" type="checkbox">
+                <label for="require_password">Require telnet password on fallback paths</label>
+              </div>
+              <div class="checkrow attention" title="Ordinary human users must already have a local user record before they can activate an account. Node-classified peers are exempt.">
+                <input id="registration_required" type="checkbox">
+                <label for="registration_required">Require registration for users</label>
+              </div>
+              <div class="checkrow attention" title="Ordinary web logins require a verified email address before access is granted.">
+                <input id="verified_email_required_for_web" type="checkbox">
+                <label for="verified_email_required_for_web">Require verified email for web</label>
+              </div>
+              <div class="checkrow attention" title="Ordinary telnet logins require a verified email address. Unverified users must complete email verification on telnet before access is granted.">
+                <input id="verified_email_required_for_telnet" type="checkbox">
+                <label for="verified_email_required_for_telnet">Require verified email for telnet</label>
+              </div>
+              <div class="checkrow attention" title="When enabled, web and telnet logins can require a one-time code after password verification. Codes are delivered by email.">
                 <input id="mfa_enabled" type="checkbox">
-                <label for="mfa_enabled">Enable email OTP MFA</label>
+                <label for="mfa_enabled">Enable MFA login challenges</label>
               </div>
-            </div>
-            <div class="field">
-              <label for="mfa_require_for_sysop" title="Require email OTP for System Operator logins.">System Operators</label>
-              <div class="checkrow attention" title="Strongly recommended. Applies to sysop web and sysop telnet logins.">
+              <div class="checkrow attention" title="Strongly recommended. Applies to sysop web and sysop telnet logins after password verification.">
                 <input id="mfa_require_for_sysop" type="checkbox" checked>
-                <label for="mfa_require_for_sysop">Require MFA for sysops</label>
+                <label for="mfa_require_for_sysop">Require MFA challenge for sysop logins</label>
               </div>
-            </div>
-            <div class="field">
-              <label for="mfa_require_for_users" title="Require email OTP for ordinary authenticated users too.">Authenticated Users</label>
-              <div class="checkrow attention" title="Enable only after confirming user email records and SMTP delivery are reliable.">
+              <div class="checkrow attention" title="Enable only after confirming user email records and SMTP delivery are reliable. This applies after password verification.">
                 <input id="mfa_require_for_users" type="checkbox">
-                <label for="mfa_require_for_users">Require MFA for users</label>
+                <label for="mfa_require_for_users">Require MFA challenge for user logins</label>
               </div>
             </div>
-            <div class="field"><label for="mfa_issuer" title="Short label shown in OTP email subject lines and body text.">MFA Issuer</label><input id="mfa_issuer" placeholder="pyCluster" title="Brand or node label used in MFA email messages."></div>
-            <div class="field"><label for="mfa_otp_ttl_seconds" title="How long each emailed OTP remains valid.">OTP TTL (seconds)</label><input id="mfa_otp_ttl_seconds" type="number" min="60" max="3600" value="600" title="Validity window for issued one-time codes."></div>
-            <div class="field"><label for="mfa_otp_length" title="Number of digits generated for each OTP.">OTP Length</label><input id="mfa_otp_length" type="number" min="6" max="8" value="6" title="Recommended range is 6 to 8 digits."></div>
-            <div class="field"><label for="mfa_max_attempts" title="How many wrong OTP submissions are allowed before the challenge is invalidated.">OTP Attempts</label><input id="mfa_max_attempts" type="number" min="1" max="10" value="5" title="Maximum verification attempts per OTP challenge."></div>
-            <div class="field"><label for="mfa_resend_cooldown_seconds" title="Minimum delay before a new OTP can be issued for the same login purpose.">OTP Resend Cooldown (seconds)</label><input id="mfa_resend_cooldown_seconds" type="number" min="0" max="600" value="30" title="Prevents repeated password submissions from sending OTP emails too frequently."></div>
+            <div class="form-grid" style="margin-top:12px">
+              <div class="field"><label for="initial_grace_logins" title="Number of failed or skipped email-verification attempts allowed before a pending account is locked.">Registration Grace Logins</label><input id="initial_grace_logins" type="number" min="0" max="100" value="5" title="When verified email is required, unverified users consume one grace login per failed verification attempt until the account locks."></div>
+              <div class="field"><label for="mfa_issuer" title="Short label shown in OTP email subject lines and body text.">MFA Issuer</label><input id="mfa_issuer" placeholder="pyCluster" title="Brand or node label used in MFA login challenge messages."></div>
+              <div class="field"><label for="mfa_otp_ttl_seconds" title="How long each emailed OTP remains valid.">OTP TTL (seconds)</label><input id="mfa_otp_ttl_seconds" type="number" min="60" max="3600" value="600" title="Validity window for issued one-time codes."></div>
+              <div class="field"><label for="mfa_otp_length" title="Number of digits generated for each OTP.">OTP Length</label><input id="mfa_otp_length" type="number" min="6" max="8" value="6" title="Recommended range is 6 to 8 digits."></div>
+              <div class="field"><label for="mfa_max_attempts" title="How many wrong OTP submissions are allowed before the challenge is invalidated.">OTP Attempts</label><input id="mfa_max_attempts" type="number" min="1" max="10" value="5" title="Maximum verification attempts per OTP challenge."></div>
+              <div class="field"><label for="mfa_resend_cooldown_seconds" title="Minimum delay before a new OTP can be issued for the same login purpose.">OTP Resend Cooldown (seconds)</label><input id="mfa_resend_cooldown_seconds" type="number" min="0" max="600" value="30" title="Prevents repeated password submissions from sending OTP emails too frequently."></div>
+            </div>
           </div>
-          <div class="form-grid" style="margin-top:12px">
-            <div class="field">
-              <label for="retention_enabled" title="When enabled, pyCluster runs age-based cleanup daily using the day counts below.">Automatic Cleanup</label>
-              <div class="checkrow attention" title="Enable daily retention cleanup for spots, messages, and bulletins.">
-                <input id="retention_enabled" type="checkbox" checked>
-                <label for="retention_enabled">Enable age-based cleanup</label>
+          <div class="node-group" id="node-group-smtp">
+            <div class="form-grid">
+              <div class="field"><label for="smtp_host" title="SMTP host used to send MFA email codes.">SMTP Host</label><input id="smtp_host" placeholder="smtp.example.net" title="Node-wide SMTP relay hostname for MFA delivery."></div>
+              <div class="field"><label for="smtp_port" title="SMTP port for the configured relay.">SMTP Port</label><input id="smtp_port" type="number" min="1" max="65535" value="587" title="Typical values are 25, 465, or 587."></div>
+              <div class="field"><label for="smtp_username" title="Optional SMTP username when the relay requires authentication.">SMTP Username</label><input id="smtp_username" placeholder="mailer" title="Leave blank for relays that do not require SMTP AUTH."></div>
+              <div class="field"><label for="smtp_password" title="SMTP password or app password for the configured relay.">SMTP Password</label><input id="smtp_password" type="password" placeholder="SMTP password" title="Stored in local config for MFA delivery."></div>
+              <div class="field"><label for="smtp_from_addr" title="From address used in MFA email delivery.">From Address</label><input id="smtp_from_addr" placeholder="pycluster@example.net" title="Envelope/display sender for OTP messages."></div>
+              <div class="field"><label for="smtp_from_name" title="Display name used in MFA email delivery.">From Name</label><input id="smtp_from_name" placeholder="pyCluster" title="Display name shown with the MFA sender address."></div>
+              <div class="field"><label for="smtp_timeout_seconds" title="Socket timeout for SMTP delivery attempts.">SMTP Timeout (seconds)</label><input id="smtp_timeout_seconds" type="number" min="1" max="120" value="10" title="Keep this modest so failed relays do not hang login flows for long."></div>
+            </div>
+            <div class="checkgrid" style="margin-top:12px">
+              <div class="checkrow attention" title="Use STARTTLS after connecting to the SMTP relay.">
+                <input id="smtp_starttls" type="checkbox">
+                <label for="smtp_starttls">Use STARTTLS</label>
+              </div>
+              <div class="checkrow attention" title="Use implicit TLS from connect time, typically on port 465.">
+                <input id="smtp_use_ssl" type="checkbox">
+                <label for="smtp_use_ssl">Use implicit TLS (SSL)</label>
               </div>
             </div>
-            <div class="field"><label for="retention_spots_days" title="Keep DX spots for this many days before purging old rows.">Keep Spots For (days)</label><input id="retention_spots_days" type="number" min="1" max="3650" value="30" title="Older spots are removed during the daily cleanup run."></div>
-            <div class="field"><label for="retention_messages_days" title="Keep private messages for this many days before purging old rows.">Keep Messages For (days)</label><input id="retention_messages_days" type="number" min="1" max="3650" value="90" title="Older messages are removed during the daily cleanup run."></div>
-            <div class="field"><label for="retention_bulletins_days" title="Keep bulletins for this many days before purging old rows.">Keep Bulletins For (days)</label><input id="retention_bulletins_days" type="number" min="1" max="3650" value="30" title="Older bulletins are removed during the daily cleanup run."></div>
-            <div class="field">
-              <label for="retention_stale_users_enabled" title="When enabled, cleanup also removes inactive non-sysop, non-blocked local users.">Stale User Cleanup</label>
-              <div class="checkrow attention" title="Remove non-sysop, non-blocked local users whose last login or last local update is older than the threshold below.">
-                <input id="retention_stale_users_enabled" type="checkbox">
-                <label for="retention_stale_users_enabled">Enable stale-user pruning</label>
-              </div>
-            </div>
-            <div class="field"><label for="retention_stale_users_days" title="Inactive local users older than this threshold are removed during cleanup when stale-user pruning is enabled.">Keep User Records For (days)</label><input id="retention_stale_users_days" type="number" min="1" max="3650" value="365" title="Based on last login when available, otherwise the last local record update."></div>
           </div>
-          <div class="subtle" id="retentionStatus" style="margin-top:8px;font-weight:700">Automatic cleanup is disabled.</div>
+          <div class="node-group" id="node-group-maintenance">
+            <div class="form-grid">
+              <div class="field">
+                <label for="retention_enabled" title="When enabled, pyCluster runs age-based cleanup daily using the day counts below.">Automatic Cleanup</label>
+                <div class="checkrow attention" title="Enable daily retention cleanup for spots, messages, and bulletins.">
+                  <input id="retention_enabled" type="checkbox" checked>
+                  <label for="retention_enabled">Enable age-based cleanup</label>
+                </div>
+              </div>
+              <div class="field"><label for="retention_spots_days" title="Keep DX spots for this many days before purging old rows.">Keep Spots For (days)</label><input id="retention_spots_days" type="number" min="1" max="3650" value="30" title="Older spots are removed during the daily cleanup run."></div>
+              <div class="field"><label for="retention_messages_days" title="Keep private messages for this many days before purging old rows.">Keep Messages For (days)</label><input id="retention_messages_days" type="number" min="1" max="3650" value="90" title="Older messages are removed during the daily cleanup run."></div>
+              <div class="field"><label for="retention_bulletins_days" title="Keep bulletins for this many days before purging old rows.">Keep Bulletins For (days)</label><input id="retention_bulletins_days" type="number" min="1" max="3650" value="30" title="Older bulletins are removed during the daily cleanup run."></div>
+              <div class="field">
+                <label for="retention_stale_users_enabled" title="When enabled, cleanup also removes inactive non-sysop, non-blocked local users.">Stale User Cleanup</label>
+                <div class="checkrow attention" title="Remove non-sysop, non-blocked local users whose last login or last local update is older than the threshold below.">
+                  <input id="retention_stale_users_enabled" type="checkbox">
+                  <label for="retention_stale_users_enabled">Enable stale-user pruning</label>
+                </div>
+              </div>
+              <div class="field"><label for="retention_stale_users_days" title="Inactive local users older than this threshold are removed during cleanup when stale-user pruning is enabled.">Keep User Records For (days)</label><input id="retention_stale_users_days" type="number" min="1" max="3650" value="365" title="Based on last login when available, otherwise the last local record update."></div>
+            </div>
+            <div class="subtle" id="retentionStatus" style="margin-top:8px;font-weight:700">Automatic cleanup is disabled.</div>
+            <div class="subtle" id="upgradeStatus" style="margin-top:12px;font-weight:700">Upgrade status is unavailable.</div>
+            <div class="subtle" id="upgradeMetaTag" style="margin-top:6px">Version check and migration status will appear here.</div>
+            <div class="subtle" id="upgradeMetaPath" style="margin-top:4px"></div>
+            <div class="subtle" id="upgradeMetaLog" style="margin-top:4px"></div>
+            <div class="subtle" id="upgradeMetaRemote" style="margin-top:4px"></div>
+          </div>
           <div class="actions" style="margin-top:12px">
             <button class="good" id="saveNode" title="Persist these telnet presentation settings for this node.">Save Node Settings</button>
             <button class="attention" id="runCleanup" title="Run the current age-based cleanup settings immediately.">Run Cleanup Now</button>
+            <button class="attention" id="checkUpgrade" title="Check whether a newer pyCluster version is available from the configured git remote.">Check for Upgrade</button>
+            <button class="warn" id="runUpgrade" title="Queue a root-owned upgrade job that survives restarting this console.">Run Upgrade</button>
           </div>
         </div>
       </section>
@@ -1733,92 +2006,145 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
         </header>
         <div class="body">
-          <div class="users-columns">
+          <div class="users-editor">
             <section>
-              <h3>Local Users</h3>
-              <div class="actions" style="margin-bottom:12px">
-                <input id="user_search" placeholder="Filter users by callsign, name, home node, QTH, email" title="Search local users by callsign, name, home node, QTH, or email." style="max-width:320px">
-                <button class="secondary" id="userSearch">Search</button>
-                <button class="secondary" id="userPrev">Previous</button>
-                <button class="secondary" id="userNext">Next</button>
-                <span class="subtle" id="userPageInfo">Page 1</span>
+              <div class="subtle" id="userSelectionHint" style="margin-bottom:12px">Select a user below to open the editor on the right.</div>
+              <div class="users-browser-tabs" aria-label="User browser panels">
+                <button class="subtab" data-user-browser="local">Local Users</button>
+                <button class="subtab" data-user-browser="blocked">Blocked Users</button>
+                <button class="subtab" data-user-browser="clusters">Clusters</button>
+                <button class="subtab" data-user-browser="sysops">System Operators</button>
+                <button class="subtab" data-user-browser="requests">Requests</button>
               </div>
-              <div class="tablewrap">
-                <table>
-                  <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
-                  <tbody id="userRows"><tr><td colspan="8">Loading local users...</td></tr></tbody>
-                </table>
+              <div class="users-browser-stage">
+                <div class="users-browser-panel" id="user-browser-local">
+                  <h3>Local Users</h3>
+                  <div class="tablewrap">
+                    <table>
+                      <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
+                      <tbody id="userRows"><tr><td colspan="9">Loading local users...</td></tr></tbody>
+                    </table>
+                  </div>
+                </div>
+                <div class="users-browser-panel" id="user-browser-blocked">
+                  <h3>Blocked Users</h3>
+                  <div class="tablewrap compact">
+                  <table>
+                      <thead><tr><th>Callsign</th><th>Home Node</th><th>Block Reason</th><th>Blocked</th><th>Last Path</th></tr></thead>
+                      <tbody id="blockedRows"><tr><td colspan="5">Loading blocked users...</td></tr></tbody>
+                  </table>
+                </div>
+                </div>
+                <div class="users-browser-panel" id="user-browser-clusters">
+                  <h3>Clusters</h3>
+                  <div class="tablewrap">
+                    <table>
+                      <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
+                      <tbody id="clusterRows"><tr><td colspan="9">Loading cluster peers...</td></tr></tbody>
+                    </table>
+                  </div>
+                </div>
+                <div class="users-browser-panel" id="user-browser-sysops">
+                  <h3>System Operators</h3>
+                  <div class="tablewrap compact">
+                  <table>
+                      <thead><tr><th>Callsign</th><th>Name</th><th>Email</th><th>Telnet</th><th>Web</th><th>Last Path</th></tr></thead>
+                      <tbody id="sysopRows"><tr><td colspan="6">Loading System Operators...</td></tr></tbody>
+                  </table>
+                </div>
+                </div>
+                <div class="users-browser-panel" id="user-browser-requests">
+                  <h3>Pending Registration Requests</h3>
+                  <div class="tablewrap compact">
+                  <table>
+                      <thead><tr><th>Callsign</th><th>Name</th><th>Email</th><th>Source</th><th>Requested</th><th>Actions</th></tr></thead>
+                      <tbody id="registrationRows"><tr><td colspan="6">Loading registration requests...</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+              <div class="browser-toolbar">
+                <div class="browser-search">
+                  <input id="user_search" placeholder="Filter users by callsign, name, home node, QTH, email" title="Search the current user-browser tab by callsign, name, home node, QTH, or email when available.">
+                  <button class="secondary" id="userSearch">Search</button>
+                </div>
+                <div class="browser-nav">
+                  <span class="subtle" id="userPageInfo">Page 1</span>
+                  <button class="secondary" id="userPrev">Previous</button>
+                  <button class="secondary" id="userNext">Next</button>
+                </div>
               </div>
             </section>
-            <section>
-              <h3>Blocked Users</h3>
-              <div class="subtle" style="margin-bottom:12px">Calls blocked from login on this node, including matching SSID variants.</div>
-              <div class="tablewrap compact">
-              <table>
-                  <thead><tr><th>Callsign</th><th>Home Node</th><th>Block Reason</th><th>Blocked</th><th>Last Path</th></tr></thead>
-                  <tbody id="blockedRows"><tr><td colspan="5">Loading blocked users...</td></tr></tbody>
-              </table>
-            </div>
-          </section>
-            <section>
-              <h3>System Operators</h3>
-              <div class="subtle" style="margin-bottom:12px">Compact operator list kept above the editor for quick access.</div>
-              <div class="tablewrap compact">
-              <table>
-                  <thead><tr><th>Callsign</th><th>Name</th><th>Email</th><th>Telnet</th><th>Web</th><th>Last Path</th></tr></thead>
-                  <tbody id="sysopRows"><tr><td colspan="6">Loading System Operators...</td></tr></tbody>
-              </table>
-            </div>
-          </section>
-          </div>
-          <div class="users-editor" style="margin-top:14px">
-            <section>
-              <h3 id="userEditorTitle">User Details</h3>
-              <div class="subtle" id="userMailStatus" style="margin-bottom:10px">Mail status for the selected user will appear here.</div>
-              <div class="form-grid">
+            <div class="users-editor-side">
+              <section>
+                <h3 id="userEditorTitle">User Details</h3>
+                <div class="subtle" id="userMailStatus" style="margin-bottom:10px">Mail status for the selected user will appear here.</div>
+                <div class="subtle" id="userRegistrationStatus" style="margin-bottom:10px">Registration status for the selected user will appear here.</div>
+                <div class="form-grid">
                 <div class="field"><label for="user_call" title="Local callsign record to create or edit on this node.">Callsign</label><input id="user_call" placeholder="N0CALL" title="Use the base callsign or an SSID variant for the exact local record you want to manage."></div>
-                <div class="field"><label for="user_privilege" title="Access level on this node. Blocked prevents logins for this callsign and its SSIDs. System Operator grants access to the System Operator console and sysop commands.">Access Level</label><div class="select-shell"><select id="user_privilege" title="Choose Authenticated for ordinary local accounts, Non-Authenticated for local users without password-based authentication, Blocked to prevent logins for this callsign and its SSIDs, or System Operator for privileged operators on this node."><option value="">Non-Authenticated</option><option value="user">Authenticated</option><option value="sysop">System Operator</option><option value="blocked">Blocked</option></select></div></div>
                 <div class="field"><label for="user_name" title="Operator name shown in local account details for this callsign.">Name (QRA)</label><input id="user_name" placeholder="Operator name" title="Friendly operator name stored for this local callsign record."></div>
                 <div class="field"><label for="user_qth" title="Operator location for this local callsign record.">Location (QTH)</label><input id="user_qth" placeholder="Location" title="Human-readable location used for local operator details on this node."></div>
                 <div class="field"><label for="user_grid" title="Grid square for this local user record.">Grid Square</label><input id="user_grid" placeholder="FN31PR" title="Maidenhead grid square for this local user record."></div>
                 <div class="field"><label for="user_email" title="Optional contact email for this local callsign record.">Email</label><input id="user_email" placeholder="operator@example.org" title="Optional contact address used for local account details and future federation/contact features."></div>
                 <div class="field"><label for="user_password" title="Change or set the local password for this callsign. Enter CLEAR to remove it.">Password</label><input id="user_password" type="password" placeholder="Change/Set or CLEAR to clear" title="Set or change the local password for this callsign. Enter CLEAR and then Set Password to remove it."></div>
                 <div class="field"><label for="user_home_node" title="Authoritative home node for this callsign. This maps to set/homenode.">Home Node</label><input id="user_home_node" placeholder="N0CALL-1" title="The home node is the source of truth for this callsign and will be used by future federation features."></div>
-                <div class="field"><label for="user_mfa_email_otp" title="Optional per-user override for email OTP MFA. Default follows the node-wide MFA policy.">Email MFA Override</label><div class="select-shell"><select id="user_mfa_email_otp" title="Use Default to follow node policy, Required to always require email OTP for this user, or Off to exempt this user."><option value="default">Default</option><option value="required">Required</option><option value="off">Off</option></select></div></div>
                 <div class="field"><label for="user_node_family" title="Use this only for node-to-node records. It controls trusted cluster-peer login behavior and password bypass.">Cluster Node Family</label><div class="select-shell"><select id="user_node_family" title="Leave this unset for normal people. Set a cluster node family only for sysop-managed node records such as DXSpider, DxNet, AR-Cluster, CLX, or pyCluster."><option value="">Not a cluster peer</option><option value="pycluster">pyCluster</option><option value="dxspider">DXSpider</option><option value="dxnet">DxNet</option><option value="arcluster">AR-Cluster</option><option value="clx">CLX</option></select></div></div>
                 <div class="field span2"><label for="user_block_reason" title="Short operator notes for this local user. If Access Level is Blocked, this text is also shown as the block reason.">Notes / Block Reason</label><input id="user_block_reason" maxlength="80" placeholder="General notes or a block reason" title="Keep this brief. It can hold general notes for the local user, and if Access Level is Blocked it will also be shown as the block reason."></div>
-              </div>
-              <div class="actions" style="margin-top:12px">
-                <button class="good" id="newUser">New User</button>
-                <button id="saveUser">Save User</button>
-                <button class="special" id="saveUserPassword">Set Password</button>
-                <button class="warn" id="deleteUser" disabled>Remove User</button>
-                <button class="attention" id="sendMfaTest">Send MFA Test Email</button>
-                <button class="attention" id="resetUserMfa">Reset MFA</button>
-              </div>
-            </section>
-            <section>
-              <h3>Access Matrix</h3>
-              <div class="subtle" style="margin-bottom:8px">Per-user channel and posting policy for the selected local callsign.</div>
-              <div class="tablewrap">
-                <table>
-                  <thead><tr><th>Capability</th><th>TELNET</th><th>WEB</th></tr></thead>
-                  <tbody>
-                    <tr><td title="Whether this callsign may log in through that interface.">Login</td><td><input id="access_telnet_login" type="checkbox" title="Allow telnet login for this callsign."></td><td><input id="access_web_login" type="checkbox" title="Allow public web login for this callsign."></td></tr>
-                    <tr><td title="Whether this callsign may post DX spots through that interface.">Spots</td><td><input id="access_telnet_spots" type="checkbox" title="Allow DX spot posting over telnet."></td><td><input id="access_web_spots" type="checkbox" title="Allow DX spot posting from the public web UI."></td></tr>
-                    <tr><td title="Whether this callsign may send chat-style traffic through that interface.">Chat</td><td><input id="access_telnet_chat" type="checkbox" title="Allow chat posting over telnet."></td><td><input id="access_web_chat" type="checkbox" title="Allow chat posting from the public web UI."></td></tr>
-                    <tr><td title="Whether this callsign may send announce traffic through that interface.">Announce</td><td><input id="access_telnet_announce" type="checkbox" title="Allow announce posting over telnet."></td><td><input id="access_web_announce" type="checkbox" title="Allow announce posting from the public web UI."></td></tr>
-                    <tr><td title="Whether this callsign may send WX traffic through that interface.">WX</td><td><input id="access_telnet_wx" type="checkbox" title="Allow WX posting over telnet."></td><td><input id="access_web_wx" type="checkbox" title="Allow WX posting from the public web UI."></td></tr>
-                    <tr><td title="Whether this callsign may send WCY traffic through that interface.">WCY</td><td><input id="access_telnet_wcy" type="checkbox" title="Allow WCY posting over telnet."></td><td><input id="access_web_wcy" type="checkbox" title="Allow WCY posting from the public web UI."></td></tr>
-                    <tr><td title="Whether this callsign may send WWV traffic through that interface.">WWV</td><td><input id="access_telnet_wwv" type="checkbox" title="Allow WWV posting over telnet."></td><td><input id="access_web_wwv" type="checkbox" title="Allow WWV posting from the public web UI."></td></tr>
-                  </tbody>
-                </table>
-              </div>
-              <div class="actions" style="margin-top:12px">
-                <button class="good" id="accessAll">Add All</button>
-                <button class="warn" id="accessNone">Remove All</button>
-              </div>
-            </section>
+                </div>
+                <div class="users-actionbar">
+                  <div class="users-action-group">
+                    <button class="good" id="newUser">New User</button>
+                    <button id="saveUser">Save User</button>
+                    <button class="special" id="saveUserPassword">Set Password</button>
+                    <button class="warn" id="deleteUser" disabled>Remove User</button>
+                  </div>
+                  <div class="users-action-group">
+                    <button class="attention" id="sendVerification">Send Verification</button>
+                    <button class="attention" id="sendMfaTest">Send MFA Test Email</button>
+                    <button class="attention" id="resetUserMfa">Reset MFA</button>
+                  </div>
+                </div>
+              </section>
+              <section>
+                <h3>Access Matrix</h3>
+                <div class="subtle" style="margin-bottom:8px">Per-user channel and posting policy for the selected local callsign.</div>
+                <div class="form-grid" style="margin-bottom:12px">
+                  <div class="field"><label for="user_privilege" title="Access level on this node. Blocked prevents logins for this callsign and its SSIDs. System Operator grants access to the System Operator console and sysop commands.">Access Level</label><div class="select-shell"><select id="user_privilege" title="Choose Authenticated for ordinary local accounts, Non-Authenticated for local users without password-based authentication, Blocked to prevent logins for this callsign and its SSIDs, or System Operator for privileged operators on this node."><option value="">Non-Authenticated</option><option value="user">Authenticated</option><option value="sysop">System Operator</option><option value="blocked">Blocked</option></select></div></div>
+                  <div class="field"><label for="user_mfa_email_otp" title="Optional per-user override for email OTP MFA. Default follows the node-wide MFA policy.">Email MFA Override</label><div class="select-shell"><select id="user_mfa_email_otp" title="Use Default to follow node policy, Required to always require email OTP for this user, or Off to exempt this user."><option value="default">Default</option><option value="required">Required</option><option value="off">Off</option></select></div></div>
+                  <div class="field span2">
+                    <label title="Current registration state for the selected local user.">Registration State</label>
+                    <div class="users-statusrow">
+                      <div class="checkrow attention" title="Checked when this account email has been verified.">
+                        <input id="user_verified_state" type="checkbox" disabled>
+                        <label for="user_verified_state">Verified</label>
+                      </div>
+                      <div class="checkrow attention" title="Checked when this account is locked and cannot continue registration/login flows until a sysop unlocks it.">
+                        <input id="user_unlocked_state" type="checkbox" disabled>
+                        <label for="user_unlocked_state">Locked</label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="tablewrap">
+                  <table>
+                    <thead><tr><th>Capability</th><th>TELNET</th><th>WEB</th></tr></thead>
+                    <tbody>
+                      <tr><td title="Whether this callsign may log in through that interface.">Login</td><td><input id="access_telnet_login" type="checkbox" title="Allow telnet login for this callsign."></td><td><input id="access_web_login" type="checkbox" title="Allow public web login for this callsign."></td></tr>
+                      <tr><td title="Whether this callsign may post DX spots through that interface.">Spots</td><td><input id="access_telnet_spots" type="checkbox" title="Allow DX spot posting over telnet."></td><td><input id="access_web_spots" type="checkbox" title="Allow DX spot posting from the public web UI."></td></tr>
+                      <tr><td title="Whether this callsign may send chat-style traffic through that interface.">Chat</td><td><input id="access_telnet_chat" type="checkbox" title="Allow chat posting over telnet."></td><td><input id="access_web_chat" type="checkbox" title="Allow chat posting from the public web UI."></td></tr>
+                      <tr><td title="Whether this callsign may send announce traffic through that interface.">Announce</td><td><input id="access_telnet_announce" type="checkbox" title="Allow announce posting over telnet."></td><td><input id="access_web_announce" type="checkbox" title="Allow announce posting from the public web UI."></td></tr>
+                      <tr><td title="Whether this callsign may send WX traffic through that interface.">WX</td><td><input id="access_telnet_wx" type="checkbox" title="Allow WX posting over telnet."></td><td><input id="access_web_wx" type="checkbox" title="Allow WX posting from the public web UI."></td></tr>
+                      <tr><td title="Whether this callsign may send WCY traffic through that interface.">WCY</td><td><input id="access_telnet_wcy" type="checkbox" title="Allow WCY posting over telnet."></td><td><input id="access_web_wcy" type="checkbox" title="Allow WCY posting from the public web UI."></td></tr>
+                      <tr><td title="Whether this callsign may send WWV traffic through that interface.">WWV</td><td><input id="access_telnet_wwv" type="checkbox" title="Allow WWV posting over telnet."></td><td><input id="access_web_wwv" type="checkbox" title="Allow WWV posting from the public web UI."></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="actions" style="margin-top:12px">
+                  <button class="good" id="accessAll">Add All</button>
+                  <button class="warn" id="accessNone">Remove All</button>
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </section>
@@ -1834,12 +2160,12 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <div class="form-grid">
             <div class="field"><label for="peer" title="Optional filter applied to policy-drop and protocol-history views.">Peer Filter</label><input id="peer" placeholder="Peer name" title="Enter part of a peer name to narrow protocol and policy-drop views."></div>
             <div class="field"><label for="peername" title="Logical name for the peer you want to manage.">Peer Name</label><input id="peername" placeholder="Peer name" title="Used for connect, disconnect, and profile-change actions."></div>
-            <div class="field"><label for="peerdsn" title="Transport address used to open the link to this peer.">Transport Address</label><input id="peerdsn" placeholder="dxspider://host:7300?login=LOCALNODE-1&client=PEERNODE-1" title="This is the connection method, not the cluster family. Use an explicit transport such as dxspider://host:7300?login=LOCALCALL&client=PEERCALL or tcp://host:7300. Bare host:port values are not accepted. Leave this blank only for an inbound peer."></div>
-            <div class="field"><label for="peerprof" title="Cluster family/profile used once the link is established.">Cluster Family</label><input id="peerprof" placeholder="dxspider | dxnet | arcluster | clx" title="This is the peer behavior family, not the transport. For example: family dxspider with transport dxspider://host:7300?login=LOCALCALL&client=PEERCALL."></div>
-            <div class="field"><label for="peerpass" title="Optional. Use this only when the remote peer is configured to require a node password.">Peer Password (Optional)</label><input id="peerpass" name="peer_secret" type="text" placeholder="Only if the peer requires it" title="Optional. If the remote peer is configured to require a node password, set it here. pyCluster stores it in the transport DSN as a password parameter." autocomplete="off" autocapitalize="off" autocorrect="off" data-lpignore="true" data-1p-ignore="true" spellcheck="false"><div class="subtle">Some system operators from peers may require a password; please coordinate with your peer operator.</div></div>
+            <div class="field"><label for="peerdsn" title="Transport address used to open the link to this peer.">Transport Address</label><input id="peerdsn" placeholder="pycluster://host:7300?login=LOCALNODE-1&client=PEERNODE-1" title="This is the connection method, not the cluster family. Use an explicit transport such as pycluster://host:7300?login=LOCALCALL&client=PEERCALL for pyCluster peers, dxspider://host:7300?login=LOCALCALL&client=PEERCALL for DXSpider peers, or tcp://host:7300. Bare host:port values are not accepted. Leave this blank only for an inbound peer."></div>
+            <div class="field"><label for="peerprof" title="Cluster family/profile used once the link is established.">Cluster Family</label><div class="select-shell"><select id="peerprof" title="This is the peer behavior family, not the transport. For example: family pycluster with transport pycluster://host:7300?login=LOCALCALL&client=PEERCALL for pyCluster-to-pyCluster linking, or family dxspider with transport dxspider://host:7300?login=LOCALCALL&client=PEERCALL for DXSpider-style peers."><option value="pycluster">pyCluster</option><option value="dxspider">DXSpider</option><option value="dxnet">DxNet</option><option value="arcluster">AR-Cluster</option><option value="clx">CLX</option></select></div></div>
+            <div class="field"><label for="peerpass" title="Optional. Use this only when the remote peer is configured to require a node password.">Peer Password (Optional)</label><input id="peerpass" name="peer_secret" type="text" placeholder="Only if the peer requires it" title="Optional. If the remote peer is configured to require a node password, set it here. pyCluster stores it separately from the transport address and injects it only when connecting." autocomplete="off" autocapitalize="off" autocorrect="off" data-lpignore="true" data-1p-ignore="true" spellcheck="false"><div class="subtle">Some system operators from peers may require a password; please coordinate with your peer operator.</div></div>
             <div class="field">
               <label for="peerretry" title="When enabled, pyCluster will keep trying to re-establish this saved outbound peer.">Retry Automatically</label>
-              <div class="checkrow" title="Outbound peers retry with exponential backoff from 5 seconds up to 5 minutes. Inbound peers connect on their own and do not use local retry.">
+              <div class="checkrow attention" title="Outbound peers retry with exponential backoff from 5 seconds up to 5 minutes. Inbound peers connect on their own and do not use local retry.">
                 <input id="peerretry" type="checkbox" checked>
                 <label for="peerretry">Reconnect this outbound peer automatically</label>
               </div>
@@ -1848,15 +2174,15 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
           <div class="actions" style="margin-top:12px">
             <button class="attention" id="newPeer" title="Clear the editor and create a new outbound peer definition.">New Peer</button>
-            <button id="peerSave" title="Save this outbound peer target without opening the link immediately.">Save Peer</button>
+            <button class="special" id="peerSave" title="Save this outbound peer target without opening the link immediately.">Save Peer</button>
+            <button id="peerRefresh" title="Reload live peer connection details in the table below.">Refresh</button>
             <button class="good" id="pconnect" title="Create an outbound node-link connection to the selected peer DSN.">Connect</button>
             <button class="warn" id="pdisconnect" title="Disconnect the selected live peer session.">Disconnect</button>
-            <button class="special" id="reset" title="Clear policy-drop counters, optionally limited by the current peer filter.">Reset Policy Drops</button>
           </div>
           <div class="tablewrap" style="margin-top:14px">
-            <table>
-              <thead><tr><th>Peer</th><th>Role</th><th>Status</th><th>Family</th><th>Traffic</th><th>Policy Drops</th><th>Health</th></tr></thead>
-              <tbody id="peerRows"><tr><td colspan="7">Loading peers...</td></tr></tbody>
+            <table class="peer-table">
+              <thead><tr><th>Peer</th><th>Role</th><th>Status</th><th>Traffic</th><th>Health</th></tr></thead>
+              <tbody id="peerRows"><tr><td colspan="5">Loading peers...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -1866,7 +2192,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <header>
           <div>
             <h2>Protocol Health</h2>
-            <div class="subtle">Peer state, alerting, threshold controls, and history review.</div>
+            <div class="subtle">Protocol alerting, threshold controls, and history review.</div>
           </div>
         </header>
         <div class="body">
@@ -1876,31 +2202,32 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="field"><label for="pwindow" title="Time window used when evaluating protocol flap behavior.">Flap Window Seconds</label><input id="pwindow" value="300" title="Protocol state changes inside this window contribute to flap scoring."></div>
             <div class="field"><label for="phlim" title="Maximum number of protocol history rows to load into the history table.">History Limit</label><input id="phlim" value="20" title="Increase this when investigating a noisy or unstable peer."></div>
           </div>
+          <div class="card-grid protocol-glance" style="margin-top:12px">
+            <article class="card compact"><span class="label">Peers</span><strong id="protoPeers">-</strong><span class="subtle" id="protoKnown">Known: -</span></article>
+            <article class="card compact"><span class="label">Healthy</span><strong id="protoOk">-</strong><span class="subtle" id="protoUnknown">Unknown: -</span></article>
+            <article class="card compact"><span class="label">History</span><strong id="protoHistoryEvents">-</strong><span class="subtle" id="protoHistoryPeers">Peers with history: -</span></article>
+            <article class="card summary wide"><span class="label">Alerts</span><strong id="protoAlertSummary">-</strong><span class="subtle" id="protoLatestEvent">Latest event: -</span></article>
+          </div>
           <div class="actions" style="margin-top:12px">
             <button class="good" id="protoSave" title="Persist the current protocol health thresholds.">Save Thresholds</button>
             <button id="phload" title="Reload protocol history using the current peer filter and history limit.">Reload History</button>
-            <button class="special" id="phreset" title="Delete stored protocol history for the current peer filter, or for all peers if no filter is set.">Reset Proto History</button>
-          </div>
-          <div class="proto-grid" style="margin-top:14px">
-            <div class="proto-card"><label>Tracked Peers</label><strong id="protoTracked">-</strong></div>
-            <div class="proto-card"><label>Healthy</label><strong id="protoHealthy">-</strong></div>
-            <div class="proto-card"><label>Alerts</label><strong id="protoAlerts">-</strong></div>
-            <div class="proto-card"><label>Acknowledged</label><strong id="protoAcked">-</strong></div>
+            <button class="special" id="phreset" title="Delete stored protocol history for the current peer filter, or for all peers if no filter is set.">Reset Protocol History</button>
+            <button class="special" id="reset" title="Clear policy-drop counters, optionally limited by the current peer filter.">Reset Policy Drops</button>
           </div>
           <div class="split" style="margin-top:14px">
             <section>
-              <h3>Protocol Summary</h3>
+              <h3>Protocol Alerts</h3>
               <div class="tablewrap">
                 <table>
-                  <thead><tr><th>Peer</th><th>Health</th><th>Age</th><th>Changes</th><th>Flap</th><th>Last Event</th></tr></thead>
-                  <tbody id="protoRows"><tr><td colspan="6">Loading protocol summary...</td></tr></tbody>
+                  <thead><tr><th>Peer</th><th>Health</th><th>Age</th><th>Flap</th><th>Status</th></tr></thead>
+                  <tbody id="protoAlertRows"><tr><td colspan="5">Loading protocol alerts...</td></tr></tbody>
                 </table>
               </div>
-              <div class="tablewrap" style="margin-top:14px">
-                <h3>Policy Drops</h3>
+              <h3 style="margin-top:14px">Policy Drops</h3>
+              <div class="tablewrap">
                 <table>
-                  <thead><tr><th>Peer</th><th>Total</th><th>Loop Drops</th><th>Reasons</th></tr></thead>
-                  <tbody id="dropRows"><tr><td colspan="4">Loading policy drops...</td></tr></tbody>
+                  <thead><tr><th>Peer</th><th>Total</th><th>Loop</th><th>Reasons</th></tr></thead>
+                  <tbody id="policyDropRows"><tr><td colspan="4">Loading policy drops...</td></tr></tbody>
                 </table>
               </div>
             </section>
@@ -1952,51 +2279,69 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
         </header>
         <div class="body">
-          <section>
-            <h3>Runtime Stats</h3>
-            <div class="metric-grid">
-              <div class="metric"><label>Uptime</label><strong id="statUptime">-</strong></div>
-              <div class="metric"><label>Stored Spots</label><strong id="statSpots">-</strong></div>
-              <div class="metric"><label>Telnet Sessions</label><strong id="statSessions">-</strong></div>
-              <div class="metric"><label>Web Sessions</label><strong id="statWebSessions">-</strong></div>
-            </div>
-          </section>
-          <section style="margin-top:14px">
-            <h3>Recent Spots</h3>
-            <div class="tablewrap">
-              <table>
-                <thead><tr><th>Freq</th><th>DX</th><th>When</th><th>Spotter</th><th>Info</th><th>Node</th></tr></thead>
-                <tbody id="spotRows"><tr><td colspan="6">Loading spots...</td></tr></tbody>
-              </table>
-            </div>
-          </section>
-          <section style="margin-top:14px">
-            <h3>Recent Audit</h3>
-            <div class="actions" style="margin-bottom:12px">
-              <select id="auditCategory" style="max-width:220px">
-                <option value="">All Categories</option>
-                <option value="sysop">System Operator</option>
-                <option value="user">User</option>
-                <option value="config">Config</option>
-                <option value="control">Control</option>
-                <option value="connect">Connect</option>
-                <option value="disconnect">Disconnect</option>
-              </select>
-              <button class="secondary" id="auditReload">Reload</button>
-            </div>
-            <div class="tablewrap">
-              <table>
-                <thead><tr><th>When</th><th>Category</th><th>Activity</th></tr></thead>
-                <tbody id="auditRows"><tr><td colspan="3">Loading audit activity...</td></tr></tbody>
-              </table>
-            </div>
-          </section>
-          <section style="margin-top:14px">
-            <h3>Security</h3>
-            <div class="actions" style="margin:8px 0 12px">
-              <button class="secondary" id="securityReload" title="Reload recent login failures and current fail2ban bans.">Reload Security</button>
-            </div>
-            <div class="users-columns">
+          <div class="subtabs" aria-label="Telemetry panels">
+            <button class="subtab" data-telemetry-panel="overview">Overview</button>
+            <button class="subtab" data-telemetry-panel="audit">Audit</button>
+            <button class="subtab" data-telemetry-panel="security">Security</button>
+          </div>
+          <div class="subpanel" id="telemetry-panel-overview">
+            <section>
+              <h3>Runtime Stats</h3>
+              <div class="metric-grid">
+                <div class="metric"><label>Uptime</label><strong id="statUptime">-</strong></div>
+                <div class="metric"><label>Stored Spots</label><strong id="statSpots">-</strong></div>
+                <div class="metric"><label>Telnet Sessions</label><strong id="statSessions">-</strong></div>
+                <div class="metric"><label>Web Sessions</label><strong id="statWebSessions">-</strong></div>
+              </div>
+            </section>
+            <section style="margin-top:14px">
+              <h3>Recent Spots</h3>
+              <div class="tablewrap">
+                <table>
+                  <thead><tr><th>Freq</th><th>DX</th><th>When</th><th>Spotter</th><th>Info</th><th>Node</th></tr></thead>
+                  <tbody id="spotRows"><tr><td colspan="6">Loading spots...</td></tr></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+          <div class="subpanel" id="telemetry-panel-audit">
+            <section>
+              <h3>Recent Audit</h3>
+              <div class="actions" style="margin-bottom:12px">
+                <select id="auditCategory" style="max-width:220px">
+                  <option value="">All Categories</option>
+                  <option value="sysop">System Operator</option>
+                  <option value="user">User</option>
+                  <option value="config">Config</option>
+                  <option value="control">Control</option>
+                  <option value="connect">Connect</option>
+                  <option value="disconnect">Disconnect</option>
+                </select>
+                <button class="secondary" id="auditReload">Reload</button>
+              </div>
+              <div class="tablewrap">
+                <table>
+                  <thead><tr><th>When</th><th>Category</th><th>Activity</th></tr></thead>
+                  <tbody id="auditRows"><tr><td colspan="3">Loading audit activity...</td></tr></tbody>
+                </table>
+              </div>
+            </section>
+            <section style="margin-top:14px">
+              <h3>Current Bans</h3>
+              <div class="tablewrap">
+                <table>
+                  <thead><tr><th>Jail</th><th>IP</th></tr></thead>
+                  <tbody id="banRows"><tr><td colspan="2">Loading bans...</td></tr></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+          <div class="subpanel" id="telemetry-panel-security">
+            <section>
+              <h3>Security</h3>
+              <div class="actions" style="margin:8px 0 12px">
+                <button id="securityReload" title="Reload recent login failures and current fail2ban bans.">Reload Security</button>
+              </div>
               <section>
                 <h3>Recent Auth Failures</h3>
                 <div class="tablewrap">
@@ -2006,17 +2351,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   </table>
                 </div>
               </section>
-              <section>
-                <h3>Current Bans</h3>
-                <div class="tablewrap">
-                  <table>
-                    <thead><tr><th>Jail</th><th>IP</th></tr></thead>
-                    <tbody id="banRows"><tr><td colspan="2">Loading bans...</td></tr></tbody>
-                  </table>
-                </div>
-              </section>
-            </div>
-          </section>
+            </section>
+          </div>
         </div>
       </section>
     </main>
@@ -2026,11 +2362,11 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   <header>
     <div>
       <h2>System Operator Login</h2>
-      <div class="subtle">System Operator access is required to use the pyCluster system operator console.</div>
+      <div class="subtle">pyCluster System Operator Console</div>
     </div>
   </header>
   <div class="body">
-    <div class="gate-note">Sign in with a callsign that has a configured password and System Operator access on this node.</div>
+    <div class="gate-note">Use a callsign with System Operator access on this node.</div>
     <div class="form-grid">
       <div class="field">
         <label for="call" title="System Operator callsign used for operator-console authentication.">Callsign</label>
@@ -2053,9 +2389,10 @@ let webTok = '';
 let webCall = '';
 let webIsSysop = false;
 let userOffset = 0;
+let currentUserBrowser = 'local';
 let selectedUserCall = '';
 let selectedPeerName = '';
-const USER_PAGE_SIZE = 20;
+const USER_PAGE_SIZE = 5;
 const SYSOP_SESSION_KEY = 'pycluster-sysop-session';
 const API_BASE = window.location.pathname.startsWith('/sysop')
   ? '/sysop'
@@ -2084,6 +2421,73 @@ function setView(view) {
   });
   if (window.location.hash !== '#' + target) {
     history.replaceState(null, '', '#' + target);
+  }
+}
+function setNodeGroup(group) {
+  const target = String(group || 'general').toLowerCase();
+  document.querySelectorAll('.node-group').forEach((el) => {
+    el.classList.toggle('active', el.id === `node-group-${target}`);
+  });
+  document.querySelectorAll('.node-tab').forEach((el) => {
+    el.classList.toggle('active', el.dataset.nodeGroup === target);
+  });
+}
+function setTelemetryPanel(panel) {
+  const target = String(panel || 'overview').toLowerCase();
+  document.querySelectorAll('.subpanel[id^="telemetry-panel-"]').forEach((el) => {
+    el.classList.toggle('active', el.id === `telemetry-panel-${target}`);
+  });
+  document.querySelectorAll('.subtab[data-telemetry-panel]').forEach((el) => {
+    el.classList.toggle('active', el.dataset.telemetryPanel === target);
+  });
+}
+function setUserBrowserPanel(panel) {
+  const target = String(panel || 'local').toLowerCase();
+  currentUserBrowser = target;
+  document.querySelectorAll('.users-browser-panel').forEach((el) => {
+    el.classList.toggle('active', el.id === `user-browser-${target}`);
+  });
+  document.querySelectorAll('.subtab[data-user-browser]').forEach((el) => {
+    el.classList.toggle('active', el.dataset.userBrowser === target);
+  });
+  const pageInfo = byId('userPageInfo');
+  const prev = byId('userPrev');
+  const next = byId('userNext');
+  const paged = target === 'local';
+  if (pageInfo && !paged) pageInfo.textContent = 'Filtered view';
+  if (prev) prev.disabled = !paged;
+  if (next) next.disabled = !paged;
+}
+async function loadUserBrowser(panel = currentUserBrowser) {
+  const target = String(panel || currentUserBrowser || 'local').toLowerCase();
+  const userSearch = encodeURIComponent(byId('user_search').value.trim());
+  if (target === 'local') {
+    const payload = await j('/api/users?exclude_privilege=sysop&exclude_blocked=1&limit=' + USER_PAGE_SIZE + '&offset=' + encodeURIComponent(userOffset) + (userSearch ? '&search=' + userSearch : ''));
+    if (normalizeUserPage(payload || {})) {
+      await loadUserBrowser(target);
+      return;
+    }
+    setUserRows(payload || {});
+    return;
+  }
+  if (target === 'blocked') {
+    const payload = await j('/api/users?blocked=1&limit=200' + (userSearch ? '&search=' + userSearch : ''));
+    setBlockedRows(payload || {});
+    return;
+  }
+  if (target === 'clusters') {
+    const payload = await j('/api/users?clusters=1&limit=200' + (userSearch ? '&search=' + userSearch : ''));
+    setClusterRows(payload || {});
+    return;
+  }
+  if (target === 'sysops') {
+    const payload = await j('/api/users?privilege=sysop&limit=100' + (userSearch ? '&search=' + userSearch : ''));
+    setSysopRows((payload || {}).rows || []);
+    return;
+  }
+  if (target === 'requests') {
+    const payload = await j('/api/registrations?status=pending&limit=100');
+    setRegistrationRows(payload || {});
   }
 }
 function apiUrl(u) {
@@ -2257,7 +2661,7 @@ function esc(v) {
 }
 function healthBadge(v) {
   const txt = String(v || 'unknown').toLowerCase();
-  const klass = ['ok','degraded','stale','flapping'].includes(txt) ? txt : 'unknown';
+  const klass = ['ok','degraded','stale','flapping'].includes(txt) ? txt : (txt === 'disconnected' ? 'stale' : 'unknown');
   return `<span class="health ${klass}">${esc(txt)}</span>`;
 }
 function summarizeTypes(map) {
@@ -2299,8 +2703,8 @@ function fillPeerForm(peer) {
   selectedPeerName = String(data.peer || '');
   byId('peername').value = data.peer || '';
   byId('peerdsn').value = auth.dsn || '';
-  byId('peerprof').value = data.profile || 'dxspider';
-  byId('peerpass').value = auth.password || '';
+  byId('peerprof').value = data.profile || 'pycluster';
+  byId('peerpass').value = data.password || auth.password || '';
   byId('peerretry').checked = data.reconnect_enabled !== false;
   const editable = !!data.desired || !data.inbound;
   byId('peerdsn').disabled = !editable;
@@ -2315,7 +2719,7 @@ function clearPeerForm() {
   selectedPeerName = '';
   byId('peername').value = '';
   byId('peerdsn').value = '';
-  byId('peerprof').value = '';
+  byId('peerprof').value = 'pycluster';
   byId('peerpass').value = '';
   byId('peerretry').checked = true;
   byId('peerdsn').disabled = false;
@@ -2346,7 +2750,7 @@ function bindSelectablePeerRows(body, rows) {
 function setPeerRows(peers) {
   const body = byId('peerRows');
   if (!Array.isArray(peers) || !peers.length) {
-    body.innerHTML = '<tr><td colspan="7">No peers configured.</td></tr>';
+    body.innerHTML = '<tr><td colspan="5">No peers configured.</td></tr>';
     return;
   }
   body.innerHTML = peers.map((peer) => {
@@ -2368,26 +2772,42 @@ function setPeerRows(peers) {
     if (peer.last_error) {
       let errText = String(peer.last_error);
       if (errText.startsWith('unsupported transport scheme: ')) {
-        errText = `Unsupported peer address format. Use dxspider://host:7300?login=LOCALCALL&client=PEERCALL or tcp://host:7300.`;
-      } else if (errText === 'dxspider dsn requires ?login=CALL') {
-        errText = 'DXSpider transport requires a login callsign, for example ?login=LOCALNODE-1.';
-      } else if (errText === 'dxspider dsn requires ?client=PEERCALL') {
-        errText = 'DXSpider transport requires the remote node callsign, for example ?client=PEERNODE-1.';
+        errText = `Unsupported peer address format. Use pycluster://host:7300?login=LOCALCALL&client=PEERCALL, dxspider://host:7300?login=LOCALCALL&client=PEERCALL, or tcp://host:7300.`;
+      } else if (errText === 'dxspider dsn requires ?login=CALL' || errText === 'pycluster dsn requires ?login=CALL') {
+        errText = 'This transport requires a login callsign, for example ?login=LOCALNODE-1.';
+      } else if (errText === 'dxspider dsn requires ?client=PEERCALL' || errText === 'pycluster dsn requires ?client=PEERCALL') {
+        errText = 'This transport requires the remote node callsign, for example ?client=PEERNODE-1.';
       }
       err = `<div class="mini">${esc(errText)}</div>`;
     }
-    const healthText = peer.proto ? `${peer.proto.age_min >= 0 ? `${peer.proto.age_min}m since update` : 'no age data'} • last ${peer.proto.last_pc_type || 'unknown'}` : 'no protocol data';
+    const currentHealth = peer.connected === false ? 'disconnected' : (peer.proto && peer.proto.health) || 'unknown';
+    const healthText = peer.connected === false
+      ? (peer.proto
+          ? `last known ${peer.proto.health || 'unknown'}${peer.proto.age_min >= 0 ? ` • ${peer.proto.age_min}m ago` : ''}${peer.proto.last_pc_type ? ` • last ${peer.proto.last_pc_type}` : ''}`
+          : 'no protocol data')
+      : (peer.proto
+          ? `${peer.proto.age_min >= 0 ? `${peer.proto.age_min}m since update` : 'no age data'} • last ${peer.proto.last_pc_type || 'unknown'}`
+          : 'no protocol data');
+    const normalizedProfile = String(peer.profile || 'dxspider').trim().toLowerCase();
+    const normalizedTransport = transport.toLowerCase();
+    const transportMeta = transport && normalizedTransport !== normalizedProfile ? `<div class="mini">${esc(transport)}</div>` : '';
+    const pathMeta = pathHint ? `<div class="mini">${esc(pathHint)}</div>` : '';
+    const learnedVersion = String((peer.proto && (peer.proto.pc18_summary || peer.proto.pc18_software)) || '').trim();
+    const learnedVersionMeta = learnedVersion ? `<div class="mini">${esc(learnedVersion)}</div>` : '';
+    const familyMeta = `<div class="mini"><strong>${esc(String(peer.profile || 'dxspider'))}</strong> • ${esc(reconnect)}</div>`;
     return `<tr data-peer="${esc(peer.peer || '')}">
       <td><strong>${peer.peer}</strong></td>
-      <td>${esc(direction)}<div class="mini">${peer.desired ? 'configured peer' : 'observed live peer'}</div>${pathHint ? `<div class="mini">${esc((transport ? transport + ' • ' : '') + pathHint)}</div>` : ''}</td>
-      <td><strong>${status}</strong><div class="mini">${esc(statusMeta)}</div>${desired}</td>
-      <td><span class="tag">${peer.profile || 'dxspider'}</span><div class="mini">${esc(reconnect)}</div></td>
+      <td>${esc(direction)}<div class="mini">${peer.desired ? 'configured peer' : 'observed live peer'}</div>${familyMeta}${transportMeta}${pathMeta}${learnedVersionMeta}</td>
+      <td><strong>${status}</strong><div class="mini">${esc(statusMeta)}</div><div class="mini">${peer.inbound ? 'inbound link' : `retry ${esc(String(peer.retry_count || 0))} • ${esc(retry)}`}</div>${desired}${err}</td>
       <td>${frames}<div class="mini">rx ${esc(rxTypes)}</div><div class="mini">tx ${esc(txTypes)}</div></td>
-      <td>${peer.policy_dropped || 0}</td>
-      <td>${healthBadge(peer.proto && peer.proto.health)} <div class="mini">${esc(healthText)}</div><div class="mini">${peer.inbound ? 'inbound link' : `retry ${esc(String(peer.retry_count || 0))} • ${esc(retry)}`}</div><div class="mini">${queue}</div>${routeIssues}${err}</td>
+      <td>${healthBadge(currentHealth)} <div class="mini">${esc(healthText)}</div><div class="mini">${queue}</div>${routeIssues}</td>
     </tr>`;
   }).join('');
   bindSelectablePeerRows(body, peers);
+}
+async function loadPeerRows() {
+  const peers = await j('/api/peers');
+  setPeerRows(peers);
 }
 function setSpotRows(spots) {
   const body = byId('spotRows');
@@ -2469,35 +2889,44 @@ async function reloadAudit() {
   const rows = await j(path);
   setAuditRows(rows);
 }
-function setDropRows(rows) {
-  const body = byId('dropRows');
+function setProtoAlertRows(rows) {
+  const body = byId('protoAlertRows');
   if (!Array.isArray(rows) || !rows.length) {
-    body.innerHTML = '<tr><td colspan="4">No policy drops recorded.</td></tr>';
+    body.innerHTML = '<tr><td colspan="5">No active protocol alerts.</td></tr>';
     return;
   }
   body.innerHTML = rows.map((row) => {
-    const reasons = Object.entries(row.reasons || {}).map(([k,v]) => `${k}: ${v}`).join(', ') || '-';
-    return `<tr><td><strong>${esc(row.peer || '')}</strong></td><td>${esc(row.total || 0)}</td><td>${esc(row.loop_total || 0)}</td><td>${esc(reasons)}</td></tr>`;
-  }).join('');
-}
-function setProtoRows(rows) {
-  const body = byId('protoRows');
-  if (!Array.isArray(rows) || !rows.length) {
-    body.innerHTML = '<tr><td colspan="6">No protocol-tracked peers yet.</td></tr>';
-    return;
-  }
-  body.innerHTML = rows.map((row) => {
-    const last = row.last_event || {};
-    const lastTxt = last.key ? `${last.key}: ${last.from || ''} -> ${last.to || ''}` : '-';
+    let status = 'Active';
+    if (row.suppressed || String(row.health || '').toLowerCase() === 'acked') {
+      status = row.ack_epoch ? `Acknowledged at ${fmtEpoch(row.ack_epoch)}` : 'Acknowledged';
+    } else if (row.last_pc_type) {
+      status = `Last ${row.last_pc_type}`;
+    }
     return `<tr>
       <td><strong>${esc(String(row.peer || '').toUpperCase())}</strong></td>
       <td>${healthBadge(row.health)}</td>
       <td>${row.age_min >= 0 ? esc(row.age_min + 'm') : '-'}</td>
-      <td>${esc(row.change_count || 0)}</td>
       <td>${esc(row.flap_score || 0)}</td>
-      <td>${esc(lastTxt)}</td>
+      <td>${esc(status)}</td>
     </tr>`;
   }).join('');
+}
+function setProtoSummary(summary) {
+  const data = summary || {};
+  setText('protoPeers', String(data.peers ?? '-'));
+  setText('protoKnown', `Known: ${Number(data.known || 0)}`);
+  setText('protoOk', String(data.ok ?? 0));
+  setText('protoUnknown', `Unknown: ${Number(data.unknown || 0)}`);
+  setText(
+    'protoAlertSummary',
+    `${Number(data.degraded || 0)} degraded, ${Number(data.flapping || 0)} flapping, ${Number(data.stale || 0)} stale`
+  );
+  setText(
+    'protoLatestEvent',
+    data.latest_history_epoch ? `Latest event: ${fmtEpoch(data.latest_history_epoch)}` : 'Latest event: none recorded'
+  );
+  setText('protoHistoryEvents', String(data.history_events ?? 0));
+  setText('protoHistoryPeers', `Peers with history: ${Number(data.history_peers || 0)}`);
 }
 function setHistRows(rows) {
   const body = byId('histRows');
@@ -2512,6 +2941,24 @@ function setHistRows(rows) {
     <td>${esc(String(row.from || '').toUpperCase())}</td>
     <td>${esc(String(row.to || '').toUpperCase())}</td>
   </tr>`).join('');
+}
+function setPolicyDropRows(rows) {
+  const body = byId('policyDropRows');
+  if (!Array.isArray(rows) || !rows.length) {
+    body.innerHTML = '<tr><td colspan="4">No policy drops for this filter.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map((row) => {
+    const reasons = row && row.reasons && typeof row.reasons === 'object'
+      ? Object.entries(row.reasons).map(([k, v]) => `${k}: ${v}`).join(', ')
+      : '';
+    return `<tr>
+      <td><strong>${esc(String(row.peer || '').toUpperCase())}</strong></td>
+      <td>${esc(String(row.total ?? 0))}</td>
+      <td>${esc(String(row.loop_total ?? 0))}</td>
+      <td>${esc(reasons || 'none recorded')}</td>
+    </tr>`;
+  }).join('');
 }
 function fillUserForm(row) {
   const data = row || {};
@@ -2544,7 +2991,17 @@ function fillUserForm(row) {
   if (Number(data.mail_outbox_issues || 0) > 0) mailStatus += ` • delivery issues: ${Number(data.mail_outbox_issues || 0)}`;
   if (data.mail_last_error) mailStatus += ` • last error: ${data.mail_last_error}`;
   setText('userMailStatus', mailStatus);
+  let regStatus = `Principal ${data.principal_call || data.call || '-'}`;
+  regStatus += ` • state: ${data.registration_state || 'pending'}`;
+  regStatus += ` • email verified: ${data.email_verified ? 'yes' : 'no'}`;
+  if (data.email_verified_epoch) regStatus += ` • verified: ${fmtEpoch(data.email_verified_epoch)}`;
+  regStatus += ` • grace logins remaining: ${Number(data.grace_logins_remaining || 0)}`;
+  if (data.registration_locked) regStatus += ' • account locked';
+  setText('userRegistrationStatus', regStatus);
+  setRegistrationActionState(!!data.email_verified, !!data.registration_locked, true);
   setText('userEditorTitle', selectedUserCall ? `Editing ${selectedUserCall}` : 'User Details');
+  setText('userSelectionHint', selectedUserCall ? `Selected user: ${selectedUserCall}. Click any row below to load a different editor record.` : 'Select a user below to open the editor.');
+  setText('registrationSelectionHint', selectedUserCall ? `Selected user: ${selectedUserCall}. Pending requests stay here while the editor remains on the right.` : 'Approve requests here, or select an existing user from the other tabs to edit details on the right.');
   setText('saveUser', selectedUserCall ? 'Update User' : 'Save User');
   byId('deleteUser').disabled = !selectedUserCall;
 }
@@ -2563,9 +3020,19 @@ function clearUserForm(defaultCall='') {
   byId('user_password').value = '';
   applyPrivilegeDefaults('');
   setText('userMailStatus', 'Mail status for the selected user will appear here.');
+  setText('userRegistrationStatus', 'Registration status for the selected user will appear here.');
+  setText('userSelectionHint', 'Select a user below to open the editor.');
+  setText('registrationSelectionHint', 'Approve requests here, or select an existing user from the other tabs to edit details on the right.');
+  setRegistrationActionState(false, false, false);
   setText('userEditorTitle', 'User Details');
   setText('saveUser', 'Save User');
   byId('deleteUser').disabled = true;
+}
+function setRegistrationActionState(verified, locked, enabled) {
+  const verifiedState = byId('user_verified_state');
+  if (verifiedState) verifiedState.checked = !!verified;
+  const unlockedState = byId('user_unlocked_state');
+  if (unlockedState) unlockedState.checked = !!locked;
 }
 function bindSelectableRows(body, rows) {
   body.querySelectorAll('tr[data-call]').forEach((tr) => {
@@ -2585,6 +3052,14 @@ function mark(enabled, onTitle, offTitle) {
   return enabled
     ? `<span class="presence on" title="${esc(onTitle || 'Allowed')}">✓</span>`
     : `<span class="presence off" title="${esc(offTitle || 'Disabled')}">✗</span>`;
+}
+function fillerRows(count, columns) {
+  const rows = [];
+  const cols = Math.max(1, Number(columns || 1));
+  for (let i = 0; i < count; i += 1) {
+    rows.push('<tr class="filler">' + Array.from({length: cols}, () => '<td>&nbsp;</td>').join('') + '</tr>');
+  }
+  return rows;
 }
 function fmtAgeEpoch(epoch) {
   if (!epoch) return '—';
@@ -2621,14 +3096,15 @@ function setSysopRows(rows) {
     body.innerHTML = '<tr><td colspan="6">No System Operators registered yet.</td></tr>';
     return;
   }
-  body.innerHTML = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
+  const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
     <td><strong>${esc(row.call || '')}</strong></td>
     <td>${esc(row.display_name || '-')}</td>
     <td>${esc(row.email || '-')}</td>
     <td>${seenText(!!row.telnet_online, String(row.last_login_peer || '').toLowerCase().startsWith('sysop-web') ? 0 : row.last_login_epoch, 'Telnet session active now', `Last telnet login${row.last_login_peer ? ` via ${row.last_login_peer}` : ''}`)}</td>
     <td>${seenText(!!row.web_online, String(row.last_login_peer || '').toLowerCase().startsWith('sysop-web') ? row.last_login_epoch : 0, 'System Operator web session active now', `Last System Operator web login${row.last_login_peer ? ` via ${row.last_login_peer}` : ''}`)}</td>
     <td>${esc(row.last_login_peer || '-')}</td>
-  </tr>`).join('');
+  </tr>`);
+  body.innerHTML = rendered.concat(fillerRows(Math.max(0, USER_PAGE_SIZE - rendered.length), 6)).join('');
   bindSelectableRows(body, rows);
 }
 function collectAccessMatrix() {
@@ -2678,6 +3154,21 @@ function applyPrivilegeDefaults(privilege) {
 function setUserRows(payload) {
   setRegistryRows('userRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No local users match this filter.');
 }
+function normalizeUserPage(payload) {
+  const total = Number((payload && payload.total) || 0);
+  const offset = Number((payload && payload.offset) || 0);
+  const limit = Math.max(1, Number((payload && payload.limit) || USER_PAGE_SIZE));
+  if (total <= 0) {
+    if (offset !== 0) {
+      userOffset = 0;
+      return true;
+    }
+    return false;
+  }
+  if (offset < total) return false;
+  userOffset = Math.max(0, (Math.ceil(total / limit) - 1) * limit);
+  return true;
+}
 function setBlockedRows(payload) {
   const body = byId('blockedRows');
   const rows = Array.isArray(payload && payload.rows) ? payload.rows : [];
@@ -2685,14 +3176,62 @@ function setBlockedRows(payload) {
     body.innerHTML = '<tr><td colspan="5">No blocked users match this filter.</td></tr>';
     return;
   }
-  body.innerHTML = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
+  const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
     <td><strong>${esc(row.call || '')}</strong></td>
     <td>${esc(row.home_node || '-')}</td>
     <td>${esc(row.blocked_reason || 'Blocked by local policy')}</td>
     <td>${esc(fmtEpoch(row.updated_epoch))}</td>
     <td>${esc(row.last_login_peer || '-')}</td>
-  </tr>`).join('');
+  </tr>`);
+  body.innerHTML = rendered.concat(fillerRows(Math.max(0, USER_PAGE_SIZE - rendered.length), 5)).join('');
   bindSelectableRows(body, rows);
+}
+function setClusterRows(payload) {
+  setRegistryRows('clusterRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No cluster-peer records match this filter.');
+}
+function setRegistrationRows(payload) {
+  const body = byId('registrationRows');
+  const rows = Array.isArray(payload && payload.rows) ? payload.rows : [];
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="6">No pending registration requests.</td></tr>';
+    return;
+  }
+  const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
+    <td><strong>${esc(row.call || '')}</strong></td>
+    <td>${esc(row.display_name || '-')}</td>
+    <td title="${esc(row.note || '')}">${esc(row.email || '-')}</td>
+    <td>${esc(row.source || '-')}</td>
+    <td>${esc(fmtEpoch(row.requested_epoch))}</td>
+    <td>
+      <button class="good reg-approve" data-call="${esc(row.call || '')}">Approve</button>
+      <button class="warn reg-deny" data-call="${esc(row.call || '')}">Deny</button>
+    </td>
+  </tr>`);
+  body.innerHTML = rendered.concat(fillerRows(Math.max(0, USER_PAGE_SIZE - rendered.length), 6)).join('');
+  body.querySelectorAll('button.reg-approve').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const call = btn.dataset.call || '';
+      try {
+        await j('/api/registrations/approve', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
+        say('Registration approved for ' + call + '.');
+        await load();
+      } catch (err) {
+        say('Approving registration failed: ' + errText(err), false);
+      }
+    });
+  });
+  body.querySelectorAll('button.reg-deny').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const call = btn.dataset.call || '';
+      try {
+        await j('/api/registrations/deny', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
+        say('Registration denied for ' + call + '.');
+        await load();
+      } catch (err) {
+        say('Denying registration failed: ' + errText(err), false);
+      }
+    });
+  });
 }
 function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText) {
   const body = byId(bodyId);
@@ -2709,7 +3248,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
     body.innerHTML = `<tr><td colspan="9">${esc(emptyText)}</td></tr>`;
     return;
   }
-  body.innerHTML = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
+  const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
     <td><strong>${esc(row.call || '')}</strong></td>
     <td><span class="tag">${esc(row.access_label || row.privilege || 'None')}</span></td>
     <td>${esc(row.home_node || '-')}</td>
@@ -2719,7 +3258,12 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
     <td>${mark(bulletinPostingEnabled(row.access), 'Chat, WX, WCY, or WWV traffic allowed on one or more channels', 'Chat and bulletin-style traffic blocked on all channels')}</td>
     <td title="${esc(row.last_login_peer || 'No recorded inbound path')}">${esc(fmtEpoch(row.last_login_epoch))}</td>
     <td>${esc(row.last_login_peer || '-')}</td>
-  </tr>`).join('');
+  </tr>`);
+  const fillers = [];
+  for (let i = rendered.length; i < USER_PAGE_SIZE; i += 1) {
+    fillers.push('<tr class="filler"><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>');
+  }
+  body.innerHTML = rendered.concat(fillers).join('');
   bindSelectableRows(body, rows);
 }
 function fillNodeForm(data) {
@@ -2729,6 +3273,9 @@ function fillNodeForm(data) {
   });
   byId('show_status_after_login').checked = !!data.show_status_after_login;
   byId('require_password').checked = !!data.require_password;
+  byId('registration_required').checked = !!data.registration_required;
+  byId('verified_email_required_for_web').checked = !!data.verified_email_required_for_web;
+  byId('verified_email_required_for_telnet').checked = !!data.verified_email_required_for_telnet;
   byId('smtp_starttls').checked = !!data.smtp_starttls;
   byId('smtp_use_ssl').checked = !!data.smtp_use_ssl;
   byId('mfa_enabled').checked = !!data.mfa_enabled;
@@ -2746,6 +3293,7 @@ function fillNodeForm(data) {
   if (data.retention_messages_days !== undefined) byId('retention_messages_days').value = data.retention_messages_days;
   if (data.retention_bulletins_days !== undefined) byId('retention_bulletins_days').value = data.retention_bulletins_days;
   if (data.retention_stale_users_days !== undefined) byId('retention_stale_users_days').value = data.retention_stale_users_days;
+  if (data.initial_grace_logins !== undefined) byId('initial_grace_logins').value = data.initial_grace_logins;
   const lastRun = Number(data.retention_last_run_epoch || 0);
   let status = byId('retention_enabled').checked ? 'Automatic cleanup is enabled.' : 'Automatic cleanup is disabled.';
   if (byId('retention_stale_users_enabled').checked) {
@@ -2780,42 +3328,66 @@ function fillNodeForm(data) {
   setDatasetPill('navCty', 'CTY.DAT', cty);
   setDatasetPill('navWpx', 'wpxloc.raw', wpxloc);
 }
+function renderUpgradeStatus(payload) {
+  const status = (payload && payload.status) || {};
+  const availability = (payload && payload.availability) || {};
+  const migrations = Array.isArray(payload && payload.migrations) ? payload.migrations : [];
+  let lead = 'Upgrade status is unavailable.';
+  if (status.state === 'running') {
+    lead = `Upgrade is running for ${status.requested_by || 'unknown requester'}.`;
+  } else if (status.state === 'complete') {
+    lead = `Last upgrade completed successfully at ${fmtEpoch(status.finished_at_epoch || 0)}.`;
+  } else if (status.state === 'failed') {
+    lead = `Last upgrade failed at ${fmtEpoch(status.finished_at_epoch || 0)}.`;
+  } else if (availability.available) {
+    lead = `Upgrade available: pyCluster ${availability.available_version}.`;
+  } else if (availability.remote_checked) {
+    lead = `No newer upgrade is available. Current version is ${availability.current_version || '-'}.`;
+  } else {
+    lead = `Current version is ${availability.current_version || '-'}. Remote upgrade status is unavailable.`;
+  }
+  setText('upgradeStatus', lead);
+  const tags = [];
+  if (availability.latest_remote_tag) tags.push(`Latest remote tag: ${availability.latest_remote_tag}`);
+  if (availability.latest_local_tag) tags.push(`Latest local tag: ${availability.latest_local_tag}`);
+  setText('upgradeMetaTag', tags.join(' • ') || 'No upgrade metadata is available.');
+  setText('upgradeMetaPath', migrations.length ? `Upgrade path: ${migrations.join(', ')}` : '');
+  setText('upgradeMetaLog', status.log_path ? `Log: ${status.log_path}` : '');
+  setText('upgradeMetaRemote', availability.remote_error ? `Remote check note: ${availability.remote_error}` : '');
+  const runBtn = byId('runUpgrade');
+  if (runBtn) runBtn.disabled = status.state === 'running';
+}
 async function load() {
   const peer = encodeURIComponent(byId('peer').value.trim());
   const lim = parseInt(byId('phlim').value.trim(), 10) || 20;
-  const userSearch = encodeURIComponent(byId('user_search').value.trim());
   const results = await Promise.allSettled([
     j('/api/stats'),
     j('/api/spots?limit=20'),
     j('/api/peers'),
-    j('/api/policydrop' + (peer ? '?peer=' + peer : '')),
     j('/api/proto/summary'),
-    j('/api/proto/acks'),
+    j('/api/proto/alerts?include_acked=1' + (peer ? '&peer=' + peer : '')),
     j('/api/proto/history' + (peer ? '?peer=' + peer + '&' : '?') + 'limit=' + encodeURIComponent(lim)),
     j('/api/proto/thresholds'),
+    j('/api/policydrop' + (peer ? '?peer=' + peer : '')),
     j('/api/node/presentation'),
+    j('/api/upgrade/status'),
     j('/api/audit?limit=20'),
     j('/api/security?limit=20'),
-    j('/api/users?privilege=sysop&limit=100'),
-    j('/api/users?exclude_privilege=sysop&exclude_blocked=1&limit=' + USER_PAGE_SIZE + '&offset=' + encodeURIComponent(userOffset) + (userSearch ? '&search=' + userSearch : '')),
-    j('/api/users?blocked=1&limit=200' + (userSearch ? '&search=' + userSearch : '')),
   ]);
 
   const [
     statsRes,
     spotsRes,
     peersRes,
-    dropRes,
-    protoRes,
-    protoAcksRes,
+    protoSummaryRes,
+    protoAlertsRes,
     histRes,
     thresholdsRes,
+    policyDropRes,
     nodeUiRes,
+    upgradeRes,
     auditRes,
     securityRes,
-    sysopsRes,
-    usersRes,
-    blockedRes,
   ] = results;
 
   const failures = results.filter((r) => r.status === 'rejected');
@@ -2835,18 +3407,8 @@ async function load() {
 
   if (spotsRes.status === 'fulfilled') setSpotRows(spotsRes.value);
   if (peersRes.status === 'fulfilled') setPeerRows(peersRes.value);
-  if (dropRes.status === 'fulfilled') setDropRows(dropRes.value);
-  if (protoRes.status === 'fulfilled') {
-    const protoSummary = protoRes.value;
-    setProtoRows(protoSummary);
-    setText('protoTracked', String(Array.isArray(protoSummary) ? protoSummary.length : 0));
-    setText('protoHealthy', String(Array.isArray(protoSummary) ? protoSummary.filter((r) => String(r.health || '').toLowerCase() === 'ok').length : 0));
-    setText('protoAlerts', String(Array.isArray(protoSummary) ? protoSummary.filter((r) => ['degraded','stale','flapping'].includes(String(r.health || '').toLowerCase())).length : 0));
-  }
-  if (protoAcksRes.status === 'fulfilled') {
-    const protoAcks = protoAcksRes.value;
-    setText('protoAcked', String(Array.isArray(protoAcks) ? protoAcks.filter((r) => r.acked).length : 0));
-  }
+  if (protoSummaryRes.status === 'fulfilled') setProtoSummary(protoSummaryRes.value);
+  if (protoAlertsRes.status === 'fulfilled') setProtoAlertRows(protoAlertsRes.value);
   if (histRes.status === 'fulfilled') setHistRows(histRes.value);
   if (thresholdsRes.status === 'fulfilled') {
     const thresholds = thresholdsRes.value || {};
@@ -2854,16 +3416,16 @@ async function load() {
     if (thresholds.flap_score !== undefined) byId('pflap').value = thresholds.flap_score;
     if (thresholds.flap_window_secs !== undefined) byId('pwindow').value = thresholds.flap_window_secs;
   }
+  if (policyDropRes.status === 'fulfilled') setPolicyDropRows(policyDropRes.value);
   if (nodeUiRes.status === 'fulfilled') fillNodeForm(nodeUiRes.value);
   if (nodeUiRes.status === 'fulfilled') setText('navVersion', (nodeUiRes.value && nodeUiRes.value.software_version) || '-');
+  if (upgradeRes.status === 'fulfilled') renderUpgradeStatus(upgradeRes.value);
   if (auditRes.status === 'fulfilled') setAuditRows(auditRes.value);
   if (securityRes.status === 'fulfilled') {
     setAuthFailRows((securityRes.value || {}).auth_failures || []);
     setBanRows((securityRes.value || {}).bans || []);
   }
-  if (sysopsRes.status === 'fulfilled') setSysopRows((sysopsRes.value || {}).rows || []);
-  if (usersRes.status === 'fulfilled') setUserRows(usersRes.value || {});
-  if (blockedRes.status === 'fulfilled') setBlockedRows(blockedRes.value || {});
+  await loadUserBrowser(currentUserBrowser);
   setText('postingCall', webCall || '-');
 
   if (failures.length) {
@@ -2880,6 +3442,18 @@ document.querySelectorAll('.sidebar-nav a').forEach((el) => {
     ev.preventDefault();
     setView(el.dataset.view || 'node');
   });
+});
+document.querySelectorAll('.node-tab').forEach((el) => {
+  el.addEventListener('click', () => setNodeGroup(el.dataset.nodeGroup || 'general'));
+});
+document.querySelectorAll('.subtab[data-user-browser]').forEach((el) => {
+  el.addEventListener('click', async () => {
+    setUserBrowserPanel(el.dataset.userBrowser || 'local');
+    await loadUserBrowser(currentUserBrowser);
+  });
+});
+document.querySelectorAll('.subtab[data-telemetry-panel]').forEach((el) => {
+  el.addEventListener('click', () => setTelemetryPanel(el.dataset.telemetryPanel || 'overview'));
 });
 byId('auditReload').onclick = async () => {
   await reloadAudit();
@@ -2952,6 +3526,9 @@ byId('login').onclick = async () => {
     } else if (message === 'web login not allowed') {
       sayLogin('Web login is not allowed for this callsign.', false);
       say('Web login is not allowed for this callsign.', false);
+    } else if (message === 'password setup required') {
+      sayLogin('Password setup is required before System Operator login.', false);
+      say('Password setup is required before System Operator login.', false);
     } else {
       sayLogin('Login failed: ' + message, false);
       say('Login failed: ' + message, false);
@@ -2974,6 +3551,10 @@ byId('saveNode').onclick = async () => {
         login_tip: byId('login_tip').value.trim(),
         show_status_after_login: byId('show_status_after_login').checked,
         require_password: byId('require_password').checked,
+        registration_required: byId('registration_required').checked,
+        verified_email_required_for_web: byId('verified_email_required_for_web').checked,
+        verified_email_required_for_telnet: byId('verified_email_required_for_telnet').checked,
+        initial_grace_logins: parseInt(byId('initial_grace_logins').value.trim(), 10) || 5,
         smtp_host: byId('smtp_host').value.trim(),
         smtp_port: parseInt(byId('smtp_port').value.trim(), 10) || 587,
         smtp_username: byId('smtp_username').value.trim(),
@@ -3016,9 +3597,20 @@ byId('runCleanup').onclick = async () => {
   say(`Cleanup removed ${Number(removed.spots || 0)} spots, ${Number(removed.messages || 0)} messages, ${Number(removed.bulletins || 0)} bulletins, and ${Number(removed.users || 0)} users.`, !!(r && r.ok));
   await load();
 };
+byId('checkUpgrade').onclick = async () => {
+  const r = await j('/api/upgrade/status');
+  renderUpgradeStatus(r);
+  say('Upgrade status refreshed.');
+};
+byId('runUpgrade').onclick = async () => {
+  if (!window.confirm('Queue a root-owned upgrade? The System Operator console and services may restart during the process.')) return;
+  const r = await j('/api/upgrade/request', {method:'POST'});
+  say(r && r.ok ? 'Upgrade request queued.' : 'Upgrade request failed.', !!(r && r.ok));
+  await load();
+};
 byId('userSearch').onclick = async () => {
   userOffset = 0;
-  await load();
+  await loadUserBrowser(currentUserBrowser);
 };
 byId('newUser').onclick = async () => {
   clearUserForm('');
@@ -3033,11 +3625,11 @@ byId('user_privilege').onchange = () => {
 };
 byId('userPrev').onclick = async () => {
   userOffset = Math.max(0, userOffset - USER_PAGE_SIZE);
-  await load();
+  await loadUserBrowser('local');
 };
 byId('userNext').onclick = async () => {
   userOffset += USER_PAGE_SIZE;
-  await load();
+  await loadUserBrowser('local');
 };
 byId('saveUser').onclick = async () => {
   try {
@@ -3101,6 +3693,21 @@ byId('sendMfaTest').onclick = async () => {
     say('MFA test email failed: ' + errText(err), false);
   }
 };
+byId('sendVerification').onclick = async () => {
+  const call = byId('user_call').value.trim();
+  if (!call) {
+    say('A callsign is required before sending verification.', false);
+    return;
+  }
+  try {
+    const r = await j('/api/users/verification/send', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
+    if (r && r.ok && r.user) fillUserForm(r.user);
+    say(r && r.ok ? 'Verification email sent for ' + call + '.' : 'Sending verification failed.', !!(r && r.ok));
+    await load();
+  } catch (err) {
+    say('Sending verification failed: ' + errText(err), false);
+  }
+};
 byId('resetUserMfa').onclick = async () => {
   const call = byId('user_call').value.trim();
   if (!call) {
@@ -3137,22 +3744,28 @@ byId('deleteUser').onclick = async () => {
 };
 byId('pconnect').onclick = async () => {
   const peer = byId('peername').value.trim();
-  const dsn = mergePeerPassword(byId('peerdsn').value.trim(), byId('peerpass').value);
+  const dsn = byId('peerdsn').value.trim();
+  const password = byId('peerpass').value;
   const profile = byId('peerprof').value.trim();
   const reconnect = !!byId('peerretry').checked;
-  await j('/api/peer/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, profile, reconnect})});
-  const r = await j('/api/peer/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, profile})});
+  await j('/api/peer/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, password, profile, reconnect})});
+  const r = await j('/api/peer/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, password, profile})});
   say(r && r.ok ? 'Connected ' + peer + '.' : 'Peer connect failed.', !!(r && r.ok));
   await load();
 };
 byId('peerSave').onclick = async () => {
   const peer = byId('peername').value.trim();
-  const dsn = mergePeerPassword(byId('peerdsn').value.trim(), byId('peerpass').value);
+  const dsn = byId('peerdsn').value.trim();
+  const password = byId('peerpass').value;
   const profile = byId('peerprof').value.trim();
   const reconnect = !!byId('peerretry').checked;
-  const r = await j('/api/peer/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, profile, reconnect})});
+  const r = await j('/api/peer/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, password, profile, reconnect})});
   say(r && r.ok ? 'Saved peer ' + peer + '.' : 'Saving peer failed.', !!(r && r.ok));
   await load();
+};
+byId('peerRefresh').onclick = async () => {
+  await loadPeerRows();
+  say('Peer table refreshed.');
 };
 byId('newPeer').onclick = () => {
   clearPeerForm();
@@ -3219,6 +3832,9 @@ byId('phreset').onclick = async () => {
 byId('phload').onclick = load;
 applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
 setView((window.location.hash || '#node').slice(1) || 'node');
+setNodeGroup('general');
+setUserBrowserPanel('local');
+setTelemetryPanel('overview');
 if (restoreWebSession()) {
   load().catch(() => {
     clearWebSession();
@@ -3305,13 +3921,33 @@ if (restoreWebSession()) {
                     self._log_auth_failure(writer, headers, "sysop-web", call, "web_login_not_allowed")
                     await self._write_response(writer, 401, self._json({"error": "web login not allowed"}))
                     return
+                is_admin_candidate = False if special_sysop else await self._admin_privileged_call(call)
+                reg = await self.store.get_user_registry(call)
+                if not special_sysop and not is_admin_candidate and reg is None:
+                    self._log_auth_failure(writer, headers, "sysop-web", call, "registration_required")
+                    await self._write_response(writer, 403, self._json({"error": "registration required"}))
+                    return
+                if not special_sysop and not is_admin_candidate and not _has_valid_email(str(reg["email"] or "")):
+                    self._log_auth_failure(writer, headers, "sysop-web", call, "valid_email_required")
+                    await self._write_response(writer, 403, self._json({"error": "valid email required"}))
+                    return
+                if not special_sysop and not is_admin_candidate and self.config.node.verified_email_required_for_web:
+                    state, verified_epoch, _remaining = await registration_state(self.store, call)
+                    if verified_epoch <= 0 or state != "verified":
+                        self._log_auth_failure(writer, headers, "sysop-web", call, "email_verification_required")
+                        await self._write_response(writer, 403, self._json({"error": "email verification required"}))
+                        return
                 expected = await self.store.get_user_pref(call, "password")
+                if not special_sysop and (expected is None or not str(expected).strip()):
+                    self._log_auth_failure(writer, headers, "sysop-web", call, "password_setup_required")
+                    await self._write_response(writer, 403, self._json({"error": "password setup required"}))
+                    return
                 if expected is not None and str(expected).strip() and not verify_password(password, str(expected)):
                     self._log_auth_failure(writer, headers, "sysop-web", call, "bad_password")
                     await self._write_response(writer, 401, self._json({"error": "login failed"}))
                     return
                 has_real_password = expected is not None and bool(str(expected).strip())
-                is_sysop = has_real_password and verify_password(password, str(expected)) and await self._admin_privileged_call(call)
+                is_sysop = has_real_password and verify_password(password, str(expected)) and (is_admin_candidate or await self._admin_privileged_call(call))
                 if has_real_password and not is_password_hash(str(expected)) and verify_password(password, str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
                 if await self._mfa_required_for_call(call, is_sysop=is_sysop):
@@ -3440,6 +4076,10 @@ if (restoreWebSession()) {
                         "login_tip": "",
                         "show_status_after_login": "off",
                         "require_password": "on",
+                        "registration_required": "on",
+                        "verified_email_required_for_web": "on",
+                        "verified_email_required_for_telnet": "on",
+                        "initial_grace_logins": "5",
                         "smtp_host": "",
                         "smtp_port": "587",
                         "smtp_username": "",
@@ -3484,7 +4124,7 @@ if (restoreWebSession()) {
                     for key in fields:
                         if key not in payload:
                             continue
-                        if key in {"show_status_after_login", "require_password", "retention_enabled", "retention_stale_users_enabled", "smtp_starttls", "smtp_use_ssl", "mfa_enabled", "mfa_require_for_sysop", "mfa_require_for_users"}:
+                        if key in {"show_status_after_login", "require_password", "registration_required", "verified_email_required_for_web", "verified_email_required_for_telnet", "retention_enabled", "retention_stale_users_enabled", "smtp_starttls", "smtp_use_ssl", "mfa_enabled", "mfa_require_for_sysop", "mfa_require_for_users"}:
                             flag = bool(payload.get(key, False))
                             val = "on" if flag else "off"
                             if key in _CONFIG_AUTH_NODE_FIELDS:
@@ -3493,13 +4133,16 @@ if (restoreWebSession()) {
                                 smtp_updates[key[5:]] = flag
                             elif key.startswith("mfa_"):
                                 mfa_updates[key[4:]] = flag
-                        elif key in {"retention_spots_days", "retention_messages_days", "retention_bulletins_days", "retention_stale_users_days", "smtp_port", "smtp_timeout_seconds", "mfa_otp_ttl_seconds", "mfa_otp_length", "mfa_max_attempts", "mfa_resend_cooldown_seconds"}:
+                        elif key in {"initial_grace_logins", "retention_spots_days", "retention_messages_days", "retention_bulletins_days", "retention_stale_users_days", "smtp_port", "smtp_timeout_seconds", "mfa_otp_ttl_seconds", "mfa_otp_length", "mfa_max_attempts", "mfa_resend_cooldown_seconds"}:
                             try:
                                 number = int(payload.get(key, fields[key]))
                             except Exception:
                                 await self._write_response(writer, 400, self._json({"error": f"invalid {key}"}))
                                 return
-                            if key == "smtp_port":
+                            if key == "initial_grace_logins":
+                                number = max(0, min(100, number))
+                                cfg_updates[key] = number
+                            elif key == "smtp_port":
                                 number = max(1, min(65535, number))
                                 smtp_updates["port"] = number
                             elif key == "smtp_timeout_seconds":
@@ -3596,6 +4239,37 @@ if (restoreWebSession()) {
                 await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                 return
 
+            if path == "/api/upgrade/status":
+                if method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                await self._write_response(writer, 200, self._json(self._upgrade_status_json()))
+                return
+
+            if path == "/api/upgrade/request":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                current = read_upgrade_status(self._upgrade_paths.status_path)
+                if str(current.get("state", "")).strip() == "running":
+                    await self._write_response(writer, 409, self._json({"error": "upgrade already running"}))
+                    return
+                requested_by = self._web_call_from_headers(headers) or "SYSOP"
+                request = queue_upgrade_request(
+                    self._upgrade_paths.request_path,
+                    requested_by=requested_by,
+                    current_version=__version__,
+                )
+                self._audit("control", f"{requested_by} queued a system upgrade")
+                await self._write_response(writer, 200, self._json({"ok": True, "queued": True, "request": request}))
+                return
+
             if path == "/api/maintenance/cleanup":
                 if method != "POST":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
@@ -3687,9 +4361,10 @@ if (restoreWebSession()) {
                     if exclude_privilege == "admin":
                         exclude_privilege = "sysop"
                     exclude_blocked = str(q.get("exclude_blocked", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
+                    clusters_only = str(q.get("clusters", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
                     search = str(q.get("search", [""])[0]).strip()
                     blocked_only = str(q.get("blocked", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
-                    if blocked_only or exclude_privilege or exclude_blocked:
+                    if blocked_only or exclude_privilege or exclude_blocked or clusters_only:
                         rows = await self.store.list_user_registry(limit=1000, offset=0, privilege=privilege, search=search)
                         body_all = [await self._user_registry_json(r) for r in rows]
                         if exclude_privilege:
@@ -3698,6 +4373,8 @@ if (restoreWebSession()) {
                             body_all = [r for r in body_all if not bool(r.get("blocked_login"))]
                         if blocked_only:
                             body_all = [r for r in body_all if bool(r.get("blocked_login"))]
+                        if clusters_only:
+                            body_all = [r for r in body_all if str(r.get("node_family", "")).strip().lower() in {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}]
                         total = len(body_all)
                         body_rows = body_all[offset : offset + limit]
                     else:
@@ -3721,6 +4398,7 @@ if (restoreWebSession()) {
                                 "privilege": privilege,
                                 "exclude_privilege": exclude_privilege,
                                 "exclude_blocked": exclude_blocked,
+                                "clusters": clusters_only,
                                 "blocked": blocked_only,
                                 "search": search,
                             }
@@ -3733,6 +4411,7 @@ if (restoreWebSession()) {
                     call = normalize_call(str(payload.get("call", "")).strip())
                     original_base = original_call.split("-", 1)[0] if original_call else ""
                     base_call = call.split("-", 1)[0]
+                    old_row = await self.store.get_user_registry(original_call or call)
                     if not _is_valid_admin_record_call(call):
                         await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                         return
@@ -3780,6 +4459,15 @@ if (restoreWebSession()) {
                         email=str(payload.get("email", "")).strip(),
                         privilege=privilege,
                     )
+                    new_email = str(payload.get("email", "")).strip()
+                    old_email = str(old_row["email"] or "").strip() if old_row is not None else ""
+                    if new_email != old_email:
+                        await mark_email_unverified(
+                            self.store,
+                            call,
+                            now_epoch=now,
+                            grace_logins=int(self.config.node.initial_grace_logins),
+                        )
                     home_node = str(payload.get("home_node", "")).strip().upper()
                     if home_node:
                         await self.store.set_user_pref(call, "homenode", home_node, now)
@@ -3860,6 +4548,111 @@ if (restoreWebSession()) {
                     )
                     return
                 await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                return
+
+            if path == "/api/registrations":
+                if method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                limit = self._parse_limit(q, "limit", default=100, low=1, high=200)
+                offset = self._parse_limit(q, "offset", default=0, low=0, high=100000)
+                status = str(q.get("status", ["pending"])[0]).strip().lower()
+                rows = await self.store.list_registration_requests(status=status, limit=limit, offset=offset)
+                total = len(await self.store.list_registration_requests(status=status, limit=1000, offset=0))
+                body_rows = [
+                    {
+                        "call": str(row["call"] or ""),
+                        "display_name": str(row["display_name"] or ""),
+                        "home_node": str(row["home_node"] or ""),
+                        "qth": str(row["qth"] or ""),
+                        "qra": str(row["qra"] or ""),
+                        "email": str(row["email"] or ""),
+                        "note": str(row["note"] or ""),
+                        "source": str(row["source"] or ""),
+                        "email_verified": bool(int(row["email_verified"] or 0)),
+                        "status": str(row["status"] or ""),
+                        "requested_epoch": int(row["requested_epoch"] or 0),
+                        "reviewed_epoch": int(row["reviewed_epoch"] or 0),
+                        "reviewer": str(row["reviewer"] or ""),
+                        "review_note": str(row["review_note"] or ""),
+                    }
+                    for row in rows
+                ]
+                await self._write_response(writer, 200, self._json({"rows": body_rows, "total": total, "offset": offset, "limit": limit, "status": status}))
+                return
+
+            if path == "/api/registrations/approve":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                if not _is_valid_admin_record_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                req = await self.store.get_registration_request(call)
+                if req is None:
+                    await self._write_response(writer, 404, self._json({"error": "registration request not found"}))
+                    return
+                now = int(time.time())
+                await self.store.upsert_user_registry(
+                    call,
+                    now,
+                    display_name=str(req["display_name"] or ""),
+                    home_node=str(req["home_node"] or ""),
+                    qth=str(req["qth"] or ""),
+                    qra=str(req["qra"] or ""),
+                    email=str(req["email"] or ""),
+                    privilege="user",
+                )
+                if int(req["email_verified"] or 0):
+                    await mark_email_verified(self.store, call, now_epoch=now)
+                else:
+                    await mark_email_unverified(self.store, call, now_epoch=now, grace_logins=int(self.config.node.initial_grace_logins))
+                await self.store.set_registration_request_status(
+                    call,
+                    status="approved",
+                    epoch=now,
+                    reviewer=self._authorized_call(headers),
+                    review_note=str(payload.get("note", "")).strip()[:160],
+                )
+                row = await self.store.get_user_registry(call)
+                self._audit("sysop", f"{self._authorized_call(headers)} approved registration request for {call}")
+                await self._write_response(writer, 200, self._json({"ok": True, "call": call, "user": await self._user_registry_json(row) if row else {"call": call}}))
+                return
+
+            if path == "/api/registrations/deny":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                if not _is_valid_admin_record_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                req = await self.store.get_registration_request(call)
+                if req is None:
+                    await self._write_response(writer, 404, self._json({"error": "registration request not found"}))
+                    return
+                now = int(time.time())
+                await self.store.set_registration_request_status(
+                    call,
+                    status="denied",
+                    epoch=now,
+                    reviewer=self._authorized_call(headers),
+                    review_note=str(payload.get("note", "")).strip()[:160],
+                )
+                self._audit("sysop", f"{self._authorized_call(headers)} denied registration request for {call}")
+                await self._write_response(writer, 200, self._json({"ok": True, "call": call}))
                 return
 
             if path == "/api/users/delete":
@@ -3980,11 +4773,12 @@ if (restoreWebSession()) {
                     st = stats.get(name, {})
                     desired = desired_map.get(name, {})
                     desired_transport, desired_path = describe_transport_dsn(str(desired.get("dsn", "")))
+                    profile = normalize_profile(str(desired.get("profile") or st.get("profile") or "pycluster"))
                     proto = self._proto_state_for_peer(node_cfg, name, now_epoch)
                     out.append(
                         {
                             "peer": name,
-                            "profile": str(st.get("profile", desired.get("profile", "dxspider"))),
+                            "profile": profile,
                             "inbound": bool(st.get("inbound", False)),
                             "parsed_frames": int(st.get("parsed_frames", 0)),
                             "sent_frames": int(st.get("sent_frames", 0)),
@@ -4006,6 +4800,7 @@ if (restoreWebSession()) {
                             "pending_mail": int(desired.get("pending_mail", 0) or 0),
                             "route_issues": int(desired.get("route_issues", 0) or 0),
                             "dsn": str(desired.get("dsn", "")),
+                            "password": str(desired.get("password", "")),
                         }
                     )
                 await self._write_response(writer, 200, self._json(out))
@@ -4496,12 +5291,13 @@ if (restoreWebSession()) {
                 payload = self._parse_json_body(body)
                 peer = str(payload.get("peer", "")).strip()
                 dsn = str(payload.get("dsn", "")).strip()
+                password = str(payload.get("password", "")).strip()
                 profile = str(payload.get("profile", "")).strip() or "dxspider"
                 if not peer or not dsn:
                     await self._write_response(writer, 400, self._json({"error": "peer and dsn are required"}))
                     return
                 try:
-                    await self.link_connect_fn(peer, dsn, profile)
+                    await self.link_connect_fn(peer, dsn, profile, True, password)
                 except Exception as exc:
                     await self._write_response(writer, 500, self._json({"error": f"connect failed: {exc}"}))
                     return
@@ -4522,13 +5318,14 @@ if (restoreWebSession()) {
                 payload = self._parse_json_body(body)
                 peer = str(payload.get("peer", "")).strip()
                 dsn = str(payload.get("dsn", "")).strip()
+                password = str(payload.get("password", "")).strip()
                 profile = str(payload.get("profile", "")).strip() or "dxspider"
                 reconnect = bool(payload.get("reconnect", True))
                 if not peer or not dsn:
                     await self._write_response(writer, 400, self._json({"error": "peer and dsn are required"}))
                     return
                 try:
-                    await self.link_save_peer_fn(peer, dsn, profile, reconnect)
+                    await self.link_save_peer_fn(peer, dsn, profile, reconnect, password)
                 except Exception as exc:
                     await self._write_response(writer, 500, self._json({"error": f"save failed: {exc}"}))
                     return
@@ -4695,6 +5492,10 @@ if (restoreWebSession()) {
                         self._json({"error": f"{category} posting not allowed via web"}),
                     )
                     return
+                if category == "wcy":
+                    text = canonicalize_wcy_text(text) or text
+                elif category == "wwv":
+                    text = canonicalize_wwv_text(text) or text
                 scope = str(payload.get("scope", "LOCAL")).strip().upper() or "LOCAL"
                 if category != "announce":
                     scope = "LOCAL"
@@ -4746,6 +5547,129 @@ if (restoreWebSession()) {
                             "principal": base_call,
                             "challenges_cleared": cleared,
                             "user": await self._user_registry_json(row) if row else {"call": call, "mfa_email_otp": "off"},
+                        }
+                    ),
+                )
+                return
+
+            if path == "/api/users/verification/send":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                if not _is_valid_admin_record_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                base_call = call.split("-", 1)[0]
+                row = await self.store.get_user_registry(call)
+                if row is None and call != base_call:
+                    row = await self.store.get_user_registry(base_call)
+                email = str((row["email"] if row is not None else "") or "").strip()
+                if not has_valid_email(email):
+                    await self._write_response(writer, 400, self._json({"error": "valid email required"}))
+                    return
+                if not self._smtp.enabled():
+                    await self._write_response(writer, 503, self._json({"error": "verification delivery not configured"}))
+                    return
+                try:
+                    challenge_id, expires_epoch = await self._mfa.issue(call=base_call, email=email, purpose="sysop-verify")
+                except Exception:
+                    LOG.exception("sysop verification delivery failed call=%s", base_call)
+                    await self._write_response(writer, 503, self._json({"error": "verification delivery failed"}))
+                    return
+                row = await self.store.get_user_registry(call)
+                if row is None and call != base_call:
+                    row = await self.store.get_user_registry(base_call)
+                self._audit("sysop", f"{self._authorized_call(headers)} sent verification email for {base_call}")
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json(
+                        {
+                            "ok": True,
+                            "call": call,
+                            "principal": base_call,
+                            "challenge_id": challenge_id,
+                            "expires_epoch": expires_epoch,
+                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": base_call},
+                        }
+                    ),
+                )
+                return
+
+            if path == "/api/users/verification/verify":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                if not _is_valid_admin_record_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                now = int(time.time())
+                base_call = call.split("-", 1)[0]
+                await self.store.upsert_user_registry(base_call, now)
+                await mark_email_verified(self.store, base_call, now_epoch=now)
+                cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                row = await self.store.get_user_registry(call)
+                if row is None and call != base_call:
+                    row = await self.store.get_user_registry(base_call)
+                self._audit("sysop", f"{self._authorized_call(headers)} marked verified {base_call} challenges={cleared}")
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json(
+                        {
+                            "ok": True,
+                            "call": call,
+                            "principal": base_call,
+                            "challenges_cleared": cleared,
+                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": base_call},
+                        }
+                    ),
+                )
+                return
+
+            if path == "/api/users/verification/unlock":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                if not _is_valid_admin_record_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                now = int(time.time())
+                base_call = call.split("-", 1)[0]
+                await self.store.upsert_user_registry(base_call, now)
+                await self.store.delete_user_pref(base_call, "email_verified_epoch")
+                await self.store.set_user_pref(base_call, "registration_state", "pending", now)
+                await self.store.set_user_pref(base_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
+                cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                row = await self.store.get_user_registry(call)
+                if row is None and call != base_call:
+                    row = await self.store.get_user_registry(base_call)
+                self._audit("sysop", f"{self._authorized_call(headers)} unlocked registration for {base_call} challenges={cleared}")
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json(
+                        {
+                            "ok": True,
+                            "call": call,
+                            "principal": base_call,
+                            "challenges_cleared": cleared,
+                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": base_call},
                         }
                     ),
                 )

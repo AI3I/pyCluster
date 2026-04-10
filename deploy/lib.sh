@@ -11,6 +11,8 @@ PYCLUSTER_CTY_REFRESH_SERVICE_NAME="${PYCLUSTER_CTY_REFRESH_SERVICE_NAME:-pyclus
 PYCLUSTER_CTY_REFRESH_TIMER_NAME="${PYCLUSTER_CTY_REFRESH_TIMER_NAME:-pycluster-cty-refresh.timer}"
 PYCLUSTER_RETENTION_SERVICE_NAME="${PYCLUSTER_RETENTION_SERVICE_NAME:-pycluster-retention.service}"
 PYCLUSTER_RETENTION_TIMER_NAME="${PYCLUSTER_RETENTION_TIMER_NAME:-pycluster-retention.timer}"
+PYCLUSTER_UPGRADE_SERVICE_NAME="${PYCLUSTER_UPGRADE_SERVICE_NAME:-pycluster-upgrade.service}"
+PYCLUSTER_UPGRADE_PATH_NAME="${PYCLUSTER_UPGRADE_PATH_NAME:-pycluster-upgrade.path}"
 PYCLUSTER_SYSTEMD_DIR="${PYCLUSTER_SYSTEMD_DIR:-/etc/systemd/system}"
 PYCLUSTER_CONFIG_SRC="${PYCLUSTER_CONFIG_SRC:-config/pycluster.toml}"
 PYCLUSTER_CONFIG_DEST="${PYCLUSTER_CONFIG_DEST:-$PYCLUSTER_APP_DIR/config/pycluster.toml}"
@@ -37,9 +39,50 @@ log() {
   printf '[pycluster] %s\n' "$*"
 }
 
+warn() {
+  printf '[pycluster] WARNING: %s\n' "$*" >&2
+}
+
 die() {
   printf '[pycluster] ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+is_interactive_tty() {
+  [ -t 0 ] && [ -t 1 ]
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local default="${2:-}"
+  local answer="" hint=""
+  case "$default" in
+    y|Y|yes|YES) hint=" [Y/n]" ;;
+    n|N|no|NO) hint=" [y/N]" ;;
+    *) hint=" [y/n]" ;;
+  esac
+  while true; do
+    printf '%s%s ' "$prompt" "$hint"
+    IFS= read -r answer || return 1
+    answer="${answer:-$default}"
+    case "${answer,,}" in
+      y|yes) return 0 ;;
+      n|no) return 1 ;;
+    esac
+  done
+}
+
+prompt_value() {
+  local prompt="$1"
+  local default="${2:-}"
+  local answer=""
+  if [ -n "$default" ]; then
+    printf '%s [%s] ' "$prompt" "$default"
+  else
+    printf '%s ' "$prompt"
+  fi
+  IFS= read -r answer || return 1
+  printf '%s' "${answer:-$default}"
 }
 
 os_release_value() {
@@ -301,6 +344,12 @@ install_or_refresh_service() {
   install -o root -g root -m 0644 \
     "$root/deploy/systemd/pycluster-retention.timer" \
     "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_RETENTION_TIMER_NAME"
+  install -o root -g root -m 0644 \
+    "$root/deploy/systemd/pycluster-upgrade.service" \
+    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_SERVICE_NAME"
+  install -o root -g root -m 0644 \
+    "$root/deploy/systemd/pycluster-upgrade.path" \
+    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_PATH_NAME"
   systemctl daemon-reload
 }
 
@@ -356,6 +405,7 @@ enable_service() {
   systemctl enable "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null
+  systemctl enable --now "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null
 }
 
 disable_service() {
@@ -408,6 +458,10 @@ install_or_refresh_logrotate() {
   local root
   root="$(repo_root)"
   install -d -m 0755 "$PYCLUSTER_LOGROTATE_DIR"
+  if [ ! -f "$root/deploy/logrotate/pycluster" ]; then
+    echo "[pycluster] warning: logrotate template is missing; leaving existing logrotate config in place" >&2
+    return 0
+  fi
   install -o root -g root -m 0644 \
     "$root/deploy/logrotate/pycluster" \
     "$PYCLUSTER_LOGROTATE_DIR/pycluster"
@@ -500,6 +554,72 @@ run_upgrade_1_0_1() {
       --strings-template "$strings_template"
   )
   ensure_runtime_ownership
+}
+
+run_upgrade_1_0_6() {
+  (
+    cd "$PYCLUSTER_APP_DIR" &&
+    PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/upgrade_1_0_6.py \
+      --config "$PYCLUSTER_CONFIG_DEST"
+  )
+  ensure_runtime_ownership
+}
+
+maybe_run_setup_nginx() {
+  local root setup public_host sysop_host tls_mode email expose_sysop
+  local -a cmd
+  root="$(repo_root)"
+  setup="$root/deploy/setup-nginx.sh"
+  if [ ! -x "$setup" ]; then
+    warn "setup-nginx.sh is missing or not executable; leaving web listeners bound to localhost only"
+    return 0
+  fi
+
+  if ! is_interactive_tty; then
+    log "web listeners remain on localhost only (127.0.0.1:8080 and 127.0.0.1:8081) until you run deploy/setup-nginx.sh"
+    return 0
+  fi
+
+  if ! prompt_yes_no "Configure nginx reverse proxy for pyCluster now?" "y"; then
+    log "skipping nginx setup; sysop web stays on 127.0.0.1:8080 and public web stays on 127.0.0.1:8081"
+    return 0
+  fi
+
+  public_host="$(prompt_value "Public hostname for the user web UI (for example: cluster.example.net):")"
+  [ -n "$public_host" ] || die "a public hostname is required for nginx setup"
+
+  expose_sysop="n"
+  if prompt_yes_no "Expose the sysop web UI through nginx on its own hostname?" "n"; then
+    expose_sysop="y"
+    sysop_host="$(prompt_value "Sysop hostname (for example: sysop.example.net):")"
+    [ -n "$sysop_host" ] || die "a sysop hostname is required when sysop nginx exposure is enabled"
+  else
+    sysop_host=""
+  fi
+
+  tls_mode="none"
+  if prompt_yes_no "Configure HTTPS on ports 80/443 with nginx?" "y"; then
+    if prompt_yes_no "Use Let's Encrypt for TLS certificates?" "y"; then
+      tls_mode="letsencrypt"
+      email="$(prompt_value "Email address for Let's Encrypt notices:")"
+      [ -n "$email" ] || die "an email address is required for Let's Encrypt"
+    else
+      tls_mode="self-signed"
+      email=""
+    fi
+  else
+    email=""
+  fi
+
+  log "running nginx setup"
+  cmd=("$setup" --public-host "$public_host" --tls-mode "$tls_mode")
+  if [ -n "$sysop_host" ]; then
+    cmd+=(--sysop-host "$sysop_host")
+  fi
+  if [ -n "$email" ]; then
+    cmd+=(--email "$email")
+  fi
+  "${cmd[@]}"
 }
 
 show_sysop_bootstrap_note() {

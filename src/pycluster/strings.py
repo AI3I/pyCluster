@@ -45,6 +45,15 @@ class StringCatalog:
             node = node[part]
         return str(node) if isinstance(node, str) else default
 
+    def data(self, key: str, default: object = None) -> object:
+        self._reload_if_needed()
+        node: object = self._data
+        for part in key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return default
+            node = node[part]
+        return node
+
     def render(self, catalog_key: str, default: str = "", **values: object) -> str:
         template = self.get(catalog_key, default)
 

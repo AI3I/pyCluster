@@ -47,6 +47,10 @@ class NodeConfig:
     login_tip: str = "Tip: help shows commands, sh/dx shows recent spots."
     show_status_after_login: bool = True
     require_password: bool = True
+    registration_required: bool = True
+    verified_email_required_for_web: bool = True
+    verified_email_required_for_telnet: bool = True
+    initial_grace_logins: int = 5
     support_contact: str = ""
     website_url: str = ""
     prompt_template: str = "[{timestamp}] {node}{suffix}"
@@ -115,6 +119,10 @@ def node_presentation_defaults(node: NodeConfig) -> dict[str, str]:
         "login_tip": node.login_tip,
         "show_status_after_login": "on" if node.show_status_after_login else "off",
         "require_password": "on" if node.require_password else "off",
+        "registration_required": "on" if node.registration_required else "off",
+        "verified_email_required_for_web": "on" if node.verified_email_required_for_web else "off",
+        "verified_email_required_for_telnet": "on" if node.verified_email_required_for_telnet else "off",
+        "initial_grace_logins": str(int(node.initial_grace_logins)),
         "support_contact": node.support_contact,
         "website_url": node.website_url,
         "prompt_template": node.prompt_template,
@@ -179,6 +187,17 @@ def config_override_paths(path: str | Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
+def _default_wpxloc_raw_path(public_web: PublicWebConfig) -> str:
+    current = str(public_web.wpxloc_raw_path or "").strip()
+    if current:
+        return current
+    cty_path = str(public_web.cty_dat_path or "").strip()
+    if not cty_path:
+        return ""
+    cty = Path(cty_path)
+    return str(cty.with_name("wpxloc.raw"))
+
+
 def load_config(path: str | Path) -> AppConfig:
     p = Path(path)
     data = _load_toml(p)
@@ -193,6 +212,7 @@ def load_config(path: str | Path) -> AppConfig:
     telnet = TelnetConfig(**telnet_raw)
     web = WebConfig(**_load_section(data, "web"))
     public_web = PublicWebConfig(**_load_section(data, "public_web")) if "public_web" in data else PublicWebConfig()
+    public_web.wpxloc_raw_path = _default_wpxloc_raw_path(public_web)
     store = StoreConfig(**_load_section(data, "store"))
 
     qrz = QRZConfig(**_load_section(data, "qrz")) if "qrz" in data else QRZConfig()

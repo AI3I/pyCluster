@@ -265,12 +265,6 @@ name = "  Name: pyCluster"
 mode = "  Mode: DXSpider compatibility"
 version = "  Version: {value}"
 
-[show.dxqsl]
-title = "DXQSL status for {target}:"
-export_path = "  Export Path: {value}"
-import_path = "  Import Path: {value}"
-ready = "  Ready: {value}"
-
 [show.session_pref]
 value = "{label} for {target}: {value}"
 
@@ -286,8 +280,7 @@ qth = "  QTH: {value}"
 grid = "  Grid: {value}"
 home_node = "  Home Node: {value}"
 
-[show.bands]
-title = "Band plan:"
+show.bands.title = "Band plan:"
 line = "  {band:<6} {low:>8.1f}-{high:<8.1f} kHz"
 
 [session]
@@ -325,6 +318,39 @@ clear_done = "Cleared {family} filters for {target} ({scope})."
 clear_expr_usage = "Usage: clear/{label} [<call>] [input] [<slot>|all]"
 clear_expr_done = "Cleared {count} {label} filter entr{suffix} for {target} ({scope})."
 dupefile_cleared = "Duplicate spot tracking reset; removed {count} cached duplicate entr{suffix}."
+header = "Echo {echo}  Here {here}  Beep {beep}  Language {language}  Profile {profile}"
+profile = "Profile for {target} set to {profile}."
+title = "Filters for {target}"
+family = "[{family}]"
+rule = "  {action}/{family} {slot} {expr}"
+add_usage = "Usage: {action}/{family} [<call>] [input] [0-9] <pattern>"
+add_done = "{action} filter for {family} saved for {target} in slot {slot}."
+alias_usage = "Usage: {action}/{label} [<call>] [input] [<slot>|all]"
+alias_done = "{action} filter for {family} saved for {target} in slot {slot} ({label})."
+alias_echo = "{action}/{label} {target} {slot}"
+preview = "Preview:"
+preview_spots = "  show/filter test spots <freq_khz> <dx_call> <spotter> [info]"
+preview_route = "  show/filter test route <peer>"
+preview_text = "  show/filter test <announce|wcy|wwv|wx> <sender> <text>"
+preview_verbose = "  add --verbose after family to include winning rule"
+empty = "  No filters are defined."
+test_usage = "Usage: show/filter [<call>] test <spots [--verbose] <freq_khz> <dx_call> <spotter> [info] | route [--verbose] <peer> | <announce|wcy|wwv|wx> [--verbose] <sender> <text>>"
+test_spots_usage = "Usage: show/filter test spots <freq_khz> <dx_call> <spotter> [info]"
+test_route_usage = "Usage: show/filter test route <peer>"
+test_text_usage = "Usage: show/filter test {family} <sender> <text>"
+test_generic_usage = "Usage: show/filter test <spots|route|announce|wcy|wwv|wx> ..."
+test_spots_title = "Filter test for {call} (spots):"
+test_route_title = "Filter test for {call} (route):"
+test_text_title = "Filter test for {call} ({family}):"
+decision = "  Decision: {decision}"
+frequency = "  Frequency: {freq:.1f} kHz"
+dx_call = "  DX Call: {dx_call}"
+spotter = "  Spotter: {spotter}"
+info = "  Info: {info}"
+peer = "  Peer: {peer}"
+sender = "  Sender: {sender}"
+text = "  Text: {text}"
+winning_rule = "  Winning Rule: {detail}"
 
 [user]
 create_usage = "Usage: create/user <call>"
@@ -403,6 +429,10 @@ reply = "PONG {target}"
 [bulletin]
 usage = "Usage: {name} <text>"
 accepted = "{name}: accepted (local-safe)"
+wcy_usage = "Usage: wcy k=<0-9>,expk=<0-9>,a=<0-400>,r=<0-500>,sf=<65-300>,sa=<state>,gmf=<state>,au=<state>"
+wcy_accepted = "WCY accepted (local-safe)."
+wwv_usage = "Usage: wwv sf=<65-300>,a=<0-400>,k=<0-9>,<forecast text>"
+wwv_accepted = "WWV accepted (local-safe)."
 
 [links]
 connect_unavailable = "Node-link connect unavailable"
@@ -415,14 +445,12 @@ disconnect_usage = "Usage: disconnect <peer>"
 disconnect_done = "Disconnected {peer}."
 disconnect_missing = "Peer {peer} was not found."
 
-[show.links]
-row = "{peer:<12} {family:<8} {state:<5} {age:>4} {traffic:>7} {loop:>5} {last_pc:<4} {ident}"
-detail = "  Reconnect: {reconnect}  Retry Count: {retry_count}  Next Retry: {next_retry}  Mail Queue: {pending_mail}"
-route_issues = "  Route Issues: {count}"
-last_error = "  Last Error: {error}"
+show.links.row = "{peer:<12} {family:<8} {state:<5} {age:>4} {traffic:>7} {loop:>5} {last_pc:<4} {ident}"
+show.links.detail = "  Reconnect: {reconnect}  Retry Count: {retry_count}  Next Retry: {next_retry}  Mail Queue: {pending_mail}"
+show.links.route_issues = "  Route Issues: {count}"
+show.links.last_error = "  Last Error: {error}"
 
-[show.hops]
-row = "{name:<24} hop metric {hop:>2}  RX {parsed:>6}  TX {sent:>6}  policy drops {policy:>4}"
+show.hops.row = "{name:<24} hop metric {hop:>2}  RX {parsed:>6}  TX {sent:>6}  policy drops {policy:>4}"
 
 [profile]
 peer_set = "Profile for peer {peer} set to {profile}."
@@ -434,18 +462,6 @@ not_implemented = "That command is recognized, but it has not been implemented y
 keps_ok = "Keplerian elements request accepted."
 ok = "{label} completed successfully."
 disabled = "{label} is not available in pyCluster."
-
-[filters]
-header = "Echo {echo}  Here {here}  Beep {beep}  Language {language}  Profile {profile}"
-profile = "Profile for {target} set to {profile}."
-title = "Filters for {target}"
-family = "[{family}]"
-rule = "  {action}/{family} {slot} {expr}"
-add_usage = "Usage: {action}/{family} [<call>] [input] [0-9] <pattern>"
-add_done = "{action} filter for {family} saved for {target} in slot {slot}."
-alias_usage = "Usage: {action}/{label} [<call>] [input] [<slot>|all]"
-alias_done = "{action} filter for {family} saved for {target} in slot {slot} ({label})."
-alias_echo = "{action}/{label} {target} {slot}"
 
 [show.uptime]
 title = "Uptime:"
@@ -500,34 +516,31 @@ set_usage = "Usage: set/{kind} <pattern>"
 set_done = "{name} rule added: {pattern}"
 unset_done = "Removed {count} {kind} entr{suffix}."
 
-[show.var]
-item = "Variable {key} for {target}: {value}"
-item_empty = "Variable {key} is not set for {target}."
+show.var.item = "Variable {key} for {target}: {value}"
+show.var.item_empty = "Variable {key} is not set for {target}."
 
-[show.registered]
-title = "Registered user {call}"
-name = "  Name: {value}"
-address = "  Address: {value}"
-qth = "  Location (QTH): {value}"
-qra = "  Grid Square (QRA): {value}"
-email = "  Email: {value}"
-location = "  Location Detail: {value}"
-usstate = "  US State: {value}"
-privilege = "  Privilege: {value}"
-homebbs = "  Home BBS: {value}"
-homenode = "  Home Node: {value}"
-node = "  Node: {value}"
-family = "  Node Family: {value}"
-access = "  Login Access: {value}"
+show.registered.title = "Registered user {call}"
+show.registered.name = "  Name: {value}"
+show.registered.address = "  Address: {value}"
+show.registered.qth = "  Location (QTH): {value}"
+show.registered.qra = "  Grid Square (QRA): {value}"
+show.registered.email = "  Email: {value}"
+show.registered.location = "  Location Detail: {value}"
+show.registered.usstate = "  US State: {value}"
+show.registered.privilege = "  Privilege: {value}"
+show.registered.homebbs = "  Home BBS: {value}"
+show.registered.homenode = "  Home Node: {value}"
+show.registered.node = "  Node: {value}"
+show.registered.family = "  Node Family: {value}"
+show.registered.access = "  Login Access: {value}"
 uservar = "  {key}: {value}"
 last_login = "  Last Login: {value}"
 last_peer = "  Last Peer: {value}"
 
-[sysop]
-clearmfa_usage = "Usage: sysop/clearmfa <call>"
-clearmfa_done = "Email MFA reset for {principal}. Outstanding challenges cleared: {cleared}. MFA is now off."
-path_usage = "Usage: sysop/path <call|peer>"
-path_empty = "No local path record for {target}."
+sysop.clearmfa_usage = "Usage: sysop/clearmfa <call>"
+sysop.clearmfa_done = "Email MFA reset for {principal}. Outstanding challenges cleared: {cleared}. MFA is now off."
+sysop.path_usage = "Usage: sysop/path <call|peer>"
+sysop.path_empty = "No local path record for {target}."
 
 [sysop.path]
 peer_title = "Path for peer {target}:"
@@ -548,20 +561,19 @@ summary = "Saved {writes} item(s) for {call}: {prefs} preference(s) and {spots} 
 [buddy]
 unset_done = "Removed {count} buddy entr{suffix} for {call}."
 
-[user]
-set_usage = "Usage: set/user <call> [<field> <value>]"
-set_created_or_updated = "User record created or updated for {target}."
-set_privilege_denied = "set/user privilege: cannot grant above your own level"
-set_node_family_usage = "Usage: set/user <call> node_family <pycluster|dxspider|dxnet|arcluster|clx>"
-set_node_family_done = "node_family updated for {target}."
-set_field_usage = "Usage: set/user <call> [name|address|qth|qra|email|privilege|node_family] <value>"
-set_field_done = "{field} updated for {target}."
-contact_usage = "Usage: set/{field} [<call>] <value>"
-contact_done = "{field} updated for {target}."
-privilege_usage = "Usage: set/privilege [<call>] <user|op|sysop>"
-privilege_denied = "set/privilege: cannot grant above your own level"
-privilege_done = "Privilege for {target} set to {level}."
-privilege_reset = "Privilege for {target} reset to user."
+user.set_usage = "Usage: set/user <call> [<field> <value>]"
+user.set_created_or_updated = "User record created or updated for {target}."
+user.set_privilege_denied = "set/user privilege: cannot grant above your own level"
+user.set_node_family_usage = "Usage: set/user <call> node_family <pycluster|dxspider|dxnet|arcluster|clx>"
+user.set_node_family_done = "node_family updated for {target}."
+user.set_field_usage = "Usage: set/user <call> [name|address|qth|qra|email|privilege|node_family] <value>"
+user.set_field_done = "{field} updated for {target}."
+user.contact_usage = "Usage: set/{field} [<call>] <value>"
+user.contact_done = "{field} updated for {target}."
+user.privilege_usage = "Usage: set/privilege [<call>] <user|op|sysop>"
+user.privilege_denied = "set/privilege: cannot grant above your own level"
+user.privilege_done = "Privilege for {target} set to {level}."
+user.privilege_reset = "Privilege for {target} reset to user."
 
 [db]
 delkey_usage = "Usage: dbdelkey <call> <key>"
@@ -868,21 +880,20 @@ spotter = "  Spotter: {spotter}"
 via = "  Via: {source}"
 comment = "  Comment: {comment}"
 
-[show.lookup]
-usage = "Usage: show/{service} <call>"
-title = "{service} data for {target}:"
-privilege = "  Privilege: {value}"
-email = "  Email: {value}"
-address = "  Address: {value}"
-dxcc = "  DXCC: {value}"
-cq = "  CQ Zone: {value}"
-itu = "  ITU Zone: {value}"
-last_spotted = "  Last Spotted: {value}"
-frequency = "  Frequency: {freq:.1f} kHz"
-spotter = "  Spotter: {value}"
-via = "  Via: {value}"
-comment = "  Comment: {value}"
-empty = "{target}: no local {service} data."
+show.lookup.usage = "Usage: show/{service} <call>"
+show.lookup.title = "{service} data for {target}:"
+show.lookup.privilege = "  Privilege: {value}"
+show.lookup.email = "  Email: {value}"
+show.lookup.address = "  Address: {value}"
+show.lookup.dxcc = "  DXCC: {value}"
+show.lookup.cq = "  CQ Zone: {value}"
+show.lookup.itu = "  ITU Zone: {value}"
+show.lookup.last_spotted = "  Last Spotted: {value}"
+show.lookup.frequency = "  Frequency: {freq:.1f} kHz"
+show.lookup.spotter = "  Spotter: {value}"
+show.lookup.via = "  Via: {value}"
+show.lookup.comment = "  Comment: {value}"
+show.lookup.empty = "{target}: no local {service} data."
 
 [show.apropos]
 usage = "Usage: show/apropos <term>"
@@ -963,6 +974,14 @@ sfi = "  SFI: {value}"
 estimate = "  Estimated MUF3000: {value:.1f} MHz"
 header = "Date        Hour   SFI   A   K MUF3000"
 long_header = "Date        Hour   SFI   A   K MUF3000 Forecast                               Logger"
+target_missing = "No MUF path data is available for {target}."
+unavailable = "MUF estimate unavailable: set your grid square or forward/latlong first."
+using_node = "Using {node_call} Coords, consider doing a set/location or set/qra"
+rxsens = "RxSens: -128 dBM SFI:{sfi:4d}   R:{sunspots:4d}   Month: {month}   Day: {day}"
+power = "Power :   26 dBW    Distance:{distance:6.0f} km    Delay:{delay:5.1f} ms"
+location_header = "Location                       Lat / Long           Azim"
+location_row = "{name:<30.30} {coords:<18}    {azim:>3.0f}"
+dxspider_header = "UT LT  MUF Zen  1.8  3.5  7.0 10.1 14.0 18.1 21.0 24.9 28.0 50.0"
 
 [show.node]
 user_title = "User node profile: {target}"
@@ -977,6 +996,41 @@ uptime = "Uptime     : {uptime}"
 topology = "Topology:"
 topology_root = "{node_call}"
 topology_branch = "{branch}{name} [{state} {family}]"
+
+[registration]
+title = "Registration checklist for {call}:"
+intro = "Complete as much of this profile as you can. Press on with normal use if you need to come back later."
+name = "  Name: set/name <your name>"
+home_node = "  Home Node: set/homenode <your home node>"
+qth = "  QTH: set/qth <city, state or region>"
+qra = "  Grid Square: set/qra <maidenhead grid>"
+latlong = "  Coordinates: forward/latlong <latitude> <longitude>"
+email = "  Email: set/email <address>"
+password = "  Password: set/password"
+mfa = "  MFA: sign in on the web and enable Email MFA after your email is set."
+required = "Registration is required for {call}. Contact a sysop before using this node."
+request_offer = "Registration is required for {call}. Submit a registration request now? [Y/n]: "
+request_note = "Optional note for the sysop: "
+request_submitted = "Registration request submitted for {call}. A sysop will review it before login is enabled."
+valid_email_required = "A valid email address is required for {call}. Contact a sysop to update your account."
+locked = "Account {call} is locked pending email verification. Contact a sysop."
+verify_prompt = "verification code: "
+verify_sent = "A verification code has been sent to your registered email address."
+verify_failed = "Verification failed ({reason})."
+verify_remaining = "You have {remaining} login attempt(s) remaining before this account is locked."
+verify_success = "Email address verified for {call}."
+interview_title = "Let's finish your registration profile for {call}."
+interview_intro = "Press Enter to skip any question and come back later with the normal set/* commands."
+interview_name = "Name: "
+interview_home_node = "Home node: "
+interview_qth = "QTH / location: "
+interview_qra = "Grid square: "
+interview_latlong = "Coordinates (lat lon): "
+interview_email = "Email address: "
+interview_email_saved = "Email saved. It will need verification before protected login paths stay open."
+interview_mfa = "Enable email MFA now? [y/N]: "
+interview_password_note = "Password setup is still required before normal login can continue."
+interview_done = "Registration interview complete."
 
 [show.station]
 title = "Station profile for {target}:"
@@ -1057,8 +1111,7 @@ peer = "{peer}: total={total}"
 reason = "  {name}={count}"
 no_breakdown = "  (no reason breakdown)"
 
-[show.hops]
-empty = "No hop data"
+show.hops.empty = "No hop data"
 
 [show.protoconfig]
 title = "Protocol thresholds for {node_call}:"
@@ -1116,31 +1169,6 @@ latest_outbox_error = "  Latest outbox error: {error}"
 outbox_empty = "No sent messages."
 outbox_title = "Outbox:"
 outbox_row = "{id:>6} {recipient:<10} {timestamp} {status:<13} via {route:<10} {body}{extra}"
-
-[filters]
-preview = "Preview:"
-preview_spots = "  show/filter test spots <freq_khz> <dx_call> <spotter> [info]"
-preview_route = "  show/filter test route <peer>"
-preview_text = "  show/filter test <announce|wcy|wwv|wx> <sender> <text>"
-preview_verbose = "  add --verbose after family to include winning rule"
-empty = "  No filters are defined."
-test_usage = "Usage: show/filter [<call>] test <spots [--verbose] <freq_khz> <dx_call> <spotter> [info] | route [--verbose] <peer> | <announce|wcy|wwv|wx> [--verbose] <sender> <text>>"
-test_spots_usage = "Usage: show/filter test spots <freq_khz> <dx_call> <spotter> [info]"
-test_route_usage = "Usage: show/filter test route <peer>"
-test_text_usage = "Usage: show/filter test {family} <sender> <text>"
-test_generic_usage = "Usage: show/filter test <spots|route|announce|wcy|wwv|wx> ..."
-test_spots_title = "Filter test for {call} (spots):"
-test_route_title = "Filter test for {call} (route):"
-test_text_title = "Filter test for {call} ({family}):"
-decision = "  Decision: {decision}"
-frequency = "  Frequency: {freq:.1f} kHz"
-dx_call = "  DX Call: {dx_call}"
-spotter = "  Spotter: {spotter}"
-info = "  Info: {info}"
-peer = "  Peer: {peer}"
-sender = "  Sender: {sender}"
-text = "  Text: {text}"
-winning_rule = "  Winning Rule: {detail}"
 
 [show.protoalerts]
 reason_flap = "flap score {score}"
@@ -1243,47 +1271,44 @@ title = "Buddy list for {target} ({count}):"
 empty = "USDB has no entries stored locally for {target}."
 title = "USDB entries for {target} ({count}):"
 
-[show.var]
-empty = "No variables stored for {target}."
-item_empty = "Variable {key} for {target}: (none)"
-title = "Variables for {target} ({count}):"
+show.var.empty = "No variables stored for {target}."
+show.var.item_empty = "Variable {key} for {target}: (none)"
+show.var.title = "Variables for {target} ({count}):"
 
-[show.registered]
-usage = "Usage: show/registered [<call>]"
-item_empty = "Registered user {target}: (none)"
-empty = "registered: (none)"
-title = "Registered users ({count}):"
-header = "Callsign   Privilege  Home Node   Name"
+show.registered.usage = "Usage: show/registered [<call>]"
+show.registered.item_empty = "Registered user {target}: (none)"
+show.registered.empty = "registered: (none)"
+show.registered.title = "Registered users ({count}):"
+show.registered.header = "Callsign   Privilege  Home Node   Name"
 
-[sysop]
-audit_usage = "Usage: sysop/audit [<category>] [<limit>]"
-audit_title = "Sysop Audit"
-audit_title_suffix = " ({category})"
-password_usage = "Usage: sysop/password <call> <newpass>"
-password_updated = "Password updated for {target}."
-clearpassword_usage = "Usage: sysop/clearpassword <call>"
-password_cleared = "Password cleared for {target}."
-password_missing = "No password was set for {target}."
-homenode_usage = "Usage: sysop/homenode <call> <node>"
-homenode_set = "Home node for {target} set to {node}."
-blocklogin_usage = "Usage: sysop/blocklogin <call> <on|off>"
-blocklogin_on = "Login blocked for {target} and all SSIDs."
-blocklogin_off = "Login block cleared for {target}."
-showuser_usage = "Usage: sysop/showuser <call>"
-sysops_empty = "System Operators: (none)"
-sysops_title = "System Operators:"
-sysops_header = "Callsign   Node Family Home Node   Name"
-access_usage = "Usage: sysop/access <call>"
-setaccess_usage = "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>"
-setaccess_result = "{what} {state} for {target} on {scope}."
-setprompt_usage = "Usage: sysop/setprompt <prompt template>"
-setprompt_too_long = "Prompt template must be 256 characters or fewer."
-setprompt_updated = "Prompt template updated."
-services_unavailable = "Service control is not attached in this runtime."
-services_empty = "No component status available."
-services_title = "Service Status:"
-services_header = "Component   State   Detail"
-restart_usage = "Usage: sysop/restart <telnet|sysopweb|all>"
+sysop.audit_usage = "Usage: sysop/audit [<category>] [<limit>]"
+sysop.audit_title = "Sysop Audit"
+sysop.audit_title_suffix = " ({category})"
+sysop.password_usage = "Usage: sysop/password <call> <newpass>"
+sysop.password_updated = "Password updated for {target}."
+sysop.clearpassword_usage = "Usage: sysop/clearpassword <call>"
+sysop.password_cleared = "Password cleared for {target}."
+sysop.password_missing = "No password was set for {target}."
+sysop.homenode_usage = "Usage: sysop/homenode <call> <node>"
+sysop.homenode_set = "Home node for {target} set to {node}."
+sysop.blocklogin_usage = "Usage: sysop/blocklogin <call> <on|off>"
+sysop.blocklogin_on = "Login blocked for {target} and all SSIDs."
+sysop.blocklogin_off = "Login block cleared for {target}."
+sysop.showuser_usage = "Usage: sysop/showuser <call>"
+sysop.sysops_empty = "System Operators: (none)"
+sysop.sysops_title = "System Operators:"
+sysop.sysops_header = "Callsign   Node Family Home Node   Name"
+sysop.access_usage = "Usage: sysop/access <call>"
+sysop.setaccess_usage = "Usage: sysop/setaccess <call> <channel|all> <capability|all> <on|off>"
+sysop.setaccess_result = "{what} {state} for {target} on {scope}."
+sysop.setprompt_usage = "Usage: sysop/setprompt <prompt template>"
+sysop.setprompt_too_long = "Prompt template must be 256 characters or fewer."
+sysop.setprompt_updated = "Prompt template updated."
+sysop.services_unavailable = "Service control is not attached in this runtime."
+sysop.services_empty = "No component status available."
+sysop.services_title = "Service Status:"
+sysop.services_header = "Component   State   Detail"
+sysop.restart_usage = "Usage: sysop/restart <telnet|sysopweb|all>"
 
 [load]
 aliases = "Alias cache loaded: {commands} commands, {grouped} grouped, {top_level} top-level, {direct_aliases} direct aliases."
@@ -1301,25 +1326,24 @@ prefixes = "Loaded {count} observed prefix sample(s): {sample}."
 swop = "Startup commands loaded for {target}: {count} {noun}."
 usdb = "USDB loaded for {target}: {count} {noun}."
 
-[stat]
-user = "User session summary: {count} active {noun}."
-msg = "Message summary: {total} total, {unread} unread."
-msg_wire = "Message summary: total={total} unread={unread}"
-db = "Database summary: {spots} stored spot(s), {registry} registry record(s)."
-db_wire = "Database summary: spots={spots} registry={registry}"
-channel_empty = "Channel summary: peers=0 inbound=0 outbound=0 rx=0 tx=0 dropped=0 policy_drop=0"
-channel = "Channel summary: {peers} peer(s), {inbound} accepted, {outbound} dial-out, RX {rx}, TX {tx}, dropped {dropped}, policy drops {policy_drop}."
-nodeconfig = "Node configuration summary: {node} has {count} stored preference {noun}."
-pc19list_empty = "PC19 routing is not enabled for any local calls."
-pc19list = "PC19 routing enabled for {count} calls: {calls}."
-routenode_empty = "Route nodes: total=0 inbound=0 outbound=0"
-routenode = "Route nodes: {total} total, {inbound} accepted, {outbound} dial-out."
-routenode_wire = "Route nodes: total={total} inbound={inbound} outbound={outbound}"
-routeuser = "Route users: {users} active user session(s) across {peers} peer link(s)."
-routeuser_wire = "Route users: users={users} peers={peers}"
-userconfig = "User configuration summary: {call} has {count} stored preference {noun}."
-bulletin = "{name} summary: {count} stored {noun}."
-bulletin_wire = "stat/{name}: {count}"
+stat.user = "User session summary: {count} active {noun}."
+stat.msg = "Message summary: {total} total, {unread} unread."
+stat.msg_wire = "Message summary: total={total} unread={unread}"
+stat.db = "Database summary: {spots} stored spot(s), {registry} registry record(s)."
+stat.db_wire = "Database summary: spots={spots} registry={registry}"
+stat.channel_empty = "Channel summary: peers=0 inbound=0 outbound=0 rx=0 tx=0 dropped=0 policy_drop=0"
+stat.channel = "Channel summary: {peers} peer(s), {inbound} accepted, {outbound} dial-out, RX {rx}, TX {tx}, dropped {dropped}, policy drops {policy_drop}."
+stat.nodeconfig = "Node configuration summary: {node} has {count} stored preference {noun}."
+stat.pc19list_empty = "PC19 routing is not enabled for any local calls."
+stat.pc19list = "PC19 routing enabled for {count} calls: {calls}."
+stat.routenode_empty = "Route nodes: total=0 inbound=0 outbound=0"
+stat.routenode = "Route nodes: {total} total, {inbound} accepted, {outbound} dial-out."
+stat.routenode_wire = "Route nodes: total={total} inbound={inbound} outbound={outbound}"
+stat.routeuser = "Route users: {users} active user session(s) across {peers} peer link(s)."
+stat.routeuser_wire = "Route users: users={users} peers={peers}"
+stat.userconfig = "User configuration summary: {call} has {count} stored preference {noun}."
+stat.bulletin = "{name} summary: {count} stored {noun}."
+stat.bulletin_wire = "stat/{name}: {count}"
 
 [welcome.greeting]
 named = "{title}, {call}."
@@ -1339,8 +1363,7 @@ show_heading = "Show beam heading to a DXCC entity."
 show_hops = "Show hop-related routing settings."
 show_moon = "Show moon phase data for your current location."
 
-[bulletin]
-row = "{timestamp} {prefix}{sender}: {body}"
+bulletin.row = "{timestamp} {prefix}{sender}: {body}"
 
 [event]
 row = "{timestamp} {text}"
@@ -1350,8 +1373,7 @@ category_row = "{timestamp} {category}: {text}"
 indexed_row = "{index:>3} {value}"
 key_value_row = "  {key}: {value}"
 
-[control]
-event_row = "{timestamp} {text}"
+control.event_row = "{timestamp} {text}"
 
 [console]
 page_more = "... ({count} more, use explicit limit)"
@@ -1367,3 +1389,221 @@ set = "  Set: {count}"
 unset = "  Unset: {count}"
 shortcuts = "  Shortcuts: {count}"
 state = "  State: warm"
+
+[public_web.taxonomy]
+mode_order = ["CW", "WSPR", "RTTY", "FT8", "FT4", "FT2", "JS8", "JT9", "JT65", "Q65", "MSK144", "SSB", "AM", "FM", "PSK"]
+rare_entities = [
+  "North Korea", "Bouvet Island", "Peter 1 Island", "Crozet Island", "Heard Island",
+  "Macquarie Island", "Kerguelen Island", "Amsterdam & St. Paul Is.", "South Georgia Is.",
+  "South Sandwich Islands", "South Shetland Islands", "South Orkney Islands",
+  "Scarborough Reef", "Pratas Island", "Spratly Islands", "Andaman & Nicobar Is.",
+  "Lakshadweep Is.", "Navassa Island", "Desecheo Island", "Baker & Howland Is.",
+  "Johnston Island", "Palmyra & Jarvis Is.", "Kure Island", "Midway Island",
+  "Minami Torishima", "Mount Athos", "Annobon Island", "Market Reef",
+  "Willis Island", "Mellish Reef", "Chesterfield Islands", "Ducie Island",
+  "Austral Islands", "Clipperton Island", "Malpelo Island", "Juan Fernandez Islands",
+  "Easter Island", "Agalega & St. Brandon Is.", "Glorioso Islands", "Tromelin Island",
+]
+
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bFT8\b'
+value = "FT8"
+button = "FT8"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bFT4\b'
+value = "FT4"
+button = "FT4"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bFT2\b'
+value = "FT2"
+button = "FT2"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bQ65\b'
+value = "Q65"
+button = "Q65"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bMSK144\b'
+value = "MSK144"
+button = "MSK144"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bJS8\b'
+value = "JS8"
+button = "JS8"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bJT65\b'
+value = "JT65"
+button = "JT65"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bJT9\b'
+value = "JT9"
+button = "JT9"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bWSPR\b'
+value = "WSPR"
+button = "WSPR"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bRTTY\b'
+value = "RTTY"
+button = "RTTY"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bMFSK\b'
+value = "MFSK"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bOLIVIA\b'
+value = "OLIVIA"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bDOMINO(?:EX)?\b'
+value = "DOMINO"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bTHOR\b'
+value = "THOR"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bHELL(?:SCHREIBER)?\b'
+value = "HELL"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bROS\b'
+value = "ROS"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bVARA\b'
+value = "VARA"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bPACTOR\b'
+value = "PACTOR"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bWINMOR\b'
+value = "WINMOR"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bARDOP\b'
+value = "ARDOP"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bPSK\d*\b'
+value = "PSK"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bFAX\b'
+value = "FAX"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bSSTV\b'
+value = "SSTV"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bATV\b'
+value = "ATV"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bDATA\b'
+value = "DATA"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bDIGI(?:TAL)?\b'
+value = "DATA"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bCW\b'
+value = "CW"
+button = "CW"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\b(LSB|USB|SSB)\b'
+value = "SSB"
+button = "SSB"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bAM\b'
+value = "AM"
+button = "AM"
+[[public_web.taxonomy.mode_rules]]
+pattern = '\bFM\b'
+value = "FM"
+button = "FM"
+
+[[public_web.taxonomy.activity_rules]]
+pattern = '\bEME\b|\bMOONBOUNCE\b'
+value = "EME"
+button = "EME"
+[[public_web.taxonomy.activity_rules]]
+pattern = '\bSAT\b|\bSATELLITE\b'
+value = "SAT"
+button = "SAT"
+[[public_web.taxonomy.activity_rules]]
+pattern = '\bWWFF\b'
+value = "WWFF"
+button = "WWFF"
+[[public_web.taxonomy.activity_rules]]
+pattern = '\bGMA\b'
+value = "GMA"
+button = "GMA"
+[[public_web.taxonomy.activity_rules]]
+pattern = '\bSOTA\b'
+value = "SOTA"
+button = "SOTA"
+[[public_web.taxonomy.activity_rules]]
+pattern = '\bPOTA\b|\bPARKS?\b'
+value = "POTA"
+button = "POTA"
+[[public_web.taxonomy.activity_rules]]
+pattern = '\bIOTA\b'
+value = "IOTA"
+button = "IOTA"
+[[public_web.taxonomy.activity_rules]]
+pattern = '\bBOTA\b'
+value = "BOTA"
+button = "BOTA"
+[[public_web.taxonomy.activity_rules]]
+pattern = '\bLOTA\b'
+value = "LOTA"
+button = "LOTA"
+
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bcq\b|\bcqing\b|\bcalling\b|\blistening\b'
+label = "CQ"
+color = "#10b981"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bsplit\b|\bspilt\b|\bup\b|\bqsx|\bdn\b'
+label = "QSX"
+color = "#f59e0b"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bqsy\b'
+label = "QSY"
+color = "#67e8f9"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bcw\b|\bskcc\b|\bfists\b|\bhst\b'
+label = "CW"
+color = "#facc15"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\beme\b|\bmoonbounce\b'
+label = "EME"
+color = "#c084fc"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bsat\b|\bsatellite\b'
+label = "SAT"
+color = "#67e8f9"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bcontest\b|\bqso\s+party\b|\bparty\b|qp\b|\bcqww\b|\barrl\b|\bwpx\b|\bfield\s*day\b|\bwfd\b|\bfd\b|\bwas\b'
+label = "CONTEST"
+color = "#f472b6"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bdx\b|\bdistance\b'
+label = "DX"
+color = "#3b82f6"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bwwff\b'
+label = "WWFF"
+color = "#e8d44d"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bgma\b'
+label = "GMA"
+color = "#6ee7b7"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bsota\b'
+label = "SOTA"
+color = "#3fb950"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bpota\b|\bparks?\b'
+label = "POTA"
+color = "#58a6ff"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\biota\b'
+label = "IOTA"
+color = "#a78bfa"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bbota\b'
+label = "BOTA"
+color = "#f97316"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\blota\b'
+label = "LOTA"
+color = "#fde68a"

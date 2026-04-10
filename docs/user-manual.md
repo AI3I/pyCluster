@@ -270,8 +270,10 @@ The public web UI gives users a browser interface for:
 - viewing live spots
 - browsing announcements, chat, WX, WCY, and WWV bulletins
 - cluster summary
-- watch rules
-- logging in to post
+- logging in from the footer `Log In` modal
+- registration requests from the footer `Register` modal
+- watch rules after login
+- posting after login
 - editing their profile
 
 See:
@@ -282,7 +284,7 @@ In general, the public web UI is more convenient when you want:
 
 - visual filtering
 - cluster overview tables
-- watch rules and recent matches
+- watch rules and recent matches after login
 - profile editing without typing commands
 
 ## 9. Command Discovery

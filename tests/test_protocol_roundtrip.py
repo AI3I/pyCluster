@@ -27,6 +27,10 @@ def test_pc11_roundtrip() -> None:
     _roundtrip("1772323226^<- I WB3FFV-2 PC11^7225.0^K4MDI^01-Mar-2026^0000Z^LSB^KD2KW^NC7J^H97^~")
 
 
+def test_pc23_roundtrip() -> None:
+    _roundtrip("1772323240^<- I WB3FFV-2 PC23^14-Mar-2026^18^120^24^4^Moderate w/G2 -> Minor w/G1^W0MU^AI3I-16^H96^")
+
+
 def test_pc24_roundtrip() -> None:
     _roundtrip("1772323258^<- I WB3FFV-2 PC24^4X0IARC^1^H29^")
 
@@ -37,3 +41,7 @@ def test_pc50_roundtrip() -> None:
 
 def test_pc51_roundtrip() -> None:
     _roundtrip("1772323359^<- I WB3FFV-2 PC51^AI3I-15^WB3FFV-2^1^")
+
+
+def test_pc73_roundtrip() -> None:
+    _roundtrip("1772323380^<- I WB3FFV-2 PC73^14-Mar-2026^20^120^18^3^2^105^qui^maj^no^DK0WCY^AI3I-16^H96^")

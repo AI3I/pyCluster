@@ -73,12 +73,15 @@ def describe_transport_dsn(dsn: str) -> tuple[str, str]:
         return "", ""
     u = urlparse(raw)
     scheme = (u.scheme or "").lower()
-    if scheme in {"tcp", "dxspider", "spidertelnet"} and u.hostname:
+    if scheme in {"tcp", "pycluster", "dxspider", "spidertelnet"} and u.hostname:
         host = str(u.hostname)
         kind = _host_kind(host)
         host_txt = f"[{host}]" if ":" in host and not host.startswith("[") else host
         endpoint = f"{host_txt}:{u.port}" if u.port is not None else host_txt
-        mapped = "dxspider" if scheme in {"dxspider", "spidertelnet"} else "tcp"
+        if scheme == "pycluster":
+            mapped = "pycluster"
+        else:
+            mapped = "dxspider" if scheme in {"dxspider", "spidertelnet"} else "tcp"
         return mapped, f"{kind} {endpoint}"
     if scheme in {"kiss", "kiss_serial"}:
         return "kiss_serial", str(u.path or "").strip()

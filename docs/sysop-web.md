@@ -68,7 +68,34 @@ This view controls local node identity and welcome-flow presentation.
 ### Behavior Flags
 
 - `Show node status after MOTD`
-- `Require telnet passwords for users`
+- `Require telnet password on fallback paths`
+
+### Authentication
+
+- `Require registration for users`
+- `Require verified email for web`
+- `Require verified email for telnet`
+- `Registration Grace Logins`
+- `Enable MFA login challenges`
+- `Require MFA challenge for sysop logins`
+- `Require MFA challenge for user logins`
+- `MFA Issuer`
+- `OTP TTL (seconds)`
+- `OTP Length`
+- `OTP Attempts`
+- `OTP Resend Cooldown (seconds)`
+
+### Mail (SMTP)
+
+- `SMTP Host`
+- `SMTP Port`
+- `SMTP Username`
+- `SMTP Password`
+- `From Email`
+- `From Name`
+- `Use STARTTLS`
+- `Use SSL`
+- `Send MFA Test Email`
 
 ### Main Action
 
@@ -82,29 +109,15 @@ This section controls:
 
 ## Users
 
-The `Users` view is split into several operational sections.
+The `Users` view is a single workspace with a browser area above the editor.
 
-### System Operators
+Browser tabs:
 
-Shows local sysops and where they are active.
-
-Columns:
-
-- `Callsign`
-- `Name`
-- `Email`
-- `Telnet`
-- `Web`
-
-Active sessions are shown as:
-
-- `now`
-
-Recent activity is shown relatively, for example:
-
-- `19h ago`
-
-User last-login details now carry normalized inbound path information, and live peer rows include transport/path hints when pyCluster has them.
+- `Local Users`
+- `Blocked Users`
+- `Clusters`
+- `System Operators`
+- `Requests`
 
 ### User Details
 
@@ -125,9 +138,11 @@ Fields:
 Actions:
 
 - `New User`
-- `Save User`
+- `Update User`
 - `Set Password`
 - `Remove User`
+- `Send Verification`
+- `Reset MFA`
 
 Password behavior:
 
@@ -136,41 +151,22 @@ Password behavior:
 
 Access levels:
 
-- `Non-Authenticated`
-- `Authenticated`
-- `System Operator`
-- `Blocked`
+- `none`
+- `user`
+- `sysop`
+- `blocked`
 
 Default behavior by level:
 
-- `Non-Authenticated`: login, chat, WX, WCY, and WWV remain allowed by default; spot and announce posting are off until access is explicitly granted
-- `Authenticated`: normal login and posting access
-- `System Operator`: sysop login plus full administrative access
-- `Blocked`: login denied for the base callsign and matching SSIDs
+- `none`: login, chat, WX, WCY, and WWV remain allowed by default; spot and announce posting are off until access is explicitly granted
+- `user`: normal login and posting access
+- `sysop`: sysop login plus full administrative access
+- `blocked`: login denied for the base callsign and matching SSIDs
 
 If `Blocked` is selected:
 
 - login is blocked for the base callsign and matching SSIDs
 - the notes field also serves as the block reason
-
-### Advanced Node Login
-
-Collapsed advanced section for node-to-node login identity.
-
-Field:
-
-- `Cluster Node Family`
-
-Options:
-
-- `Not a cluster peer`
-- `pyCluster`
-- `DXSpider`
-- `DxNet`
-- `AR-Cluster`
-- `CLX`
-
-This should only be used for cluster-peer records, not ordinary human users.
 
 ### Access Matrix
 
@@ -200,25 +196,16 @@ This is the operational source of truth for where a user may log in and what the
 
 Explicit access-matrix overrides take precedence over the default behavior implied by the selected access level.
 
-### Blocked Users
+This section also carries:
 
-Separate full-width table for blocked local users.
+- `Access Level`
+- `Email MFA Override`
+- `Verified`
+- `Locked`
 
-Shows:
+`Verified` and `Locked` are read-only state indicators in the matrix. They are not separate editor buttons.
 
-- callsign
-- access
-- home node
-- block reason
-- blocked time
-
-Blocked users are intentionally not mixed into the ordinary local-user list.
-
-### Local Users
-
-Full-width table of ordinary local users who are not sysops and are not blocked.
-
-This section is meant to be the normal operating user view.
+The `Clusters` browser tab shows any user record with a real cluster-node family such as `pycluster` or `dxspider`.
 
 ## Peers and Links
 
@@ -256,9 +243,9 @@ Meaning:
 
 - `New Peer`
 - `Save Peer`
+- `Refresh`
 - `Connect`
 - `Disconnect`
-- `Reset Policy Drops`
 
 ### Peer Table
 
@@ -267,10 +254,15 @@ Columns:
 - `Peer`
 - `Role`
 - `Status`
-- `Family`
 - `Traffic`
-- `Policy Drops`
 - `Health`
+
+The `Role` cell now carries:
+
+- peer family
+- retry mode
+- host / transport endpoint
+- learned peer software/version when it has been seen from `PC18`
 
 This view is intended to make peer operations understandable without dropping into raw counters or logs.
 
@@ -289,27 +281,27 @@ This view focuses on peer state, alerting, and protocol history.
 
 - `Save Thresholds`
 - `Reload History`
-- `Reset Proto History`
+- `Reset Protocol History`
+- `Reset Policy Drops`
 
 ### Summary Cards
 
-- `Tracked Peers`
+- `Peers`
 - `Healthy`
+- `History`
 - `Alerts`
-- `Acknowledged`
 
 ### Main Tables
 
-#### Protocol Summary
+#### Protocol Alerts
 
 Columns:
 
 - `Peer`
 - `Health`
 - `Age`
-- `Changes`
 - `Flap`
-- `Last Event`
+- `Status`
 
 #### Policy Drops
 
@@ -399,13 +391,18 @@ Categories currently exposed:
 - `Connect`
 - `Disconnect`
 
+### Audit
+
+Includes:
+
+- `Current Bans`
+
 ### Security
 
 Includes:
 
 - `Reload Security`
 - `Recent Auth Failures`
-- `Current Bans`
 
 Recent auth failures show:
 

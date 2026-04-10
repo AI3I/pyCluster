@@ -90,6 +90,116 @@ class Pc10Message:
 
 
 @dataclass(slots=True)
+class Pc23Message:
+    date_token: str
+    hour_token: str
+    sfi: str
+    a_index: str
+    k_index: str
+    forecast: str
+    sender: str
+    source_node: str
+    hops_token: str
+    trailer: str = ""
+    raw_fields: list[str] | None = None
+
+    @classmethod
+    def from_fields(cls, fields: list[str]) -> "Pc23Message":
+        f = fields
+        get = lambda i: f[i] if i < len(f) else ""
+        return cls(
+            date_token=get(0),
+            hour_token=get(1),
+            sfi=get(2),
+            a_index=get(3),
+            k_index=get(4),
+            forecast=get(5),
+            sender=get(6),
+            source_node=get(7),
+            hops_token=get(8),
+            trailer=get(9),
+            raw_fields=list(fields),
+        )
+
+    def to_fields(self) -> list[str]:
+        if self.raw_fields is not None:
+            return list(self.raw_fields)
+        return [
+            self.date_token,
+            self.hour_token,
+            self.sfi,
+            self.a_index,
+            self.k_index,
+            self.forecast,
+            self.sender,
+            self.source_node,
+            self.hops_token,
+            self.trailer,
+        ]
+
+
+@dataclass(slots=True)
+class Pc73Message:
+    date_token: str
+    hour_token: str
+    sfi: str
+    a_index: str
+    k_index: str
+    expk: str
+    sunspots: str
+    sun_activity: str
+    geomagnetic_field: str
+    aurora: str
+    sender: str
+    source_node: str
+    hops_token: str
+    trailer: str = ""
+    raw_fields: list[str] | None = None
+
+    @classmethod
+    def from_fields(cls, fields: list[str]) -> "Pc73Message":
+        f = fields
+        get = lambda i: f[i] if i < len(f) else ""
+        return cls(
+            date_token=get(0),
+            hour_token=get(1),
+            sfi=get(2),
+            a_index=get(3),
+            k_index=get(4),
+            expk=get(5),
+            sunspots=get(6),
+            sun_activity=get(7),
+            geomagnetic_field=get(8),
+            aurora=get(9),
+            sender=get(10),
+            source_node=get(11),
+            hops_token=get(12),
+            trailer=get(13),
+            raw_fields=list(fields),
+        )
+
+    def to_fields(self) -> list[str]:
+        if self.raw_fields is not None:
+            return list(self.raw_fields)
+        return [
+            self.date_token,
+            self.hour_token,
+            self.sfi,
+            self.a_index,
+            self.k_index,
+            self.expk,
+            self.sunspots,
+            self.sun_activity,
+            self.geomagnetic_field,
+            self.aurora,
+            self.sender,
+            self.source_node,
+            self.hops_token,
+            self.trailer,
+        ]
+
+
+@dataclass(slots=True)
 class Pc28Message:
     to_node: str
     from_node: str
@@ -600,11 +710,13 @@ def serialize_wire_pc_frame(frame: WirePcFrame) -> str:
 
 def decode_typed(
     frame: PcFrame,
-) -> Pc18Message | Pc10Message | Pc28Message | Pc29Message | Pc30Message | Pc31Message | Pc32Message | Pc33Message | Pc61Message | Pc92Message | Pc93Message | Pc11Message | Pc12Message | Pc24Message | Pc50Message | Pc51Message | None:
+) -> Pc18Message | Pc10Message | Pc23Message | Pc28Message | Pc29Message | Pc30Message | Pc31Message | Pc32Message | Pc33Message | Pc61Message | Pc73Message | Pc92Message | Pc93Message | Pc11Message | Pc12Message | Pc24Message | Pc50Message | Pc51Message | None:
     if frame.pc_type == "PC18":
         return Pc18Message.from_fields(frame.payload_fields)
     if frame.pc_type == "PC10":
         return Pc10Message.from_fields(frame.payload_fields)
+    if frame.pc_type == "PC23":
+        return Pc23Message.from_fields(frame.payload_fields)
     if frame.pc_type == "PC28":
         return Pc28Message.from_fields(frame.payload_fields)
     if frame.pc_type == "PC29":
@@ -619,6 +731,8 @@ def decode_typed(
         return Pc33Message.from_fields(frame.payload_fields)
     if frame.pc_type == "PC61":
         return Pc61Message.from_fields(frame.payload_fields)
+    if frame.pc_type == "PC73":
+        return Pc73Message.from_fields(frame.payload_fields)
     if frame.pc_type == "PC92":
         return Pc92Message.from_fields(frame.payload_fields)
     if frame.pc_type == "PC93":
@@ -638,11 +752,13 @@ def decode_typed(
 
 def encode_typed(
     pc_type: str,
-    message: Pc18Message | Pc10Message | Pc28Message | Pc29Message | Pc30Message | Pc31Message | Pc32Message | Pc33Message | Pc61Message | Pc92Message | Pc93Message | Pc11Message | Pc12Message | Pc24Message | Pc50Message | Pc51Message,
+    message: Pc18Message | Pc10Message | Pc23Message | Pc28Message | Pc29Message | Pc30Message | Pc31Message | Pc32Message | Pc33Message | Pc61Message | Pc73Message | Pc92Message | Pc93Message | Pc11Message | Pc12Message | Pc24Message | Pc50Message | Pc51Message,
 ) -> list[str]:
     if pc_type == "PC18" and isinstance(message, Pc18Message):
         return message.to_fields()
     if pc_type == "PC10" and isinstance(message, Pc10Message):
+        return message.to_fields()
+    if pc_type == "PC23" and isinstance(message, Pc23Message):
         return message.to_fields()
     if pc_type == "PC28" and isinstance(message, Pc28Message):
         return message.to_fields()
@@ -657,6 +773,8 @@ def encode_typed(
     if pc_type == "PC33" and isinstance(message, Pc33Message):
         return message.to_fields()
     if pc_type == "PC61" and isinstance(message, Pc61Message):
+        return message.to_fields()
+    if pc_type == "PC73" and isinstance(message, Pc73Message):
         return message.to_fields()
     if pc_type == "PC92" and isinstance(message, Pc92Message):
         return message.to_fields()

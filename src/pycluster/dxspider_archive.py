@@ -37,8 +37,8 @@ class DxSpiderWcyRecord:
     def body(self) -> str:
         return (
             f"SFI={self.sfi} A={self.a_index} K={self.k_index} "
-            f"spots={self.sunspots} expk={self.expk} "
-            f"aurora={self.aurora} xray={self.xray} storm={self.storm}"
+            f"ExpK={self.expk} R={self.sunspots} "
+            f"SA={self.aurora} GMF={self.xray} Aurora={self.storm}"
         )
 
 
