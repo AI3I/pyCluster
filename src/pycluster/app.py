@@ -527,8 +527,6 @@ class ClusterApp:
             profile = str(row.get("profile", "dxspider")).strip().lower()
             if profile != "dxspider":
                 continue
-            if bool(row.get("inbound")):
-                continue
             try:
                 await self.node_link.send(name, WirePcFrame("PC20", [""]))
             except KeyError:
@@ -808,7 +806,7 @@ class ClusterApp:
         )
 
     async def _handle_node_link_item(self, peer_name: str, frame: WirePcFrame, typed: object | None) -> None:
-        if frame.pc_type in {"PC10", "PC11", "PC12", "PC16", "PC17", "PC18", "PC19", "PC21", "PC22", "PC23", "PC24", "PC28", "PC29", "PC30", "PC31", "PC32", "PC33", "PC50", "PC51", "PC61", "PC73", "PC93"}:
+        if frame.pc_type in {"PC10", "PC11", "PC12", "PC16", "PC17", "PC18", "PC19", "PC20", "PC21", "PC22", "PC23", "PC24", "PC28", "PC29", "PC30", "PC31", "PC32", "PC33", "PC50", "PC51", "PC61", "PC73", "PC93"}:
             await self._touch_proto_activity(peer_name, frame.pc_type)
 
         if frame.pc_type == "PC18":

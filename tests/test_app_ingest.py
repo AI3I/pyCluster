@@ -1315,8 +1315,8 @@ def test_dxspider_heartbeat_sends_pc20_and_ignores_dead_peers(tmp_path) -> None:
 
             count = await app.heartbeat_once()
 
-            assert count == 1
-            assert sent == [("peer1", "PC20", [""])]
+            assert count == 2
+            assert sent == [("peer1", "PC20", [""]), ("peer4", "PC20", [""])]
         finally:
             await app.store.close()
 
