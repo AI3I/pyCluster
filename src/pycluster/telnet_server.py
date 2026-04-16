@@ -22,7 +22,7 @@ from .ctydat import load_cty, lookup
 from .wpxloc import load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
-from .geomag import canonicalize_wcy_text, canonicalize_wwv_text, parse_wcy_text, parse_wwv_text
+from .geomag import canonicalize_wcy_text, canonicalize_wwv_text, derive_wcy_from_wwv, parse_wcy_text, parse_wwv_text
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path, normalize_recorded_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
@@ -118,7 +118,10 @@ class TelnetClusterServer:
     _TELNET_IAC = 255
     _TELNET_WILL = 251
     _TELNET_WONT = 252
+    _TELNET_DO = 253
+    _TELNET_DONT = 254
     _TELNET_ECHO = 1
+    _TELNET_SUPPRESS_GO_AHEAD = 3
     _PRIV_LEVELS: dict[str, int] = {
         "user": 0,
         "op": 1,
@@ -260,6 +263,7 @@ class TelnetClusterServer:
         self._wm7d = WM7DClient()
         self._smtp = SMTPMailer(self.config.smtp)
         self._mfa = EmailOtpManager(self.config.mfa, self._smtp.send_code, store)
+        self._telnet_option_seen: set[int] = set()
         self._cty_loaded = False
         self._wpx_loaded = False
         cty_path = self.config.public_web.cty_dat_path.strip()
@@ -319,6 +323,7 @@ class TelnetClusterServer:
         if not raw:
             return None
         if raw == b"\xff":
+            self._telnet_option_seen.add(id(reader))
             try:
                 nxt = await (asyncio.wait_for(reader.read(1), timeout=timeout) if timeout > 0 else reader.read(1))
             except asyncio.TimeoutError:
@@ -915,6 +920,12 @@ class TelnetClusterServer:
         if not ent:
             return ""
         parts: list[str] = []
+        show_us_state = bool(str(prefs.get("usstate") or "").strip())
+        if show_us_state and str(ent.name) == "United States":
+            usdb = await self.store.list_usdb_entries(dx_call)
+            state = str(usdb.get("state") or usdb.get("us_state") or "").strip().upper()
+            if state:
+                parts.append(state)
         if self._is_on_value(prefs.get("dxcq"), default=False):
             parts.append(f"CQ{ent.cq_zone}")
         if self._is_on_value(prefs.get("dxitu"), default=False):
@@ -1066,6 +1077,39 @@ class TelnetClusterServer:
                 if not await self._text_family_passes_filters(s.call, category.lower(), sender, text):
                     continue
             lead = "\r\n" if not s.async_line_open else ""
+            if category.lower() == "wcy":
+                reading = parse_wcy_text(text)
+                if reading is not None:
+                    now = datetime.now(timezone.utc)
+                    row = (
+                        f"{now.strftime('%-d-%b-%Y'):>11}   {now.strftime('%H'):>2}"
+                        f"{reading.sfi:>6}{reading.a_index:>4}{reading.k_index:>4}{reading.expk:>6}"
+                        f"{reading.sunspots:>4} {reading.sun_activity[:5]:<5} {reading.geomagnetic_field[:5]:<5}"
+                        f"{reading.aurora[:8]:>8} <{sender}>"
+                    )
+                    await self._write(
+                        s.writer,
+                        f"{lead}{self._string('show.wcy.header', 'Date        Hour   SFI   A   K Exp.K   R SA    GMF   Aurora   Logger')}\r\n{row}\r\n",
+                    )
+                    s.async_line_open = True
+                    delivered += 1
+                    continue
+            if category.lower() == "wwv":
+                reading = parse_wwv_text(text)
+                if reading is not None:
+                    now = datetime.now(timezone.utc)
+                    row = (
+                        f"{now.strftime('%-d-%b-%Y'):>11}   {now.strftime('%H'):>2}"
+                        f"{reading.sfi:>6}{reading.a_index:>4}{reading.k_index:>4} "
+                        f"{reading.forecast[:39]:<39} <{sender}>"
+                    )
+                    await self._write(
+                        s.writer,
+                        f"{lead}{self._string('show.wwv.header', 'Date        Hour   SFI   A   K Forecast                               Logger')}\r\n{row}\r\n",
+                    )
+                    s.async_line_open = True
+                    delivered += 1
+                    continue
             await self._write(s.writer, f"{lead}{prefix} {sender}: {text}\r\n")
             s.async_line_open = True
             delivered += 1
@@ -1107,17 +1151,16 @@ class TelnetClusterServer:
     async def _read_password(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> str | None:
         chars: list[str] = []
         timeout = float(self.config.telnet.idle_timeout_seconds or 0)
-        await self._set_telnet_password_echo(writer, suppress=True)
         while True:
             raw = await self._read_telnet_byte(reader, timeout)
             if raw is None:
-                await self._set_telnet_password_echo(writer, suppress=False)
+                await self._set_telnet_password_echo(reader, writer, suppress=False)
                 return None
             if raw == b"":
                 continue
             b = raw[0]
             if b in (10, 13):
-                await self._set_telnet_password_echo(writer, suppress=False)
+                await self._set_telnet_password_echo(reader, writer, suppress=False)
                 await self._write(writer, "\r\n")
                 if b == 13:
                     try:
@@ -1135,7 +1178,7 @@ class TelnetClusterServer:
                 continue
             chars.append(bytes((b,)).decode("utf-8", errors="ignore"))
 
-    async def _set_telnet_password_echo(self, writer: asyncio.StreamWriter, *, suppress: bool) -> None:
+    async def _set_telnet_password_echo(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, suppress: bool) -> None:
         try:
             writer.write(
                 bytes(
@@ -1143,6 +1186,12 @@ class TelnetClusterServer:
                         self._TELNET_IAC,
                         self._TELNET_WILL if suppress else self._TELNET_WONT,
                         self._TELNET_ECHO,
+                        self._TELNET_IAC,
+                        self._TELNET_WILL if suppress else self._TELNET_WONT,
+                        self._TELNET_SUPPRESS_GO_AHEAD,
+                        self._TELNET_IAC,
+                        self._TELNET_DO if suppress else self._TELNET_DONT,
+                        self._TELNET_SUPPRESS_GO_AHEAD,
                     )
                 )
             )
@@ -1863,6 +1912,24 @@ class TelnetClusterServer:
                     if estimate:
                         await self.store.upsert_user_registry(call, now, qth=estimate[:80])
                         reg_row["qth"] = estimate[:80]
+
+        location_detail = str(await self.store.get_user_pref(call, "location") or "").strip()
+        if not location_detail:
+            location_detail = await self._prompt_optional_value(
+                reader,
+                writer,
+                "registration.interview_location",
+                "Location detail: ",
+                call=call,
+            )
+            if location_detail is None:
+                return False
+            location_detail = location_detail[:80].strip()
+            if location_detail:
+                await self.store.set_user_pref(call, "location", location_detail, now)
+                await self.store.set_user_pref(call, "location_source", "user", now)
+            elif str(reg_row.get("qra") or "").strip():
+                await self._backfill_location_from_qra(call, str(reg_row["qra"]))
 
         if not has_valid_email(str(reg_row.get("email") or "").strip()):
             email = await self._prompt_optional_value(
@@ -3403,6 +3470,20 @@ class TelnetClusterServer:
                 return denied
         return target
 
+    async def _show_geo_target(self, call: str, arg: str | None, cmd: str) -> str:
+        target = call.upper()
+        if arg and arg.strip():
+            tok = arg.split()[0].upper()
+            if is_valid_call(tok):
+                target = tok
+            elif self._geo_lookup(tok) is not None:
+                target = tok
+        if target != call.upper() and is_valid_call(target):
+            denied = await self._require_privilege(call, 2, cmd)
+            if denied:
+                return denied
+        return target
+
     async def _show_session_pref(self, call: str, arg: str | None, cmd: str, key: str, default: str) -> str:
         target = await self._show_named_target(call, arg, cmd)
         vars_map = dict(self._session_vars(target))
@@ -3499,16 +3580,16 @@ class TelnetClusterServer:
         return await self._show_named_map(call, arg, "show/rcmd", "rcmd")
 
     async def _cmd_show_sun_direct(self, call: str, arg: str | None) -> str:
-        target = await self._show_named_target(call, arg, "show/sun")
-        return await self._cmd_show_sun(target)
+        target = await self._show_geo_target(call, arg, "show/sun")
+        return await self._cmd_show_sun(call, target)
 
     async def _cmd_show_moon_direct(self, call: str, arg: str | None) -> str:
-        target = await self._show_named_target(call, arg, "show/moon")
-        return await self._cmd_show_moon(target)
+        target = await self._show_geo_target(call, arg, "show/moon")
+        return await self._cmd_show_moon(call, target)
 
     async def _cmd_show_grayline_direct(self, call: str, arg: str | None) -> str:
-        target = await self._show_named_target(call, arg, "show/grayline")
-        return await self._cmd_show_grayline(target)
+        target = await self._show_geo_target(call, arg, "show/grayline")
+        return await self._cmd_show_grayline(call, target)
 
     async def _cmd_show_muf_direct(self, call: str, arg: str | None) -> str:
         target = await self._show_named_target(call, arg, "show/muf")
@@ -3644,6 +3725,23 @@ class TelnetClusterServer:
                 return coords, f"node grid square {node_locator}"
         return None
 
+    async def _coords_context_for_target(self, call: str, target: str | None = None) -> tuple[tuple[float, float], str] | None:
+        wanted = (target or call).strip().upper()
+        if not wanted or wanted == call.upper():
+            return await self._coords_context_for(call.upper())
+        prefs = await self._load_prefs_for_call(wanted)
+        locator = (prefs.get("qra") or "").strip().upper()
+        if not locator:
+            reg = await self.store.get_user_registry(wanted)
+            locator = str(reg["qra"] or "").strip().upper() if reg else ""
+        locator_coords = self._locator_to_coords(locator) if locator else None
+        if locator and locator_coords is not None:
+            return locator_coords, f"QRA {locator}"
+        ent = self._geo_lookup(wanted)
+        if ent is not None:
+            return (float(ent.lat), float(ent.lon)), str(ent.name)
+        return await self._coords_context_for(call.upper())
+
     async def _coords_for(self, call: str) -> tuple[float, float] | None:
         info = await self._coords_context_for(call)
         if info is None:
@@ -3684,20 +3782,31 @@ class TelnetClusterServer:
         return bearing, reverse, distance_km
 
     def _signal_report_for_muf(self, freq_mhz: float, muf_mhz: float, zen: float) -> str:
-        if zen < 0:
+        effective_muf = self._effective_muf_for_zenith(muf_mhz, zen)
+        daylight_strength = max(0.0, math.cos(math.radians(max(0.0, min(90.0, zen)))))
+        d_layer_penalty = 0.0
+        if daylight_strength > 0.0 and freq_mhz < 10.5:
+            d_layer_penalty = ((10.5 - freq_mhz) / 8.7) * daylight_strength * 28.0
+        score = (effective_muf - freq_mhz) - d_layer_penalty
+        if score < -1.0:
             return ""
-        margin = muf_mhz - freq_mhz
-        if margin < 0:
-            return ""
-        if margin >= 8:
-            return "S7"
-        if margin >= 5:
-            return "S6"
-        if margin >= 3:
-            return "S4+"
-        if margin >= 1:
+        if score < 0.5:
+            return "sS0"
+        if score < 2.0:
+            return "mS1"
+        if score < 4.0:
+            return "S1+"
+        if score < 6.0:
+            return "S2"
+        if score < 8.0:
             return "S2+"
-        return "S1"
+        return "S6"
+
+    def _effective_muf_for_zenith(self, muf_mhz: float, zen: float) -> float:
+        if zen >= 90.0:
+            return 0.0
+        daylight_factor = max(0.0, math.cos(math.radians(max(0.0, zen))))
+        return muf_mhz * (0.45 + 0.55 * daylight_factor)
 
     def _dataset_summary(self, status: dict[str, object]) -> str:
         state = str(status.get("status", "") or "unknown")
@@ -3798,14 +3907,83 @@ class TelnetClusterServer:
     def _solar_hour(self, now: datetime, lon: float) -> float:
         return (now.hour + now.minute / 60.0 + now.second / 3600.0 + lon / 15.0) % 24.0
 
-    async def _cmd_show_sun(self, call: str) -> str:
-        info = await self._coords_context_for(call)
+    def _solar_declination(self, now: datetime) -> float:
+        day_utc = datetime(now.year, now.month, now.day, 12, 0, 0, tzinfo=timezone.utc)
+        julian_day = (day_utc.timestamp() / 86400.0) + 2440587.5
+        days = julian_day - 2451545.0
+        mean_anomaly = math.radians((357.529 + 0.98560028 * days) % 360.0)
+        ecliptic_longitude = math.radians(
+            (280.459 + 0.98564736 * days + 1.915 * math.sin(mean_anomaly) + 0.020 * math.sin(2.0 * mean_anomaly)) % 360.0
+        )
+        return math.asin(math.sin(math.radians(23.439)) * math.sin(ecliptic_longitude))
+
+    def _solar_events_utc(self, now: datetime, lat: float, lon: float) -> tuple[str, str]:
+        declination = self._solar_declination(now)
+        lat_r = math.radians(lat)
+        cos_h = (
+            math.cos(math.radians(90.833)) - math.sin(lat_r) * math.sin(declination)
+        ) / max(1e-9, (math.cos(lat_r) * math.cos(declination)))
+        if cos_h < -1.0:
+            return "Midnight Sun", "-"
+        if cos_h > 1.0:
+            return "Polar Night", "-"
+        hour_angle = math.degrees(math.acos(cos_h)) / 15.0
+        solar_noon = 12.0 - lon / 15.0
+
+        def _fmt(hours: float) -> str:
+            total_minutes = (round(hours * 60.0) % 1440 + 1440) % 1440
+            hh = total_minutes // 60
+            mm = total_minutes % 60
+            return f"{hh:02d}:{mm:02d} UTC"
+
+        return _fmt(solar_noon - hour_angle), _fmt(solar_noon + hour_angle)
+
+    def _solar_zenith_angle(self, now: datetime, lat: float, lon: float) -> float:
+        declination = self._solar_declination(now)
+        lat_r = math.radians(lat)
+        hour_angle = math.radians((self._solar_hour(now, lon) - 12.0) * 15.0)
+        altitude = math.asin(
+            max(
+                -1.0,
+                min(
+                    1.0,
+                    math.sin(lat_r) * math.sin(declination)
+                    + math.cos(lat_r) * math.cos(declination) * math.cos(hour_angle),
+                ),
+            )
+        )
+        return max(0.0, min(180.0, 90.0 - math.degrees(altitude)))
+
+    def _path_midpoint(self, lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float, float]:
+        lat1r = math.radians(lat1)
+        lon1r = math.radians(lon1)
+        lat2r = math.radians(lat2)
+        lon2r = math.radians(lon2)
+        x = math.cos(lat1r) * math.cos(lon1r) + math.cos(lat2r) * math.cos(lon2r)
+        y = math.cos(lat1r) * math.sin(lon1r) + math.cos(lat2r) * math.sin(lon2r)
+        z = math.sin(lat1r) + math.sin(lat2r)
+        if abs(x) < 1e-9 and abs(y) < 1e-9 and abs(z) < 1e-9:
+            return (lat1, lon1)
+        lon = math.degrees(math.atan2(y, x))
+        hyp = math.hypot(x, y)
+        lat = math.degrees(math.atan2(z, hyp))
+        return lat, ((lon + 540.0) % 360.0) - 180.0
+
+    def _antipode(self, lat: float, lon: float) -> tuple[float, float]:
+        return (-lat, ((lon + 180.0 + 540.0) % 360.0) - 180.0)
+
+    async def _cmd_show_sun(self, call: str, target: str | None = None) -> str:
+        info = await self._coords_context_for_target(call, target)
         if not info:
             return self._string("show.sun.unavailable", "Sun: set your grid square or forward/latlong first.") + "\r\n"
         (lat, lon), source = info
         now = datetime.now(timezone.utc)
         sh = self._solar_hour(now, lon)
         phase = "day" if 6.0 <= sh < 18.0 else "night"
+        sunrise, sunset = self._solar_events_utc(now, lat, lon)
+        to_sunrise = (6.0 - sh) % 24.0
+        to_sunset = (18.0 - sh) % 24.0
+        next_event = f"sunrise in {to_sunrise:.2f}h" if to_sunrise <= to_sunset else f"sunset in {to_sunset:.2f}h"
         lines = [
             self._string("show.sun.title", "Sun status:"),
             self._render_string("show.sun.reference", "  Reference: {source}", source=source),
@@ -3813,11 +3991,14 @@ class TelnetClusterServer:
             self._render_string("show.sun.longitude", "  Longitude: {lon:.4f}", lon=lon),
             self._render_string("show.sun.solar_hour", "  Solar Hour: {hour:.2f}", hour=sh),
             self._render_string("show.sun.phase", "  Phase: {phase}", phase=phase),
+            self._render_string("show.sun.sunrise", "  Sunrise: {value}", value=sunrise),
+            self._render_string("show.sun.sunset", "  Sunset: {value}", value=sunset),
+            self._render_string("show.sun.next", "  Next Event: {value}", value=next_event),
         ]
         return await self._format_console_lines(call, lines)
 
-    async def _cmd_show_grayline(self, call: str) -> str:
-        info = await self._coords_context_for(call)
+    async def _cmd_show_grayline(self, call: str, target: str | None = None) -> str:
+        info = await self._coords_context_for_target(call, target)
         if not info:
             return self._string("show.grayline.unavailable", "Grayline: set your grid square or forward/latlong first.") + "\r\n"
         (lat, lon), source = info
@@ -3839,8 +4020,8 @@ class TelnetClusterServer:
         ]
         return await self._format_console_lines(call, lines)
 
-    async def _cmd_show_moon(self, call: str) -> str:
-        info = await self._coords_context_for(call)
+    async def _cmd_show_moon(self, call: str, target: str | None = None) -> str:
+        info = await self._coords_context_for_target(call, target)
         if not info:
             return self._string("show.moon.unavailable", "Moon: set your grid square or forward/latlong first.") + "\r\n"
         (lat, lon), source = info
@@ -3850,6 +4031,24 @@ class TelnetClusterServer:
         age = ((now_epoch - 947182440.0) / 86400.0) % synodic
         phase = age / synodic
         illum = 0.5 * (1 - math.cos(2 * math.pi * phase))
+        if age < 1.84566:
+            phase_name = "new"
+        elif age < 5.53699:
+            phase_name = "waxing crescent"
+        elif age < 9.22831:
+            phase_name = "first quarter"
+        elif age < 12.91963:
+            phase_name = "waxing gibbous"
+        elif age < 16.61096:
+            phase_name = "full"
+        elif age < 20.30228:
+            phase_name = "waning gibbous"
+        elif age < 23.99361:
+            phase_name = "last quarter"
+        elif age < 27.68493:
+            phase_name = "waning crescent"
+        else:
+            phase_name = "new"
         lines = [
             self._string("show.moon.title", "Moon status:"),
             self._render_string("show.moon.reference", "  Reference: {source}", source=source),
@@ -3857,6 +4056,7 @@ class TelnetClusterServer:
             self._render_string("show.moon.longitude", "  Longitude: {lon:.4f}", lon=lon),
             self._render_string("show.moon.age", "  Age: {age:.2f} days", age=age),
             self._render_string("show.moon.illumination", "  Illumination: {illumination:.1f}%", illumination=illum * 100),
+            self._render_string("show.moon.phase_name", "  Phase: {phase}", phase=phase_name),
         ]
         return await self._format_console_lines(call, lines)
 
@@ -3959,7 +4159,7 @@ class TelnetClusterServer:
                 "show.muf.location_row",
                 "{name:<30.30} {coords:<18}    {azim:>3.0f}",
                 name=from_name,
-                coords=f"{self._format_deg_min(lat1, 'N', 'S')} {self._format_deg_min(-lon1, 'E', 'W')}",
+                coords=f"{self._format_deg_min(lat1, 'N', 'S')} {self._format_deg_min(lon1, 'E', 'W')}",
                 azim=short_bearing,
             )
         )
@@ -3968,20 +4168,24 @@ class TelnetClusterServer:
                 "show.muf.location_row",
                 "{name:<30.30} {coords:<18}    {azim:>3.0f}",
                 name=str(ent.name),
-                coords=f"{self._format_deg_min(lat2, 'N', 'S')} {self._format_deg_min(-lon2, 'E', 'W')}",
+                coords=f"{self._format_deg_min(lat2, 'N', 'S')} {self._format_deg_min(lon2, 'E', 'W')}",
                 azim=reverse_bearing,
             )
         )
+        path_mid_lat, path_mid_lon = self._path_midpoint(lat1, lon1, lat2, lon2)
+        if long_form:
+            path_mid_lat, path_mid_lon = self._antipode(path_mid_lat, path_mid_lon)
         freq_cols = [1.8, 3.5, 7.0, 10.1, 14.0, 18.1, 21.0, 24.9, 28.0, 50.0]
         header = self._string("show.muf.dxspider_header", "UT LT  MUF Zen  1.8  3.5  7.0 10.1 14.0 18.1 21.0 24.9 28.0 50.0")
         lines.append(header)
         for r, sfi, _a, _k, text in samples[:max(2, min(limit, 24))]:
             ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc)
             ut = ts.hour
-            local = int((ut + round(lon2 / 15.0)) % 24)
+            local = int((ut + round(path_mid_lon / 15.0)) % 24)
             muf = 8.0 + 0.12 * sfi
-            zen = max(-90.0, min(90.0, 90.0 - (distance_km / 100.0 if not long_form else distance_km / 620.0)))
-            row = f"{ut:2d} {local:2d} {muf:4.1f} {zen:4.0f}"
+            zen = self._solar_zenith_angle(ts, path_mid_lat, path_mid_lon)
+            displayed_muf = self._effective_muf_for_zenith(muf, zen)
+            row = f"{ut:2d} {local:2d} {displayed_muf:4.1f} {zen:4.0f}"
             if not long_form:
                 for freq in freq_cols:
                     sig = self._signal_report_for_muf(freq, muf, zen)
@@ -4906,6 +5110,33 @@ class TelnetClusterServer:
                     self._string("show.wcy.header", "Date        Hour   SFI   A   K Exp.K   R SA    GMF   Aurora   Logger")
                     + "\r\n"
                     + "\r\n".join(table)
+                    + "\r\n"
+                )
+            fallback = sorted(await self.store.list_bulletins("wwv", limit=limit), key=lambda r: (int(r["epoch"]), int(r["id"])), reverse=True)
+            derived_rows: list[str] = []
+            for r in fallback:
+                sender = str(r["sender"] or "")
+                body = str(r["body"] or "")
+                if not await self._text_family_passes_filters(call, "wcy", sender, body):
+                    continue
+                reading = parse_wwv_text(body)
+                if reading is None:
+                    continue
+                derived = derive_wcy_from_wwv(reading)
+                ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc)
+                derived_rows.append(
+                    f"{ts.strftime('%-d-%b-%Y'):>11}   {ts.strftime('%H'):>2}"
+                    f"{derived.sfi:>6}{derived.a_index:>4}{derived.k_index:>4}{derived.expk:>6}"
+                    f"{derived.sunspots:>4} {derived.sun_activity[:5]:<5} {derived.geomagnetic_field[:5]:<5}"
+                    f"{derived.aurora[:8]:>8} <{sender}>"
+                )
+            if derived_rows:
+                return (
+                    self._string("show.wcy.header", "Date        Hour   SFI   A   K Exp.K   R SA    GMF   Aurora   Logger")
+                    + "\r\n"
+                    + self._string("show.wcy.derived_note", "Derived from WWV feed: no recent WCY bulletins have been received.")
+                    + "\r\n"
+                    + "\r\n".join(derived_rows)
                     + "\r\n"
                 )
         if category == "wwv":
@@ -6496,9 +6727,8 @@ class TelnetClusterServer:
             return self._render_string("user.delete_missing", "No user record found for {target}.", target=target) + "\r\n"
         removed_calls: list[str] = []
         for matched in matches:
-            counts = await self.store.delete_user_data(matched)
-            removed = await self.store.delete_user_registry(matched)
-            if removed or any(int(v) > 0 for v in counts.values()):
+            counts = await self.store.delete_user_account(matched)
+            if any(int(v) > 0 for v in counts.values()):
                 removed_calls.append(matched)
         self._log_event("user", f"{call} delete/user {target} removed={','.join(removed_calls) or 'none'}")
         if not removed_calls:
@@ -7088,6 +7318,30 @@ class TelnetClusterServer:
         target = toks[1].upper()
         if table not in {"user", "registry", "prefs", "vars", "usdb", "buddy", "startup", "filters"}:
             return self._string("db.remove_table_usage", "Usage: dbremove <table=user|registry|prefs|vars|usdb|buddy|startup|filters> <call>") + "\r\n"
+        if table == "user":
+            counts = await self.store.delete_user_account(target)
+            removed = sum(counts.values())
+            self._log_event(
+                "db",
+                f"{_call} dbremove user {target} removed={removed} "
+                f"registry={counts.get('registry', 0)} prefs={counts.get('prefs', 0)} "
+                f"vars={counts.get('vars', 0)} usdb={counts.get('usdb', 0)} "
+                f"buddy={counts.get('buddy', 0)} startup={counts.get('startup', 0)} "
+                f"filters={counts.get('filters', 0)}",
+            )
+            return self._render_string(
+                "db.remove_user",
+                "Removed {removed} stored item(s) for {target}: registry {registry}, preferences {prefs}, variables {vars}, USDB entries {usdb}, buddy entries {buddy}, startup commands {startup}, filters {filters}",
+                removed=removed,
+                target=target,
+                registry=counts.get("registry", 0),
+                prefs=counts.get("prefs", 0),
+                vars=counts.get("vars", 0),
+                usdb=counts.get("usdb", 0),
+                buddy=counts.get("buddy", 0),
+                startup=counts.get("startup", 0),
+                filters=counts.get("filters", 0),
+            ) + "\r\n"
         if table == "registry":
             removed = await self.store.delete_user_registry(target)
             self._log_event("db", f"{_call} dbremove registry {target} removed={removed}")
@@ -7106,27 +7360,6 @@ class TelnetClusterServer:
             removed = int(counts.get(key, 0))
             self._log_event("db", f"{_call} dbremove {table} {target} removed={removed}")
             return self._render_string("db.remove_table", "Removed {removed} {table} entr{suffix} for {target}.", removed=removed, table=table, suffix="y" if removed == 1 else "ies", target=target) + "\r\n"
-        counts = await self.store.delete_user_data(target)
-        removed = sum(counts.values())
-        self._log_event(
-            "db",
-            f"{_call} dbremove user {target} removed={removed} "
-            f"prefs={counts.get('prefs', 0)} vars={counts.get('vars', 0)} "
-            f"usdb={counts.get('usdb', 0)} buddy={counts.get('buddy', 0)} "
-            f"startup={counts.get('startup', 0)} filters={counts.get('filters', 0)}",
-        )
-        return self._render_string(
-            "db.remove_user",
-            "Removed {removed} stored item(s) for {target}: preferences {prefs}, variables {vars}, USDB entries {usdb}, buddy entries {buddy}, startup commands {startup}, filters {filters}",
-            removed=removed,
-            target=target,
-            prefs=counts.get("prefs", 0),
-            vars=counts.get("vars", 0),
-            usdb=counts.get("usdb", 0),
-            buddy=counts.get("buddy", 0),
-            startup=counts.get("startup", 0),
-            filters=counts.get("filters", 0),
-        ) + "\r\n"
 
     async def _cmd_dxqsl_export(self, call: str, arg: str | None) -> str:
         path = (arg or "").strip() or f"/tmp/pycluster-dxqsl-export-{int(datetime.now(timezone.utc).timestamp())}.dat"
@@ -9161,6 +9394,7 @@ class TelnetClusterServer:
                     password_set = expected_password is not None and str(expected_password).strip() != ""
                     password_just_set = True
                 if require_password and not password_just_set:
+                    await self._set_telnet_password_echo(reader, writer, suppress=True)
                     await self._write(writer, "password: ")
                     supplied_password = await self._read_password(reader, writer)
                     if supplied_password is None:
@@ -9267,6 +9501,7 @@ class TelnetClusterServer:
             except Exception:
                 LOG.exception("session error peer=%s", peer)
             finally:
+                self._telnet_option_seen.discard(id(reader))
                 self._sessions.pop(session_id, None)
                 if self._on_sessions_changed_fn:
                     await self._on_sessions_changed_fn()

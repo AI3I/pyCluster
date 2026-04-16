@@ -46,10 +46,10 @@ class NodeConfig:
     welcome_body: str = ""
     login_tip: str = "Tip: help shows commands, sh/dx shows recent spots."
     show_status_after_login: bool = True
-    require_password: bool = True
-    registration_required: bool = True
-    verified_email_required_for_web: bool = True
-    verified_email_required_for_telnet: bool = True
+    require_password: bool = False
+    registration_required: bool = False
+    verified_email_required_for_web: bool = False
+    verified_email_required_for_telnet: bool = False
     initial_grace_logins: int = 5
     support_contact: str = ""
     website_url: str = ""
@@ -85,7 +85,7 @@ class SMTPConfig:
 @dataclass(slots=True)
 class MFAConfig:
     enabled: bool = False
-    require_for_sysop: bool = True
+    require_for_sysop: bool = False
     require_for_users: bool = False
     issuer: str = "pyCluster"
     otp_ttl_seconds: int = 600
