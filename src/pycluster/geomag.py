@@ -36,6 +36,32 @@ class WwvReading:
         return f"SFI={self.sfi} A={self.a_index} K={self.k_index} {self.forecast}".strip()
 
 
+def derive_wcy_from_wwv(reading: WwvReading) -> WcyReading:
+    forecast = str(reading.forecast or "").strip().lower()
+    sunspots = max(0, int(round((reading.sfi - 85) * 2)))
+    if any(word in forecast for word in ("major", "severe", "g3", "g4", "g5", "active")):
+        sun_activity = "act"
+    else:
+        sun_activity = "qui"
+    if any(word in forecast for word in ("major", "g3", "g4", "g5")):
+        geomagnetic_field = "maj"
+    elif any(word in forecast for word in ("moderate", "minor", "g1", "g2", "unsettled")):
+        geomagnetic_field = "mod"
+    else:
+        geomagnetic_field = "qui"
+    aurora = "yes" if reading.k_index >= 4 or "aurora" in forecast or "storm" in forecast else "no"
+    return WcyReading(
+        sfi=int(reading.sfi),
+        a_index=int(reading.a_index),
+        k_index=int(reading.k_index),
+        expk=int(reading.k_index),
+        sunspots=sunspots,
+        sun_activity=sun_activity,
+        geomagnetic_field=geomagnetic_field,
+        aurora=aurora,
+    )
+
+
 def _parse_pairs(text: str) -> tuple[dict[str, str], str]:
     raw = (text or "").strip()
     if not raw:

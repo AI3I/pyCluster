@@ -9,6 +9,7 @@ import re
 import secrets
 import subprocess
 import time
+import tomllib
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
@@ -26,6 +27,7 @@ from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
 from .pathmeta import describe_session_path, describe_transport_dsn, normalize_recorded_path
 from .peer_profiles import normalize_profile
+from .public_web import _DEFAULT_ACTIVITY_RULES, _DEFAULT_COMMENT_TAGS, _DEFAULT_MODE_ORDER, _DEFAULT_MODE_RULES, _DEFAULT_RARE_ENTITIES
 from .registration import has_valid_email, mark_email_unverified, mark_email_verified, registration_state
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
@@ -152,6 +154,147 @@ class WebAdminServer:
                 self.event_log_fn(category, text)
             except Exception:
                 LOG.exception("web admin audit log failed")
+
+    def _taxonomy_path(self) -> Path:
+        return self.repo_root / "config" / "strings.toml"
+
+    def _taxonomy_defaults(self) -> dict[str, object]:
+        return {
+            "mode_order": list(_DEFAULT_MODE_ORDER),
+            "mode_rules": [dict(row) for row in _DEFAULT_MODE_RULES],
+            "activity_rules": [dict(row) for row in _DEFAULT_ACTIVITY_RULES],
+            "comment_tags": [dict(row) for row in _DEFAULT_COMMENT_TAGS],
+            "rare_entities": list(_DEFAULT_RARE_ENTITIES),
+        }
+
+    def _taxonomy_json(self) -> dict[str, object]:
+        raw = self._taxonomy_defaults()
+        path = self._taxonomy_path()
+        if path.exists():
+            try:
+                text = path.read_text(encoding="utf-8")
+                marker = "[public_web.taxonomy]"
+                idx = text.find(marker)
+                if idx >= 0:
+                    parsed = tomllib.loads(text[idx:])
+                    node = parsed.get("public_web", {}).get("taxonomy", {})
+                    if isinstance(node, dict):
+                        raw = {
+                            "mode_order": node.get("mode_order", raw["mode_order"]),
+                            "mode_rules": node.get("mode_rules", raw["mode_rules"]),
+                            "activity_rules": node.get("activity_rules", raw["activity_rules"]),
+                            "comment_tags": node.get("comment_tags", raw["comment_tags"]),
+                            "rare_entities": node.get("rare_entities", raw["rare_entities"]),
+                        }
+            except Exception:
+                LOG.warning("taxonomy load failed for %s", path, exc_info=True)
+        return {
+            "mode_order": [str(item).strip().upper() for item in raw["mode_order"] if str(item).strip()],
+            "mode_rules": [
+                {
+                    "pattern": str(row.get("pattern", "")).strip(),
+                    "value": str(row.get("value", "")).strip().upper(),
+                    "button": str(row.get("button", row.get("value", ""))).strip().upper(),
+                }
+                for row in raw["mode_rules"]
+                if isinstance(row, dict) and str(row.get("pattern", "")).strip() and str(row.get("value", "")).strip()
+            ],
+            "activity_rules": [
+                {
+                    "pattern": str(row.get("pattern", "")).strip(),
+                    "value": str(row.get("value", "")).strip().upper(),
+                    "button": str(row.get("button", row.get("value", ""))).strip().upper(),
+                }
+                for row in raw["activity_rules"]
+                if isinstance(row, dict) and str(row.get("pattern", "")).strip() and str(row.get("value", "")).strip()
+            ],
+            "comment_tags": [
+                {
+                    "pattern": str(row.get("pattern", "")).strip(),
+                    "label": str(row.get("label", "")).strip(),
+                    "button": str(row.get("button", row.get("label", ""))).strip(),
+                    "color": str(row.get("color", "")).strip() or "#58a6ff",
+                }
+                for row in raw["comment_tags"]
+                if isinstance(row, dict) and str(row.get("pattern", "")).strip() and str(row.get("label", "")).strip()
+            ],
+            "rare_entities": [str(item).strip() for item in raw["rare_entities"] if str(item).strip()],
+            "strings_path": str(path),
+        }
+
+    def _dump_taxonomy_toml(self, payload: dict[str, object]) -> str:
+        def _q(value: object) -> str:
+            return json.dumps(str(value))
+
+        lines = ["[public_web.taxonomy]"]
+        mode_order = [str(item).strip().upper() for item in payload.get("mode_order", []) if str(item).strip()]
+        rare_entities = [str(item).strip() for item in payload.get("rare_entities", []) if str(item).strip()]
+        lines.append("mode_order = [" + ", ".join(_q(item) for item in mode_order) + "]")
+        lines.append("rare_entities = [" + ", ".join(_q(item) for item in rare_entities) + "]")
+        lines.append("")
+        for row in payload.get("mode_rules", []):
+            if not isinstance(row, dict):
+                continue
+            pattern = str(row.get("pattern", "")).strip()
+            value = str(row.get("value", "")).strip().upper()
+            button = str(row.get("button", value)).strip().upper() or value
+            if not pattern or not value:
+                continue
+            lines.extend([
+                "[[public_web.taxonomy.mode_rules]]",
+                f"pattern = {_q(pattern)}",
+                f"value = {_q(value)}",
+                f"button = {_q(button)}",
+                "",
+            ])
+        for row in payload.get("activity_rules", []):
+            if not isinstance(row, dict):
+                continue
+            pattern = str(row.get("pattern", "")).strip()
+            value = str(row.get("value", "")).strip().upper()
+            button = str(row.get("button", value)).strip().upper() or value
+            if not pattern or not value:
+                continue
+            lines.extend([
+                "[[public_web.taxonomy.activity_rules]]",
+                f"pattern = {_q(pattern)}",
+                f"value = {_q(value)}",
+                f"button = {_q(button)}",
+                "",
+            ])
+        for row in payload.get("comment_tags", []):
+            if not isinstance(row, dict):
+                continue
+            pattern = str(row.get("pattern", "")).strip()
+            label = str(row.get("label", "")).strip()
+            button = str(row.get("button", label)).strip() or label
+            color = str(row.get("color", "")).strip() or "#58a6ff"
+            if not pattern or not label:
+                continue
+            lines.extend([
+                "[[public_web.taxonomy.comment_tags]]",
+                f"pattern = {_q(pattern)}",
+                f"label = {_q(label)}",
+                f"button = {_q(button)}",
+                f"color = {_q(color)}",
+                "",
+            ])
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _save_taxonomy(self, payload: dict[str, object]) -> None:
+        path = self._taxonomy_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        marker = "[public_web.taxonomy]"
+        block = self._dump_taxonomy_toml(payload)
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        idx = existing.find(marker)
+        if idx >= 0:
+            text = existing[:idx].rstrip() + "\n\n" + block
+        elif existing.strip():
+            text = existing.rstrip() + "\n\n" + block
+        else:
+            text = block
+        path.write_text(text, encoding="utf-8")
 
     def _dataset_status(self) -> dict[str, dict[str, object]]:
         return {
@@ -325,6 +468,7 @@ class WebAdminServer:
             "qth": str(row["qth"] or ""),
             "qra": str(row["qra"] or ""),
             "email": str(row["email"] or ""),
+            "location": str(await self.store.get_user_pref(call, "location") or ""),
             "privilege": privilege,
             "access_label": access_label,
             "last_login_epoch": int(row["last_login_epoch"] or 0),
@@ -485,8 +629,8 @@ class WebAdminServer:
             seen_epoch = self._stale_user_seen_epoch(row)
             if seen_epoch <= 0 or seen_epoch >= cutoff:
                 continue
-            removed += await self.store.delete_user_registry(call)
-            await self.store.delete_user_data(call)
+            counts = await self.store.delete_user_account(call)
+            removed += int(counts.get("registry", 0))
         return removed
 
     def _issue_web_token(self, call: str, ttl_seconds: int = 8 * 3600, *, is_sysop: bool = False) -> tuple[str, int]:
@@ -1870,6 +2014,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <div class="node-tabs" role="tablist" aria-label="Node Settings groups">
             <button class="node-tab active" type="button" data-node-group="general">General</button>
             <button class="node-tab" type="button" data-node-group="auth">Authentication</button>
+            <button class="node-tab" type="button" data-node-group="taxonomy">Taxonomy</button>
             <button class="node-tab" type="button" data-node-group="smtp">Mail (SMTP)</button>
             <button class="node-tab" type="button" data-node-group="maintenance">Maintenance</button>
           </div>
@@ -1923,7 +2068,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <label for="mfa_enabled">Enable MFA login challenges</label>
               </div>
               <div class="checkrow attention" title="Strongly recommended. Applies to sysop web and sysop telnet logins after password verification.">
-                <input id="mfa_require_for_sysop" type="checkbox" checked>
+                <input id="mfa_require_for_sysop" type="checkbox">
                 <label for="mfa_require_for_sysop">Require MFA challenge for sysop logins</label>
               </div>
               <div class="checkrow attention" title="Enable only after confirming user email records and SMTP delivery are reliable. This applies after password verification.">
@@ -1938,6 +2083,20 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="field"><label for="mfa_otp_length" title="Number of digits generated for each OTP.">OTP Length</label><input id="mfa_otp_length" type="number" min="6" max="8" value="6" title="Recommended range is 6 to 8 digits."></div>
               <div class="field"><label for="mfa_max_attempts" title="How many wrong OTP submissions are allowed before the challenge is invalidated.">OTP Attempts</label><input id="mfa_max_attempts" type="number" min="1" max="10" value="5" title="Maximum verification attempts per OTP challenge."></div>
               <div class="field"><label for="mfa_resend_cooldown_seconds" title="Minimum delay before a new OTP can be issued for the same login purpose.">OTP Resend Cooldown (seconds)</label><input id="mfa_resend_cooldown_seconds" type="number" min="0" max="600" value="30" title="Prevents repeated password submissions from sending OTP emails too frequently."></div>
+            </div>
+          </div>
+          <div class="node-group" id="node-group-taxonomy">
+            <div class="subtle">Manage the public-web taxonomy here instead of hand-editing <code>config/strings.toml</code>. Edit the arrays as JSON and save when ready.</div>
+            <div class="form-grid one" style="margin-top:12px">
+              <div class="field"><label for="taxonomy_mode_order" title="JSON array controlling mode filter order in the public web UI.">Mode Order (JSON)</label><textarea id="taxonomy_mode_order" placeholder='["CW","FT8","SSB"]' title="JSON array controlling mode filter order in the public web UI."></textarea></div>
+              <div class="field"><label for="taxonomy_mode_rules" title="JSON array of mode rules with pattern, value, and optional button.">Mode Rules (JSON)</label><textarea id="taxonomy_mode_rules" placeholder='[{"pattern":"\\\\bFT8\\\\b","value":"FT8","button":"FT8"}]' title="Each object should include pattern and value; button is optional."></textarea></div>
+              <div class="field"><label for="taxonomy_activity_rules" title="JSON array of activity rules with pattern, value, and optional button.">Activity Rules (JSON)</label><textarea id="taxonomy_activity_rules" placeholder='[{"pattern":"\\\\bPOTA\\\\b","value":"POTA","button":"POTA"}]' title="Each object should include pattern and value; button is optional."></textarea></div>
+              <div class="field"><label for="taxonomy_comment_tags" title="JSON array of comment tag rules with pattern, label, optional button, and optional color.">Comment Tags (JSON)</label><textarea id="taxonomy_comment_tags" placeholder='[{"pattern":"\\\\bcq\\\\b","label":"CQ","color":"#10b981"}]' title="Each object should include pattern and label; color defaults to #58a6ff."></textarea></div>
+              <div class="field"><label for="taxonomy_rare_entities" title="JSON array of entity names treated as rare by the public web UI.">Rare Entities (JSON)</label><textarea id="taxonomy_rare_entities" placeholder='["Bouvet Island","Peter 1 Island"]' title="JSON array of entity names treated as rare by the public web UI."></textarea></div>
+            </div>
+            <div class="subtle" id="taxonomyStatus" style="margin-top:8px;font-weight:700">Taxonomy editor is ready.</div>
+            <div class="actions" style="margin-top:12px">
+              <button class="good" id="saveTaxonomy" title="Persist the public-web taxonomy to config/strings.toml.">Save Taxonomy</button>
             </div>
           </div>
           <div class="node-group" id="node-group-smtp">
@@ -2085,6 +2244,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <div class="field"><label for="user_name" title="Operator name shown in local account details for this callsign.">Name (QRA)</label><input id="user_name" placeholder="Operator name" title="Friendly operator name stored for this local callsign record."></div>
                 <div class="field"><label for="user_qth" title="Operator location for this local callsign record.">Location (QTH)</label><input id="user_qth" placeholder="Location" title="Human-readable location used for local operator details on this node."></div>
                 <div class="field"><label for="user_grid" title="Grid square for this local user record.">Grid Square</label><input id="user_grid" placeholder="FN31PR" title="Maidenhead grid square for this local user record."></div>
+                <div class="field span2"><label for="user_location" title="Optional free-form location detail distinct from QTH and grid square.">Location Detail</label><input id="user_location" placeholder="City neighborhood, county, or other detail" title="Optional free-form location detail stored separately from QTH and grid square."></div>
                 <div class="field"><label for="user_email" title="Optional contact email for this local callsign record.">Email</label><input id="user_email" placeholder="operator@example.org" title="Optional contact address used for local account details and future federation/contact features."></div>
                 <div class="field"><label for="user_password" title="Change or set the local password for this callsign. Enter CLEAR to remove it.">Password</label><input id="user_password" type="password" placeholder="Change/Set or CLEAR to clear" title="Set or change the local password for this callsign. Enter CLEAR and then Set Password to remove it."></div>
                 <div class="field"><label for="user_home_node" title="Authoritative home node for this callsign. This maps to set/homenode.">Home Node</label><input id="user_home_node" placeholder="N0CALL-1" title="The home node is the source of truth for this callsign and will be used by future federation features."></div>
@@ -2970,6 +3130,7 @@ function fillUserForm(row) {
   byId('user_email').value = data.email || '';
   byId('user_home_node').value = data.home_node || '';
   byId('user_grid').value = data.qra || '';
+  byId('user_location').value = data.location || '';
   byId('user_block_reason').value = data.user_note || data.blocked_reason || '';
   byId('user_node_family').value = data.node_family || '';
   byId('user_mfa_email_otp').value = data.mfa_email_otp || 'default';
@@ -3014,6 +3175,7 @@ function clearUserForm(defaultCall='') {
   byId('user_email').value = '';
   byId('user_home_node').value = '';
   byId('user_grid').value = '';
+  byId('user_location').value = '';
   byId('user_block_reason').value = '';
   byId('user_node_family').value = '';
   byId('user_mfa_email_otp').value = 'default';
@@ -3357,6 +3519,20 @@ function renderUpgradeStatus(payload) {
   const runBtn = byId('runUpgrade');
   if (runBtn) runBtn.disabled = status.state === 'running';
 }
+function setJsonEditor(id, value) {
+  const el = byId(id);
+  if (!el) return;
+  el.value = JSON.stringify(value, null, 2);
+}
+function loadTaxonomyEditor(data) {
+  if (!data) return;
+  setJsonEditor('taxonomy_mode_order', data.mode_order || []);
+  setJsonEditor('taxonomy_mode_rules', data.mode_rules || []);
+  setJsonEditor('taxonomy_activity_rules', data.activity_rules || []);
+  setJsonEditor('taxonomy_comment_tags', data.comment_tags || []);
+  setJsonEditor('taxonomy_rare_entities', data.rare_entities || []);
+  setText('taxonomyStatus', data.strings_path ? `Editing taxonomy in ${data.strings_path}` : 'Taxonomy editor is ready.');
+}
 async function load() {
   const peer = encodeURIComponent(byId('peer').value.trim());
   const lim = parseInt(byId('phlim').value.trim(), 10) || 20;
@@ -3370,6 +3546,7 @@ async function load() {
     j('/api/proto/thresholds'),
     j('/api/policydrop' + (peer ? '?peer=' + peer : '')),
     j('/api/node/presentation'),
+    j('/api/node/taxonomy'),
     j('/api/upgrade/status'),
     j('/api/audit?limit=20'),
     j('/api/security?limit=20'),
@@ -3385,6 +3562,7 @@ async function load() {
     thresholdsRes,
     policyDropRes,
     nodeUiRes,
+    taxonomyRes,
     upgradeRes,
     auditRes,
     securityRes,
@@ -3419,6 +3597,7 @@ async function load() {
   if (policyDropRes.status === 'fulfilled') setPolicyDropRows(policyDropRes.value);
   if (nodeUiRes.status === 'fulfilled') fillNodeForm(nodeUiRes.value);
   if (nodeUiRes.status === 'fulfilled') setText('navVersion', (nodeUiRes.value && nodeUiRes.value.software_version) || '-');
+  if (taxonomyRes.status === 'fulfilled') loadTaxonomyEditor(taxonomyRes.value);
   if (upgradeRes.status === 'fulfilled') renderUpgradeStatus(upgradeRes.value);
   if (auditRes.status === 'fulfilled') setAuditRows(auditRes.value);
   if (securityRes.status === 'fulfilled') {
@@ -3600,7 +3779,26 @@ byId('runCleanup').onclick = async () => {
 byId('checkUpgrade').onclick = async () => {
   const r = await j('/api/upgrade/status');
   renderUpgradeStatus(r);
-  say('Upgrade status refreshed.');
+  const availability = (r && r.availability) || {};
+  if (availability.available) say(`Upgrade available: pyCluster ${availability.available_version || '?'}.`);
+  else if (availability.remote_checked) say(`No newer upgrade is available. Current version is ${availability.current_version || '-'}.`);
+  else say('Upgrade status refreshed.');
+};
+byId('saveTaxonomy').onclick = async () => {
+  try {
+    const payload = {
+      mode_order: JSON.parse(byId('taxonomy_mode_order').value || '[]'),
+      mode_rules: JSON.parse(byId('taxonomy_mode_rules').value || '[]'),
+      activity_rules: JSON.parse(byId('taxonomy_activity_rules').value || '[]'),
+      comment_tags: JSON.parse(byId('taxonomy_comment_tags').value || '[]'),
+      rare_entities: JSON.parse(byId('taxonomy_rare_entities').value || '[]'),
+    };
+    const r = await j('/api/node/taxonomy', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    loadTaxonomyEditor(r);
+    say(r && r.ok ? 'Taxonomy saved.' : 'Saving taxonomy failed.', !!(r && r.ok));
+  } catch (err) {
+    say('Saving taxonomy failed: ' + errText(err), false);
+  }
 };
 byId('runUpgrade').onclick = async () => {
   if (!window.confirm('Queue a root-owned upgrade? The System Operator console and services may restart during the process.')) return;
@@ -3642,6 +3840,7 @@ byId('saveUser').onclick = async () => {
       mfa_email_otp: byId('user_mfa_email_otp').value.trim(),
       qth: byId('user_qth').value.trim(),
       qra: byId('user_grid').value.trim().toUpperCase(),
+      location: byId('user_location').value.trim(),
       email: byId('user_email').value.trim(),
       privilege: byId('user_privilege').value.trim(),
       blocked_reason: byId('user_block_reason').value.trim().slice(0, 80),
@@ -4075,10 +4274,10 @@ if (restoreWebSession()) {
                         "welcome_body": "",
                         "login_tip": "",
                         "show_status_after_login": "off",
-                        "require_password": "on",
-                        "registration_required": "on",
-                        "verified_email_required_for_web": "on",
-                        "verified_email_required_for_telnet": "on",
+                        "require_password": "off",
+                        "registration_required": "off",
+                        "verified_email_required_for_web": "off",
+                        "verified_email_required_for_telnet": "off",
                         "initial_grace_logins": "5",
                         "smtp_host": "",
                         "smtp_port": "587",
@@ -4090,7 +4289,7 @@ if (restoreWebSession()) {
                         "smtp_use_ssl": "off",
                         "smtp_timeout_seconds": "10",
                         "mfa_enabled": "off",
-                        "mfa_require_for_sysop": "on",
+                        "mfa_require_for_sysop": "off",
                         "mfa_require_for_users": "off",
                         "mfa_issuer": "pyCluster",
                         "mfa_otp_ttl_seconds": "600",
@@ -4235,6 +4434,66 @@ if (restoreWebSession()) {
                             await self._write_response(writer, 500, self._json({"error": f"telnet rebind failed: {exc}"}))
                             return
                     await self._write_response(writer, 200, self._json({"ok": True, **self._node_presentation_json(await self._node_presentation())}))
+                    return
+                await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                return
+
+            if path == "/api/node/taxonomy":
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                if method == "GET":
+                    await self._write_response(writer, 200, self._json(self._taxonomy_json()))
+                    return
+                if method == "POST":
+                    payload = self._parse_json_body(body)
+                    mode_order = payload.get("mode_order", [])
+                    mode_rules = payload.get("mode_rules", [])
+                    activity_rules = payload.get("activity_rules", [])
+                    comment_tags = payload.get("comment_tags", [])
+                    rare_entities = payload.get("rare_entities", [])
+                    if not all(isinstance(v, list) for v in (mode_order, mode_rules, activity_rules, comment_tags, rare_entities)):
+                        await self._write_response(writer, 400, self._json({"error": "taxonomy fields must be arrays"}))
+                        return
+                    clean = {
+                        "mode_order": [str(item).strip().upper() for item in mode_order if str(item).strip()],
+                        "mode_rules": [
+                            {
+                                "pattern": str(row.get("pattern", "")).strip(),
+                                "value": str(row.get("value", "")).strip().upper(),
+                                "button": str(row.get("button", row.get("value", ""))).strip().upper(),
+                            }
+                            for row in mode_rules
+                            if isinstance(row, dict) and str(row.get("pattern", "")).strip() and str(row.get("value", "")).strip()
+                        ],
+                        "activity_rules": [
+                            {
+                                "pattern": str(row.get("pattern", "")).strip(),
+                                "value": str(row.get("value", "")).strip().upper(),
+                                "button": str(row.get("button", row.get("value", ""))).strip().upper(),
+                            }
+                            for row in activity_rules
+                            if isinstance(row, dict) and str(row.get("pattern", "")).strip() and str(row.get("value", "")).strip()
+                        ],
+                        "comment_tags": [
+                            {
+                                "pattern": str(row.get("pattern", "")).strip(),
+                                "label": str(row.get("label", "")).strip(),
+                                "button": str(row.get("button", row.get("label", ""))).strip(),
+                                "color": str(row.get("color", "")).strip() or "#58a6ff",
+                            }
+                            for row in comment_tags
+                            if isinstance(row, dict) and str(row.get("pattern", "")).strip() and str(row.get("label", "")).strip()
+                        ],
+                        "rare_entities": [str(item).strip() for item in rare_entities if str(item).strip()],
+                    }
+                    try:
+                        self._save_taxonomy(clean)
+                    except Exception as exc:
+                        await self._write_response(writer, 500, self._json({"error": f"taxonomy save failed: {exc}"}))
+                        return
+                    self._audit("config", f"{self._authorized_call(headers)} updated taxonomy settings")
+                    await self._write_response(writer, 200, self._json({"ok": True, **self._taxonomy_json()}))
                     return
                 await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                 return
@@ -4427,14 +4686,22 @@ if (restoreWebSession()) {
                     now = int(time.time())
                     qth = str(payload.get("qth", "")).strip()
                     qra = str(payload.get("qra", "")).strip().upper()
-                    if qth:
+                    location = str(payload.get("location", "")).strip()[:80]
+                    old_qth = str(old_row["qth"] or "").strip() if old_row is not None else ""
+                    old_qra = str(old_row["qra"] or "").strip().upper() if old_row is not None else ""
+                    explicit_qra = extract_locator(qra)
+                    qra_changed = bool(explicit_qra and explicit_qra != extract_locator(old_qra))
+                    if qth and not qra_changed:
                         coords = resolve_location_to_coords(qth)
                         if coords is not None:
                             qra = coords_to_locator(*coords)
                     elif qra:
-                        qra = extract_locator(qra)
+                        qra = explicit_qra or extract_locator(qra)
                         if qra:
-                            qth = estimate_location_from_locator(qra).strip()
+                            if not qth:
+                                qth = estimate_location_from_locator(qra).strip()
+                            elif qth == old_qth and qra_changed:
+                                qth = old_qth
                     if original_call and original_call != call:
                         try:
                             renamed = await self.store.rename_user_registry(original_call, call, now)
@@ -4481,6 +4748,12 @@ if (restoreWebSession()) {
                         await self.store.set_user_pref(call, "node_family", node_family, now)
                     else:
                         await self.store.delete_user_pref(call, "node_family")
+                    if location:
+                        await self.store.set_user_pref(call, "location", location, now)
+                        await self.store.set_user_pref(call, "location_source", "user", now)
+                    else:
+                        await self.store.delete_user_pref(call, "location")
+                        await self.store.delete_user_pref(call, "location_source")
                     blocked_reason = str(payload.get("blocked_reason", "")).strip()[:80]
                     mfa_email_otp = str(payload.get("mfa_email_otp", "")).strip().lower()
                     if mfa_email_otp not in {"", "default", "required", "off"}:
@@ -4609,7 +4882,7 @@ if (restoreWebSession()) {
                     qth=str(req["qth"] or ""),
                     qra=str(req["qra"] or ""),
                     email=str(req["email"] or ""),
-                    privilege="user",
+                    privilege="",
                 )
                 if int(req["email_verified"] or 0):
                     await mark_email_verified(self.store, call, now_epoch=now)
@@ -4667,9 +4940,10 @@ if (restoreWebSession()) {
                 if not _is_valid_admin_record_call(call):
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
-                removed = await self.store.delete_user_registry(call)
+                counts = await self.store.delete_user_account(call)
+                removed = sum(int(v) for v in counts.values())
                 self._audit("sysop", f"{self._authorized_call(headers)} removed user {call} removed={removed}")
-                await self._write_response(writer, 200, self._json({"ok": removed > 0, "removed": removed, "call": call}))
+                await self._write_response(writer, 200, self._json({"ok": removed > 0, "removed": removed, "call": call, "counts": counts}))
                 return
 
             if path == "/api/users/password":

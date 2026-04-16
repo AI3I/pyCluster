@@ -1560,9 +1560,41 @@ pattern = '\bqsy\b'
 label = "QSY"
 color = "#67e8f9"
 [[public_web.taxonomy.comment_tags]]
+pattern = '\bqrt\b'
+label = "QRT"
+color = "#94a3b8"
+[[public_web.taxonomy.comment_tags]]
 pattern = '\bcw\b|\bskcc\b|\bfists\b|\bhst\b'
 label = "CW"
 color = "#facc15"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bft8\b|\bft4\b|\bft2\b|\bq65\b|\bmsk144\b|\bfsk441\b|\brtty\b|\bjs8\b|\bjt65\b|\bjt9\b|\bwspr\b|\bmfsk\b|\bolivia\b|\bdomino(?:ex)?\b|\bthor\b|\bhell(?:schreiber)?\b|\bros\b|\bvara\b|\bpactor\b|\bwinmor\b|\bardop\b|\bpsk\b|\bfax\b|\bsstv\b|\batv\b|\bdata\b|\bdigi(?:tal)?\b'
+label = "DIGITAL"
+color = "#a78bfa"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bssb\b|\bam\b|\bfm\b'
+label = "VOICE"
+color = "#34d399"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\busb\b'
+label = "USB"
+color = "#818cf8"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\blsb\b'
+label = "LSB"
+color = "#6ee7b7"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bqrm\b'
+label = "QRM"
+color = "#f87171"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bqrp\b'
+label = "QRP"
+color = "#a78bfa"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bqro\b'
+label = "QRO"
+color = "#fb923c"
 [[public_web.taxonomy.comment_tags]]
 pattern = '\beme\b|\bmoonbounce\b'
 label = "EME"
@@ -1576,9 +1608,69 @@ pattern = '\bcontest\b|\bqso\s+party\b|\bparty\b|qp\b|\bcqww\b|\barrl\b|\bwpx\b|
 label = "CONTEST"
 color = "#f472b6"
 [[public_web.taxonomy.comment_tags]]
+pattern = '\bpile.?up\b'
+label = "PILEUP"
+color = "#ff9f43"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bdxped'
+label = "DXPED"
+color = "#e879f9"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\blong\s+path\b'
+label = "LONG PATH"
+color = "#a3e635"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bportable\b'
+label = "PORTABLE"
+color = "#14b8a6"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bmobile\b'
+label = "MOBILE"
+color = "#06b6d4"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bmaritime\b'
+label = "MARITIME"
+color = "#0ea5e9"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bnet\b'
+label = "NET"
+color = "#34d399"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bpirate\b'
+label = "PIRATE"
+color = "#f97316"
+[[public_web.taxonomy.comment_tags]]
 pattern = '\bdx\b|\bdistance\b'
 label = "DX"
 color = "#3b82f6"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\batno\b'
+label = "ATNO"
+color = "#f85149"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bnew\s*one\b|\bnew\s+ctry\b|\bnew\s+country\b|\bnewone\b'
+label = "NEW ONE"
+color = "#f85149"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bspecial\b|\baward\b|\byear\b|\bday\b|\bses\b'
+label = "SPECIAL"
+color = "#c084fc"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\b59\b|\brst\s*59\b|\b5\/9\b|\b5-9\b'
+label = "5/9"
+color = "#3fb950"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\blotw\b'
+label = "LoTW"
+color = "#58a6ff"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\bbeacon\b'
+label = "BEACON"
+color = "#fbbf24"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\btnx\b|\bthx\b|\btks\b|\bthank|\b73\b'
+label = "TNX"
+color = "#fb7185"
 [[public_web.taxonomy.comment_tags]]
 pattern = '\bwwff\b'
 label = "WWFF"
