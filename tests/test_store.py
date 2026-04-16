@@ -132,6 +132,40 @@ def test_store_filter_rules_round_trip(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_delete_user_account_removes_registry_and_all_user_data(tmp_path: Path) -> None:
+    async def run() -> None:
+        db = tmp_path / "delete_user_account.db"
+        store = SpotStore(str(db))
+        try:
+            now = 1772336200
+            await store.upsert_user_registry("N0CALL", now, display_name="Joe", qra="FN31PR", email="joe@example.test")
+            await store.set_user_pref("N0CALL", "password", "pw", now)
+            await store.set_user_pref("N0CALL", "location", "Milwaukee", now)
+            await store.set_usdb_entry("N0CALL", "state", "WI", now)
+            await store.add_buddy("N0CALL", "K1ABC", now)
+            await store.add_startup_command("N0CALL", "show/dx", now)
+            await store.set_filter_rule("N0CALL", "spots", "accept", 1, "on 20m", now)
+
+            counts = await store.delete_user_account("N0CALL")
+            assert counts["registry"] == 1
+            assert counts["prefs"] >= 2
+            assert counts["usdb"] == 1
+            assert counts["buddy"] == 1
+            assert counts["startup"] == 1
+            assert counts["filters"] == 1
+
+            assert await store.get_user_registry("N0CALL") is None
+            assert await store.list_user_prefs("N0CALL") == {}
+            assert await store.list_usdb_entries("N0CALL") == {}
+            assert await store.list_buddies("N0CALL") == []
+            assert await store.list_startup_commands("N0CALL") == []
+            assert await store.list_filter_rules("N0CALL") == []
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_store_deny_rules_and_spot_filtering(tmp_path: Path) -> None:
     async def run() -> None:
         db = tmp_path / "test.db"

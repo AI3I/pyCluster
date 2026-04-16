@@ -547,9 +547,9 @@ class ClusterApp:
             return m.group(1).strip().lower(), m.group(2).strip().upper(), (_VIA_SUFFIX_RE.sub("", raw_body).strip() or raw_body)
         sender_u = normalize_call(sender)
         body_u = text.upper()
-        if sender_u == "DK0WCY" or ("SPOTS=" in body_u and "EXPK=" in body_u):
+        if sender_u == "DK0WCY" or parse_wcy_text(body) is not None or ("SPOTS=" in body_u and "EXPK=" in body_u):
             category = "wcy"
-        elif sender_u == "WWV" or re.search(r"\bSFI\s*=\s*\d+\b", body_u):
+        elif sender_u == "WWV" or parse_wwv_text(body) is not None or re.search(r"\bSFI\s*=\s*\d+\b", body_u):
             category = "wwv"
         return category, scope, body
 

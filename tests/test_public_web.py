@@ -631,6 +631,25 @@ color = "#123456"
     asyncio.run(run())
 
 
+def test_bundled_strings_catalog_keeps_expected_comment_labels(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_taxonomy_bundled.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        strings_path = Path(__file__).resolve().parents[1] / "config" / "strings.toml"
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc), strings_path=str(strings_path))
+        try:
+            code, _, body = await _http_request(srv, "/api/public/taxonomy")
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            labels = {row["label"] for row in data["comment_tags"]}
+            assert {"CQ", "DIGITAL", "VOICE", "QRM", "QRT", "PILEUP", "LoTW", "TNX"} <= labels
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_stop_closes_tracked_ws_clients(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_ws_stop.db")

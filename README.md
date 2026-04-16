@@ -67,16 +67,16 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current release: `1.0.6`
+Current release: `1.0.7`
 
-Recent highlights in `1.0.6`:
+Recent highlights in `1.0.7`:
 
-- cleaner and more human-readable telnet/operator command replies
-- `CTY.DAT` and `wpxloc.raw` visibility plus refresh support
-- public web 24-hour spot stats that reflect real time windows
-- more complete MFA recovery, cluster-mail observability, and config-override documentation
-- stronger registration/auth policy with verified-email gates for ordinary users
-- telnet email verification flow plus sysop verification/unlock controls in the System Operator Console
+- user deletion now removes the full local account footprint instead of leaving stale prefs and records behind
+- new-user approval again creates limited-access users by default rather than over-permissive accounts
+- telnet `show/sun`, `show/moon`, `show/muf`, `show/wcy`, and `show/wwv` behavior was tightened and regression-covered
+- public web spot toasts no longer cover the sidebar, and operators can now hide the sidebar entirely
+- historical taxonomy/comment tags were restored, and the SysOp web UI can now edit taxonomy directly
+- fresh deployments now ship with all authentication toggles off by default until a sysop enables them
 
 ## 🖥️ Interfaces
 

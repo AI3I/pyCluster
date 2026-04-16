@@ -292,6 +292,18 @@ def test_desired_peer_status_includes_mail_queue_and_route_issues(tmp_path) -> N
     asyncio.run(run())
 
 
+def test_classify_pc93_bulletin_detects_parseable_wcy_payloads(tmp_path) -> None:
+    db = str(tmp_path / "classify_wcy.db")
+    app = ClusterApp(_mk_config(db))
+    try:
+        category, scope, body = app._classify_pc93_bulletin("N0BOT", "SFI=120 A=18 K=3 ExpK=2 R=105 SA=QUI GMF=MAJ Aurora=NO")
+        assert category == "wcy"
+        assert scope == "LOCAL"
+        assert "ExpK=2" in body
+    finally:
+        asyncio.run(app.store.close())
+
+
 def test_peer_password_is_stored_separately_from_dsn_and_injected_on_connect(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "peer_password_separate.db")

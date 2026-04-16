@@ -146,9 +146,133 @@ def test_web_admin_static_shows_registration_state_controls() -> None:
     assert text.index('<h3>Access Matrix</h3>') < text.index('id="user_verified_state"')
     assert text.index('<h3>Access Matrix</h3>') < text.index('id="user_mfa_email_otp"')
     assert text.index('<h3>Access Matrix</h3>') < text.index('id="user_privilege"')
+    assert 'id="mfa_require_for_sysop" type="checkbox" checked' not in text
     assert "function setRegistrationActionState(verified, locked, enabled)" in text
     assert "verifiedState.checked = !!verified" in text
     assert "unlockedState.checked = !!locked" in text
+
+
+def test_web_admin_static_includes_location_detail_field() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'id="user_location"' in text
+    assert "Location Detail" in text
+    assert "location: byId('user_location').value.trim()" in text
+
+
+def test_public_web_static_offsets_toasts_clear_of_sidebar() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert "--sidebar-width: 320px;" in text
+    assert "--sidebar-toast-offset: calc(var(--sidebar-width) + 28px);" in text
+    assert "right:var(--sidebar-toast-offset);" in text
+
+
+def test_public_web_static_keeps_login_actions_out_of_header() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert 'id="header-auth-btn"' not in text
+    assert "function updateHeaderAuthButton()" not in text
+    assert 'id="footer-login"' in text
+
+
+def test_public_web_static_supports_sidebar_hide_toggle() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert 'id="sidebar-toggle"' in text
+    assert "localStorage.getItem('sidebarHidden')" in text
+    assert "document.body.classList.toggle('sidebar-hidden', sidebarHidden);" in text
+
+
+def test_web_admin_static_exposes_taxonomy_editor() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'data-node-group="taxonomy"' in text
+    assert 'id="node-group-taxonomy"' in text
+    assert 'id="taxonomy_comment_tags"' in text
+    assert "loadTaxonomyEditor" in text
+    assert "saveTaxonomy" in text
+
+
+def test_web_admin_node_presentation_defaults_leave_auth_unchecked(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_auth_defaults.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "GET",
+                "/api/node/presentation",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["require_password"] is False
+            assert data["registration_required"] is False
+            assert data["verified_email_required_for_web"] is False
+            assert data["verified_email_required_for_telnet"] is False
+            assert data["mfa_enabled"] is False
+            assert data["mfa_require_for_sysop"] is False
+            assert data["mfa_require_for_users"] is False
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_taxonomy_roundtrip(tmp_path) -> None:
+    async def run() -> None:
+        repo_root = tmp_path / "repo"
+        config_dir = repo_root / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "pycluster.toml"
+        config_path.write_text("[node]\nnode_call = \"AI3I-15\"\n\n[web]\nadmin_token = \"adm\"\n", encoding="utf-8")
+        db = str(tmp_path / "taxonomy_roundtrip.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+            config_path=str(config_path),
+        )
+        try:
+            code, _, body = await _http_request(srv, "GET", "/api/node/taxonomy", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            labels = {row["label"] for row in data["comment_tags"]}
+            assert {"DIGITAL", "PILEUP", "ATNO", "LoTW", "TNX"} <= labels
+
+            payload = {
+                "mode_order": ["TRX"],
+                "mode_rules": [{"pattern": "\\bTRX\\b", "value": "TRX", "button": "TRX"}],
+                "activity_rules": [{"pattern": "\\bCASTLE\\b", "value": "CASTLE", "button": "CASTLE"}],
+                "comment_tags": [{"pattern": "\\bCASTLE\\b", "label": "CASTLE", "button": "CASTLE", "color": "#123456"}],
+                "rare_entities": ["Castle Island"],
+            }
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/node/taxonomy",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps(payload).encode("utf-8"),
+            )
+            assert code == 200
+            saved = json.loads(body.decode("utf-8"))
+            assert saved["ok"] is True
+            assert saved["comment_tags"][0]["label"] == "CASTLE"
+            strings_path = config_dir / "strings.toml"
+            text = strings_path.read_text(encoding="utf-8")
+            assert "[public_web.taxonomy]" in text
+            assert 'label = "CASTLE"' in text
+            assert 'color = "#123456"' in text
+        finally:
+            await store.close()
+
+    asyncio.run(run())
 
 
 def test_web_admin_static_switches_to_editor_when_user_selected() -> None:
@@ -234,6 +358,87 @@ def test_web_login_and_spot_post(tmp_path) -> None:
             assert await store.count_spots() == 1
             assert len(published) == 1
             assert len(relayed) == 1
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_registration_approval_creates_limited_user_record(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "approve_registration.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(config=cfg, store=store, started_at=datetime.now(timezone.utc), session_count_fn=lambda: 0)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_registration_request(
+            "N0CALL",
+            now,
+            display_name="Joe",
+            home_node="AI3I-15",
+            qth="Milwaukee, WI",
+            qra="EN63AA",
+            email="joe@example.test",
+            note="",
+            source="public-web",
+            email_verified=True,
+            status="pending",
+        )
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/registrations/approve",
+                headers={"Content-Type": "application/json", "X-Admin-Token": "adm"},
+                body=json.dumps({"call": "N0CALL"}).encode("utf-8"),
+            )
+            assert code == 200
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["ok"] is True
+            assert payload["user"]["privilege"] == ""
+            assert payload["user"]["access"]["telnet"]["login"] is True
+            assert payload["user"]["access"]["telnet"]["spots"] is False
+            assert payload["user"]["access"]["web"]["announce"] is False
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_user_save_preserves_explicit_grid_square_when_qth_is_already_set(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "user_save_qra.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(config=cfg, store=store, started_at=datetime.now(timezone.utc), session_count_fn=lambda: 0)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, display_name="Joe", qth="Milwaukee, WI", qra="EN63AA", email="joe@example.test")
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users",
+                headers={"Content-Type": "application/json", "X-Admin-Token": "adm"},
+                body=json.dumps(
+                    {
+                        "original_call": "N0CALL",
+                        "call": "N0CALL",
+                        "display_name": "Joe",
+                        "qth": "Milwaukee, WI",
+                        "qra": "FN31PR",
+                        "location": "Downtown",
+                        "email": "joe@example.test",
+                        "privilege": "",
+                        "access": {},
+                    }
+                ).encode("utf-8"),
+            )
+            assert code == 200
+            row = await store.get_user_registry("N0CALL")
+            assert row is not None
+            assert str(row["qra"]) == "FN31PR"
+            assert str(row["qth"]) == "Milwaukee, WI"
+            assert await store.get_user_pref("N0CALL", "location") == "Downtown"
         finally:
             await store.close()
 

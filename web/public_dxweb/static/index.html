@@ -13,6 +13,8 @@
 <style>
 /* ================================================================ theme variables */
 :root {
+  --sidebar-width: 320px;
+  --sidebar-toast-offset: calc(var(--sidebar-width) + 28px);
   --bg-body:        #090d13;
   --bg-header:      linear-gradient(160deg, #0d1420 0%, #111827 60%, #0a1628 100%);
   --bg-header-wave: linear-gradient(90deg, transparent, #1d6fa4 30%, #58a6ff 50%, #1d6fa4 70%, transparent);
@@ -236,12 +238,26 @@ html.light #header { box-shadow:0 2px 10px rgba(0,0,0,.08); }
   transition:color .15s,border-color .15s,background .15s;
 }
 #map-toggle:hover { color:var(--text-primary); border-color:var(--accent); background:var(--row-hover); }
+#sidebar-toggle {
+  border:1px solid var(--border-pill); background:var(--bg-pill); color:var(--text-secondary);
+  border-radius:999px; min-width:116px; height:34px; padding:0 14px;
+  cursor:pointer; flex-shrink:0; font:700 0.72rem/1 'Exo',system-ui,Arial,sans-serif;
+  letter-spacing:.08em; text-transform:uppercase;
+  transition:background .2s,border-color .2s,color .2s;
+}
+#sidebar-toggle:hover { background:var(--row-hover); border-color:var(--accent); color:var(--accent); }
 
 /* ================================================================ sidebar */
 #sidebar {
   width:320px; flex-shrink:0; background:var(--bg-filters);
   border-left:1px solid var(--border-main); overflow-y:auto;
   display:flex; flex-direction:column; gap:10px; padding:10px 12px;
+}
+body.sidebar-hidden {
+  --sidebar-toast-offset: 28px;
+}
+body.sidebar-hidden #sidebar {
+  display:none;
 }
 .filter-section  { display:flex; flex-direction:column; gap:4px; }
 .filter-label    { font-size:0.65rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.07em; font-weight:600; }
@@ -732,7 +748,7 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 
 /* ================================================================ toast */
 #toast-wrap {
-  position:fixed; bottom:36px; right:calc(240px + 20px); z-index:9999;
+  position:fixed; bottom:28px; right:var(--sidebar-toast-offset); z-index:9999;
   display:flex; flex-direction:column-reverse; gap:6px; pointer-events:none;
 }
 .toast {
@@ -980,6 +996,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
     border-top:1px solid var(--border-main);
     overflow:visible;
   }
+  body.sidebar-hidden #sidebar { display:none; }
   #map-wrap { height:260px; }
 }
 @media (max-width:760px) {
@@ -1027,6 +1044,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
       <canvas id="hdr-sparkline" height="18"></canvas>
     </div>
     <span id="last-spot-time"></span>
+    <button id="sidebar-toggle" type="button" title="Hide the sidebar" aria-label="Hide the sidebar">Hide Sidebar</button>
     <button id="audio-toggle" class="off" title="Toggle audio alerts" aria-label="Audio alerts">
       <svg id="audio-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1744,9 +1762,20 @@ const AUDIO_OFF = `<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1
 // ================================================================ Theme
 const TILE_DARK  = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 const TILE_LIGHT = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+const _storedSidebar = localStorage.getItem('sidebarHidden');
 const _storedTheme = localStorage.getItem('theme');
 let isLight = _storedTheme !== null ? _storedTheme === 'light' : window.matchMedia('(prefers-color-scheme: light)').matches;
+let sidebarHidden = _storedSidebar === 'on';
 let tileLayer;
+
+function updateSidebarToggle() {
+  const btn = document.getElementById('sidebar-toggle');
+  if (!btn) return;
+  document.body.classList.toggle('sidebar-hidden', sidebarHidden);
+  btn.textContent = sidebarHidden ? 'Show Sidebar' : 'Hide Sidebar';
+  btn.title = sidebarHidden ? 'Show the sidebar' : 'Hide the sidebar';
+  btn.setAttribute('aria-label', btn.title);
+}
 
 function applyTheme(light) {
   isLight = light;
@@ -1760,6 +1789,13 @@ function applyTheme(light) {
 document.getElementById('theme-toggle').addEventListener('click', () => applyTheme(!isLight));
 document.documentElement.classList.toggle('light', isLight);
 document.getElementById('theme-icon').innerHTML = isLight ? ICON_MOON : ICON_SUN;
+updateSidebarToggle();
+document.getElementById('sidebar-toggle').addEventListener('click', () => {
+  sidebarHidden = !sidebarHidden;
+  localStorage.setItem('sidebarHidden', sidebarHidden ? 'on' : 'off');
+  updateSidebarToggle();
+  if (currentPage === 'spots' && mapVisible) setTimeout(() => map.invalidateSize(), 10);
+});
 
 // ================================================================ Audio
 let audioEnabled = localStorage.getItem('audio') === 'on';

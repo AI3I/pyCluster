@@ -2651,6 +2651,25 @@ def test_dxspider_shorthand_slash_forms_and_muf_history(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_show_wwv_defaults_to_recent_20_rows(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_wwv_limit.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            for idx in range(25):
+                await store.add_bulletin("wwv", "WWV", "LOCAL", now - idx * 60, f"SFI={120 + idx} A=5 K=2 Quiet")
+            _, out = await srv._execute_command("N0CALL", "show/wwv")
+            assert out.count("<WWV>") == 20
+            assert "SFI=144" not in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_show_muf_dxspider_style_path_report(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "muf_dxspider_path.db")
@@ -2688,6 +2707,83 @@ def test_show_muf_dxspider_style_path_report(tmp_path) -> None:
             assert "Location                       Lat / Long           Azim" in out
             assert "European Russia" in out
             assert "UT LT  MUF Zen" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_muf_path_uses_midpoint_solar_zenith_for_signal_estimates(tmp_path) -> None:
+    db = str(tmp_path / "muf_midpoint_zenith.db")
+    cfg = _mk_config(db)
+    store = SpotStore(db)
+    srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+    try:
+        lat, lon = srv._path_midpoint(42.0, -71.0, 39.0, -98.0)
+        noon_utc = datetime(2026, 6, 21, 18, 0, tzinfo=timezone.utc)
+        midnight_utc = datetime(2026, 6, 21, 6, 0, tzinfo=timezone.utc)
+
+        zen_noon = srv._solar_zenith_angle(noon_utc, lat, lon)
+        zen_midnight = srv._solar_zenith_angle(midnight_utc, lat, lon)
+
+        assert zen_noon < zen_midnight
+        assert srv._effective_muf_for_zenith(26.0, zen_noon) > srv._effective_muf_for_zenith(26.0, zen_midnight)
+        assert srv._signal_report_for_muf(14.0, 26.0, zen_noon)
+        assert srv._signal_report_for_muf(14.0, 26.0, zen_midnight) == ""
+        assert srv._signal_report_for_muf(1.8, 26.0, zen_noon) == ""
+    finally:
+        asyncio.run(store.close())
+
+
+def test_show_wcy_falls_back_to_derived_wwv_when_no_wcy_entries(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_wcy_derived_from_wwv.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(
+            call="N0CALL",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_bulletin("wwv", "VE7CC", "LOCAL", now, "SFI=108 A=4 K=1 No Storms -> Moderate w/G2")
+            _, out = await srv._execute_command("N0CALL", "show/wcy")
+            assert "Derived from WWV feed" in out
+            assert "Date        Hour   SFI   A   K Exp.K" in out
+            assert "<VE7CC>" in out
+            assert "108" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_wcy_derived_fallback_uses_wcy_filters_not_wwv_filters(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_wcy_derived_filters.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(
+            call="N0CALL",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_bulletin("wwv", "VE7CC", "LOCAL", now, "SFI=108 A=4 K=1 No Storms -> Moderate w/G2")
+
+            await srv._execute_command("N0CALL", "accept/wcy 1 by VE7")
+            await srv._execute_command("N0CALL", "accept/wwv 1 by W1")
+
+            _, out = await srv._execute_command("N0CALL", "show/wcy")
+            assert "Derived from WWV feed" in out
+            assert "VE7CC" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/wwv")
+            assert "VE7CC" not in out
         finally:
             await store.close()
 
@@ -5532,7 +5628,7 @@ def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_pat
     asyncio.run(run())
 
 
-def test_telnet_password_prompt_sends_echo_negotiation(tmp_path) -> None:
+def test_telnet_password_prompt_stays_clean_for_raw_tcp_clients(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "login_echo_negotiation.db")
         cfg = AppConfig(
@@ -5560,16 +5656,102 @@ def test_telnet_password_prompt_sends_echo_negotiation(tmp_path) -> None:
             await w1.drain()
             pw = await asyncio.wait_for(r1.readuntil(b"password: "), timeout=2.0)
             assert b"password:" in pw
-            assert b"\xff\xfb\x01" in pw
+            assert b"\xff" not in pw
             w1.write(b"pw1\r\n")
             await w1.drain()
             hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
-            assert b"\xff\xfc\x01" in hello
+            assert b"\xff" not in hello
             assert b"Welcome" in hello
             w1.close()
             await w1.wait_closed()
         finally:
             await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_password_prompt_negotiates_echo_for_telnet_clients(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "login_echo_telnet_client.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-15", require_password=True),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        await store.set_user_pref("N0CALL", "password", "pw1", int(datetime.now(timezone.utc).timestamp()))
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"\xff\xfd\x01")
+            w1.write(b"N0CALL\r\n")
+            await w1.drain()
+            pw = await asyncio.wait_for(r1.readuntil(b"password: "), timeout=2.0)
+            assert b"\xff\xfb\x01" in pw
+            assert b"\xff\xfb\x03" in pw
+            assert b"\xff\xfd\x03" in pw
+            assert pw.endswith(b"password: ")
+            w1.write(b"pw1\r\n")
+            await w1.drain()
+            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            assert b"\xff\xfc\x01" in hello
+            assert b"\xff\xfc\x03" in hello
+            assert b"\xff\xfe\x03" in hello
+            assert b"Welcome" in hello
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_password_echo_negotiation_is_initiated_by_server(tmp_path) -> None:
+    class _BufWriter:
+        def __init__(self) -> None:
+            self.buf = bytearray()
+
+        def write(self, data: bytes) -> None:
+            self.buf.extend(data)
+
+        async def drain(self) -> None:
+            return
+
+    async def run() -> None:
+        db = str(tmp_path / "login_echo_gate.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        writer = _BufWriter()
+        try:
+            await srv._set_telnet_password_echo(reader, writer, suppress=True)  # type: ignore[arg-type]
+            assert bytes(writer.buf) == b"\xff\xfb\x01\xff\xfb\x03\xff\xfd\x03"
+
+            reader.feed_data(b"\xff\xfd\x01")
+            assert await srv._read_telnet_byte(reader, 0) == b""
+
+            await srv._set_telnet_password_echo(reader, writer, suppress=True)  # type: ignore[arg-type]
+            await srv._set_telnet_password_echo(reader, writer, suppress=False)  # type: ignore[arg-type]
+            assert bytes(writer.buf) == (
+                b"\xff\xfb\x01\xff\xfb\x03\xff\xfd\x03"
+                b"\xff\xfb\x01\xff\xfb\x03\xff\xfd\x03"
+                b"\xff\xfc\x01\xff\xfc\x03\xff\xfe\x03"
+            )
+        finally:
             await store.close()
 
     asyncio.run(run())
@@ -5834,6 +6016,125 @@ def test_show_heading_uses_wpxloc_when_cty_is_unavailable(tmp_path) -> None:
             await store.upsert_user_registry("N0CALL", now, qra="FN42LI")
             _, out = await srv._execute_command("N0CALL", "show/heading RG65SM")
             assert "Heading to European Russia (RG65SM):" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_sun_reports_sunrise_and_sunset(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_sun.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N0CALL", now, qra="FN31PR")
+            _, out = await srv._execute_command("N0CALL", "show/sun")
+            assert "Sunrise:" in out
+            assert "Sunset:" in out
+            assert "Next Event:" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_dx_line_suffix_includes_us_state_when_enabled(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "usstate_suffix.db")
+        cfg = _mk_config(db)
+        cfg.public_web.cty_dat_path = _write_cty(tmp_path)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.set_user_pref("N0CALL", "usstate", "WI", now)
+            await store.set_usdb_entry("K1ABC", "state", "MA", now)
+            suffix = await srv._dx_line_suffix_for_call("N0CALL", "K1ABC")
+            assert suffix.strip() == "MA"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_live_wwv_bulletin_uses_aligned_table_format(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "live_wwv_table.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(call="N0CALL", writer=writer, connected_at=datetime.now(timezone.utc))
+        try:
+            delivered = await srv.publish_bulletin("wwv", "WWV", "LOCAL", "SFI=121 A=5 K=3 Moderate w/G2 -> Minor w/G1")
+            assert delivered == 1
+            text = bytes(writer.buffer).decode("utf-8", errors="replace")
+            assert "Date        Hour   SFI   A   K Forecast" in text
+            assert "Moderate w/G2 -> Minor w/G1" in text
+            assert "<WWV>" in text
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_sun_target_uses_geo_lookup_instead_of_node_fallback(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_sun_target.db")
+        cty_path = _write_cty(tmp_path)
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16", node_locator="FN20"),
+            telnet=TelnetConfig(),
+            web=WebConfig(),
+            public_web=PublicWebConfig(cty_dat_path=cty_path),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            _, out = await srv._execute_command("N0CALL", "show/sun K")
+            assert "Reference: United States" in out
+            assert "node grid square FN20" not in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_muf_path_report_uses_west_longitudes_and_varies_by_hour(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "muf_path_variation.db")
+        cty_path = _write_cty(tmp_path)
+        wpx_path = _write_wpxloc(tmp_path)
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16", node_locator="EN63AA"),
+            telnet=TelnetConfig(),
+            web=WebConfig(),
+            public_web=PublicWebConfig(cty_dat_path=cty_path, wpxloc_raw_path=wpx_path),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime(2026, 4, 10, 18, 0, tzinfo=timezone.utc).timestamp())
+            await store.add_bulletin("wwv", "WWV", "LOCAL", now, "SFI=98 A=6 K=2 Quiet")
+            await store.add_bulletin("wwv", "WWV", "LOCAL", now - 3 * 3600, "SFI=98 A=6 K=2 Quiet")
+            await store.add_bulletin("wwv", "WWV", "LOCAL", now - 6 * 3600, "SFI=98 A=6 K=2 Quiet")
+            _, out = await srv._execute_command("N0CALL", "show/muf K 3")
+            assert "87 57 W" in out
+            rows = [
+                line for line in out.splitlines()
+                if len(line.split()) >= 4
+                and line.split()[0].isdigit()
+                and line.split()[1].isdigit()
+                and "." in line.split()[2]
+            ]
+            assert len(rows) >= 3
+            muf_values = {line.split()[2] for line in rows[:3]}
+            assert len(muf_values) > 1
         finally:
             await store.close()
 

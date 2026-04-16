@@ -1536,6 +1536,30 @@ class SpotStore:
             self._conn.commit()
             return int(cur.rowcount or 0)
 
+    async def delete_user_account(self, call: str, *, include_registry: bool = True) -> dict[str, int]:
+        c = call.strip().upper()
+        counts = {"registry": 0, "prefs": 0, "vars": 0, "usdb": 0, "buddy": 0, "startup": 0, "filters": 0}
+        if not c:
+            return counts
+        async with self._lock:
+            if include_registry:
+                cur = self._conn.execute("DELETE FROM user_registry WHERE call = ?", (c,))
+                counts["registry"] = int(cur.rowcount or 0)
+            cur = self._conn.execute("DELETE FROM user_prefs WHERE call = ?", (c,))
+            counts["prefs"] = int(cur.rowcount or 0)
+            cur = self._conn.execute("DELETE FROM user_vars WHERE call = ?", (c,))
+            counts["vars"] = int(cur.rowcount or 0)
+            cur = self._conn.execute("DELETE FROM usdb_entries WHERE call = ?", (c,))
+            counts["usdb"] = int(cur.rowcount or 0)
+            cur = self._conn.execute("DELETE FROM buddy_entries WHERE call = ?", (c,))
+            counts["buddy"] = int(cur.rowcount or 0)
+            cur = self._conn.execute("DELETE FROM user_startup_commands WHERE call = ?", (c,))
+            counts["startup"] = int(cur.rowcount or 0)
+            cur = self._conn.execute("DELETE FROM filter_rules WHERE call = ?", (c,))
+            counts["filters"] = int(cur.rowcount or 0)
+            self._conn.commit()
+        return counts
+
     async def match_user_registry_calls(self, pattern: str, *, limit: int = 5000) -> list[str]:
         pat = str(pattern or "").strip().upper()
         if not pat:
