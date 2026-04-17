@@ -101,6 +101,7 @@ Recommended layout for a host-level install:
 
 - checkout under `/usr/src/pyCluster`
 - let `deploy/install.sh` create the `pycluster` system user and group automatically
+- use a clean standalone Linux host dedicated to pyCluster rather than trying to combine it with unrelated products or pre-existing service bundles
 
 There is no separate pre-install account creation step for the operator to perform.
 
@@ -117,6 +118,9 @@ If you skip nginx setup, pyCluster still installs and starts cleanly, but:
 - the sysop web UI stays on `127.0.0.1:8080`
 - the public web UI stays on `127.0.0.1:8081`
 - those listeners are local-only until you publish them with nginx or another reverse proxy
+
+Skipping nginx setup does not change the supported deployment model. The intended path is still a pyCluster-owned nginx configuration on the pyCluster host, not grafting pyCluster into some unrelated existing reverse-proxy layout later.
+`deploy/setup-nginx.sh` is the supported out-of-the-gate path for wiring nginx to host ports `80` and `443`, and it now fails fast if another non-nginx service already owns those ports.
 
 This installs:
 
@@ -147,6 +151,8 @@ For upgrades from any release below `1.0.6`, `deploy/upgrade.sh` runs the cumula
 - `run_upgrade_1_0_6`
   - move any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
 
+`deploy/upgrade.sh`, `deploy/repair.sh`, and `deploy/uninstall.sh` also create timestamped runtime backups under `/root/pycluster-backups/` before making destructive changes to the live tree.
+
 Recommended before future upgrades:
 
 - keep `config/pycluster.toml` close to upstream defaults
@@ -154,6 +160,8 @@ Recommended before future upgrades:
 - leave `config/pycluster.local.toml` untracked so `git pull --ff-only` stays clean
 
 That local override file is also the right place for host-specific secrets such as QRZ credentials, SMTP credentials, and any node identity or listener changes that should survive repo updates.
+
+SMTP should also be treated as part of the pyCluster host configuration. The supported path is to configure the mail settings pyCluster needs for its own delivery behavior, not to assume pyCluster is meant to be bolted onto some unrelated pre-existing mail stack without dedicated setup.
 
 ## Repair
 
@@ -315,6 +323,7 @@ Default bind behavior:
 - the public web service listens on `127.0.0.1:8081`
 
 That localhost binding is intentional. A fresh install is not meant to expose the web UI directly until you finish reverse-proxy setup.
+That is part of the standalone deployment model: pyCluster expects you to complete its own reverse-proxy setup cleanly, not to co-mingle it into an unrelated existing web stack and assume equivalent behavior.
 
 ## Reverse Proxy Setup
 
@@ -325,6 +334,7 @@ sudo ./deploy/setup-nginx.sh
 ```
 
 You can also let `deploy/install.sh` call that for you interactively during first install.
+That script is intended to claim `80/443` for the pyCluster nginx deployment path on the host. If another non-nginx service is already bound there, it stops with a clear error instead of silently fighting the existing web stack.
 
 Typical nginx setup choices:
 
