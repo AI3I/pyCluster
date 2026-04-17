@@ -861,6 +861,7 @@ def test_public_web_login_requires_registration_and_valid_email(tmp_path) -> Non
     async def run() -> None:
         db = str(tmp_path / "public_auth_registration_required.db")
         cfg = _mk_config(db)
+        cfg.node.verified_email_required_for_web = True
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))

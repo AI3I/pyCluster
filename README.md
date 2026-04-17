@@ -18,6 +18,7 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 - Public web UI for users and a dedicated web console for system operators
 - SQLite persistence, CTY and wpxloc refresh tooling, and fail2ban integration
 - Validated deploy path across modern Debian, Ubuntu, Fedora, and Red Hat-family Linux
+- Intended for standalone deployment on a clean Linux host, VPS, Raspberry Pi, or dedicated physical system
 
 ## 🧭 What pyCluster Does
 
@@ -30,6 +31,18 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 - integrates with fail2ban for login-abuse protection
 - supports age-based cleanup for spots, messages, and bulletins
 - maintains local `CTY.DAT` and `wpxloc.raw` data with optional automatic refresh from Country Files
+
+## Standalone Deployment Model
+
+pyCluster is intended to be installed as a standalone product on a clean system.
+
+- recommended targets are a fresh VPS, Raspberry Pi, mini PC, VM, or dedicated physical server running a supported Linux distribution
+- the supported deployment model is one host dedicated to pyCluster and its own bundled services
+- do not plan around co-mingling pyCluster with unrelated products, control panels, large application stacks, or hand-managed service bundles on the same machine
+- the same rule applies to reverse proxy and mail handling: use the documented nginx and SMTP configuration paths for pyCluster itself rather than trying to wedge pyCluster into an unrelated existing proxy/mail stack
+- if you want a predictable install, upgrade, repair, and support path, start with a clean host rather than trying to layer pyCluster into an already busy system
+
+This is not just a preference in the docs. The deployment scripts, service layout, ports, runtime paths, nginx guidance, SMTP configuration expectations, and operator assumptions are all written around pyCluster owning its host cleanly.
 
 ## Where pyCluster Improves on Legacy Cluster Software
 
@@ -134,6 +147,8 @@ Update an existing checkout:
 git pull --ff-only
 ```
 
+For production-style installs, start from a clean host. Do not treat pyCluster as a sidecar package to be dropped into an already crowded server with other unrelated products.
+
 Run locally for development:
 
 ```bash
@@ -161,9 +176,14 @@ Interactive installs now offer to run `deploy/setup-nginx.sh` for you. That flow
 - whether to use Let's Encrypt or self-signed TLS
 - the email address required for Let's Encrypt
 
+Do not skip that setup and then assume pyCluster is meant to be merged into some unrelated pre-existing nginx layout. The documented path is a pyCluster-owned nginx configuration on a clean host.
+`deploy/setup-nginx.sh` is also the supported out-of-the-gate path for wiring nginx to ports `80` and `443`; it now fails fast if some other non-nginx service already owns those ports.
+
 For a host-level install, cloning into `/usr/src/pyCluster` is the recommended layout.
 The deploy scripts create the `pycluster` system user and group automatically; the installer does not require the operator to create that account first.
 The installed runtime tree is placed under `/home/pycluster/pyCluster`.
+The intended install target is a clean standalone Linux host dedicated to pyCluster rather than a system already shared with unrelated application stacks.
+The same expectation applies to SMTP: configure mail delivery specifically for pyCluster, on the pyCluster host, using the documented settings and local override file, rather than treating pyCluster as a partial add-on to some unrelated mail environment.
 
 Typical deployed layout:
 
@@ -203,6 +223,7 @@ For upgrades from any release below `1.0.6`, `deploy/upgrade.sh` performs the re
   - moves any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
 
 The upgrade path still preserves the existing `config/pycluster.toml`, local overrides, data, and logs in place.
+`deploy/upgrade.sh`, `deploy/repair.sh`, and `deploy/uninstall.sh` also create timestamped runtime backups under `/root/pycluster-backups/` before making destructive changes to the live tree.
 
 Default listeners:
 
@@ -215,6 +236,8 @@ Important:
 - unless you publish nginx or another reverse proxy in front of them, the two web listeners stay bound to localhost only
 - a fresh install is intentionally not public on ports `8080` or `8081`
 - `deploy/install.sh` now offers to finish that nginx setup during the install
+- `deploy/setup-nginx.sh` is the supported way to claim `80/443` for pyCluster on the host
+- if you skip nginx or SMTP configuration, do not assume the supported answer is to splice pyCluster into some other product's reverse proxy or mail stack later; the intended path is still a clean pyCluster-owned host configuration
 
 ## 🛠️ Deployment
 

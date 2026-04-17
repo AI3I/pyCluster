@@ -397,11 +397,11 @@ Martinique:               08:  11:  NA:   14.70:    61.03:     4.0:  FM:
 French Polynesia:         32:  63:  OC:  -17.65:   149.40:    10.0:  FO:
     FO;
 Austral Islands:          32:  63:  OC:  -23.37:   149.48:    10.0:  FO/a:
-    =TX5EU;
+    =TX5EU,=TX5N;
 Clipperton Island:        07:  10:  NA:   10.28:   109.22:     8.0:  FO/c:
     =TX5S;
 Marquesas Islands:        31:  63:  OC:   -8.92:   140.07:     9.5:  FO/m:
-    =FO5QS,=TX9W;
+    =FO5QS,=TX9W,=TX7N;
 St. Pierre & Miquelon:    05:  09:  NA:   46.77:    56.20:     3.0:  FP:
     FP;
 Reunion Island:           39:  53:  AF:  -21.12:   -55.48:    -4.0:  FR:

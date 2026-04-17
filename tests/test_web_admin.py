@@ -659,6 +659,7 @@ def test_web_admin_login_requires_registration_and_valid_email(tmp_path) -> None
     async def run() -> None:
         db = str(tmp_path / "web_admin_registration_required.db")
         cfg = _mk_config(db, admin_token="")
+        cfg.node.verified_email_required_for_web = True
         store = SpotStore(db)
         srv = WebAdminServer(
             config=cfg,
