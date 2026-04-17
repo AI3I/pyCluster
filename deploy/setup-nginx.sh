@@ -6,7 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"
 
 PUBLIC_HOST="${PUBLIC_HOST:-_}"
+PUBLIC_ALIASES="${PUBLIC_ALIASES:-}"
 SYSOP_HOST="${SYSOP_HOST:-}"
+SYSOP_ALIASES="${SYSOP_ALIASES:-}"
 TLS_MODE="${TLS_MODE:-self-signed}"
 LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-}"
 NGINX_CONFIG_DIR="${NGINX_CONFIG_DIR:-/etc/nginx/conf.d}"
@@ -19,7 +21,9 @@ Usage: sudo ./deploy/setup-nginx.sh [options]
 
 Options:
   --public-host HOST         Public web hostname or '_' for default catch-all
+  --public-aliases HOSTS     Optional comma-separated additional public hostnames
   --sysop-host HOST          Optional sysop web hostname
+  --sysop-aliases HOSTS      Optional comma-separated additional sysop hostnames
   --tls-mode MODE            one of: none, self-signed, letsencrypt
   --email EMAIL              Required for letsencrypt mode
   --interactive              Prompt for nginx/TLS settings
@@ -36,8 +40,16 @@ while [ "$#" -gt 0 ]; do
       PUBLIC_HOST="$2"
       shift 2
       ;;
+    --public-aliases)
+      PUBLIC_ALIASES="$2"
+      shift 2
+      ;;
     --sysop-host)
       SYSOP_HOST="$2"
+      shift 2
+      ;;
+    --sysop-aliases)
+      SYSOP_ALIASES="$2"
       shift 2
       ;;
     --tls-mode)
@@ -70,11 +82,14 @@ if [ "$INTERACTIVE" = "1" ]; then
   fi
   PUBLIC_HOST="$(prompt_value "Public hostname for the user web UI (for example: cluster.example.net):" "${PUBLIC_HOST:-}")"
   [ -n "$PUBLIC_HOST" ] || die "public hostname is required"
+  PUBLIC_ALIASES="$(prompt_value "Additional public hostnames/SANs (comma-separated, optional):" "${PUBLIC_ALIASES:-}")"
   if prompt_yes_no "Expose the sysop web UI through nginx on its own hostname?" "${SYSOP_HOST:+y}"; then
     SYSOP_HOST="$(prompt_value "Sysop hostname (for example: sysop.example.net):" "${SYSOP_HOST:-}")"
     [ -n "$SYSOP_HOST" ] || die "sysop hostname is required"
+    SYSOP_ALIASES="$(prompt_value "Additional sysop hostnames/SANs (comma-separated, optional):" "${SYSOP_ALIASES:-}")"
   else
     SYSOP_HOST=""
+    SYSOP_ALIASES=""
   fi
   if prompt_yes_no "Configure HTTPS on ports 80/443?" "y"; then
     if prompt_yes_no "Use Let's Encrypt certificates?" "y"; then
@@ -90,6 +105,60 @@ if [ "$INTERACTIVE" = "1" ]; then
     LETSENCRYPT_EMAIL=""
   fi
 fi
+
+normalize_aliases() {
+  local raw="$1"
+  local out="" part trimmed
+  IFS=',' read -r -a parts <<<"$raw"
+  for part in "${parts[@]}"; do
+    trimmed="$(printf '%s' "$part" | xargs)"
+    [ -n "$trimmed" ] || continue
+    if [ -n "$out" ]; then
+      out="$out,$trimmed"
+    else
+      out="$trimmed"
+    fi
+  done
+  printf '%s' "$out"
+}
+
+PUBLIC_ALIASES="$(normalize_aliases "$PUBLIC_ALIASES")"
+SYSOP_ALIASES="$(normalize_aliases "$SYSOP_ALIASES")"
+
+build_server_names() {
+  local primary="$1"
+  local aliases="$2"
+  local out="$primary" part
+  [ -n "$aliases" ] || {
+    printf '%s' "$out"
+    return
+  }
+  IFS=',' read -r -a parts <<<"$aliases"
+  for part in "${parts[@]}"; do
+    [ -n "$part" ] || continue
+    case " $out " in
+      *" $part "*) ;;
+      *) out="$out $part" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+build_host_array() {
+  local primary="$1"
+  local aliases="$2"
+  local -a out=()
+  local part
+  [ "$primary" = "_" ] || out+=("$primary")
+  if [ -n "$aliases" ]; then
+    IFS=',' read -r -a parts <<<"$aliases"
+    for part in "${parts[@]}"; do
+      [ -n "$part" ] || continue
+      out+=("$part")
+    done
+  fi
+  printf '%s\n' "${out[@]}"
+}
 
 case "$TLS_MODE" in
   none|self-signed|letsencrypt) ;;
@@ -183,7 +252,7 @@ selinux_for_nginx() {
 
 write_http_config() {
   local name="$1"
-  local host="$2"
+  local hostnames="$2"
   local upstream_port="$3"
   local conf="$NGINX_CONFIG_DIR/pycluster-${name}.conf"
   cat > "$conf" <<EOF
@@ -194,7 +263,7 @@ map \$http_upgrade \$connection_upgrade_${name} {
 
 server {
     listen 80;
-    server_name ${host};
+    server_name ${hostnames};
 
     location / {
         proxy_pass http://127.0.0.1:${upstream_port};
@@ -212,7 +281,7 @@ EOF
 
 write_https_config() {
   local name="$1"
-  local host="$2"
+  local hostnames="$2"
   local upstream_port="$3"
   local cert="$4"
   local key="$5"
@@ -225,13 +294,13 @@ map \$http_upgrade \$connection_upgrade_${name} {
 
 server {
     listen 80;
-    server_name ${host};
+    server_name ${hostnames};
     return 301 https://\$host\$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name ${host};
+    server_name ${hostnames};
 
     ssl_certificate ${cert};
     ssl_certificate_key ${key};
@@ -257,14 +326,25 @@ EOF
 
 issue_self_signed() {
   local host="$1"
-  local prefix="$2"
+  local aliases="$2"
+  local prefix="$3"
   local cert="$SSL_DIR/${prefix}.crt"
   local key="$SSL_DIR/${prefix}.key"
+  local san_list="" item
   if [ -z "$host" ] || [ "$host" = "_" ]; then
     host="pycluster.local"
   fi
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    if [ -n "$san_list" ]; then
+      san_list="${san_list},DNS:${item}"
+    else
+      san_list="DNS:${item}"
+    fi
+  done < <(build_host_array "$host" "$aliases")
   openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
     -subj "/CN=${host}" \
+    ${san_list:+-addext "subjectAltName = ${san_list}"} \
     -keyout "$key" -out "$cert" >/dev/null 2>&1
   chmod 0600 "$key"
   printf '%s\n%s\n' "$cert" "$key"
@@ -273,29 +353,32 @@ issue_self_signed() {
 configure_site() {
   local name="$1"
   local host="$2"
-  local port="$3"
+  local aliases="$3"
+  local port="$4"
   local cert
   local key
+  local hostnames
+  hostnames="$(build_server_names "$host" "$aliases")"
 
   case "$TLS_MODE" in
     none)
-      write_http_config "$name" "$host" "$port"
+      write_http_config "$name" "$hostnames" "$port"
       ;;
     self-signed)
-      mapfile -t paths < <(issue_self_signed "$host" "$name")
+      mapfile -t paths < <(issue_self_signed "$host" "$aliases" "$name")
       cert="${paths[0]}"
       key="${paths[1]}"
-      write_https_config "$name" "$host" "$port" "$cert" "$key"
+      write_https_config "$name" "$hostnames" "$port" "$cert" "$key"
       ;;
     letsencrypt)
-      write_http_config "$name" "$host" "$port"
+      write_http_config "$name" "$hostnames" "$port"
       ;;
   esac
 }
 
-configure_site public "$PUBLIC_HOST" 8081
+configure_site public "$PUBLIC_HOST" "$PUBLIC_ALIASES" 8081
 if [ -n "$SYSOP_HOST" ]; then
-  configure_site sysop "$SYSOP_HOST" 8080
+  configure_site sysop "$SYSOP_HOST" "$SYSOP_ALIASES" 8080
 fi
 
 if [ "$TLS_MODE" = "none" ]; then
@@ -311,15 +394,25 @@ systemctl enable nginx >/dev/null
 systemctl restart nginx
 
 if [ "$TLS_MODE" = "letsencrypt" ]; then
-  certbot --nginx --non-interactive --agree-tos --redirect -m "$LETSENCRYPT_EMAIL" -d "$PUBLIC_HOST"
+  certbot_cmd=(certbot --nginx --non-interactive --agree-tos --redirect -m "$LETSENCRYPT_EMAIL")
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    certbot_cmd+=(-d "$item")
+  done < <(build_host_array "$PUBLIC_HOST" "$PUBLIC_ALIASES")
+  "${certbot_cmd[@]}"
   if [ -n "$SYSOP_HOST" ]; then
-    certbot --nginx --non-interactive --agree-tos --redirect -m "$LETSENCRYPT_EMAIL" -d "$SYSOP_HOST"
+    certbot_cmd=(certbot --nginx --non-interactive --agree-tos --redirect -m "$LETSENCRYPT_EMAIL")
+    while IFS= read -r item; do
+      [ -n "$item" ] || continue
+      certbot_cmd+=(-d "$item")
+    done < <(build_host_array "$SYSOP_HOST" "$SYSOP_ALIASES")
+    "${certbot_cmd[@]}"
   fi
   systemctl reload nginx
 fi
 
 if [ "$TLS_MODE" = "none" ]; then
-  log "nginx reverse proxy configured on port 80 (public_host=$PUBLIC_HOST sysop_host=${SYSOP_HOST:-none})"
+  log "nginx reverse proxy configured on port 80 (public_host=$PUBLIC_HOST public_aliases=${PUBLIC_ALIASES:-none} sysop_host=${SYSOP_HOST:-none} sysop_aliases=${SYSOP_ALIASES:-none})"
 else
-  log "nginx reverse proxy configured on ports 80/443 (tls_mode=$TLS_MODE public_host=$PUBLIC_HOST sysop_host=${SYSOP_HOST:-none})"
+  log "nginx reverse proxy configured on ports 80/443 (tls_mode=$TLS_MODE public_host=$PUBLIC_HOST public_aliases=${PUBLIC_ALIASES:-none} sysop_host=${SYSOP_HOST:-none} sysop_aliases=${SYSOP_ALIASES:-none})"
 fi

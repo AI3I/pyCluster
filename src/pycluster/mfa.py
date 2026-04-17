@@ -5,6 +5,7 @@ import secrets
 import smtplib
 import ssl
 import time
+from email.utils import formatdate, make_msgid
 from email.message import EmailMessage
 from typing import Callable
 
@@ -36,6 +37,8 @@ class SMTPMailer:
         msg["From"] = f"{from_name} <{from_addr}>" if from_name else from_addr
         msg["To"] = recipient.strip()
         msg["Subject"] = subject
+        msg["Date"] = formatdate(localtime=True)
+        msg["Message-ID"] = make_msgid()
         msg.set_content(body)
 
         timeout = max(1, int(self.config.timeout_seconds or 10))
