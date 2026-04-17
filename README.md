@@ -214,7 +214,7 @@ sudo ./deploy/doctor.sh
 
 For git-based upgrades, move site-local changes out of the tracked `config/pycluster.toml` file and into `config/pycluster.local.toml` first. That keeps `git pull --ff-only` clean while preserving local runtime settings.
 
-For upgrades from any release below `1.0.6`, `deploy/upgrade.sh` performs the required cumulative migration chain before services restart:
+The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh` performs the required cumulative migration chain before services restart:
 
 - `run_upgrade_1_0_1`
   - hashes any legacy plaintext passwords still stored in `user_prefs`
@@ -286,7 +286,7 @@ sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
 
-If you are moving an existing node from `1.0.0` to `1.0.1`, run that upgrade path instead of reinstalling. The upgrader handles the `1.0.1` state conversion in place.
+If you are upgrading from any `1.0.x` release starting at `1.0.0`, use the scripted upgrade path instead of reinstalling. The cumulative migrations are designed to carry older `1.0.x` nodes forward in place.
 
 Installed services:
 
