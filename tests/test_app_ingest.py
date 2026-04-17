@@ -4,6 +4,7 @@ import json
 import pytest
 import re
 
+from pycluster import __version__
 from pycluster.app import ClusterApp
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.models import Spot
@@ -166,7 +167,7 @@ def test_accept_inbound_node_login_sends_legacy_banner_and_init(tmp_path) -> Non
             assert ok is True
             assert accepted == [("AI3I-16", "dxspider")]
             assert legacy_init == ["AI3I-16"]
-            assert "PC18^pyCluster 1.0.6^" in text
+            assert f"PC18^pyCluster {__version__}^" in text
             assert "PC20^" in text
         finally:
             await app.store.close()

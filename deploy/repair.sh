@@ -9,6 +9,7 @@ require_root
 ensure_base_packages
 ensure_supported_python
 log "repairing pyCluster deployment in $PYCLUSTER_APP_DIR"
+backup_runtime_snapshot repair-preflight
 ensure_group
 ensure_user
 ensure_layout
