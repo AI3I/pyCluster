@@ -23,6 +23,7 @@ PYCLUSTER_LOGROTATE_DIR="${PYCLUSTER_LOGROTATE_DIR:-/etc/logrotate.d}"
 PYCLUSTER_FAIL2BAN_BADIP_LIST="${PYCLUSTER_FAIL2BAN_BADIP_LIST:-$PYCLUSTER_APP_DIR/config/fail2ban-badip.local}"
 PYCLUSTER_FAIL2BAN_BADIP_STATE="${PYCLUSTER_FAIL2BAN_BADIP_STATE:-$PYCLUSTER_APP_DIR/data/fail2ban-badip-applied.txt}"
 PYCLUSTER_SYSOP_BOOTSTRAP_NOTE="${PYCLUSTER_SYSOP_BOOTSTRAP_NOTE:-/root/pycluster-initial-sysop.txt}"
+PYCLUSTER_BACKUP_DIR="${PYCLUSTER_BACKUP_DIR:-/root/pycluster-backups}"
 PYCLUSTER_TMP_SWAPFILE="${PYCLUSTER_TMP_SWAPFILE:-/swapfile-pycluster}"
 PYCLUSTER_TMP_SWAP_MB="${PYCLUSTER_TMP_SWAP_MB:-1024}"
 
@@ -46,6 +47,10 @@ warn() {
 die() {
   printf '[pycluster] ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+timestamp_utc() {
+  date -u +%Y%m%d_%H%M%S
 }
 
 is_interactive_tty() {
@@ -278,6 +283,26 @@ ensure_runtime_ownership() {
   if [ -d "$PYCLUSTER_APP_DIR" ]; then
     chown -R "$PYCLUSTER_USER:$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR"
   fi
+}
+
+backup_runtime_snapshot() {
+  local label="$1"
+  local archive parent base rel
+  local -a paths=()
+  [ -d "$PYCLUSTER_APP_DIR" ] || return 0
+  parent="$(dirname "$PYCLUSTER_APP_DIR")"
+  base="$(basename "$PYCLUSTER_APP_DIR")"
+  for rel in config data logs; do
+    if [ -e "$PYCLUSTER_APP_DIR/$rel" ]; then
+      paths+=("$base/$rel")
+    fi
+  done
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  install -d -m 0700 "$PYCLUSTER_BACKUP_DIR"
+  archive="$PYCLUSTER_BACKUP_DIR/${label}_$(timestamp_utc).tar.gz"
+  tar -C "$parent" -czf "$archive" "${paths[@]}"
+  chmod 0600 "$archive" >/dev/null 2>&1 || true
+  log "backup snapshot written to $archive"
 }
 
 ensure_selinux_contexts() {

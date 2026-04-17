@@ -23,6 +23,10 @@ Options:
   --tls-mode MODE            one of: none, self-signed, letsencrypt
   --email EMAIL              Required for letsencrypt mode
   --interactive              Prompt for nginx/TLS settings
+
+This is the supported way to publish pyCluster with nginx on ports 80/443.
+It assumes pyCluster owns that nginx deployment path on the host and fails
+fast if another non-nginx service is already bound to the required ports.
 EOF
 }
 
@@ -127,6 +131,42 @@ open_firewall() {
     firewall-cmd --reload >/dev/null || true
   elif command -v ufw >/dev/null 2>&1; then
     ufw allow 'Nginx Full' >/dev/null 2>&1 || true
+  fi
+}
+
+port_listener_report() {
+  local want_csv="$1"
+  if ! command -v ss >/dev/null 2>&1; then
+    return 0
+  fi
+  ss -H -ltnp 2>/dev/null | awk -v want="$want_csv" '
+    function wanted(port,   n,i,a) {
+      n = split(want, a, ",")
+      for (i = 1; i <= n; i++) {
+        if (port == a[i]) return 1
+      }
+      return 0
+    }
+    {
+      addr = $4
+      sub(/^.*:/, "", addr)
+      if (wanted(addr)) print
+    }
+  '
+}
+
+require_listener_ports() {
+  local want_csv="$1"
+  local report
+  report="$(port_listener_report "$want_csv")"
+  [ -n "$report" ] || return 0
+  if printf '%s\n' "$report" | grep -viq nginx; then
+    printf '%s\n' "$report" >&2
+    die "required nginx listener ports ($want_csv) are already in use by another service; free ports 80/443 before running setup-nginx.sh"
+  fi
+  if ! systemctl is-active --quiet nginx; then
+    printf '%s\n' "$report" >&2
+    die "ports ($want_csv) appear to be owned by nginx, but nginx is not active under systemd; clean up the host web stack before running setup-nginx.sh"
   fi
 }
 
@@ -258,6 +298,12 @@ if [ -n "$SYSOP_HOST" ]; then
   configure_site sysop "$SYSOP_HOST" 8080
 fi
 
+if [ "$TLS_MODE" = "none" ]; then
+  require_listener_ports "80"
+else
+  require_listener_ports "80,443"
+fi
+
 open_firewall
 selinux_for_nginx
 nginx -t
@@ -272,4 +318,8 @@ if [ "$TLS_MODE" = "letsencrypt" ]; then
   systemctl reload nginx
 fi
 
-log "nginx reverse proxy configured (tls_mode=$TLS_MODE public_host=$PUBLIC_HOST sysop_host=${SYSOP_HOST:-none})"
+if [ "$TLS_MODE" = "none" ]; then
+  log "nginx reverse proxy configured on port 80 (public_host=$PUBLIC_HOST sysop_host=${SYSOP_HOST:-none})"
+else
+  log "nginx reverse proxy configured on ports 80/443 (tls_mode=$TLS_MODE public_host=$PUBLIC_HOST sysop_host=${SYSOP_HOST:-none})"
+fi

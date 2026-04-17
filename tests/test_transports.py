@@ -1,3 +1,4 @@
+from pycluster import __version__
 from pycluster.transports import (
     connect_from_dsn,
     kiss_encode_data_frame,
@@ -152,7 +153,7 @@ def test_dxspider_connect_accepts_direct_pc_banner_without_client_command() -> N
                 assert line == "PC18^DXSpider Version: 1.55 Build: 0.203 Git: 448838ed[r] pc9x^5455^"
                 assert seen == [
                     "AI3I-16",
-                    "PC18^pyCluster 1.0.6^5455^",
+                    f"PC18^pyCluster {__version__}^5455^",
                     "PC20^",
                 ]
             finally:
@@ -199,7 +200,7 @@ def test_dxspider_connect_direct_pc18_keeps_followup_init_frames() -> None:
                 assert await conn.readline() == "PC19^1^AI3I-15^0^1057^H96^"
                 assert seen == [
                     "AI3I-16",
-                    "PC18^pyCluster 1.0.6^5455^",
+                    f"PC18^pyCluster {__version__}^5455^",
                     "PC20^",
                 ]
             finally:

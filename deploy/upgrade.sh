@@ -10,6 +10,7 @@ require_root
 ensure_base_packages
 ensure_supported_python
 log "upgrading pyCluster in $PYCLUSTER_APP_DIR"
+backup_runtime_snapshot upgrade-preflight
 ensure_group
 ensure_user
 ensure_layout

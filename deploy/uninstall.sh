@@ -11,6 +11,7 @@ KEEP_DATA="${KEEP_DATA:-1}"
 KEEP_CONFIG="${KEEP_CONFIG:-1}"
 
 log "uninstalling pyCluster from $PYCLUSTER_APP_DIR"
+backup_runtime_snapshot uninstall-preflight
 disable_service
 stop_service
 rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_SERVICE_NAME"
