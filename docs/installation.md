@@ -143,7 +143,7 @@ sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
 
-For upgrades from any release below `1.0.6`, `deploy/upgrade.sh` runs the cumulative migration chain required by older installs before services restart. The current chain includes:
+The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh` runs the cumulative migration chain required by older installs before services restart. The current chain includes:
 
 - `run_upgrade_1_0_1`
   - hash legacy plaintext user passwords
