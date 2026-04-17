@@ -12,6 +12,7 @@ import pycluster.web_admin as web_admin_mod
 from pycluster.ctydat import load_cty
 from pycluster.auth import is_password_hash, verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
+from pycluster.mfa import SMTPMailer
 from pycluster.models import Spot
 from pycluster.store import SpotStore
 from pycluster.web_admin import WebAdminServer
@@ -1398,6 +1399,53 @@ def test_web_admin_user_notes_and_block_reason_round_trip(tmp_path) -> None:
             await store.close()
 
     asyncio.run(run())
+
+
+def test_smtp_mailer_sets_required_rfc5322_headers(monkeypatch) -> None:
+    sent = {}
+
+    class _FakeSMTP:
+        def __init__(self, host: str, port: int, timeout: int = 10) -> None:
+            sent["host"] = host
+            sent["port"] = port
+            sent["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def starttls(self, context=None) -> None:
+            sent["starttls"] = True
+
+        def login(self, username: str, password: str) -> None:
+            sent["login"] = (username, password)
+
+        def send_message(self, msg) -> None:
+            sent["msg"] = msg
+
+    monkeypatch.setattr("pycluster.mfa.smtplib.SMTP", _FakeSMTP)
+
+    cfg = _mk_config("/tmp/smtp_headers.db").smtp
+    cfg.host = "smtp.example.test"
+    cfg.port = 587
+    cfg.from_addr = "pycluster@example.test"
+    cfg.from_name = "pyCluster"
+    cfg.starttls = True
+    cfg.use_ssl = False
+    cfg.username = ""
+    cfg.password = ""
+    cfg.timeout_seconds = 10
+
+    SMTPMailer(cfg).send_code("user@example.test", "Test subject", "Test body")
+
+    msg = sent["msg"]
+    assert msg["From"] == "pyCluster <pycluster@example.test>"
+    assert msg["To"] == "user@example.test"
+    assert msg["Subject"] == "Test subject"
+    assert msg["Date"]
+    assert msg["Message-ID"]
 
 
 def test_web_admin_node_presentation_includes_dataset_status(tmp_path) -> None:
