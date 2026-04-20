@@ -1,0 +1,11 @@
+[pycluster-telnet-scanner]
+enabled = true
+backend = auto
+filter = pycluster-auth-scanner
+logpath = /var/log/pycluster/authfail.log
+maxretry = 2
+findtime = 2m
+bantime = 24h
+bantime.increment = true
+bantime.factor = 2
+port = 7300,7373,8000

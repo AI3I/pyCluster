@@ -145,6 +145,8 @@ class WebAdminServer:
         self._upgrade_paths = upgrade_paths(self.repo_root)
         self._web_sessions: dict[str, tuple[str, int, bool]] = {}
         self._server: asyncio.AbstractServer | None = None
+        self._cty_mtime_ns = 0
+        self._wpx_mtime_ns = 0
         self._smtp = SMTPMailer(config.smtp)
         self._mfa = EmailOtpManager(config.mfa, self._smtp.send_code, store)
 
@@ -297,10 +299,31 @@ class WebAdminServer:
         path.write_text(text, encoding="utf-8")
 
     def _dataset_status(self) -> dict[str, dict[str, object]]:
+        self._refresh_datafiles_if_changed()
         return {
             "cty": describe_cty_file(self.config.public_web.cty_dat_path, loaded=cty_loaded()).to_json(),
             "wpxloc": describe_wpxloc_file(self.config.public_web.wpxloc_raw_path, loaded=wpx_loaded()).to_json(),
         }
+
+    def _refresh_datafiles_if_changed(self) -> None:
+        cty_path = self.config.public_web.cty_dat_path.strip()
+        if cty_path:
+            try:
+                mtime = Path(cty_path).stat().st_mtime_ns
+                if mtime != self._cty_mtime_ns:
+                    load_cty(cty_path)
+                    self._cty_mtime_ns = mtime
+            except Exception as exc:
+                LOG.warning("web admin cty reload failed from %s: %s", cty_path, exc)
+        wpx_path = self.config.public_web.wpxloc_raw_path.strip()
+        if wpx_path:
+            try:
+                mtime = Path(wpx_path).stat().st_mtime_ns
+                if mtime != self._wpx_mtime_ns:
+                    load_wpxloc(wpx_path)
+                    self._wpx_mtime_ns = mtime
+            except Exception as exc:
+                LOG.warning("web admin wpxloc reload failed from %s: %s", wpx_path, exc)
 
     async def _node_presentation(self) -> dict[str, str]:
         data = node_presentation_defaults(self.config.node)
@@ -438,7 +461,7 @@ class WebAdminServer:
         elif telnet_online:
             online_status = "Telnet"
         elif web_online:
-            online_status = "System Operator Web"
+            online_status = "Operator Console"
         else:
             online_status = "Offline"
         access = await self._access_snapshot(call)
@@ -505,12 +528,14 @@ class WebAdminServer:
         if cty_path:
             try:
                 load_cty(cty_path)
+                self._cty_mtime_ns = Path(cty_path).stat().st_mtime_ns
             except Exception as exc:
                 LOG.warning("web admin cty load failed from %s: %s", cty_path, exc)
         wpx_path = self.config.public_web.wpxloc_raw_path.strip()
         if wpx_path:
             try:
                 load_wpxloc(wpx_path)
+                self._wpx_mtime_ns = Path(wpx_path).stat().st_mtime_ns
             except Exception as exc:
                 LOG.warning("web admin wpxloc load failed from %s: %s", wpx_path, exc)
         self._server = await asyncio.start_server(
@@ -1617,16 +1642,23 @@ button.special{
   margin-top:12px;
   padding:10px 12px;
   border-radius:10px;
-  background:var(--accent-soft);
-  color:var(--status-ok-text);
+  background:rgba(88,166,255,.08);
+  border:1px solid rgba(88,166,255,.22);
+  color:var(--text-primary);
   font-weight:600;
 }
 .mast-actions .statusline{
   margin-top:0;
   width:100%;
 }
+.light .statusline{
+  background:rgba(15,23,42,.04);
+  border-color:rgba(15,23,42,.12);
+  color:#0f172a;
+}
 .statusline.error{
   background:#f4ddd5;
+  border-color:#e7b8a9;
   color:#7d2e17;
 }
 .split{
@@ -1954,6 +1986,32 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   .tablewrap table{min-width:720px}
   .tablewrap.compact table{min-width:640px}
 }
+@media (max-width: 560px){
+  .shell{padding:8px 8px 18px}
+  .mast{padding:14px}
+  .mast h1{font-size:21px}
+  .mast-actions .actions{width:100%}
+  .mast-actions .actions button{flex:1 1 100%; width:100%}
+  .statusline{font-size:12px; text-align:left}
+  .node-tabs,.subtabs,.users-browser-tabs{
+    display:grid;
+    grid-template-columns:1fr;
+    gap:8px;
+  }
+  .node-tab,.subtab{width:100%; justify-content:center}
+  .browser-toolbar,
+  .browser-toolbar .browser-search,
+  .browser-toolbar .browser-nav{
+    flex-direction:column;
+    align-items:stretch;
+  }
+  .browser-toolbar .browser-nav{margin-left:0}
+  .browser-toolbar input{max-width:none; width:100%}
+  .sidebar-metrics,.metric-grid,.protocol-glance,.proto-grid{grid-template-columns:1fr}
+  .dataset-pills{flex-direction:column; align-items:flex-start}
+  .users-actionbar .users-action-group{flex-direction:column}
+  .users-actionbar .users-action-group button{width:100%}
+}
 </style>
 </head>
 <body>
@@ -1985,6 +2043,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <a href="#protocol" data-view="protocol"><strong>Protocol Health</strong><span>State</span></a>
             <a href="#publish" data-view="publish"><strong>Operator Tools</strong><span>Posting</span></a>
             <a href="#telemetry" data-view="telemetry"><strong>Telemetry</strong><span>Runtime</span></a>
+            <a href="#taxonomy" data-view="taxonomy"><strong>Taxonomy</strong><span>Public Web</span></a>
           </nav>
         </div>
       </section>
@@ -2014,7 +2073,6 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <div class="node-tabs" role="tablist" aria-label="Node Settings groups">
             <button class="node-tab active" type="button" data-node-group="general">General</button>
             <button class="node-tab" type="button" data-node-group="auth">Authentication</button>
-            <button class="node-tab" type="button" data-node-group="taxonomy">Taxonomy</button>
             <button class="node-tab" type="button" data-node-group="smtp">Mail (SMTP)</button>
             <button class="node-tab" type="button" data-node-group="maintenance">Maintenance</button>
           </div>
@@ -2085,20 +2143,6 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="field"><label for="mfa_resend_cooldown_seconds" title="Minimum delay before a new OTP can be issued for the same login purpose.">OTP Resend Cooldown (seconds)</label><input id="mfa_resend_cooldown_seconds" type="number" min="0" max="600" value="30" title="Prevents repeated password submissions from sending OTP emails too frequently."></div>
             </div>
           </div>
-          <div class="node-group" id="node-group-taxonomy">
-            <div class="subtle">Manage the public-web taxonomy here instead of hand-editing <code>config/strings.toml</code>. Edit the arrays as JSON and save when ready.</div>
-            <div class="form-grid one" style="margin-top:12px">
-              <div class="field"><label for="taxonomy_mode_order" title="JSON array controlling mode filter order in the public web UI.">Mode Order (JSON)</label><textarea id="taxonomy_mode_order" placeholder='["CW","FT8","SSB"]' title="JSON array controlling mode filter order in the public web UI."></textarea></div>
-              <div class="field"><label for="taxonomy_mode_rules" title="JSON array of mode rules with pattern, value, and optional button.">Mode Rules (JSON)</label><textarea id="taxonomy_mode_rules" placeholder='[{"pattern":"\\\\bFT8\\\\b","value":"FT8","button":"FT8"}]' title="Each object should include pattern and value; button is optional."></textarea></div>
-              <div class="field"><label for="taxonomy_activity_rules" title="JSON array of activity rules with pattern, value, and optional button.">Activity Rules (JSON)</label><textarea id="taxonomy_activity_rules" placeholder='[{"pattern":"\\\\bPOTA\\\\b","value":"POTA","button":"POTA"}]' title="Each object should include pattern and value; button is optional."></textarea></div>
-              <div class="field"><label for="taxonomy_comment_tags" title="JSON array of comment tag rules with pattern, label, optional button, and optional color.">Comment Tags (JSON)</label><textarea id="taxonomy_comment_tags" placeholder='[{"pattern":"\\\\bcq\\\\b","label":"CQ","color":"#10b981"}]' title="Each object should include pattern and label; color defaults to #58a6ff."></textarea></div>
-              <div class="field"><label for="taxonomy_rare_entities" title="JSON array of entity names treated as rare by the public web UI.">Rare Entities (JSON)</label><textarea id="taxonomy_rare_entities" placeholder='["Bouvet Island","Peter 1 Island"]' title="JSON array of entity names treated as rare by the public web UI."></textarea></div>
-            </div>
-            <div class="subtle" id="taxonomyStatus" style="margin-top:8px;font-weight:700">Taxonomy editor is ready.</div>
-            <div class="actions" style="margin-top:12px">
-              <button class="good" id="saveTaxonomy" title="Persist the public-web taxonomy to config/strings.toml.">Save Taxonomy</button>
-            </div>
-          </div>
           <div class="node-group" id="node-group-smtp">
             <div class="form-grid">
               <div class="field"><label for="smtp_host" title="SMTP host used to send MFA email codes.">SMTP Host</label><input id="smtp_host" placeholder="smtp.example.net" title="Node-wide SMTP relay hostname for MFA delivery."></div>
@@ -2118,6 +2162,12 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <input id="smtp_use_ssl" type="checkbox">
                 <label for="smtp_use_ssl">Use implicit TLS (SSL)</label>
               </div>
+            </div>
+            <div class="form-grid" style="margin-top:12px">
+              <div class="field"><label for="smtp_test_email" title="Recipient address for a one-click SMTP delivery test using the current Mail settings.">SMTP Test Recipient</label><input id="smtp_test_email" placeholder="sysop@example.net" title="Sends a test email without changing user records. Save changed Mail settings first."></div>
+            </div>
+            <div class="actions" style="margin-top:12px">
+              <button class="attention" id="sendSmtpTest" title="Send a test email using the current node SMTP configuration.">Send SMTP Test Email</button>
             </div>
           </div>
           <div class="node-group" id="node-group-maintenance">
@@ -2147,12 +2197,14 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="subtle" id="upgradeMetaPath" style="margin-top:4px"></div>
             <div class="subtle" id="upgradeMetaLog" style="margin-top:4px"></div>
             <div class="subtle" id="upgradeMetaRemote" style="margin-top:4px"></div>
-          </div>
-          <div class="actions" style="margin-top:12px">
-            <button class="good" id="saveNode" title="Persist these telnet presentation settings for this node.">Save Node Settings</button>
+            <div class="actions" style="margin-top:12px">
             <button class="attention" id="runCleanup" title="Run the current age-based cleanup settings immediately.">Run Cleanup Now</button>
             <button class="attention" id="checkUpgrade" title="Check whether a newer pyCluster version is available from the configured git remote.">Check for Upgrade</button>
             <button class="warn" id="runUpgrade" title="Queue a root-owned upgrade job that survives restarting this console.">Run Upgrade</button>
+            </div>
+          </div>
+          <div class="actions" style="margin-top:12px">
+            <button class="good" id="saveNode" title="Persist these telnet presentation settings for this node.">Save Node Settings</button>
           </div>
         </div>
       </section>
@@ -2503,7 +2555,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <button id="securityReload" title="Reload recent login failures and current fail2ban bans.">Reload Security</button>
               </div>
               <section>
-                <h3>Recent Auth Failures</h3>
+                <h3>Recent Authentication Failures</h3>
                 <div class="tablewrap">
                   <table>
                     <thead><tr><th>When</th><th>Channel</th><th>IP</th><th>Call</th><th>Reason</th></tr></thead>
@@ -2512,6 +2564,28 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 </div>
               </section>
             </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel view-section" id="taxonomy">
+        <header>
+          <div>
+            <h2>Taxonomy</h2>
+            <div class="subtle">Manage the public-web taxonomy here instead of hand-editing <code>config/strings.toml</code>.</div>
+          </div>
+        </header>
+        <div class="body">
+          <div class="form-grid one" style="margin-top:12px">
+            <div class="field"><label for="taxonomy_mode_order" title="JSON array controlling mode filter order in the public web UI.">Mode Order (JSON)</label><textarea id="taxonomy_mode_order" placeholder='["CW","FT8","SSB"]' title="JSON array controlling mode filter order in the public web UI."></textarea></div>
+            <div class="field"><label for="taxonomy_mode_rules" title="JSON array of mode rules with pattern, value, and optional button.">Mode Rules (JSON)</label><textarea id="taxonomy_mode_rules" placeholder='[{"pattern":"\\\\bFT8\\\\b","value":"FT8","button":"FT8"}]' title="Each object should include pattern and value; button is optional."></textarea></div>
+            <div class="field"><label for="taxonomy_activity_rules" title="JSON array of activity rules with pattern, value, and optional button.">Activity Rules (JSON)</label><textarea id="taxonomy_activity_rules" placeholder='[{"pattern":"\\\\bPOTA\\\\b","value":"POTA","button":"POTA"}]' title="Each object should include pattern and value; button is optional."></textarea></div>
+            <div class="field"><label for="taxonomy_comment_tags" title="JSON array of comment tag rules with pattern, label, optional button, and optional color.">Comment Tags (JSON)</label><textarea id="taxonomy_comment_tags" placeholder='[{"pattern":"\\\\bcq\\\\b","label":"CQ","color":"#10b981"}]' title="Each object should include pattern and label; color defaults to #58a6ff."></textarea></div>
+            <div class="field"><label for="taxonomy_rare_entities" title="JSON array of entity names treated as rare by the public web UI.">Rare Entities (JSON)</label><textarea id="taxonomy_rare_entities" placeholder='["Bouvet Island","Peter 1 Island"]' title="JSON array of entity names treated as rare by the public web UI."></textarea></div>
+          </div>
+          <div class="subtle" id="taxonomyStatus" style="margin-top:8px;font-weight:700">Taxonomy editor is ready.</div>
+          <div class="actions" style="margin-top:12px">
+            <button class="good" id="saveTaxonomy" title="Persist the public-web taxonomy to config/strings.toml.">Save Taxonomy</button>
           </div>
         </div>
       </section>
@@ -3003,7 +3077,7 @@ function setAuditRows(rows) {
 }
 function prettyAuthChannel(channel) {
   const key = String(channel || '').toLowerCase();
-  if (key === 'sysop-web') return 'System Operator Web';
+  if (key === 'sysop-web') return 'Operator Console';
   if (key === 'public-web') return 'Public Web';
   if (key === 'telnet') return 'Telnet';
   return channel || '-';
@@ -3016,6 +3090,8 @@ function prettyAuthReason(reason) {
   if (key === 'blocked_login') return 'Blocked login';
   if (key === 'web_login_not_allowed') return 'Web login not allowed';
   if (key === 'telnet_login_not_allowed') return 'Telnet login not allowed';
+  if (key === 'registration_request_required') return 'Registration request required';
+  if (key === 'valid_email_required') return 'Valid email required';
   return reason || '-';
 }
 function setAuthFailRows(rows) {
@@ -3892,6 +3968,19 @@ byId('sendMfaTest').onclick = async () => {
     say('MFA test email failed: ' + errText(err), false);
   }
 };
+byId('sendSmtpTest').onclick = async () => {
+  const email = byId('smtp_test_email').value.trim();
+  if (!email) {
+    say('A test recipient email is required before sending an SMTP test email.', false);
+    return;
+  }
+  try {
+    const r = await j('/api/node/smtp-test', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email})});
+    say(r && r.ok ? 'SMTP test email queued for ' + email + '.' : 'SMTP test email failed.', !!(r && r.ok));
+  } catch (err) {
+    say('SMTP test email failed: ' + errText(err), false);
+  }
+};
 byId('sendVerification').onclick = async () => {
   const call = byId('user_call').value.trim();
   if (!call) {
@@ -4574,7 +4663,7 @@ if (restoreWebSession()) {
                 await self._write_response(writer, 200, self._json({"ok": True, "removed": removed}))
                 return
 
-            if path == "/api/mfa/test-email":
+            if path in {"/api/mfa/test-email", "/api/node/smtp-test"}:
                 if method != "POST":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
@@ -4586,7 +4675,7 @@ if (restoreWebSession()) {
                     return
                 payload = self._parse_json_body(body)
                 email = str(payload.get("email", "")).strip()
-                call = normalize_call(str(payload.get("call", "")).strip()) or "UNKNOWN"
+                call = normalize_call(str(payload.get("call", "")).strip()) or normalize_call(self.config.node.node_call) or "UNKNOWN"
                 if "@" not in email or email.startswith("@") or email.endswith("@"):
                     await self._write_response(writer, 400, self._json({"error": "valid email is required"}))
                     return

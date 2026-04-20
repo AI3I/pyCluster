@@ -211,6 +211,8 @@ class PublicWebServer:
         self._server: asyncio.AbstractServer | None = None
         self._cty_loaded = False
         self._wpx_loaded = False
+        self._cty_mtime_ns = 0
+        self._wpx_mtime_ns = 0
         self._ws_clients: set[asyncio.Task[None]] = set()
         self._ws_writers: set[asyncio.StreamWriter] = set()
         self._web_sessions: dict[str, tuple[str, int]] = {}
@@ -445,10 +447,35 @@ class PublicWebServer:
         return self._mfa.required_for(is_sysop=is_sysop)
 
     def _dataset_status(self) -> dict[str, dict[str, object]]:
+        self._refresh_datafiles_if_changed()
         return {
             "cty": describe_cty_file(self.config.public_web.cty_dat_path, loaded=self._cty_loaded).to_json(),
             "wpxloc": describe_wpxloc_file(self.config.public_web.wpxloc_raw_path, loaded=self._wpx_loaded).to_json(),
         }
+
+    def _refresh_datafiles_if_changed(self) -> None:
+        cty_path = self.config.public_web.cty_dat_path.strip()
+        if cty_path:
+            try:
+                mtime = Path(cty_path).stat().st_mtime_ns
+                if mtime != self._cty_mtime_ns:
+                    load_cty(cty_path)
+                    self._cty_loaded = True
+                    self._cty_mtime_ns = mtime
+            except Exception as exc:
+                self._cty_loaded = False
+                LOG.warning("public web cty reload failed from %s: %s", cty_path, exc)
+        wpx_path = self.config.public_web.wpxloc_raw_path.strip()
+        if wpx_path:
+            try:
+                mtime = Path(wpx_path).stat().st_mtime_ns
+                if mtime != self._wpx_mtime_ns:
+                    load_wpxloc(wpx_path)
+                    self._wpx_loaded = True
+                    self._wpx_mtime_ns = mtime
+            except Exception as exc:
+                self._wpx_loaded = False
+                LOG.warning("public web wpxloc reload failed from %s: %s", wpx_path, exc)
 
     async def _branding(self) -> dict[str, object]:
         data = node_presentation_defaults(self.config.node)
@@ -500,6 +527,7 @@ class PublicWebServer:
             try:
                 load_cty(cty_path)
                 self._cty_loaded = True
+                self._cty_mtime_ns = Path(cty_path).stat().st_mtime_ns
             except Exception as exc:
                 LOG.warning("public web cty load failed from %s: %s", cty_path, exc)
         wpx_path = self.config.public_web.wpxloc_raw_path.strip()
@@ -507,6 +535,7 @@ class PublicWebServer:
             try:
                 load_wpxloc(wpx_path)
                 self._wpx_loaded = True
+                self._wpx_mtime_ns = Path(wpx_path).stat().st_mtime_ns
             except Exception as exc:
                 LOG.warning("public web wpxloc load failed from %s: %s", wpx_path, exc)
         self._server = await asyncio.start_server(
@@ -749,6 +778,7 @@ class PublicWebServer:
         return max(low, min(high, n))
 
     def _spot_payload(self, row) -> dict[str, object]:
+        self._refresh_datafiles_if_changed()
         freq = float(row["freq_khz"])
         comment = str(row["info"] or "")
         dx_call = str(row["dx_call"] or "")
