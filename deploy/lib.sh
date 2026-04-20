@@ -468,11 +468,17 @@ install_or_refresh_fail2ban() {
     "$root/deploy/fail2ban/filter.d/pycluster-auth-web.conf" \
     "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-web.conf"
   install -o root -g root -m 0644 \
+    "$root/deploy/fail2ban/filter.d/pycluster-auth-scanner.conf" \
+    "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-scanner.conf"
+  install -o root -g root -m 0644 \
     "$root/deploy/fail2ban/jail.d/pycluster-core.local" \
     "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-core.local"
   install -o root -g root -m 0644 \
     "$root/deploy/fail2ban/jail.d/pycluster-web.local" \
     "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-web.local"
+  install -o root -g root -m 0644 \
+    "$root/deploy/fail2ban/jail.d/pycluster-scanner.local" \
+    "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-scanner.local"
   cat >"$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-disable-defaults.local" <<'EOF'
 [sshd]
 enabled = false
@@ -516,12 +522,12 @@ apply_imported_fail2ban_badips() {
     : >"$prev"
   fi
   for entry in $(comm -23 "$prev" "$tmp"); do
-    for jail in pycluster-core-auth pycluster-web-auth; do
+    for jail in pycluster-core-auth pycluster-web-auth pycluster-telnet-scanner; do
       "$client" set "$jail" unbanip "$entry" >/dev/null 2>&1 || true
     done
   done
   for entry in $(comm -13 "$prev" "$tmp"); do
-    for jail in pycluster-core-auth pycluster-web-auth; do
+    for jail in pycluster-core-auth pycluster-web-auth pycluster-telnet-scanner; do
       "$client" set "$jail" banip "$entry" >/dev/null 2>&1 || true
     done
   done
