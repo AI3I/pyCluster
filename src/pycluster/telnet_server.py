@@ -225,6 +225,7 @@ class TelnetClusterServer:
         component_restart_fn: Callable[[str], Awaitable[tuple[bool, str]]] | None = None,
         on_chat_fn: Callable[[str, str], Awaitable[None]] | None = None,
         on_bulletin_fn: Callable[[str, str, str, str], Awaitable[None]] | None = None,
+        on_talk_fn: Callable[[str, str, str, str | None], Awaitable[int]] | None = None,
         on_spot_fn: Callable[[Spot], Awaitable[None]] | None = None,
         on_message_fn: Callable[[str, str, str, int, int | None], Awaitable[None]] | None = None,
         on_sessions_changed_fn: Callable[[], Awaitable[None]] | None = None,
@@ -251,6 +252,7 @@ class TelnetClusterServer:
         self._component_restart_fn = component_restart_fn
         self._on_chat_fn = on_chat_fn
         self._on_bulletin_fn = on_bulletin_fn
+        self._on_talk_fn = on_talk_fn
         self._on_spot_fn = on_spot_fn
         self._on_message_fn = on_message_fn
         self._on_sessions_changed_fn = on_sessions_changed_fn
@@ -266,11 +268,14 @@ class TelnetClusterServer:
         self._telnet_option_seen: set[int] = set()
         self._cty_loaded = False
         self._wpx_loaded = False
+        self._cty_mtime_ns = 0
+        self._wpx_mtime_ns = 0
         cty_path = self.config.public_web.cty_dat_path.strip()
         if cty_path:
             try:
                 load_cty(cty_path)
                 self._cty_loaded = True
+                self._cty_mtime_ns = Path(cty_path).stat().st_mtime_ns
             except Exception as exc:
                 LOG.warning("telnet cty load failed from %s: %s", cty_path, exc)
         wpx_path = self.config.public_web.wpxloc_raw_path.strip()
@@ -278,6 +283,7 @@ class TelnetClusterServer:
             try:
                 load_wpxloc(wpx_path)
                 self._wpx_loaded = True
+                self._wpx_mtime_ns = Path(wpx_path).stat().st_mtime_ns
             except Exception as exc:
                 LOG.warning("telnet wpxloc load failed from %s: %s", wpx_path, exc)
 
@@ -1335,10 +1341,35 @@ class TelnetClusterServer:
         return labels.get(key, key.replace("_", " ").title())
 
     def _dataset_status(self) -> dict[str, dict[str, object]]:
+        self._refresh_datafiles_if_changed()
         return {
             "cty": describe_cty_file(self.config.public_web.cty_dat_path, loaded=self._cty_loaded).to_json(),
             "wpxloc": describe_wpxloc_file(self.config.public_web.wpxloc_raw_path, loaded=self._wpx_loaded).to_json(),
         }
+
+    def _refresh_datafiles_if_changed(self) -> None:
+        cty_path = self.config.public_web.cty_dat_path.strip()
+        if cty_path:
+            try:
+                mtime = Path(cty_path).stat().st_mtime_ns
+                if mtime != self._cty_mtime_ns:
+                    load_cty(cty_path)
+                    self._cty_loaded = True
+                    self._cty_mtime_ns = mtime
+            except Exception as exc:
+                self._cty_loaded = False
+                LOG.warning("telnet cty reload failed from %s: %s", cty_path, exc)
+        wpx_path = self.config.public_web.wpxloc_raw_path.strip()
+        if wpx_path:
+            try:
+                mtime = Path(wpx_path).stat().st_mtime_ns
+                if mtime != self._wpx_mtime_ns:
+                    load_wpxloc(wpx_path)
+                    self._wpx_loaded = True
+                    self._wpx_mtime_ns = mtime
+            except Exception as exc:
+                self._wpx_loaded = False
+                LOG.warning("telnet wpxloc reload failed from %s: %s", wpx_path, exc)
 
     async def _node_presentation(self) -> dict[str, str]:
         data = node_presentation_defaults(self.config.node)
@@ -7970,6 +8001,7 @@ class TelnetClusterServer:
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.add_bulletin(name, call, "LOCAL", now, text)
         self._log_event(name, f"{call}: {text}")
+        await self.publish_bulletin(name, call, "LOCAL", text)
         if self._on_bulletin_fn:
             await self._on_bulletin_fn(name, call, "LOCAL", text)
         return self._render_string("bulletin.accepted", "{name}: accepted (local-safe)", name=name) + "\r\n"
@@ -7986,6 +8018,7 @@ class TelnetClusterServer:
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.add_bulletin("wcy", call, "LOCAL", now, body)
         self._log_event("wcy", f"{call}: {body}")
+        await self.publish_bulletin("wcy", call, "LOCAL", body)
         if self._on_bulletin_fn:
             await self._on_bulletin_fn("wcy", call, "LOCAL", body)
         return self._string("bulletin.wcy_accepted", "WCY accepted (local-safe).") + "\r\n"
@@ -8002,6 +8035,7 @@ class TelnetClusterServer:
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.add_bulletin("wwv", call, "LOCAL", now, body)
         self._log_event("wwv", f"{call}: {body}")
+        await self.publish_bulletin("wwv", call, "LOCAL", body)
         if self._on_bulletin_fn:
             await self._on_bulletin_fn("wwv", call, "LOCAL", body)
         return self._string("bulletin.wwv_accepted", "WWV accepted (local-safe).") + "\r\n"
@@ -8055,9 +8089,9 @@ class TelnetClusterServer:
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.add_bulletin("announce", call, scope, now, text)
         self._log_event("announce", f"{scope} {call}: {text}")
+        await self.publish_bulletin("announce", call, scope, text)
         if self._on_bulletin_fn:
             await self._on_bulletin_fn("announce", call, scope, text)
-        # Safe default: local session visibility only (no network propagation)
         return self._render_string("announce.accepted", "Announcement accepted ({scope}): {text}", scope=scope.lower(), text=text) + "\r\n" + self._render_string("announce.accepted_alias", "announce/{scope} accepted: {text}", scope=scope.lower(), text=text) + "\r\n"
 
     async def _cmd_post_dx_spot(self, call: str, arg: str | None) -> str:
@@ -8125,7 +8159,14 @@ class TelnetClusterServer:
         if len(toks) < 2:
             return self._string("talk.usage", "Usage: talk <call|all> <text>") + "\r\n"
         target = toks[0].upper()
-        text = " ".join(toks[1:])
+        route_node: str | None = None
+        text_tokens = toks[1:]
+        if len(toks) >= 3 and is_valid_call(toks[1].upper()):
+            route_node = toks[1].upper()
+            text_tokens = toks[2:]
+        text = " ".join(text_tokens)
+        if not text:
+            return self._string("talk.usage", "Usage: talk <call|all> [node] <text>") + "\r\n"
         delivered = 0
         if target == "ALL":
             for s in self._sessions.values():
@@ -8137,7 +8178,14 @@ class TelnetClusterServer:
             if t:
                 await self._write(t.writer, f"\r\nTALK {call}: {text}\r\n")
                 delivered = 1
+        relayed = 0
+        if target != "ALL" and self._on_talk_fn:
+            relayed = await self._on_talk_fn(call, target, text, route_node)
         self._log_event("talk", f"{call}->{target}: {text}")
+        if relayed > 0 and delivered <= 0:
+            return self._render_string("talk.routed", "Talk routed to {count} node link(s).", count=relayed) + "\r\n"
+        if relayed > 0:
+            return self._render_string("talk.delivered_routed", "Talk delivered to {count} session(s), routed to {links} node link(s).", count=delivered, links=relayed) + "\r\n"
         return self._render_string("talk.delivered", "Talk delivered to {count} session(s).", count=delivered) + "\r\n"
 
     async def _cmd_msg(self, call: str, arg: str | None) -> str:
@@ -8709,6 +8757,7 @@ class TelnetClusterServer:
 
     async def _execute_command(self, call: str, line: str) -> tuple[bool, str]:
         started = time.monotonic()
+        self._refresh_datafiles_if_changed()
         cmdline = line.strip()
         if not cmdline:
             return True, ""
