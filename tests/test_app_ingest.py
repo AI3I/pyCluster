@@ -1167,8 +1167,12 @@ def test_outbound_relay_defaults_on_for_local_session_and_can_be_disabled(tmp_pa
         async def _send(_peer, frame):
             captured.append(frame)
 
+        async def _stats():
+            return {"peer1": {"profile": "pycluster"}}
+
         app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
         app.node_link.send = _send  # type: ignore[method-assign]
+        app.node_link.stats = _stats  # type: ignore[method-assign]
         app.telnet._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             await app.telnet._execute_command("N0CALL", "chat hello")
@@ -1198,8 +1202,12 @@ def test_outbound_bulletin_relay_with_category_prefix(tmp_path) -> None:
         async def _send(_peer, frame):
             captured.append(frame)
 
+        async def _stats():
+            return {"peer1": {"profile": "pycluster"}}
+
         app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
         app.node_link.send = _send  # type: ignore[method-assign]
+        app.node_link.stats = _stats  # type: ignore[method-assign]
         app.telnet._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
             now = int(datetime.now(timezone.utc).timestamp())
@@ -1211,6 +1219,40 @@ def test_outbound_bulletin_relay_with_category_prefix(tmp_path) -> None:
             assert any("[ANNOUNCE/FULL] test relay" in t for t in texts)
             assert any("[WCY/LOCAL] A=8 K=2" in t for t in texts)
             assert all("via:" in t for t in texts)
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_outbound_talk_relay_uses_pc10_and_optional_route(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "relay_talk_pc10.db")
+        app = ClusterApp(_mk_config(db))
+        captured: list[tuple[str, WirePcFrame]] = []
+
+        async def _peer_names():
+            return ["PEER1", "N9JR-2"]
+
+        async def _send(peer, frame):
+            captured.append((peer, frame))
+
+        app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+        app.node_link.send = _send  # type: ignore[method-assign]
+        app.telnet._sessions[1] = Session(call="N9JR-10", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            _, out = await app.telnet._execute_command("N9JR-10", "talk N9JR-5 N9JR-2 Hello there")
+            assert "Talk routed to 1 node link(s)." in out
+            assert len(captured) == 1
+            peer, frame = captured[0]
+            assert peer == "N9JR-2"
+            assert frame.pc_type == "PC10"
+            msg = Pc10Message.from_fields(frame.payload_fields)
+            assert msg.from_call == "N9JR-10"
+            assert msg.user1 == "N9JR-2"
+            assert msg.user2 == "N9JR-5"
+            assert "Hello there" in msg.text
+            assert "via:" in msg.text
         finally:
             await app.store.close()
 
@@ -1241,6 +1283,45 @@ def test_outbound_wcy_and_wwv_use_dxspider_frames_for_dxspider_peers(tmp_path) -
             await app.telnet._execute_command("N0CALL", "wcy k=3,expk=2,a=18,r=105,sf=120,sa=qui,gmf=maj,au=no")
             await app.telnet._execute_command("N0CALL", "wwv sf=120,a=24,k=4,Moderate w/G2 -> Minor w/G1")
             assert [frame.pc_type for frame in captured] == ["PC73", "PC23"]
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_outbound_announce_and_wx_use_pc12_for_dxspider_peers(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "relay_dxspider_announce_wx.db")
+        app = ClusterApp(_mk_config(db))
+        captured: list[WirePcFrame] = []
+
+        async def _peer_names():
+            return ["peer1"]
+
+        async def _send(_peer, frame):
+            captured.append(frame)
+
+        async def _stats():
+            return {"peer1": {"profile": "dxspider"}}
+
+        app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+        app.node_link.send = _send  # type: ignore[method-assign]
+        app.node_link.stats = _stats  # type: ignore[method-assign]
+        app.telnet._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.upsert_user_registry("N0CALL", now, privilege="user")
+            await app.telnet._execute_command("N0CALL", "announce full test relay")
+            await app.telnet._execute_command("N0CALL", "wx local weather")
+            assert [frame.pc_type for frame in captured] == ["PC12", "PC12"]
+            ann = Pc12Message.from_fields(captured[0].payload_fields)
+            wx = Pc12Message.from_fields(captured[1].payload_fields)
+            assert ann.from_call == "N0CALL"
+            assert ann.wx_flag == "0"
+            assert "test relay" in ann.text
+            assert wx.from_call == "N0CALL"
+            assert wx.wx_flag == "1"
+            assert "local weather" in wx.text
         finally:
             await app.store.close()
 

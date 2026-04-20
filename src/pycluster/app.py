@@ -102,6 +102,7 @@ class ClusterApp:
             component_restart_fn=self.restart_component,
             on_chat_fn=self._relay_chat_to_links,
             on_bulletin_fn=self._relay_bulletin_to_links,
+            on_talk_fn=self._relay_talk_to_links,
             on_spot_fn=self._relay_spot_to_links,
             on_message_fn=self._relay_message_to_links,
             on_sessions_changed_fn=self._sync_legacy_user_roster,
@@ -1091,6 +1092,7 @@ class ClusterApp:
             if f"[via:{self.config.node.node_call}]" in body:
                 await self.node_link.mark_policy_drop(peer_name, "ingest_pc10_loop")
                 return
+            body = _VIA_SUFFIX_RE.sub("", body).strip() or body
             if not await self._ingest_peer_enabled(peer_name, "chat"):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_talk_disabled")
                 return
@@ -1408,7 +1410,21 @@ class ClusterApp:
                 continue
             frame: WirePcFrame
             peer_profile = profiles.get(name, "dxspider")
-            if peer_profile == "dxspider" and category in {"wwv", "wcy"}:
+            if peer_profile == "dxspider" and category in {"announce", "wx"}:
+                frame = WirePcFrame(
+                    "PC12",
+                    Pc12Message(
+                        from_call=normalize_call(sender),
+                        to_node="*",
+                        text=f"{text} [via:{self.config.node.node_call}]",
+                        sysop_flag="*" if scope.upper() == "SYSOP" else " ",
+                        origin_node=normalize_call(self.config.node.node_call),
+                        wx_flag="1" if category == "wx" else "0",
+                        hops_token="H1",
+                        trailer="~",
+                    ).to_fields(),
+                )
+            elif peer_profile == "dxspider" and category in {"wwv", "wcy"}:
                 if category == "wwv":
                     reading = parse_wwv_text(text)
                     if reading is not None:
@@ -1476,6 +1492,47 @@ class ClusterApp:
             except Exception:
                 LOG.exception("relay send failed peer=%s category=%s", name, category)
         return
+
+    async def _relay_talk_to_links(self, sender: str, recipient: str, text: str, route_node: str | None = None) -> int:
+        if not await self._routepc19_enabled(sender):
+            return 0
+        if not await self._relay_category_enabled(sender, "chat"):
+            return 0
+        target = normalize_call(recipient)
+        if not is_valid_call(target):
+            return 0
+        requested_route = normalize_call(route_node or "")
+        if requested_route and not is_valid_call(requested_route):
+            return 0
+        names = await self.node_link.peer_names()
+        sent = 0
+        for name in names:
+            if requested_route and normalize_call(name) != requested_route:
+                continue
+            if not await self._route_filter_allows_peer(sender, name):
+                await self.node_link.mark_policy_drop(name, "route_filter")
+                continue
+            if not await self._relay_peer_enabled(sender, name, "chat"):
+                await self.node_link.mark_policy_drop(name, "relay_peer_chat_disabled")
+                continue
+            frame = WirePcFrame(
+                "PC10",
+                Pc10Message(
+                    from_call=normalize_call(sender),
+                    user1=requested_route or normalize_call(name),
+                    text=f"{text} [via:{self.config.node.node_call}]",
+                    star="*",
+                    user2=target,
+                    origin_node=normalize_call(self.config.node.node_call),
+                    trailer="~",
+                ).to_fields(),
+            )
+            try:
+                await self.node_link.send(name, frame)
+                sent += 1
+            except Exception:
+                LOG.exception("relay send failed peer=%s category=talk recipient=%s", name, target)
+        return sent
 
     def _next_mail_stream(self) -> str:
         self._mail_stream_seq += 1

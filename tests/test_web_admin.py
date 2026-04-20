@@ -93,8 +93,11 @@ async def _http_request(
 def test_web_admin_static_includes_mobile_breakpoints() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert "@media (max-width: 900px)" in text
+    assert "@media (max-width: 560px)" in text
     assert ".actions button{flex:1 1 160px}" in text
     assert ".tablewrap table{min-width:720px}" in text
+    assert ".node-tabs,.subtabs,.users-browser-tabs{" in text
+    assert ".browser-toolbar .browser-search," in text
 
 
 def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
@@ -115,8 +118,25 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     assert 'id="telemetry-panel-overview"' in text
     assert 'id="telemetry-panel-audit"' in text
     assert 'id="telemetry-panel-security"' in text
+    assert '<h3>Recent Authentication Failures</h3>' in text
     assert "function setUserBrowserPanel(panel)" in text
     assert "function setTelemetryPanel(panel)" in text
+    assert "if (key === 'sysop-web') return 'Operator Console';" in text
+    assert "if (key === 'registration_request_required') return 'Registration request required';" in text
+
+
+def test_web_admin_static_uses_clearer_statusline_and_maintenance_actions() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert "background:rgba(88,166,255,.08);" in text
+    assert "border:1px solid rgba(88,166,255,.22);" in text
+    assert ".light .statusline{" in text
+    maintenance_idx = text.index('id="node-group-maintenance"')
+    cleanup_idx = text.index('id="runCleanup"')
+    check_idx = text.index('id="checkUpgrade"')
+    upgrade_idx = text.index('id="runUpgrade"')
+    assert maintenance_idx < cleanup_idx
+    assert maintenance_idx < check_idx
+    assert maintenance_idx < upgrade_idx
 
 
 def test_web_admin_static_uses_full_width_user_action_bar() -> None:
@@ -165,6 +185,8 @@ def test_public_web_static_offsets_toasts_clear_of_sidebar() -> None:
     assert "--sidebar-width: 320px;" in text
     assert "--sidebar-toast-offset: calc(var(--sidebar-width) + 28px);" in text
     assert "right:var(--sidebar-toast-offset);" in text
+    assert "bottom:100px;" in text
+    assert "#toast-wrap { right:16px; bottom:100px; }" in text
 
 
 def test_public_web_static_keeps_login_actions_out_of_header() -> None:
@@ -174,20 +196,52 @@ def test_public_web_static_keeps_login_actions_out_of_header() -> None:
     assert 'id="footer-login"' in text
 
 
+def test_public_web_static_uses_pill_footer_auth_buttons() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert ".footer-user-login {" in text
+    assert ".footer-user-register {" in text
+    assert "border-radius:999px;" in text
+    assert "color:#86efac;" in text
+    assert "color:#fecaca;" in text
+    assert "(must be approved locally)" not in text
+    assert "footer-user-actions" in text
+
+
 def test_public_web_static_supports_sidebar_hide_toggle() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
     assert 'id="sidebar-toggle"' in text
+    assert 'id="toast-toggle"' in text
     assert "localStorage.getItem('sidebarHidden')" in text
+    assert "localStorage.getItem('toastPopups')" in text
     assert "document.body.classList.toggle('sidebar-hidden', sidebarHidden);" in text
+    assert 'id="footer">' not in text or "footer-controls" in text
+    assert '<button id="toast-toggle" class="on" type="button" title="Hide spot popups" aria-label="Hide spot popups"><span class="footer-control-label">Hide Popups</span></button>' in text
+    assert "const label = toastPopupsEnabled ? 'Hide Popups' : 'Show Popups';" in text
+    assert '<button id="sidebar-toggle" type="button" title="Hide the sidebar" aria-label="Hide the sidebar"><span class="footer-control-label">Hide Sidebar</span></button>' in text
+    assert '<span class="footer-control-label">Greyline</span>' in text
+    assert '<span class="footer-control-label">Sound</span>' in text
+    assert '<span class="footer-control-label">Theme</span>' in text
+    assert "if (!toastPopupsEnabled) return;" in text
+    assert "if (toastPopupsEnabled && matched.toast !== false)" in text
 
 
 def test_web_admin_static_exposes_taxonomy_editor() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
-    assert 'data-node-group="taxonomy"' in text
-    assert 'id="node-group-taxonomy"' in text
+    assert 'data-view="taxonomy"' in text
+    assert 'id="taxonomy"' in text
     assert 'id="taxonomy_comment_tags"' in text
     assert "loadTaxonomyEditor" in text
     assert "saveTaxonomy" in text
+    assert text.index('data-view="telemetry"') < text.index('data-view="taxonomy"')
+    assert text.index('<section class="panel view-section" id="telemetry">') < text.index('<section class="panel view-section" id="taxonomy">')
+
+
+def test_web_admin_static_exposes_mail_tab_smtp_test() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'data-node-group="smtp">Mail (SMTP)</button>' in text
+    assert 'id="smtp_test_email"' in text
+    assert 'id="sendSmtpTest"' in text
+    assert "j('/api/node/smtp-test'" in text
 
 
 def test_web_admin_node_presentation_defaults_leave_auth_unchecked(tmp_path) -> None:
@@ -1729,10 +1783,12 @@ def test_web_admin_console_page_includes_software_version_slot(tmp_path) -> None
             assert 'data-node-group="auth"' in html
             assert 'data-node-group="smtp"' in html
             assert 'data-node-group="maintenance"' in html
+            assert 'data-view="taxonomy"' in html
             assert 'id="node-group-general"' in html
             assert 'id="node-group-auth"' in html
             assert 'id="node-group-smtp"' in html
             assert 'id="node-group-maintenance"' in html
+            assert 'id="taxonomy"' in html
             assert 'id="upgradeStatus"' in html
             assert 'id="checkUpgrade"' in html
             assert 'id="runUpgrade"' in html
@@ -2359,6 +2415,20 @@ def test_web_admin_can_send_smtp_test_email(tmp_path) -> None:
             assert data["email"] == "ai3i@example.test"
             assert sent and sent[0][0] == "ai3i@example.test"
             assert "SMTP test" in sent[0][1]
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/node/smtp-test",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"email": "sysop@example.test"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["call"] == cfg.node.node_call
+            assert data["email"] == "sysop@example.test"
+            assert sent[-1][0] == "sysop@example.test"
         finally:
             await store.close()
 

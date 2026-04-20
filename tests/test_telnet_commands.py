@@ -2034,6 +2034,11 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "announce full test notice")
             assert "Announcement accepted (full):" in out
+            assert b"ANNOUNCE/FULL N0CALL: test notice" in bytes(w2.buffer)
+
+            _, out = await srv._execute_command("N0CALL", "wx clear and cold")
+            assert "wx: accepted" in out
+            assert b"WX N0CALL: clear and cold" in bytes(w2.buffer)
 
             _, out = await srv._execute_command("K1ABC", "show/msgstatus")
             assert "Messages for K1ABC:" in out
@@ -2407,6 +2412,23 @@ def test_repo_cty_fixture_includes_recent_tx5_tx7_entities() -> None:
     assert lookup("TX5N").name == "Austral Islands"
     assert lookup("TX5S").name == "Clipperton Island"
     assert lookup("TX7N").name == "Marquesas Islands"
+
+
+def test_telnet_dataset_status_reloads_updated_cty_file(tmp_path) -> None:
+    db = str(tmp_path / "cty_reload.db")
+    cty_path = Path(_write_cty(tmp_path))
+    body = cty_path.read_text(encoding="ascii")
+    cty_path.write_text(body + "VER20260404\n", encoding="ascii")
+    cfg = _mk_config(db)
+    cfg.public_web.cty_dat_path = str(cty_path)
+    store = SpotStore(db)
+    srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+    try:
+        assert srv._dataset_status()["cty"]["version"] == "VER20260404"
+        cty_path.write_text(body + "VER20260414\n", encoding="ascii")
+        assert srv._dataset_status()["cty"]["version"] == "VER20260414"
+    finally:
+        asyncio.run(store.close())
 
 
 def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
