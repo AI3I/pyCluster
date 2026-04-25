@@ -146,7 +146,7 @@ def parse_telnet_ports(raw: object, fallback: int = 7300) -> tuple[int, ...]:
             port = int(str(item).strip())
         except (TypeError, ValueError):
             continue
-        if 0 <= port <= 65535 and port not in vals:
+        if 0 <= port <= 65535 and (port == 0 or port not in vals):
             vals.append(port)
     if not vals:
         vals.append(int(fallback))
