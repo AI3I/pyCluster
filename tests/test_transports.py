@@ -151,6 +151,7 @@ def test_dxspider_connect_accepts_direct_pc_banner_without_client_command() -> N
             try:
                 line = await conn.readline()
                 assert line == "PC18^DXSpider Version: 1.55 Build: 0.203 Git: 448838ed[r] pc9x^5455^"
+                await asyncio.sleep(0.1)
                 assert seen == [
                     "AI3I-16",
                     f"PC18^pyCluster {__version__}^5455^",
