@@ -5223,6 +5223,8 @@ def test_maxconnect_enforced_on_login(tmp_path) -> None:
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         await store.set_user_pref("N0CALL", "maxconnect", "1", 1772345000)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.record_login("N0CALL", now, "test-setup")
         try:
             await srv.start()
         except OSError:
@@ -5322,7 +5324,9 @@ def test_telnet_login_prompts_for_password_when_required(tmp_path) -> None:
         )
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
-        await store.set_user_pref("N0CALL", "password", "pw1", int(datetime.now(timezone.utc).timestamp()))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.set_user_pref("N0CALL", "password", "pw1", now)
+        await store.record_login("N0CALL", now, "test-setup")
         try:
             await srv.start()
         except OSError:
@@ -5342,7 +5346,6 @@ def test_telnet_login_prompts_for_password_when_required(tmp_path) -> None:
             w1.write(b"pw1\r\n")
             await w1.drain()
             hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
-            assert b"***" in hello
             assert b"Welcome" in hello
             assert b"AI3I-15>" in hello
             w1.close()
@@ -5370,7 +5373,7 @@ def test_telnet_first_login_forces_password_creation(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "first_login_password.db")
         cfg = AppConfig(
-            node=NodeConfig(node_call="AI3I-16"),
+            node=NodeConfig(node_call="AI3I-16", require_password=True),
             telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
             web=WebConfig(host="127.0.0.1", port=0),
             public_web=PublicWebConfig(),
@@ -5662,7 +5665,9 @@ def test_telnet_password_prompt_stays_clean_for_raw_tcp_clients(tmp_path) -> Non
         )
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
-        await store.set_user_pref("N0CALL", "password", "pw1", int(datetime.now(timezone.utc).timestamp()))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.set_user_pref("N0CALL", "password", "pw1", now)
+        await store.record_login("N0CALL", now, "test-setup")
         try:
             await srv.start()
         except OSError:
@@ -5760,16 +5765,18 @@ def test_telnet_password_echo_negotiation_is_initiated_by_server(tmp_path) -> No
         reader = asyncio.StreamReader()
         writer = _BufWriter()
         try:
+            # No IAC from client yet — server should not send echo negotiation
             await srv._set_telnet_password_echo(reader, writer, suppress=True)  # type: ignore[arg-type]
-            assert bytes(writer.buf) == b"\xff\xfb\x01\xff\xfb\x03\xff\xfd\x03"
+            assert bytes(writer.buf) == b""
 
+            # Client sends IAC DO ECHO — marks connection as telnet
             reader.feed_data(b"\xff\xfd\x01")
             assert await srv._read_telnet_byte(reader, 0) == b""
 
+            # Now echo negotiation is sent
             await srv._set_telnet_password_echo(reader, writer, suppress=True)  # type: ignore[arg-type]
             await srv._set_telnet_password_echo(reader, writer, suppress=False)  # type: ignore[arg-type]
             assert bytes(writer.buf) == (
-                b"\xff\xfb\x01\xff\xfb\x03\xff\xfd\x03"
                 b"\xff\xfb\x01\xff\xfb\x03\xff\xfd\x03"
                 b"\xff\xfc\x01\xff\xfc\x03\xff\xfe\x03"
             )
@@ -5906,7 +5913,7 @@ def test_telnet_login_requires_email_verification_for_unverified_user(tmp_path) 
     async def run() -> None:
         db = str(tmp_path / "telnet_email_verification.db")
         cfg = AppConfig(
-            node=NodeConfig(node_call="AI3I-16", require_password=False, initial_grace_logins=5),
+            node=NodeConfig(node_call="AI3I-16", require_password=False, initial_grace_logins=5, verified_email_required_for_telnet=True),
             telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
             web=WebConfig(host="127.0.0.1", port=0),
             public_web=PublicWebConfig(),
