@@ -1185,6 +1185,8 @@ class TelnetClusterServer:
             chars.append(bytes((b,)).decode("utf-8", errors="ignore"))
 
     async def _set_telnet_password_echo(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, suppress: bool) -> None:
+        if id(reader) not in self._telnet_option_seen:
+            return
         try:
             writer.write(
                 bytes(
