@@ -7,8 +7,10 @@ PYCLUSTER_HOME="${PYCLUSTER_HOME:-/home/$PYCLUSTER_USER}"
 PYCLUSTER_APP_DIR="${PYCLUSTER_APP_DIR:-$PYCLUSTER_HOME/pyCluster}"
 PYCLUSTER_SERVICE_NAME="${PYCLUSTER_SERVICE_NAME:-pycluster.service}"
 PYCLUSTER_WEB_SERVICE_NAME="${PYCLUSTER_WEB_SERVICE_NAME:-pyclusterweb.service}"
-PYCLUSTER_CTY_REFRESH_SERVICE_NAME="${PYCLUSTER_CTY_REFRESH_SERVICE_NAME:-pycluster-cty-refresh.service}"
-PYCLUSTER_CTY_REFRESH_TIMER_NAME="${PYCLUSTER_CTY_REFRESH_TIMER_NAME:-pycluster-cty-refresh.timer}"
+PYCLUSTER_LEGACY_CTY_REFRESH_SERVICE_NAME="${PYCLUSTER_CTY_REFRESH_SERVICE_NAME:-pycluster-cty-refresh.service}"
+PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME="${PYCLUSTER_CTY_REFRESH_TIMER_NAME:-pycluster-cty-refresh.timer}"
+PYCLUSTER_DATA_REFRESH_SERVICE_NAME="${PYCLUSTER_DATA_REFRESH_SERVICE_NAME:-pycluster-data-refresh.service}"
+PYCLUSTER_DATA_REFRESH_TIMER_NAME="${PYCLUSTER_DATA_REFRESH_TIMER_NAME:-pycluster-data-refresh.timer}"
 PYCLUSTER_RETENTION_SERVICE_NAME="${PYCLUSTER_RETENTION_SERVICE_NAME:-pycluster-retention.service}"
 PYCLUSTER_RETENTION_TIMER_NAME="${PYCLUSTER_RETENTION_TIMER_NAME:-pycluster-retention.timer}"
 PYCLUSTER_UPGRADE_SERVICE_NAME="${PYCLUSTER_UPGRADE_SERVICE_NAME:-pycluster-upgrade.service}"
@@ -327,6 +329,18 @@ sync_tree() {
   chown -R "$PYCLUSTER_USER:$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR"
 }
 
+seed_runtime_data_from_fixtures() {
+  local root src dst
+  root="$(repo_root)"
+  for name in cty.dat wpxloc.raw; do
+    src="$root/fixtures/live/dxspider/$name"
+    dst="$PYCLUSTER_APP_DIR/data/$name"
+    if [ ! -f "$dst" ] && [ -f "$src" ]; then
+      install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0644 "$src" "$dst"
+    fi
+  done
+}
+
 install_config_if_missing() {
   local root
   root="$(repo_root)"
@@ -358,11 +372,11 @@ install_or_refresh_service() {
     "$root/deploy/systemd/pyclusterweb.service" \
     "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_WEB_SERVICE_NAME"
   install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pycluster-cty-refresh.service" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_CTY_REFRESH_SERVICE_NAME"
+    "$root/deploy/systemd/pycluster-data-refresh.service" \
+    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_DATA_REFRESH_SERVICE_NAME"
   install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pycluster-cty-refresh.timer" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_CTY_REFRESH_TIMER_NAME"
+    "$root/deploy/systemd/pycluster-data-refresh.timer" \
+    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_DATA_REFRESH_TIMER_NAME"
   install -o root -g root -m 0644 \
     "$root/deploy/systemd/pycluster-retention.service" \
     "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_RETENTION_SERVICE_NAME"
@@ -428,7 +442,8 @@ restart_web_service_hard() {
 enable_service() {
   systemctl enable "$PYCLUSTER_SERVICE_NAME" >/dev/null
   systemctl enable "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null
-  systemctl enable --now "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" >/dev/null
+  systemctl disable --now "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl enable --now "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null
 }
@@ -436,14 +451,16 @@ enable_service() {
 disable_service() {
   systemctl disable "$PYCLUSTER_SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl disable "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null 2>&1 || true
-  systemctl disable --now "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl disable --now "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl disable --now "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl disable --now "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
 }
 
 stop_service() {
   systemctl stop "$PYCLUSTER_SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null 2>&1 || true
-  systemctl stop "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl stop "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl stop "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
 }
 

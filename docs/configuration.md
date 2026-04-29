@@ -67,6 +67,7 @@ Note:
 - the sysop console uses callsign/password auth
 - keep it on `127.0.0.1` behind a reverse proxy unless you have a reason not to
 - a default install does exactly that; it does not expose the sysop web listener publicly by itself
+- `deploy/setup-nginx.sh --sysop-host <host>` is the supported way to publish it through nginx on a dedicated hostname
 
 ### `[public_web]`
 
@@ -85,6 +86,7 @@ Note:
 - the public web listener is local by default at `127.0.0.1:8081`
 - expose it through nginx or another reverse proxy when you want public access
 - `deploy/install.sh` can now call `deploy/setup-nginx.sh` interactively during first install
+- the supported nginx helper writes pyCluster-owned server blocks under `/etc/nginx/conf.d`
 
 ### `[store]`
 
@@ -125,6 +127,22 @@ Important fields:
 - `max_attempts`
 - `resend_cooldown_seconds`
 
+### `[satellite]`
+
+Local satellite pass-prediction settings for telnet `show/satellite <target>`.
+
+Important fields:
+
+- `keps_path`
+- `prediction_hours`
+- `pass_step_seconds`
+- `min_elevation_deg`
+
+Notes:
+- `keps_path` points at a local TLE/keps text file, for example `./data/keps.txt`
+- pass prediction uses the caller's QRA/grid square or `forward/latlong` coordinates
+- `show/satellite` without a target still shows recent satellite-tagged DX spots
+
 ## Example Paths
 
 Default deployed layout:
@@ -132,8 +150,9 @@ Default deployed layout:
 - config: `/home/pycluster/pyCluster/config/pycluster.toml`
 - local override: `/home/pycluster/pyCluster/config/pycluster.local.toml`
 - database: `/home/pycluster/pyCluster/data/pycluster.db`
-- CTY data: `/home/pycluster/pyCluster/fixtures/live/dxspider/cty.dat`
-- wpxloc.raw data: `/home/pycluster/pyCluster/fixtures/live/dxspider/wpxloc.raw` when you use the standard refresh path
+- CTY data: `/home/pycluster/pyCluster/data/cty.dat`
+- wpxloc.raw data: `/home/pycluster/pyCluster/data/wpxloc.raw` when you use the standard refresh path
+- satellite keps/TLE data: `/home/pycluster/pyCluster/data/keps.txt`
 
 ## Operational Advice
 
@@ -143,6 +162,7 @@ Default deployed layout:
 - back up the base config, local override, and SQLite DB together
 - do not hand-edit the live CTY file unless you need an emergency local override
 - keep SMTP credentials in `config/pycluster.local.toml`, not the tracked base config
+- keep local satellite keps data under `data/` and point `[satellite].keps_path` at that file
 - CTY data is used for enrichment and review cues such as suspicious spot-prefix flags in the sysop web UI; it is not treated as a complete worldwide legal callsign authority
 - ordinary user access should be managed through the registration and verified-email policy, not by relying only on the older `require_password` toggle
 

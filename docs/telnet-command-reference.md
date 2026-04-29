@@ -315,7 +315,7 @@ sh/dx day 2
 | `show/moon` | Show moon status. |
 | `show/muf` | Show MUF estimate. |
 | `show/contest` | Show contest-oriented information. |
-| `show/satellite` | Show satellite-oriented information. |
+| `show/satellite [target]` | Show satellite spots, or predict passes for a named TLE target when a keps file is configured. |
 | `show/talk` | Show talk/chat status. |
 | `show/debug` | Show debug state. |
 | `show/isolate` | Show isolate state. |
@@ -336,7 +336,7 @@ These commands require sysop privilege and are hidden from ordinary command list
 |---|---|
 | `sysop/password <call> <newpass>` | Set another user’s password. |
 | `sysop/clearpassword <call>` | Clear another user’s password. |
-| `sysop/clearmfa <call>` | Force email MFA off for a principal and clear outstanding OTP challenges. |
+| `sysop/clearmfa <call>` | Force MFA off for a principal, clear outstanding email OTP challenges, and remove any authenticator secret. |
 
 ## Spot Review Notes
 

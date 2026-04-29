@@ -160,6 +160,7 @@ Operational tasks:
 - view live traffic and health
 - inspect policy drops
 - adjust retry behavior
+- delete saved peer definitions that are no longer needed
 
 Typical outbound-peer workflow:
 
@@ -178,6 +179,13 @@ Important distinction:
   - how pyCluster opens the connection
 - `Cluster Family`
   - how pyCluster behaves once the connection is established
+
+Health distinction:
+
+- connected/disconnected answers whether the transport socket is live
+- inbound/accepted versus dial-out answers who initiated the socket
+- traffic labels such as bidirectional, receive active, transmit active, idle, and connected quiet describe recent traffic direction
+- protocol-health labels such as stale, degraded, or flapping are based on received PC protocol freshness and thresholds
 
 See:
 
@@ -293,12 +301,13 @@ Services:
 
 - `pycluster.service`
 - `pyclusterweb.service`
-- `pycluster-cty-refresh.timer`
+- `pycluster-data-refresh.timer`
 
 Healthy baseline:
 
 - core service active
 - public web service active
+- nginx active when the host is publishing web UI on `80/443`
 - CTY refresh timer active
 - wpxloc.raw configured and current if you use DXSpider-style WPX/location data
 - database present

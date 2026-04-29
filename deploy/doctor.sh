@@ -29,10 +29,14 @@ if systemctl list-unit-files "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null 2>&1; then
   [ -n "$web_service_state" ] || web_service_state="inactive"
 fi
 
-cty_timer_state="missing"
-if systemctl list-unit-files "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1; then
-  cty_timer_state="$(systemctl is-active "$PYCLUSTER_CTY_REFRESH_TIMER_NAME" 2>/dev/null || true)"
-  [ -n "$cty_timer_state" ] || cty_timer_state="inactive"
+data_timer_state="missing"
+if systemctl list-unit-files "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null 2>&1; then
+  data_timer_state="$(systemctl is-active "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" 2>/dev/null || true)"
+  [ -n "$data_timer_state" ] || data_timer_state="inactive"
+elif systemctl list-unit-files "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1; then
+  data_timer_state="$(systemctl is-active "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" 2>/dev/null || true)"
+  [ -n "$data_timer_state" ] || data_timer_state="inactive"
+  data_timer_state="$data_timer_state (legacy $PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME)"
 fi
 
 fail2ban_state="missing"
@@ -111,7 +115,7 @@ status "cty.dat" "${cty_path:-unset} ($cty_ok)"
 status "wpxloc.raw" "${wpx_path:-unset} ($wpx_ok)${wpx_note:+ [$wpx_note]}"
 status "core service" "$PYCLUSTER_SERVICE_NAME ($service_state)"
 status "web service" "$PYCLUSTER_WEB_SERVICE_NAME ($web_service_state)"
-status "cty timer" "$PYCLUSTER_CTY_REFRESH_TIMER_NAME ($cty_timer_state)"
+status "data refresh timer" "$PYCLUSTER_DATA_REFRESH_TIMER_NAME ($data_timer_state)"
 status "fail2ban" "fail2ban.service ($fail2ban_state)"
 status "selinux" "$selinux_state"
 status "sysop bootstrap" "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE ($sysop_bootstrap)"

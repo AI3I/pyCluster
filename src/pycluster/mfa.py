@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
+import hashlib
+import hmac
 import secrets
 import smtplib
 import ssl
@@ -8,6 +11,7 @@ import time
 from email.utils import formatdate, make_msgid
 from email.message import EmailMessage
 from typing import Callable
+from urllib.parse import quote
 
 from .config import MFAConfig, SMTPConfig
 from .store import SpotStore
@@ -56,6 +60,57 @@ class SMTPMailer:
             if self.config.username.strip():
                 smtp.login(self.config.username, self.config.password)
             smtp.send_message(msg)
+
+
+def generate_totp_secret() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def normalize_totp_secret(secret: str) -> str:
+    return "".join(ch for ch in str(secret or "").strip().upper() if ch.isalnum())
+
+
+def totp_otpauth_uri(*, issuer: str, account: str, secret: str) -> str:
+    issuer_clean = (issuer or "pyCluster").strip() or "pyCluster"
+    account_clean = account.strip().upper()
+    label = quote(f"{issuer_clean}:{account_clean}")
+    return (
+        f"otpauth://totp/{label}?secret={normalize_totp_secret(secret)}"
+        f"&issuer={quote(issuer_clean)}&algorithm=SHA1&digits=6&period=30"
+    )
+
+
+def verify_totp(secret: str, code: str, *, now: int | None = None, window: int = 1) -> bool:
+    normalized = normalize_totp_secret(secret)
+    supplied = "".join(ch for ch in str(code or "").strip() if ch.isdigit())
+    if len(supplied) != 6 or not normalized:
+        return False
+    padded = normalized + ("=" * ((8 - len(normalized) % 8) % 8))
+    try:
+        key = base64.b32decode(padded, casefold=True)
+    except Exception:
+        return False
+    counter = int((now if now is not None else time.time()) // 30)
+    for offset in range(-max(0, int(window)), max(0, int(window)) + 1):
+        expected = _totp_code_for_counter(key, counter + offset)
+        if secrets.compare_digest(expected, supplied):
+            return True
+    return False
+
+
+def totp_code(secret: str, *, now: int | None = None) -> str:
+    normalized = normalize_totp_secret(secret)
+    padded = normalized + ("=" * ((8 - len(normalized) % 8) % 8))
+    key = base64.b32decode(padded, casefold=True)
+    return _totp_code_for_counter(key, int((now if now is not None else time.time()) // 30))
+
+
+def _totp_code_for_counter(key: bytes, counter: int) -> str:
+    msg = int(counter).to_bytes(8, "big")
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    dynamic_offset = digest[-1] & 0x0F
+    token = int.from_bytes(digest[dynamic_offset : dynamic_offset + 4], "big") & 0x7FFFFFFF
+    return f"{token % 1000000:06d}"
 
 
 class EmailOtpManager:

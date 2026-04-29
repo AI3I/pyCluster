@@ -192,6 +192,7 @@ esac
 install -d -m 0755 "$NGINX_CONFIG_DIR"
 install -d -m 0755 "$SSL_DIR"
 rm -f "$NGINX_CONFIG_DIR/default.conf"
+rm -f /etc/nginx/sites-enabled/default
 
 open_firewall() {
   if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then

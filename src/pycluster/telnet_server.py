@@ -29,6 +29,7 @@ from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_p
 from .qrz import QRZClient, QRZLookupError
 from .registration import consume_grace_login, has_valid_email, mark_email_unverified, mark_email_verified, registration_state
 from .shdx import BAND_RANGES, parse_sh_dx_args
+from .satellite import find_tle, load_tles, predict_passes
 from .spot_throttle import (
     SPOT_THROTTLE_EXEMPT_KEY,
     SPOT_THROTTLE_MAX_KEY,
@@ -40,7 +41,7 @@ from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
 from .maidenhead import coords_to_locator, extract_locator, locator_to_coords
-from .mfa import EmailOtpManager, SMTPMailer
+from .mfa import EmailOtpManager, SMTPMailer, verify_totp
 from .wm7d import WM7DClient, WM7DLookupError
 
 
@@ -1479,6 +1480,15 @@ class TelnetClusterServer:
             return False
         return self._mfa.required_for(is_sysop=is_sysop)
 
+    async def _totp_secret_for_call(self, call: str) -> str:
+        base_call = call.split("-", 1)[0].upper()
+        for candidate in (call.upper(), base_call):
+            raw = await self.store.get_user_pref(candidate, "mfa_totp_secret")
+            secret = str(raw or "").strip()
+            if secret:
+                return secret
+        return ""
+
     async def _require_verified_email_for_login(
         self,
         call: str,
@@ -1681,6 +1691,16 @@ class TelnetClusterServer:
     async def _prompt_email_otp(self, call: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, is_sysop: bool) -> bool:
         if not await self._mfa_required_for_call(call, is_sysop=is_sysop):
             return True
+        totp_secret = await self._totp_secret_for_call(call)
+        if totp_secret:
+            await self._write(writer, "authenticator code: ")
+            supplied_totp = await self._read_password(reader, writer)
+            if supplied_totp is None:
+                return False
+            if not verify_totp(totp_secret, supplied_totp):
+                await self._write(writer, "Login failed (invalid code)\r\n")
+                return False
+            return True
         email = await self._email_for_call(call)
         if not email:
             await self._write(writer, "MFA email not configured\r\n")
@@ -1752,11 +1772,12 @@ class TelnetClusterServer:
         lines.append("")
         lines.append((await self._motd_block()).rstrip("\r\n"))
         if self._is_on_value(str(ui.get("show_status_after_login", "on") or "on"), default=True):
+            linked_nodes = await self._linked_peer_count()
             lines.append(
                 self._render_string(
                     "welcome.status",
                     "Cluster status: {linked_nodes} nodes linked, {local_users} local users, uptime {uptime}",
-                    linked_nodes=1,
+                    linked_nodes=linked_nodes,
                     local_users=self.session_count,
                     uptime=self._uptime_text(),
                 )
@@ -1765,6 +1786,15 @@ class TelnetClusterServer:
             lines.append(tip)
         lines.append("")
         return "\r\n".join(lines)
+
+    async def _linked_peer_count(self) -> int:
+        if not self._link_stats_fn:
+            return 0
+        try:
+            return len(await self._link_stats_fn())
+        except Exception:
+            LOG.exception("link stats unavailable while computing linked peer count")
+            return 0
 
     async def _registration_checklist_block(self, call: str, *, password_set: bool, node_family: str) -> str:
         if node_family:
@@ -2685,7 +2715,15 @@ class TelnetClusterServer:
     async def _cmd_show_cluster(self, _call: str, _arg: str | None) -> str:
         stats = await self._link_stats_fn() if self._link_stats_fn else {}
         local = self.session_count
-        total = local + sum(max(0, int(st.get("parsed_frames", 0))) for st in stats.values())
+        node_cfg = await self._node_proto_map()
+        remote_users = 0
+        for peer in stats:
+            raw = node_cfg.get(f"proto.peer.{self._proto_peer_tag(peer)}.pc16.user_count", "0")
+            try:
+                remote_users += max(0, int(str(raw or "0").strip()))
+            except ValueError:
+                pass
+        total = local + remote_users
         max_users = max(total, local)
         uptime = self._uptime_text()
         lines = [
@@ -2696,6 +2734,7 @@ class TelnetClusterServer:
                 local=local,
                 total=total,
             ),
+            self._render_string("show.cluster.remote_users", "Remote users reported: {remote_users}", remote_users=remote_users),
             self._render_string("show.cluster.max_users", "Max users seen: {max_users}", max_users=max_users),
             self._render_string("show.cluster.uptime", "Uptime: {uptime}", uptime=uptime),
         ]
@@ -3105,6 +3144,10 @@ class TelnetClusterServer:
         return await self._format_console_lines(call, [self._string("show.contest.title", "Contest announcements:")] + out)
 
     async def _cmd_show_satellite(self, call: str, arg: str | None) -> str:
+        target = (arg or "").strip()
+        if target and not target.split()[0].isdigit():
+            return await self._cmd_show_satellite_passes(call, target)
+
         explicit = bool(arg and arg.split()[0].isdigit())
         limit = 20
         if explicit:
@@ -3140,6 +3183,60 @@ class TelnetClusterServer:
             return self._string("show.satellite.empty", "No satellite spots.") + "\r\n"
         sat = await self._apply_page_size(call, sat, explicit_limit=explicit)
         return await self._format_console_lines(call, [self._string("show.satellite.title", "Satellite spots:")] + sat)
+
+    async def _cmd_show_satellite_passes(self, call: str, target: str) -> str:
+        keps_path = str(getattr(self.config.satellite, "keps_path", "./data/keps.txt") or "").strip()
+        if not keps_path:
+            return self._string("show.satellite.keps_unconfigured", "Satellite pass prediction is unavailable: no keps_path is configured.") + "\r\n"
+        records = load_tles(keps_path)
+        if not records:
+            return self._render_string(
+                "show.satellite.keps_missing",
+                "Satellite pass prediction is unavailable: no TLE records were found in {path}. Run get/keps or install a keps file there.",
+                path=keps_path,
+            ) + "\r\n"
+        tle = find_tle(records, target)
+        if tle is None:
+            return self._render_string(
+                "show.satellite.unknown",
+                "No TLE entry matching {target} was found in {path}.",
+                target=target.upper(),
+                path=keps_path,
+            ) + "\r\n"
+        context = await self._coords_context_for(call)
+        if context is None:
+            return self._string("show.satellite.location_missing", "Satellite pass prediction needs your QRA or forward latitude/longitude first.") + "\r\n"
+        (lat, lon), source = context
+        hours = max(1, min(168, int(getattr(self.config.satellite, "prediction_hours", 24) or 24)))
+        step = max(15, min(600, int(getattr(self.config.satellite, "pass_step_seconds", 60) or 60)))
+        min_el = float(getattr(self.config.satellite, "min_elevation_deg", 0.0) or 0.0)
+        passes = predict_passes(tle, lat, lon, hours=hours, step_seconds=step, min_elevation_deg=min_el, limit=3)
+        if not passes:
+            return self._render_string(
+                "show.satellite.no_passes",
+                "No {satellite} passes above {min_el:.0f} deg were found for {source} in the next {hours} hour(s).",
+                satellite=tle.name,
+                min_el=min_el,
+                source=source,
+                hours=hours,
+            ) + "\r\n"
+        lines = [
+            self._render_string(
+                "show.satellite.pass_title",
+                "Satellite passes for {satellite} from {source}:",
+                satellite=tle.name,
+                source=source,
+            ),
+            "AOS UTC              LOS UTC              Max UTC              MaxEl  Az",
+        ]
+        for sat_pass in passes:
+            lines.append(
+                f"{sat_pass.aos.strftime('%d-%b %H:%M'):>12}       "
+                f"{sat_pass.los.strftime('%d-%b %H:%M'):>12}       "
+                f"{sat_pass.max_time.strftime('%d-%b %H:%M'):>12}       "
+                f"{sat_pass.max_elevation_deg:5.1f} {sat_pass.max_azimuth_deg:3.0f}"
+            )
+        return await self._format_console_lines(call, lines)
 
     async def _cmd_show_prefix(self, _call: str, arg: str | None) -> str:
         if not arg:
@@ -6077,13 +6174,15 @@ class TelnetClusterServer:
         principal = target.split("-", 1)[0]
         await self.store.upsert_user_registry(principal, now)
         await self.store.set_user_pref(principal, "mfa_email_otp", "off", now)
+        await self.store.delete_user_pref(principal, "mfa_totp_secret")
         if target != principal:
             await self.store.delete_user_pref(target, "mfa_email_otp")
+            await self.store.delete_user_pref(target, "mfa_totp_secret")
         cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
         self._log_event("sysop", f"{call} sysop/clearmfa {target} challenges={cleared}")
         return self._render_string(
             "sysop.clearmfa_done",
-            "Email MFA reset for {principal}. Outstanding challenges cleared: {cleared}. MFA is now off.",
+            "MFA reset for {principal}. Outstanding challenges cleared: {cleared}. MFA is now off.",
             principal=principal,
             cleared=cleared,
         ) + "\r\n"
@@ -6927,7 +7026,16 @@ class TelnetClusterServer:
     async def _cmd_load_keps(self, call: str, arg: str | None) -> str:
         target = self._load_target_call(call, arg)
         last = await self.store.get_user_pref(target, "keps_last_request_epoch")
-        return self._render_string("load.keps", "Keplerian request state loaded for {target}; last request epoch is {last}.", target=target, last=last or "0") + "\r\n"
+        keps_path = str(getattr(self.config.satellite, "keps_path", "./data/keps.txt") or "").strip()
+        count = len(load_tles(keps_path)) if keps_path else 0
+        return self._render_string(
+            "load.keps",
+            "Keplerian request state loaded for {target}; last request epoch is {last}; TLE records: {count} from {path}.",
+            target=target,
+            last=last or "0",
+            count=count,
+            path=keps_path or "not configured",
+        ) + "\r\n"
 
     async def _cmd_load_messages(self, call: str, arg: str | None) -> str:
         target = self._load_target_call(call, arg)

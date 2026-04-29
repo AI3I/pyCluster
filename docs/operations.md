@@ -8,7 +8,7 @@ Typical production services:
 
 - `pycluster.service`
 - `pyclusterweb.service`
-- `pycluster-cty-refresh.timer`
+- `pycluster-data-refresh.timer`
   - refreshes both `CTY.DAT` and `wpxloc.raw`
 - `pycluster-retention.timer`
 
@@ -32,7 +32,7 @@ Operational stance:
 Check them:
 
 ```bash
-systemctl status pycluster.service pyclusterweb.service pycluster-cty-refresh.timer
+systemctl status pycluster.service pyclusterweb.service pycluster-data-refresh.timer
 ```
 
 ## On-Disk Layout
@@ -135,7 +135,7 @@ This refreshes both `CTY.DAT` and `wpxloc.raw` unless you pass `--cty-only`.
 
 Automatic:
 
-- `pycluster-cty-refresh.timer`
+- `pycluster-data-refresh.timer`
   - refreshes both `CTY.DAT` and `wpxloc.raw`
 
 ## Security Operations
@@ -148,8 +148,26 @@ Relevant repo paths:
 
 - `deploy/fail2ban/filter.d/pycluster-auth-core.conf`
 - `deploy/fail2ban/filter.d/pycluster-auth-web.conf`
+- `deploy/fail2ban/filter.d/pycluster-auth-scanner.conf`
 - `deploy/fail2ban/jail.d/pycluster-core.local`
 - `deploy/fail2ban/jail.d/pycluster-web.local`
+- `deploy/fail2ban/jail.d/pycluster-scanner.local`
+
+Installed jail names:
+
+- `pycluster-core-auth`
+- `pycluster-web-auth`
+- `pycluster-telnet-scanner`
+
+Useful checks:
+
+```bash
+sudo fail2ban-client status
+sudo fail2ban-client status pycluster-core-auth
+sudo fail2ban-client status pycluster-web-auth
+sudo fail2ban-client status pycluster-telnet-scanner
+sudo tail -n 50 /var/log/pycluster/authfail.log
+```
 
 Legacy migration integration:
 
@@ -171,6 +189,8 @@ The System Operator web console includes:
 
 - recent auth failures
 - current bans
+
+Install, upgrade, and repair runs refresh the pyCluster fail2ban filters and jails, then restart `fail2ban` when the service is available.
 
 ## Telnet and Web Health
 
@@ -203,6 +223,15 @@ The peer model distinguishes:
 - `Accepted`
 
 That is about who initiated the link, not whether traffic is bidirectional.
+
+The web peer table keeps transport state and protocol freshness separate:
+
+- `connected` means a socket is live
+- `disconnected` means no socket is live
+- `bidirectional`, `receive active`, `transmit active`, `idle`, and `connected quiet` describe recent traffic direction
+- protocol stale/degraded/flapping labels describe whether fresh PC protocol traffic has been received inside the configured thresholds
+
+An inbound link can be connected and transmit-active/receive-quiet when the remote node is still connected but has not sent recent protocol traffic. That should not be shown to operators as a broken transport.
 
 When spot ingest sees a callsign that is syntactically plausible but not recognized by the currently loaded prefix data, pyCluster ingests it and logs a `spot call review: ...` line instead of dropping it. The System Console spot table marks those rows with a `Review` badge.
 

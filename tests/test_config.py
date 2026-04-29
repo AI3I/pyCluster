@@ -83,6 +83,14 @@ def test_load_config_merges_sibling_local_override(tmp_path: Path) -> None:
     assert cfg.qrz.username == "AI3I"
 
 
+def test_tracked_default_config_uses_neutral_runtime_data_paths() -> None:
+    cfg = load_config(Path("/home/jdlewis/GitHub/pyCluster/config/pycluster.toml"))
+
+    assert cfg.public_web.cty_dat_path == "./data/cty.dat"
+    assert cfg.public_web.wpxloc_raw_path == "./data/wpxloc.raw"
+    assert cfg.satellite.keps_path == "./data/keps.txt"
+
+
 def test_load_config_defaults_wpxloc_to_cty_sibling(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()

@@ -83,6 +83,14 @@ class SMTPConfig:
 
 
 @dataclass(slots=True)
+class SatelliteConfig:
+    keps_path: str = "./data/keps.txt"
+    prediction_hours: int = 24
+    pass_step_seconds: int = 60
+    min_elevation_deg: float = 0.0
+
+
+@dataclass(slots=True)
 class MFAConfig:
     enabled: bool = False
     require_for_sysop: bool = False
@@ -103,6 +111,7 @@ class AppConfig:
     store: StoreConfig
     qrz: QRZConfig = field(default_factory=QRZConfig)
     smtp: SMTPConfig = field(default_factory=SMTPConfig)
+    satellite: SatelliteConfig = field(default_factory=SatelliteConfig)
     mfa: MFAConfig = field(default_factory=MFAConfig)
 
 
@@ -217,9 +226,10 @@ def load_config(path: str | Path) -> AppConfig:
 
     qrz = QRZConfig(**_load_section(data, "qrz")) if "qrz" in data else QRZConfig()
     smtp = SMTPConfig(**_load_section(data, "smtp")) if "smtp" in data else SMTPConfig()
+    satellite = SatelliteConfig(**_load_section(data, "satellite")) if "satellite" in data else SatelliteConfig()
     mfa = MFAConfig(**_load_section(data, "mfa")) if "mfa" in data else MFAConfig()
 
-    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store, qrz=qrz, smtp=smtp, mfa=mfa)
+    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store, qrz=qrz, smtp=smtp, satellite=satellite, mfa=mfa)
 
 
 def _toml_value(value: object) -> str:
@@ -245,10 +255,11 @@ def dump_config(config: AppConfig) -> str:
         "store": asdict(config.store),
         "qrz": asdict(config.qrz),
         "smtp": asdict(config.smtp),
+        "satellite": asdict(config.satellite),
         "mfa": asdict(config.mfa),
     }
     lines: list[str] = []
-    for section in ("node", "telnet", "web", "public_web", "store", "qrz", "smtp", "mfa"):
+    for section in ("node", "telnet", "web", "public_web", "store", "qrz", "smtp", "satellite", "mfa"):
         lines.append(f"[{section}]")
         for key, value in data[section].items():
             lines.append(f"{key} = {_toml_value(value)}")

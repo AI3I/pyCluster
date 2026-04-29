@@ -12,7 +12,7 @@ import pycluster.web_admin as web_admin_mod
 from pycluster.ctydat import load_cty
 from pycluster.auth import is_password_hash, verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
-from pycluster.mfa import SMTPMailer
+from pycluster.mfa import SMTPMailer, totp_code
 from pycluster.models import Spot
 from pycluster.store import SpotStore
 from pycluster.web_admin import WebAdminServer
@@ -127,9 +127,11 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
 
 def test_web_admin_static_uses_clearer_statusline_and_maintenance_actions() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
-    assert "background:rgba(88,166,255,.08);" in text
-    assert "border:1px solid rgba(88,166,255,.22);" in text
+    assert "background:transparent;" in text
+    assert "border:0;" in text
+    assert "color:var(--text-secondary);" in text
     assert ".light .statusline{" in text
+    assert ".statusline.error{" in text
     maintenance_idx = text.index('id="node-group-maintenance"')
     cleanup_idx = text.index('id="runCleanup"')
     check_idx = text.index('id="checkUpgrade"')
@@ -154,6 +156,39 @@ def test_web_admin_static_peer_table_uses_content_width_columns() -> None:
     assert "width:max-content;" in text
     assert "table-layout:auto;" in text
     assert 'class="peer-table"' in text
+    assert 'id="peerDelete"' in text
+    assert "byId('peer').value = '';" in text
+    assert "j('/api/peer/delete'" in text
+
+
+def test_web_admin_static_exposes_qrz_settings() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'data-node-group="qrz"' in text
+    assert 'id="node-group-qrz"' in text
+    assert 'id="qrz_username"' in text
+    assert 'id="qrz_password"' in text
+    assert 'id="qrz_agent"' in text
+    assert 'id="qrz_api_url"' in text
+    assert "qrz_username: byId('qrz_username').value.trim()" in text
+
+
+def test_web_admin_static_exposes_satellite_settings() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'data-node-group="satellite"' in text
+    assert 'id="node-group-satellite"' in text
+    assert 'id="satellite_keps_path"' in text
+    assert 'id="satellite_prediction_hours"' in text
+    assert 'id="satellite_pass_step_seconds"' in text
+    assert 'id="satellite_min_elevation_deg"' in text
+    assert "satellite_keps_path: byId('satellite_keps_path').value.trim()" in text
+
+
+def test_web_admin_static_exposes_totp_mfa_controls() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'id="enrollTotp"' in text
+    assert "/api/users/mfa/totp/enroll" in text
+    assert "Authenticator setup URI" in text
+    assert "mfa_method" in text
 
 
 def test_web_admin_static_shows_registration_state_controls() -> None:
@@ -223,6 +258,13 @@ def test_public_web_static_supports_sidebar_hide_toggle() -> None:
     assert '<span class="footer-control-label">Theme</span>' in text
     assert "if (!toastPopupsEnabled) return;" in text
     assert "if (toastPopupsEnabled && matched.toast !== false)" in text
+
+
+def test_public_web_greyline_mask_closes_through_dark_pole() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert "const tLat  = Math.atan2(-Math.cos(dR), Math.tan(subLatR))" in text
+    assert "const pole = sub.lat >= 0 ? -89.9 : 89.9;" in text
+    assert "Close through the dark pole" in text
 
 
 def test_web_admin_static_exposes_taxonomy_editor() -> None:
@@ -669,6 +711,54 @@ def test_web_admin_login_can_require_email_otp(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_login_can_use_totp_authenticator(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_totp.db")
+        cfg = _mk_config(db, admin_token="")
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_sysop = True
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="sysop", email="")
+        await store.set_user_pref("AI3I", "password", "pw1", now)
+        await store.set_user_pref("AI3I", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1"}).encode("utf-8"),
+            )
+            assert code == 202
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["mfa_required"] is True
+            assert payload["mfa_method"] == "totp"
+            assert "challenge_id" not in payload
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/auth/login",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I", "password": "pw1", "otp": totp_code("JBSWY3DPEHPK3PXP")}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["sysop"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_admin_login_honors_per_user_mfa_override(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_admin_mfa_override.db")
@@ -977,6 +1067,10 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
         async def _save(peer: str, dsn: str, profile: str = "dxspider", reconnect: bool = True, password: str = "") -> None:
             ops.append(("save", peer, dsn, profile, reconnect, password))
 
+        async def _delete(peer: str) -> bool:
+            ops.append(("delete", peer, ""))
+            return peer == "peer1"
+
         srv = WebAdminServer(
             config=cfg,
             store=store,
@@ -988,6 +1082,7 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             link_disconnect_fn=_disconnect,
             link_set_profile_fn=_set_profile,
             link_save_peer_fn=_save,
+            link_delete_peer_fn=_delete,
         )
         try:
             code, _, _ = await _http_request(srv, "GET", "/api/stats")
@@ -1073,6 +1168,16 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             code, _, body = await _http_request(
                 srv,
                 "POST",
+                "/api/peer/save",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"peer": "inbound1", "dsn": "", "profile": "dxspider", "reconnect": False}).encode("utf-8"),
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
                 "/api/peer/connect",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
                 body=json.dumps({"peer": "peer1", "dsn": "tcp://127.0.0.1:7300", "password": "sekret", "profile": "dxspider"}).encode("utf-8"),
@@ -1099,10 +1204,22 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             )
             assert code == 200
             assert json.loads(body.decode("utf-8"))["ok"] is True
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/peer/delete",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"peer": "peer1"}).encode("utf-8"),
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
             assert ("save", "peer1", "tcp://127.0.0.1:7300", "dxspider", True, "sekret") in ops
+            assert ("save", "inbound1", "", "dxspider", False, "") in ops
             assert ("connect", "peer1", "tcp://127.0.0.1:7300", "dxspider", True, "sekret") in ops
             assert ("profile", "peer1", "arcluster") in ops
             assert ("disconnect", "peer1", "") in ops
+            assert ("delete", "peer1", "") in ops
         finally:
             await store.close()
 
@@ -1625,6 +1742,14 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
                 "smtp_starttls": False,
                 "smtp_use_ssl": True,
                 "smtp_timeout_seconds": 15,
+                "qrz_username": "n9jr",
+                "qrz_password": "qrz-pass",
+                "qrz_agent": "pyCluster-test",
+                "qrz_api_url": "https://xmldata.qrz.com/xml/current/",
+                "satellite_keps_path": "./data/amateur.txt",
+                "satellite_prediction_hours": 48,
+                "satellite_pass_step_seconds": 120,
+                "satellite_min_elevation_deg": 5.5,
                 "mfa_enabled": True,
                 "mfa_require_for_sysop": True,
                 "mfa_require_for_users": False,
@@ -1668,6 +1793,14 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["smtp_starttls"] is False
             assert data["smtp_use_ssl"] is True
             assert data["smtp_timeout_seconds"] == 15
+            assert data["qrz_username"] == "n9jr"
+            assert data["qrz_password"] == "qrz-pass"
+            assert data["qrz_agent"] == "pyCluster-test"
+            assert data["qrz_api_url"] == "https://xmldata.qrz.com/xml/current/"
+            assert data["satellite_keps_path"] == "./data/amateur.txt"
+            assert data["satellite_prediction_hours"] == 48
+            assert data["satellite_pass_step_seconds"] == 120
+            assert data["satellite_min_elevation_deg"] == 5.5
             assert data["mfa_enabled"] is True
             assert data["mfa_require_for_sysop"] is True
             assert data["mfa_require_for_users"] is False
@@ -1701,6 +1834,13 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert saved["smtp"]["host"] == "smtp.example.test"
             assert saved["smtp"]["port"] == 465
             assert saved["smtp"]["use_ssl"] is True
+            assert saved["qrz"]["username"] == "n9jr"
+            assert saved["qrz"]["password"] == "qrz-pass"
+            assert saved["qrz"]["agent"] == "pyCluster-test"
+            assert saved["satellite"]["keps_path"] == "./data/amateur.txt"
+            assert saved["satellite"]["prediction_hours"] == 48
+            assert saved["satellite"]["pass_step_seconds"] == 120
+            assert saved["satellite"]["min_elevation_deg"] == 5.5
             assert saved["mfa"]["enabled"] is True
             assert saved["mfa"]["issuer"] == "AI3I Cluster"
             assert saved["mfa"]["resend_cooldown_seconds"] == 45
@@ -2089,6 +2229,9 @@ def test_web_peers_includes_proto_state(tmp_path) -> None:
                 "peer1": {
                     "profile": "spider",
                     "inbound": False,
+                    "connected_epoch": now - 3600,
+                    "last_tx_epoch": now - 60,
+                    "last_rx_epoch": now - 120,
                     "parsed_frames": 12,
                     "sent_frames": 8,
                     "policy_dropped": 1,
@@ -2130,6 +2273,13 @@ def test_web_peers_includes_proto_state(tmp_path) -> None:
             assert len(rows) == 1
             assert rows[0]["transport"] == ""
             assert rows[0]["path_hint"] == ""
+            assert rows[0]["last_tx_epoch"] == now - 60
+            assert rows[0]["last_rx_epoch"] == now - 120
+            assert rows[0]["link"]["health"] == "connected"
+            assert rows[0]["link"]["activity"] == "bidirectional"
+            assert rows[0]["link"]["summary"] == "bidirectional traffic"
+            assert rows[0]["link"]["tx_age_min"] == 1
+            assert rows[0]["link"]["rx_age_min"] == 2
             p = rows[0]["proto"]
             assert p["known"] is True
             assert p["health"] == "ok"
@@ -2140,6 +2290,57 @@ def test_web_peers_includes_proto_state(tmp_path) -> None:
             assert p["pc24"]["call"] == "OH8X"
             assert p["pc50"]["count"] == "63"
             assert p["pc51"]["to"] == "AI3I-15"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_peers_reports_transmit_active_receive_quiet_link(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_peers_rx_quiet.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+
+        async def _stats():
+            return {
+                "KC9GWK-1": {
+                    "profile": "pycluster",
+                    "inbound": True,
+                    "connected_epoch": now - 3600,
+                    "last_tx_epoch": now - 45,
+                    "last_rx_epoch": None,
+                    "parsed_frames": 0,
+                    "sent_frames": 42,
+                    "tx_by_type": {"PC61": 40, "PC20": 2},
+                    "rx_by_type": {},
+                }
+            }
+
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+            link_stats_fn=_stats,
+        )
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.pc18.family", "pycluster", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.pc18.summary", "pyCluster 1.0.6", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.last_epoch", str(now - 86400), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.last_pc_type", "PC18", now)
+        try:
+            code, _, body = await _http_request(srv, "GET", "/api/peers", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            row = json.loads(body.decode("utf-8"))[0]
+            assert row["peer"] == "KC9GWK-1"
+            assert row["connected"] is True
+            assert row["proto"]["health"] == "stale"
+            assert row["link"]["health"] == "connected"
+            assert row["link"]["activity"] == "transmit_active"
+            assert row["link"]["summary"] == "transmit active; receive quiet"
+            assert row["link"]["tx_age_min"] == 0
+            assert row["link"]["rx_age_min"] == -1
         finally:
             await store.close()
 
@@ -2187,6 +2388,46 @@ def test_web_proto_history_endpoint(tmp_path) -> None:
             assert len(rows) == 2
             assert all(r["peer"] == "peer1" for r in rows)
             assert rows[0]["epoch"] >= rows[1]["epoch"]
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_peers_displays_saved_inbound_peer_without_live_session(tmp_path) -> None:
+    async def _desired():
+        return [
+            {
+                "peer": "N9JR-2",
+                "dsn": "",
+                "profile": "dxspider",
+                "reconnect_enabled": False,
+                "desired": True,
+                "connected": False,
+            }
+        ]
+
+    async def run() -> None:
+        db = str(tmp_path / "web_inbound_peer.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+            link_stats_fn=lambda: asyncio.sleep(0, result={}),
+            link_desired_peers_fn=_desired,
+        )
+        try:
+            code, _, body = await _http_request(srv, "GET", "/api/peers", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert rows[0]["peer"] == "N9JR-2"
+            assert rows[0]["desired"] is True
+            assert rows[0]["connected"] is False
+            assert rows[0]["inbound"] is True
+            assert rows[0]["dsn"] == ""
         finally:
             await store.close()
 
@@ -2504,6 +2745,7 @@ def test_web_users_can_reset_mfa(tmp_path) -> None:
             await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
             await store.set_user_pref("AI3I", "password", "pw123", now)
             await store.set_user_pref("AI3I", "mfa_email_otp", "required", now)
+            await store.set_user_pref("AI3I", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
             challenge_id, _expires = await srv._mfa.issue(call="AI3I", email="ai3i@example.test", purpose="sysop-web")
             assert await store.get_mfa_challenge(challenge_id) is not None
 
@@ -2520,7 +2762,46 @@ def test_web_users_can_reset_mfa(tmp_path) -> None:
             assert data["principal"] == "AI3I"
             assert data["user"]["mfa_email_otp"] == "off"
             assert await store.get_user_pref("AI3I", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") is None
             assert await store.get_mfa_challenge(challenge_id) is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_users_can_enroll_totp_mfa(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_users_totp_enroll.db")
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.mfa.issuer = "AI3I Cluster"
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="sysop")
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/mfa/totp/enroll",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I-7"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["principal"] == "AI3I"
+            assert data["secret"]
+            assert data["otpauth_uri"].startswith("otpauth://totp/")
+            assert "AI3I%20Cluster" in data["otpauth_uri"]
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == data["secret"]
+            assert await store.get_user_pref("AI3I", "mfa_email_otp") == "required"
+            assert data["user"]["mfa_totp_enabled"] is True
         finally:
             await store.close()
 

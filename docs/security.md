@@ -27,11 +27,19 @@ Included filters:
 
 - `deploy/fail2ban/filter.d/pycluster-auth-core.conf`
 - `deploy/fail2ban/filter.d/pycluster-auth-web.conf`
+- `deploy/fail2ban/filter.d/pycluster-auth-scanner.conf`
 
 Included jails:
 
 - `deploy/fail2ban/jail.d/pycluster-core.local`
 - `deploy/fail2ban/jail.d/pycluster-web.local`
+- `deploy/fail2ban/jail.d/pycluster-scanner.local`
+
+Installed jail names:
+
+- `pycluster-core-auth`
+- `pycluster-web-auth`
+- `pycluster-telnet-scanner`
 
 ## Auth Failure Logging
 
@@ -51,6 +59,16 @@ Common reasons:
 - `blocked_login`
 - `web_login_not_allowed`
 - `telnet_login_not_allowed`
+
+Operational checks:
+
+```bash
+sudo fail2ban-client status
+sudo fail2ban-client status pycluster-core-auth
+sudo fail2ban-client status pycluster-web-auth
+sudo fail2ban-client status pycluster-telnet-scanner
+sudo tail -n 50 /var/log/pycluster/authfail.log
+```
 
 ## Recommended Deployment Posture
 

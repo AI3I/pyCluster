@@ -85,10 +85,11 @@ Current release: `1.0.7`
 Recent highlights in `1.0.7`:
 
 - user deletion now removes the full local account footprint instead of leaving stale prefs and records behind
-- new-user approval again creates limited-access users by default rather than over-permissive accounts
-- telnet `show/sun`, `show/moon`, `show/muf`, `show/wcy`, and `show/wwv` behavior was tightened and regression-covered
+- System Operator web controls now cover QRZ XML credentials, SMTP test mail, taxonomy editing, peer deletion, and Google Authenticator-compatible TOTP enrollment
+- telnet `talk`, announce, WX, WCY, WWV, satellite pass prediction, and cluster-user totals were tightened and regression-covered
+- peer link reporting now separates connected/disconnected transport state from one-way traffic and protocol freshness
 - public web spot toasts no longer cover the sidebar, and operators can now hide the sidebar entirely
-- historical taxonomy/comment tags were restored, and the SysOp web UI can now edit taxonomy directly
+- nginx, Let's Encrypt, fail2ban, and data-refresh deployment paths are documented and covered by install/repair/upgrade tooling
 - fresh deployments now ship with all authentication toggles off by default until a sysop enables them
 
 ## 🖥️ Interfaces
@@ -292,7 +293,7 @@ Installed services:
 
 - `pycluster.service`
 - `pyclusterweb.service`
-- `pycluster-cty-refresh.timer`
+- `pycluster-data-refresh.timer`
 - `pycluster-retention.timer`
 
 ## 📦 Hardware Requirements
@@ -354,7 +355,7 @@ By default this refreshes both `CTY.DAT` and `wpxloc.raw`. Use `--cty-only` if y
 
 Automatic refresh:
 
-- `pycluster-cty-refresh.timer`
+- `pycluster-data-refresh.timer`
   - refreshes both `CTY.DAT` and `wpxloc.raw`
 
 The System Operator web console and telnet `show/configuration` also report dataset load state, path, and version/date when available.

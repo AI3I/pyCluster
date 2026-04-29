@@ -89,6 +89,17 @@ Useful sysop commands:
 
 In the System Operator web console, the `Peers and Links` editor now exposes `Cluster Family` as an explicit selector, including `pyCluster` for pyCluster-to-pyCluster links.
 
+## Link Health Labels
+
+Peer role and traffic direction are separate ideas:
+
+- `Dial-out` means this node initiated the socket
+- `Accepted` means the remote node connected inbound
+- `connected` and `disconnected` describe whether a live socket exists
+- `bidirectional`, `receive active`, `transmit active`, `idle`, and `connected quiet` describe recent traffic direction
+
+Protocol-health labels such as stale, degraded, or flapping are based on received PC protocol freshness and configured thresholds. They do not automatically mean the transport socket is down.
+
 ## Notes
 
 - pyCluster avoids silently guessing peer family/version

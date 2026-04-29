@@ -538,7 +538,7 @@ last_login = "  Last Login: {value}"
 last_peer = "  Last Peer: {value}"
 
 sysop.clearmfa_usage = "Usage: sysop/clearmfa <call>"
-sysop.clearmfa_done = "Email MFA reset for {principal}. Outstanding challenges cleared: {cleared}. MFA is now off."
+sysop.clearmfa_done = "MFA reset for {principal}. Outstanding challenges cleared: {cleared}. MFA is now off."
 sysop.path_usage = "Usage: sysop/path <call|peer>"
 sysop.path_empty = "No local path record for {target}."
 

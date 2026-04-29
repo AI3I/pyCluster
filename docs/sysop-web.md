@@ -85,6 +85,11 @@ This view controls local node identity and welcome-flow presentation.
 - `OTP Attempts`
 - `OTP Resend Cooldown (seconds)`
 
+Per-user MFA actions:
+
+- `Enroll Authenticator` creates a Google Authenticator-compatible TOTP secret and setup URI for the selected principal callsign.
+- `Reset MFA` disables the per-user MFA override, clears outstanding email OTP challenges, and removes any authenticator secret.
+
 ### Mail (SMTP)
 
 - `SMTP Host`
@@ -264,6 +269,21 @@ The `Role` cell now carries:
 - host / transport endpoint
 - learned peer software/version when it has been seen from `PC18`
 
+The `Status` cell answers the simple transport question first:
+
+- `connected`: a live socket exists
+- `disconnected`: no live socket exists
+
+The detail text then describes recent activity:
+
+- `bidirectional`
+- `receive active`
+- `transmit active`
+- `idle`
+- `connected quiet`
+
+This is intentionally separate from protocol-health freshness. A connected inbound node can be `transmit active` and `receive quiet` when pyCluster is still sending keepalives or traffic but has not recently received PC protocol frames from the remote node. In that case, the transport is connected; the protocol-health view is where stale/degraded/flapping protocol state is investigated.
+
 This view is intended to make peer operations understandable without dropping into raw counters or logs.
 
 ## Protocol Health
@@ -402,7 +422,7 @@ Includes:
 Includes:
 
 - `Reload Security`
-- `Recent Auth Failures`
+- `Recent Authentication Failures`
 
 Recent auth failures show:
 
