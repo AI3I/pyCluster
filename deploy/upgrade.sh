@@ -15,6 +15,7 @@ ensure_group
 ensure_user
 ensure_layout
 sync_tree
+seed_runtime_data_from_fixtures
 install_config_if_missing
 install_optional_config_if_missing "config/strings.toml" "strings.toml"
 install_optional_config_if_missing "config/pycluster.local.toml.example" "pycluster.local.toml.example"

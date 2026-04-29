@@ -122,6 +122,7 @@ class ClusterApp:
             link_disconnect_fn=self.disconnect_peer,
             link_set_profile_fn=self.node_link.set_peer_profile,
             link_save_peer_fn=self.save_peer_target,
+            link_delete_peer_fn=self.delete_peer_target,
             publish_spot_fn=self.telnet.publish_spot,
             relay_spot_fn=self._relay_spot_to_links,
             publish_chat_fn=self.telnet.publish_chat,
@@ -219,6 +220,14 @@ class ClusterApp:
     ) -> None:
         await self._persist_peer_target(name, dsn, profile=profile, reconnect=reconnect, password=password)
 
+    async def delete_peer_target(self, name: str) -> bool:
+        desired = await self._desired_peer_targets()
+        existed = name in desired
+        await self._forget_peer_target(name)
+        self._legacy_dxspider_peers.discard(name)
+        disconnected = await self.node_link.disconnect_peer(name)
+        return existed or disconnected
+
     async def _forget_peer_target(self, name: str) -> None:
         keys = [
             "name",
@@ -250,7 +259,7 @@ class ClusterApp:
         for row in out.values():
             name = row.get("name", "").strip()
             dsn = row.get("dsn", "").strip()
-            if not name or not dsn:
+            if not name:
                 continue
             desired[name] = row
         return desired
@@ -526,7 +535,7 @@ class ClusterApp:
         stats = await self.node_link.stats()
         for name, row in stats.items():
             profile = str(row.get("profile", "dxspider")).strip().lower()
-            if profile != "dxspider":
+            if profile not in {"dxspider", "pycluster"}:
                 continue
             try:
                 await self.node_link.send(name, WirePcFrame("PC20", [""]))
@@ -820,6 +829,24 @@ class ClusterApp:
                     "pc18.proto": (msg.proto_version or "").strip(),
                     "pc18.family": family,
                     "pc18.summary": summary,
+                },
+            )
+            return
+
+        if frame.pc_type == "PC16":
+            fields = list(frame.payload_fields)
+            remote_node = normalize_call(fields[0]) if fields else ""
+            users = 0
+            for item in fields[1:]:
+                text = str(item or "").strip()
+                if not text or text.upper().startswith("H"):
+                    break
+                users += 1
+            await self._record_proto_state(
+                peer_name,
+                {
+                    "pc16.node": remote_node,
+                    "pc16.user_count": str(users),
                 },
             )
             return

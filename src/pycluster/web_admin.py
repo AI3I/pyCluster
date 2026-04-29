@@ -20,7 +20,7 @@ from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .geomag import canonicalize_wcy_text, canonicalize_wwv_text
 from .maidenhead import coords_to_locator, extract_locator
-from .mfa import EmailOtpManager, SMTPMailer
+from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
 from .ctydat import is_loaded as cty_loaded, load_cty, lookup as cty_lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
@@ -108,6 +108,7 @@ class WebAdminServer:
         link_disconnect_fn=None,
         link_set_profile_fn=None,
         link_save_peer_fn=None,
+        link_delete_peer_fn=None,
         publish_spot_fn=None,
         relay_spot_fn=None,
         publish_chat_fn=None,
@@ -131,6 +132,7 @@ class WebAdminServer:
         self.link_disconnect_fn = link_disconnect_fn
         self.link_set_profile_fn = link_set_profile_fn
         self.link_save_peer_fn = link_save_peer_fn
+        self.link_delete_peer_fn = link_delete_peer_fn
         self.publish_spot_fn = publish_spot_fn
         self.relay_spot_fn = relay_spot_fn
         self.publish_chat_fn = publish_chat_fn
@@ -401,6 +403,14 @@ class WebAdminServer:
             "smtp_starttls": bool(self.config.smtp.starttls),
             "smtp_use_ssl": bool(self.config.smtp.use_ssl),
             "smtp_timeout_seconds": int(self.config.smtp.timeout_seconds),
+            "qrz_username": self.config.qrz.username,
+            "qrz_password": self.config.qrz.password,
+            "qrz_agent": self.config.qrz.agent,
+            "qrz_api_url": self.config.qrz.api_url,
+            "satellite_keps_path": self.config.satellite.keps_path,
+            "satellite_prediction_hours": int(self.config.satellite.prediction_hours),
+            "satellite_pass_step_seconds": int(self.config.satellite.pass_step_seconds),
+            "satellite_min_elevation_deg": float(self.config.satellite.min_elevation_deg),
             "mfa_enabled": bool(self.config.mfa.enabled),
             "mfa_require_for_sysop": bool(self.config.mfa.require_for_sysop),
             "mfa_require_for_users": bool(self.config.mfa.require_for_users),
@@ -480,6 +490,7 @@ class WebAdminServer:
         mfa_email_otp = str(await self.store.get_user_pref(call, "mfa_email_otp") or "").strip().lower()
         if mfa_email_otp not in {"required", "off"}:
             mfa_email_otp = "default"
+        mfa_totp_enabled = bool(str(await self.store.get_user_pref(base_call, "mfa_totp_secret") or "").strip())
         reg_state, email_verified_epoch, grace_logins_remaining = await registration_state(self.store, base_call)
         return {
             "call": call,
@@ -513,6 +524,7 @@ class WebAdminServer:
             "mail_outbox_issues": outbox_issues,
             "mail_last_error": last_mail_error,
             "mfa_email_otp": mfa_email_otp,
+            "mfa_totp_enabled": mfa_totp_enabled,
             "registration_state": reg_state,
             "email_verified": email_verified_epoch > 0 and reg_state == "verified",
             "email_verified_epoch": email_verified_epoch,
@@ -621,6 +633,15 @@ class WebAdminServer:
         if override == "off":
             return False
         return self._mfa.required_for(is_sysop=is_sysop)
+
+    async def _totp_secret_for_call(self, call: str) -> str:
+        base_call = call.split("-", 1)[0].upper()
+        for candidate in (call.upper(), base_call):
+            raw = await self.store.get_user_pref(candidate, "mfa_totp_secret")
+            secret = str(raw or "").strip()
+            if secret:
+                return secret
+        return ""
 
     def _cleanup_web_sessions(self) -> None:
         now = int(time.time())
@@ -1038,6 +1059,54 @@ class WebAdminServer:
             "pc24": {"call": state["pc24_call"], "flag": state["pc24_flag"]},
             "pc50": {"call": state["pc50_call"], "count": state["pc50_count"]},
             "pc51": {"to": state["pc51_to"], "from": state["pc51_from"], "value": state["pc51_value"]},
+        }
+
+    def _link_activity_for_peer(self, st: dict[str, object], now_epoch: int) -> dict[str, object]:
+        def _to_int(v: object, default: int = 0) -> int:
+            try:
+                return int(str(v))
+            except (TypeError, ValueError):
+                return default
+
+        connected_epoch = _to_int(st.get("connected_epoch"), 0)
+        last_rx_epoch = _to_int(st.get("last_rx_epoch"), 0)
+        last_tx_epoch = _to_int(st.get("last_tx_epoch"), 0)
+        parsed_frames = _to_int(st.get("parsed_frames"), 0)
+        sent_frames = _to_int(st.get("sent_frames"), 0)
+        rx_age_min = ((now_epoch - last_rx_epoch) // 60) if last_rx_epoch > 0 else -1
+        tx_age_min = ((now_epoch - last_tx_epoch) // 60) if last_tx_epoch > 0 else -1
+        connected_age_min = ((now_epoch - connected_epoch) // 60) if connected_epoch > 0 else -1
+        recent_rx = last_rx_epoch > 0 and now_epoch - last_rx_epoch <= 30 * 60
+        recent_tx = last_tx_epoch > 0 and now_epoch - last_tx_epoch <= 30 * 60
+
+        if recent_rx and recent_tx:
+            activity = "bidirectional"
+            summary = "bidirectional traffic"
+        elif recent_rx:
+            activity = "receive_active"
+            summary = "receive active"
+        elif recent_tx:
+            activity = "transmit_active"
+            summary = "transmit active; receive quiet"
+        elif parsed_frames > 0 or sent_frames > 0:
+            activity = "idle"
+            summary = "connected; no recent traffic"
+        else:
+            activity = "connected_quiet"
+            summary = "connected; no protocol frames yet"
+
+        return {
+            "health": "connected",
+            "activity": activity,
+            "summary": summary,
+            "connected_epoch": connected_epoch,
+            "connected_age_min": connected_age_min,
+            "last_rx_epoch": last_rx_epoch,
+            "last_tx_epoch": last_tx_epoch,
+            "rx_age_min": rx_age_min,
+            "tx_age_min": tx_age_min,
+            "recent_rx": recent_rx,
+            "recent_tx": recent_tx,
         }
 
     def _render_index_html(self) -> str:
@@ -1640,11 +1709,11 @@ button.special{
 }
 .statusline{
   margin-top:12px;
-  padding:10px 12px;
-  border-radius:10px;
-  background:rgba(88,166,255,.08);
-  border:1px solid rgba(88,166,255,.22);
-  color:var(--text-primary);
+  padding:4px 0;
+  border-radius:0;
+  background:transparent;
+  border:0;
+  color:var(--text-secondary);
   font-weight:600;
 }
 .mast-actions .statusline{
@@ -1652,9 +1721,7 @@ button.special{
   width:100%;
 }
 .light .statusline{
-  background:rgba(15,23,42,.04);
-  border-color:rgba(15,23,42,.12);
-  color:#0f172a;
+  color:#475569;
 }
 .statusline.error{
   background:#f4ddd5;
@@ -2074,6 +2141,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <button class="node-tab active" type="button" data-node-group="general">General</button>
             <button class="node-tab" type="button" data-node-group="auth">Authentication</button>
             <button class="node-tab" type="button" data-node-group="smtp">Mail (SMTP)</button>
+            <button class="node-tab" type="button" data-node-group="qrz">Lookup (QRZ)</button>
+            <button class="node-tab" type="button" data-node-group="satellite">Satellite</button>
             <button class="node-tab" type="button" data-node-group="maintenance">Maintenance</button>
           </div>
           <div class="node-group active" id="node-group-general">
@@ -2168,6 +2237,22 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </div>
             <div class="actions" style="margin-top:12px">
               <button class="attention" id="sendSmtpTest" title="Send a test email using the current node SMTP configuration.">Send SMTP Test Email</button>
+            </div>
+          </div>
+          <div class="node-group" id="node-group-qrz">
+            <div class="form-grid">
+              <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
+              <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.7" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
+            </div>
+          </div>
+          <div class="node-group" id="node-group-satellite">
+            <div class="form-grid">
+              <div class="field"><label for="satellite_keps_path" title="Local TLE/keps file used by show/satellite target pass prediction.">Keps Path</label><input id="satellite_keps_path" placeholder="./data/keps.txt" title="Local TLE file read by show/satellite &lt;target&gt;."></div>
+              <div class="field"><label for="satellite_prediction_hours" title="How far ahead show/satellite searches for passes.">Prediction Window (hours)</label><input id="satellite_prediction_hours" type="number" min="1" max="168" value="24" title="Search window for upcoming satellite passes."></div>
+              <div class="field"><label for="satellite_pass_step_seconds" title="Sampling interval for pass prediction. Smaller values are slower but more precise.">Pass Step (seconds)</label><input id="satellite_pass_step_seconds" type="number" min="15" max="600" value="60" title="Sampling interval for pass prediction."></div>
+              <div class="field"><label for="satellite_min_elevation_deg" title="Minimum elevation angle needed for a pass to be reported.">Minimum Elevation</label><input id="satellite_min_elevation_deg" type="number" min="0" max="90" value="0" title="Only passes above this elevation are shown."></div>
             </div>
           </div>
           <div class="node-group" id="node-group-maintenance">
@@ -2313,6 +2398,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   <div class="users-action-group">
                     <button class="attention" id="sendVerification">Send Verification</button>
                     <button class="attention" id="sendMfaTest">Send MFA Test Email</button>
+                    <button class="attention" id="enrollTotp">Enroll Authenticator</button>
                     <button class="attention" id="resetUserMfa">Reset MFA</button>
                   </div>
                 </div>
@@ -2390,6 +2476,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <button id="peerRefresh" title="Reload live peer connection details in the table below.">Refresh</button>
             <button class="good" id="pconnect" title="Create an outbound node-link connection to the selected peer DSN.">Connect</button>
             <button class="warn" id="pdisconnect" title="Disconnect the selected live peer session.">Disconnect</button>
+            <button class="warn" id="peerDelete" title="Delete the saved peer target and disconnect any live session.">Delete Peer</button>
           </div>
           <div class="tablewrap" style="margin-top:14px">
             <table class="peer-table">
@@ -2895,7 +2982,7 @@ function esc(v) {
 }
 function healthBadge(v) {
   const txt = String(v || 'unknown').toLowerCase();
-  const klass = ['ok','degraded','stale','flapping'].includes(txt) ? txt : (txt === 'disconnected' ? 'stale' : 'unknown');
+  const klass = ['ok','connected','degraded','stale','flapping'].includes(txt) ? (txt === 'connected' ? 'ok' : txt) : (txt === 'disconnected' ? 'stale' : 'unknown');
   return `<span class="health ${klass}">${esc(txt)}</span>`;
 }
 function summarizeTypes(map) {
@@ -2951,6 +3038,7 @@ function fillPeerForm(peer) {
 }
 function clearPeerForm() {
   selectedPeerName = '';
+  byId('peer').value = '';
   byId('peername').value = '';
   byId('peerdsn').value = '';
   byId('peerprof').value = 'pycluster';
@@ -3014,13 +3102,17 @@ function setPeerRows(peers) {
       }
       err = `<div class="mini">${esc(errText)}</div>`;
     }
-    const currentHealth = peer.connected === false ? 'disconnected' : (peer.proto && peer.proto.health) || 'unknown';
+    const link = peer.link || {};
+    const linkHealth = peer.connected === false ? 'disconnected' : (link.health || 'connected');
+    const linkSummary = peer.connected === false
+      ? 'transport disconnected'
+      : `${link.summary || 'transport connected'}${link.rx_age_min >= 0 ? ` • rx ${link.rx_age_min}m ago` : ' • rx quiet'}${link.tx_age_min >= 0 ? ` • tx ${link.tx_age_min}m ago` : ' • tx quiet'}`;
     const healthText = peer.connected === false
       ? (peer.proto
           ? `last known ${peer.proto.health || 'unknown'}${peer.proto.age_min >= 0 ? ` • ${peer.proto.age_min}m ago` : ''}${peer.proto.last_pc_type ? ` • last ${peer.proto.last_pc_type}` : ''}`
           : 'no protocol data')
       : (peer.proto
-          ? `${peer.proto.age_min >= 0 ? `${peer.proto.age_min}m since update` : 'no age data'} • last ${peer.proto.last_pc_type || 'unknown'}`
+          ? `protocol ${peer.proto.health || 'unknown'}${peer.proto.age_min >= 0 ? ` • ${peer.proto.age_min}m since inbound PC` : ' • no inbound PC age'} • last ${peer.proto.last_pc_type || 'unknown'}`
           : 'no protocol data');
     const normalizedProfile = String(peer.profile || 'dxspider').trim().toLowerCase();
     const normalizedTransport = transport.toLowerCase();
@@ -3034,7 +3126,7 @@ function setPeerRows(peers) {
       <td>${esc(direction)}<div class="mini">${peer.desired ? 'configured peer' : 'observed live peer'}</div>${familyMeta}${transportMeta}${pathMeta}${learnedVersionMeta}</td>
       <td><strong>${status}</strong><div class="mini">${esc(statusMeta)}</div><div class="mini">${peer.inbound ? 'inbound link' : `retry ${esc(String(peer.retry_count || 0))} • ${esc(retry)}`}</div>${desired}${err}</td>
       <td>${frames}<div class="mini">rx ${esc(rxTypes)}</div><div class="mini">tx ${esc(txTypes)}</div></td>
-      <td>${healthBadge(currentHealth)} <div class="mini">${esc(healthText)}</div><div class="mini">${queue}</div>${routeIssues}</td>
+      <td>${healthBadge(linkHealth)} <div class="mini">${esc(linkSummary)}</div><div class="mini">${esc(healthText)}</div><div class="mini">${queue}</div>${routeIssues}</td>
     </tr>`;
   }).join('');
   bindSelectablePeerRows(body, peers);
@@ -3506,7 +3598,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
 }
 function fillNodeForm(data) {
   if (!data) return;
-  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','motd','prompt_template','smtp_host','smtp_username','smtp_password','smtp_from_addr','smtp_from_name','mfa_issuer'].forEach((key) => {
+  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','motd','prompt_template','smtp_host','smtp_username','smtp_password','smtp_from_addr','smtp_from_name','qrz_username','qrz_password','qrz_agent','qrz_api_url','satellite_keps_path','mfa_issuer'].forEach((key) => {
     if (byId(key) && data[key] !== undefined) byId(key).value = data[key];
   });
   byId('show_status_after_login').checked = !!data.show_status_after_login;
@@ -3523,6 +3615,9 @@ function fillNodeForm(data) {
   byId('retention_stale_users_enabled').checked = !!data.retention_stale_users_enabled;
   if (data.smtp_port !== undefined) byId('smtp_port').value = data.smtp_port;
   if (data.smtp_timeout_seconds !== undefined) byId('smtp_timeout_seconds').value = data.smtp_timeout_seconds;
+  if (data.satellite_prediction_hours !== undefined) byId('satellite_prediction_hours').value = data.satellite_prediction_hours;
+  if (data.satellite_pass_step_seconds !== undefined) byId('satellite_pass_step_seconds').value = data.satellite_pass_step_seconds;
+  if (data.satellite_min_elevation_deg !== undefined) byId('satellite_min_elevation_deg').value = data.satellite_min_elevation_deg;
   if (data.mfa_otp_ttl_seconds !== undefined) byId('mfa_otp_ttl_seconds').value = data.mfa_otp_ttl_seconds;
   if (data.mfa_otp_length !== undefined) byId('mfa_otp_length').value = data.mfa_otp_length;
   if (data.mfa_max_attempts !== undefined) byId('mfa_max_attempts').value = data.mfa_max_attempts;
@@ -3738,13 +3833,14 @@ byId('login').onclick = async () => {
     let payload = {call, password};
     let r = await jw('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), skipAuthReset:true});
     if (r && r.mfa_required) {
-      const otp = window.prompt('Enter the email OTP code for ' + call + ':', '');
+      const method = r.mfa_method === 'totp' ? 'authenticator app' : 'email OTP';
+      const otp = window.prompt('Enter the ' + method + ' code for ' + call + ':', '');
       if (!otp) {
         sayLogin('Login cancelled before MFA code entry.', false);
         say('Login cancelled before MFA code entry.', false);
         return;
       }
-      payload = {call, password, challenge_id: r.challenge_id, otp: String(otp).trim()};
+      payload = {call, password, challenge_id: r.challenge_id || '', otp: String(otp).trim()};
       r = await jw('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), skipAuthReset:true});
     }
     if (r && r.ok) {
@@ -3819,6 +3915,14 @@ byId('saveNode').onclick = async () => {
         smtp_starttls: byId('smtp_starttls').checked,
         smtp_use_ssl: byId('smtp_use_ssl').checked,
         smtp_timeout_seconds: parseInt(byId('smtp_timeout_seconds').value.trim(), 10) || 10,
+        qrz_username: byId('qrz_username').value.trim(),
+        qrz_password: byId('qrz_password').value,
+        qrz_agent: byId('qrz_agent').value.trim(),
+        qrz_api_url: byId('qrz_api_url').value.trim(),
+        satellite_keps_path: byId('satellite_keps_path').value.trim(),
+        satellite_prediction_hours: parseInt(byId('satellite_prediction_hours').value.trim(), 10) || 24,
+        satellite_pass_step_seconds: parseInt(byId('satellite_pass_step_seconds').value.trim(), 10) || 60,
+        satellite_min_elevation_deg: parseFloat(byId('satellite_min_elevation_deg').value.trim()) || 0,
         mfa_enabled: byId('mfa_enabled').checked,
         mfa_require_for_sysop: byId('mfa_require_for_sysop').checked,
         mfa_require_for_users: byId('mfa_require_for_users').checked,
@@ -4011,6 +4115,24 @@ byId('resetUserMfa').onclick = async () => {
     say('MFA reset failed: ' + errText(err), false);
   }
 };
+byId('enrollTotp').onclick = async () => {
+  const call = byId('user_call').value.trim();
+  if (!call) {
+    say('A callsign is required before enrolling authenticator MFA.', false);
+    return;
+  }
+  try {
+    const r = await j('/api/users/mfa/totp/enroll', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
+    if (r && r.ok && r.user) fillUserForm(r.user);
+    if (r && r.ok) {
+      window.prompt('Authenticator setup URI for ' + call + ':', r.otpauth_uri || r.secret || '');
+    }
+    say(r && r.ok ? 'Authenticator MFA enrolled for ' + call + '.' : 'Authenticator MFA enrollment failed.', !!(r && r.ok));
+    await load();
+  } catch (err) {
+    say('Authenticator MFA enrollment failed: ' + errText(err), false);
+  }
+};
 byId('accessAll').onclick = () => {
   setAccessMatrixAll(true);
   say('Enabled all channel and posting permissions for the current user form.');
@@ -4063,6 +4185,18 @@ byId('pdisconnect').onclick = async () => {
   const peer = byId('peername').value.trim();
   const r = await j('/api/peer/disconnect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer})});
   say(r && r.ok ? 'Disconnected ' + peer + '.' : 'Peer disconnect failed.', !!(r && r.ok));
+  await load();
+};
+byId('peerDelete').onclick = async () => {
+  const peer = byId('peername').value.trim();
+  if (!peer) {
+    say('A peer name is required before deleting a saved peer.', false);
+    return;
+  }
+  if (!window.confirm('Delete saved peer ' + peer + '? Any live session for this peer will also be disconnected.')) return;
+  const r = await j('/api/peer/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer})});
+  if (r && r.ok) clearPeerForm();
+  say(r && r.ok ? 'Deleted peer ' + peer + '.' : 'Peer delete failed.', !!(r && r.ok));
   await load();
 };
 byId('reset').onclick = async () => {
@@ -4239,34 +4373,48 @@ if (restoreWebSession()) {
                 if has_real_password and not is_password_hash(str(expected)) and verify_password(password, str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
                 if await self._mfa_required_for_call(call, is_sysop=is_sysop):
-                    email = await self._email_for_call(call)
-                    if not email:
-                        self._log_auth_failure(writer, headers, "sysop-web", call, "mfa_email_missing")
-                        await self._write_response(writer, 401, self._json({"error": "mfa email not configured"}))
-                        return
-                    if not self._smtp.enabled():
-                        await self._write_response(writer, 503, self._json({"error": "mfa delivery not configured"}))
-                        return
                     challenge_id = str(payload.get("challenge_id", "")).strip()
                     otp = str(payload.get("otp", "")).strip()
-                    if not challenge_id or not otp:
-                        try:
-                            challenge_id, expires_epoch = await self._mfa.issue(call=call, email=email, purpose="sysop-web")
-                        except Exception:
-                            LOG.exception("sysop web mfa delivery failed call=%s", call)
-                            await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
+                    totp_secret = await self._totp_secret_for_call(call)
+                    if totp_secret:
+                        if not otp:
+                            await self._write_response(
+                                writer,
+                                202,
+                                self._json({"ok": False, "mfa_required": True, "mfa_method": "totp"}),
+                            )
                             return
-                        await self._write_response(
-                            writer,
-                            202,
-                            self._json({"ok": False, "mfa_required": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
-                        )
-                        return
-                    ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="sysop-web", otp=otp)
-                    if not ok:
-                        self._log_auth_failure(writer, headers, "sysop-web", call, "mfa_" + reason.replace(" ", "_"))
-                        await self._write_response(writer, 401, self._json({"error": reason}))
-                        return
+                        if not verify_totp(totp_secret, otp):
+                            self._log_auth_failure(writer, headers, "sysop-web", call, "mfa_invalid_totp")
+                            await self._write_response(writer, 401, self._json({"error": "invalid code"}))
+                            return
+                    else:
+                        email = await self._email_for_call(call)
+                        if not email:
+                            self._log_auth_failure(writer, headers, "sysop-web", call, "mfa_email_missing")
+                            await self._write_response(writer, 401, self._json({"error": "mfa email not configured"}))
+                            return
+                        if not self._smtp.enabled():
+                            await self._write_response(writer, 503, self._json({"error": "mfa delivery not configured"}))
+                            return
+                        if not challenge_id or not otp:
+                            try:
+                                challenge_id, expires_epoch = await self._mfa.issue(call=call, email=email, purpose="sysop-web")
+                            except Exception:
+                                LOG.exception("sysop web mfa delivery failed call=%s", call)
+                                await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
+                                return
+                            await self._write_response(
+                                writer,
+                                202,
+                                self._json({"ok": False, "mfa_required": True, "mfa_method": "email", "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
+                            )
+                            return
+                        ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="sysop-web", otp=otp)
+                        if not ok:
+                            self._log_auth_failure(writer, headers, "sysop-web", call, "mfa_" + reason.replace(" ", "_"))
+                            await self._write_response(writer, 401, self._json({"error": reason}))
+                            return
                 token, exp = self._issue_web_token(call, is_sysop=is_sysop)
                 await self.store.record_login(
                     call,
@@ -4377,6 +4525,14 @@ if (restoreWebSession()) {
                         "smtp_starttls": "on",
                         "smtp_use_ssl": "off",
                         "smtp_timeout_seconds": "10",
+                        "qrz_username": "",
+                        "qrz_password": "",
+                        "qrz_agent": "",
+                        "qrz_api_url": "https://xmldata.qrz.com/xml/current/",
+                        "satellite_keps_path": "./data/keps.txt",
+                        "satellite_prediction_hours": "24",
+                        "satellite_pass_step_seconds": "60",
+                        "satellite_min_elevation_deg": "0",
                         "mfa_enabled": "off",
                         "mfa_require_for_sysop": "off",
                         "mfa_require_for_users": "off",
@@ -4407,6 +4563,8 @@ if (restoreWebSession()) {
                     old_node_call = self.config.node.node_call
                     cfg_updates: dict[str, object] = {}
                     smtp_updates: dict[str, object] = {}
+                    qrz_updates: dict[str, object] = {}
+                    satellite_updates: dict[str, object] = {}
                     mfa_updates: dict[str, object] = {}
                     telnet_ports_value: tuple[int, ...] | None = None
                     for key in fields:
@@ -4419,11 +4577,13 @@ if (restoreWebSession()) {
                                 cfg_updates[key] = flag
                             elif key.startswith("smtp_"):
                                 smtp_updates[key[5:]] = flag
+                            elif key.startswith("qrz_"):
+                                qrz_updates[key[4:]] = flag
                             elif key.startswith("mfa_"):
                                 mfa_updates[key[4:]] = flag
-                        elif key in {"initial_grace_logins", "retention_spots_days", "retention_messages_days", "retention_bulletins_days", "retention_stale_users_days", "smtp_port", "smtp_timeout_seconds", "mfa_otp_ttl_seconds", "mfa_otp_length", "mfa_max_attempts", "mfa_resend_cooldown_seconds"}:
+                        elif key in {"initial_grace_logins", "retention_spots_days", "retention_messages_days", "retention_bulletins_days", "retention_stale_users_days", "smtp_port", "smtp_timeout_seconds", "satellite_prediction_hours", "satellite_pass_step_seconds", "satellite_min_elevation_deg", "mfa_otp_ttl_seconds", "mfa_otp_length", "mfa_max_attempts", "mfa_resend_cooldown_seconds"}:
                             try:
-                                number = int(payload.get(key, fields[key]))
+                                number = float(payload.get(key, fields[key])) if key == "satellite_min_elevation_deg" else int(payload.get(key, fields[key]))
                             except Exception:
                                 await self._write_response(writer, 400, self._json({"error": f"invalid {key}"}))
                                 return
@@ -4436,6 +4596,15 @@ if (restoreWebSession()) {
                             elif key == "smtp_timeout_seconds":
                                 number = max(1, min(120, number))
                                 smtp_updates["timeout_seconds"] = number
+                            elif key == "satellite_prediction_hours":
+                                number = max(1, min(168, int(number)))
+                                satellite_updates["prediction_hours"] = number
+                            elif key == "satellite_pass_step_seconds":
+                                number = max(15, min(600, int(number)))
+                                satellite_updates["pass_step_seconds"] = number
+                            elif key == "satellite_min_elevation_deg":
+                                number = max(0.0, min(90.0, float(number)))
+                                satellite_updates["min_elevation_deg"] = number
                             elif key == "mfa_otp_ttl_seconds":
                                 number = max(60, min(3600, number))
                                 mfa_updates["otp_ttl_seconds"] = number
@@ -4469,17 +4638,21 @@ if (restoreWebSession()) {
                                 cfg_updates[key] = val
                             elif key.startswith("smtp_"):
                                 smtp_updates[key[5:]] = val
+                            elif key.startswith("qrz_"):
+                                qrz_updates[key[4:]] = val
+                            elif key.startswith("satellite_"):
+                                satellite_updates[key[10:]] = val
                             elif key.startswith("mfa_"):
                                 mfa_updates[key[4:]] = val
                         if key not in _CONFIG_AUTH_NODE_FIELDS:
-                            if not key.startswith("smtp_") and not key.startswith("mfa_"):
+                            if not key.startswith("smtp_") and not key.startswith("qrz_") and not key.startswith("satellite_") and not key.startswith("mfa_"):
                                 await self.store.set_user_pref(
                                     self.config.node.node_call,
                                     pref_key_map.get(key, key),
                                     val,
                                     now,
                                 )
-                    config_changed = bool(cfg_updates or smtp_updates or mfa_updates)
+                    config_changed = bool(cfg_updates or smtp_updates or qrz_updates or satellite_updates or mfa_updates)
                     if cfg_updates:
                         if "node_call" in cfg_updates:
                             new_node_call = str(cfg_updates["node_call"]).strip().upper()
@@ -4502,6 +4675,12 @@ if (restoreWebSession()) {
                     for key, value in smtp_updates.items():
                         if hasattr(self.config.smtp, key):
                             setattr(self.config.smtp, key, value)
+                    for key, value in qrz_updates.items():
+                        if hasattr(self.config.qrz, key):
+                            setattr(self.config.qrz, key, value)
+                    for key, value in satellite_updates.items():
+                        if hasattr(self.config.satellite, key):
+                            setattr(self.config.satellite, key, value)
                     for key, value in mfa_updates.items():
                         if hasattr(self.config.mfa, key):
                             setattr(self.config.mfa, key, value)
@@ -5137,12 +5316,14 @@ if (restoreWebSession()) {
                     desired = desired_map.get(name, {})
                     desired_transport, desired_path = describe_transport_dsn(str(desired.get("dsn", "")))
                     profile = normalize_profile(str(desired.get("profile") or st.get("profile") or "pycluster"))
+                    inbound = bool(st.get("inbound", False)) or (bool(desired) and not str(desired.get("dsn", "")).strip())
                     proto = self._proto_state_for_peer(node_cfg, name, now_epoch)
+                    link_activity = self._link_activity_for_peer(st, now_epoch) if name in stats else {}
                     out.append(
                         {
                             "peer": name,
                             "profile": profile,
-                            "inbound": bool(st.get("inbound", False)),
+                            "inbound": inbound,
                             "parsed_frames": int(st.get("parsed_frames", 0)),
                             "sent_frames": int(st.get("sent_frames", 0)),
                             "policy_dropped": int(st.get("policy_dropped", 0)),
@@ -5150,6 +5331,10 @@ if (restoreWebSession()) {
                             "rx_by_type": st.get("rx_by_type", {}),
                             "tx_by_type": st.get("tx_by_type", {}),
                             "policy_reasons": st.get("policy_reasons", {}),
+                            "connected_epoch": int(st.get("connected_epoch", 0) or 0),
+                            "last_rx_epoch": int(st.get("last_rx_epoch", 0) or 0),
+                            "last_tx_epoch": int(st.get("last_tx_epoch", 0) or 0),
+                            "link": link_activity,
                             "transport": str(st.get("transport", desired.get("transport", desired_transport))),
                             "path_hint": str(st.get("path_hint", desired_path)),
                             "proto": proto,
@@ -5656,8 +5841,8 @@ if (restoreWebSession()) {
                 dsn = str(payload.get("dsn", "")).strip()
                 password = str(payload.get("password", "")).strip()
                 profile = str(payload.get("profile", "")).strip() or "dxspider"
-                if not peer or not dsn:
-                    await self._write_response(writer, 400, self._json({"error": "peer and dsn are required"}))
+                if not peer:
+                    await self._write_response(writer, 400, self._json({"error": "peer is required"}))
                     return
                 try:
                     await self.link_connect_fn(peer, dsn, profile, True, password)
@@ -5684,8 +5869,8 @@ if (restoreWebSession()) {
                 password = str(payload.get("password", "")).strip()
                 profile = str(payload.get("profile", "")).strip() or "dxspider"
                 reconnect = bool(payload.get("reconnect", True))
-                if not peer or not dsn:
-                    await self._write_response(writer, 400, self._json({"error": "peer and dsn are required"}))
+                if not peer:
+                    await self._write_response(writer, 400, self._json({"error": "peer is required"}))
                     return
                 try:
                     await self.link_save_peer_fn(peer, dsn, profile, reconnect, password)
@@ -5713,6 +5898,26 @@ if (restoreWebSession()) {
                     return
                 ok = bool(await self.link_disconnect_fn(peer))
                 self._audit("disconnect", f"{self._authorized_call(headers)} disconnected peer {peer} ok={int(ok)}")
+                await self._write_response(writer, 200, self._json({"ok": ok, "peer": peer}))
+                return
+
+            if path == "/api/peer/delete":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                if not self.link_delete_peer_fn:
+                    await self._write_response(writer, 500, self._json({"error": "peer delete unavailable"}))
+                    return
+                payload = self._parse_json_body(body)
+                peer = str(payload.get("peer", "")).strip()
+                if not peer:
+                    await self._write_response(writer, 400, self._json({"error": "peer is required"}))
+                    return
+                ok = bool(await self.link_delete_peer_fn(peer))
+                self._audit("config", f"{self._authorized_call(headers)} deleted peer {peer} ok={int(ok)}")
                 await self._write_response(writer, 200, self._json({"ok": ok, "peer": peer}))
                 return
 
@@ -5893,8 +6098,10 @@ if (restoreWebSession()) {
                 base_call = call.split("-", 1)[0]
                 await self.store.upsert_user_registry(base_call, now)
                 await self.store.set_user_pref(base_call, "mfa_email_otp", "off", now)
+                await self.store.delete_user_pref(base_call, "mfa_totp_secret")
                 if call != base_call:
                     await self.store.delete_user_pref(call, "mfa_email_otp")
+                    await self.store.delete_user_pref(call, "mfa_totp_secret")
                 cleared = await self.store.delete_mfa_challenges_for_call(call, include_ssids=True)
                 row = await self.store.get_user_registry(call)
                 if row is None and call != base_call:
@@ -5910,6 +6117,49 @@ if (restoreWebSession()) {
                             "principal": base_call,
                             "challenges_cleared": cleared,
                             "user": await self._user_registry_json(row) if row else {"call": call, "mfa_email_otp": "off"},
+                        }
+                    ),
+                )
+                return
+
+            if path == "/api/users/mfa/totp/enroll":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                if not _is_valid_admin_record_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                now = int(time.time())
+                base_call = call.split("-", 1)[0]
+                await self.store.upsert_user_registry(base_call, now)
+                secret = generate_totp_secret()
+                await self.store.set_user_pref(base_call, "mfa_totp_secret", secret, now)
+                await self.store.set_user_pref(base_call, "mfa_email_otp", "required", now)
+                cleared = await self.store.delete_mfa_challenges_for_call(call, include_ssids=True)
+                uri = totp_otpauth_uri(
+                    issuer=self.config.mfa.issuer.strip() or self.config.node.node_call,
+                    account=base_call,
+                    secret=secret,
+                )
+                row = await self.store.get_user_registry(base_call)
+                self._audit("sysop", f"{self._authorized_call(headers)} enrolled TOTP for {base_call} challenges={cleared}")
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json(
+                        {
+                            "ok": True,
+                            "call": call,
+                            "principal": base_call,
+                            "secret": secret,
+                            "otpauth_uri": uri,
+                            "challenges_cleared": cleared,
+                            "user": await self._user_registry_json(row) if row else {"call": base_call, "mfa_totp_enabled": True},
                         }
                     ),
                 )
