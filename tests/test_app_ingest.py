@@ -200,6 +200,46 @@ def test_disconnect_peer_forgets_persisted_target(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_delete_peer_target_removes_saved_peer_without_live_session(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "delete_peer_target.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            await app.save_peer_target(
+                "AI3I-15",
+                "dxspider://dxspider.ai3i.net:7300?login=AI3I-16&client=AI3I-15",
+                profile="dxspider",
+                reconnect=True,
+                password="sekret",
+            )
+            assert await app.delete_peer_target("AI3I-15") is True
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            assert "peer.outbound.ai3i-15.name" not in prefs
+            assert "peer.outbound.ai3i-15.dsn" not in prefs
+            assert "peer.outbound.ai3i-15.password" not in prefs
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_saved_inbound_peer_target_can_have_blank_dsn(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "inbound_peer_blank_dsn.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            await app.save_peer_target("N9JR-2", "", profile="dxspider", reconnect=False)
+            desired = await app.desired_peer_status()
+            assert desired[0]["peer"] == "N9JR-2"
+            assert desired[0]["dsn"] == ""
+            assert desired[0]["profile"] == "dxspider"
+            assert desired[0]["reconnect_enabled"] is False
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_reconnect_once_reattaches_persisted_peer_and_tracks_backoff(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "reconnect_once.db")
@@ -1117,6 +1157,25 @@ def test_ingest_pc12_wx_maps_to_wx_bulletin(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_ingest_pc16_records_remote_roster_count_for_cluster_stats(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "pc16_roster_count.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            await app._handle_node_link_item(
+                "N9JR-2",
+                WirePcFrame("PC16", ["N9JR-2", "N9JR-5 - 1", "N9JR-10 - 1", "H1", ""]),
+                None,
+            )
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            assert prefs["proto.peer.n9jr-2.pc16.node"] == "N9JR-2"
+            assert prefs["proto.peer.n9jr-2.pc16.user_count"] == "2"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_ingest_pc23_maps_to_wwv_bulletin(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_pc23_wwv.db")
@@ -1385,7 +1444,7 @@ def test_legacy_pc16_sync_drops_dead_peer_without_traceback(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_dxspider_heartbeat_sends_pc20_and_ignores_dead_peers(tmp_path) -> None:
+def test_node_link_heartbeat_sends_pc20_to_dxspider_and_pycluster_peers(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "dxspider_heartbeat.db")
         app = ClusterApp(_mk_config(db))
@@ -1394,9 +1453,10 @@ def test_dxspider_heartbeat_sends_pc20_and_ignores_dead_peers(tmp_path) -> None:
             async def _stats():
                 return {
                     "peer1": {"profile": "dxspider", "inbound": False},
-                    "peer2": {"profile": "arcluster", "inbound": False},
+                    "peer2": {"profile": "pycluster", "inbound": False},
                     "peer3": {"profile": "dxspider", "inbound": False},
                     "peer4": {"profile": "dxspider", "inbound": True},
+                    "peer5": {"profile": "arcluster", "inbound": False},
                 }
 
             async def _send(peer, frame):
@@ -1409,8 +1469,8 @@ def test_dxspider_heartbeat_sends_pc20_and_ignores_dead_peers(tmp_path) -> None:
 
             count = await app.heartbeat_once()
 
-            assert count == 2
-            assert sent == [("peer1", "PC20", [""]), ("peer4", "PC20", [""])]
+            assert count == 3
+            assert sent == [("peer1", "PC20", [""]), ("peer2", "PC20", [""]), ("peer4", "PC20", [""])]
         finally:
             await app.store.close()
 

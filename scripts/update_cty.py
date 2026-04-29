@@ -129,7 +129,7 @@ def main() -> int:
     config_path = Path(args.config).resolve()
     cfg = _load_config(config_path)
     public_web = cfg.get("public_web", {})
-    cty_target = _resolve_data_path(config_path, str(public_web.get("cty_dat_path", "")), "fixtures/live/dxspider/cty.dat")
+    cty_target = _resolve_data_path(config_path, str(public_web.get("cty_dat_path", "")), "data/cty.dat")
     wpx_target = _resolve_data_path(config_path, str(public_web.get("wpxloc_raw_path", "")), str(cty_target.with_name("wpxloc.raw")))
 
     results: list[str] = []

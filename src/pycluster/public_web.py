@@ -27,7 +27,7 @@ from .datafiles import describe_cty_file, describe_wpxloc_file
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .geomag import canonicalize_wcy_text, canonicalize_wwv_text
 from .maidenhead import coords_to_locator, extract_locator
-from .mfa import EmailOtpManager, SMTPMailer
+from .mfa import EmailOtpManager, SMTPMailer, verify_totp
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path
 from .registration import has_valid_email, registration_state
@@ -445,6 +445,15 @@ class PublicWebServer:
         if override == "off":
             return False
         return self._mfa.required_for(is_sysop=is_sysop)
+
+    async def _totp_secret_for_call(self, call: str) -> str:
+        base_call = call.split("-", 1)[0].upper()
+        for candidate in (call.upper(), base_call):
+            raw = await self.store.get_user_pref(candidate, "mfa_totp_secret")
+            secret = str(raw or "").strip()
+            if secret:
+                return secret
+        return ""
 
     def _dataset_status(self) -> dict[str, dict[str, object]]:
         self._refresh_datafiles_if_changed()
@@ -1420,34 +1429,44 @@ class PublicWebServer:
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
                 is_sysop = str(reg["privilege"] or "").strip().lower() in {"sysop", "admin"} if reg is not None else False
                 if await self._mfa_required_for_call(call, is_sysop=is_sysop):
-                    email = await self._email_for_call(call)
-                    if not email:
-                        self._log_auth_failure(writer, headers, "public-web", call, "mfa_email_missing")
-                        await self._write_response(writer, 401, self._json({"error": "mfa email not configured"}))
-                        return
-                    if not self._smtp.enabled():
-                        await self._write_response(writer, 503, self._json({"error": "mfa delivery not configured"}))
-                        return
                     challenge_id = str(payload.get("challenge_id", "")).strip()
                     otp = str(payload.get("otp", "")).strip()
-                    if not challenge_id or not otp:
-                        try:
-                            challenge_id, expires_epoch = await self._mfa.issue(call=call, email=email, purpose="public-web")
-                        except Exception:
-                            LOG.exception("public web mfa delivery failed call=%s", call)
-                            await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
+                    totp_secret = await self._totp_secret_for_call(call)
+                    if totp_secret:
+                        if not otp:
+                            await self._write_response(writer, 202, self._json({"ok": False, "mfa_required": True, "mfa_method": "totp"}))
                             return
-                        await self._write_response(
-                            writer,
-                            202,
-                            self._json({"ok": False, "mfa_required": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
-                        )
-                        return
-                    ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="public-web", otp=otp)
-                    if not ok:
-                        self._log_auth_failure(writer, headers, "public-web", call, "mfa_" + reason.replace(" ", "_"))
-                        await self._write_response(writer, 401, self._json({"error": reason}))
-                        return
+                        if not verify_totp(totp_secret, otp):
+                            self._log_auth_failure(writer, headers, "public-web", call, "mfa_invalid_totp")
+                            await self._write_response(writer, 401, self._json({"error": "invalid code"}))
+                            return
+                    else:
+                        email = await self._email_for_call(call)
+                        if not email:
+                            self._log_auth_failure(writer, headers, "public-web", call, "mfa_email_missing")
+                            await self._write_response(writer, 401, self._json({"error": "mfa email not configured"}))
+                            return
+                        if not self._smtp.enabled():
+                            await self._write_response(writer, 503, self._json({"error": "mfa delivery not configured"}))
+                            return
+                        if not challenge_id or not otp:
+                            try:
+                                challenge_id, expires_epoch = await self._mfa.issue(call=call, email=email, purpose="public-web")
+                            except Exception:
+                                LOG.exception("public web mfa delivery failed call=%s", call)
+                                await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
+                                return
+                            await self._write_response(
+                                writer,
+                                202,
+                                self._json({"ok": False, "mfa_required": True, "mfa_method": "email", "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
+                            )
+                            return
+                        ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="public-web", otp=otp)
+                        if not ok:
+                            self._log_auth_failure(writer, headers, "public-web", call, "mfa_" + reason.replace(" ", "_"))
+                            await self._write_response(writer, 401, self._json({"error": reason}))
+                            return
                 await self.store.record_login(
                     call,
                     int(time.time()),

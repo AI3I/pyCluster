@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
-from pycluster.mfa import EmailOtpManager
+from pycluster.mfa import EmailOtpManager, totp_code
 from pycluster import __version__
 from pycluster.models import Spot
 from pycluster.public_web import PublicWebServer
@@ -411,6 +411,50 @@ def test_public_web_login_can_require_email_otp(tmp_path) -> None:
                         "otp": challenge.code,
                     }
                 ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["token"]
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_login_can_use_totp_authenticator(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_totp.db")
+        cfg = _mk_config(db)
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+            await store.set_user_pref("AI3I", "password", "secret", now)
+            await store.set_user_pref("AI3I", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert code == 202
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["mfa_required"] is True
+            assert payload["mfa_method"] == "totp"
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret", "otp": totp_code("JBSWY3DPEHPK3PXP")}).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
             )
             assert code == 200

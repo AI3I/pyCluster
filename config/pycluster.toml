@@ -36,8 +36,8 @@ enabled = true
 host = "127.0.0.1"
 port = 8081
 static_dir = "./web/public_dxweb/static"
-cty_dat_path = "./fixtures/live/dxspider/cty.dat"
-wpxloc_raw_path = "./fixtures/live/dxspider/wpxloc.raw"
+cty_dat_path = "./data/cty.dat"
+wpxloc_raw_path = "./data/wpxloc.raw"
 
 [store]
 sqlite_path = "./data/pycluster.db"
@@ -47,3 +47,9 @@ username = ""
 password = ""
 agent = ""
 api_url = "https://xmldata.qrz.com/xml/current/"
+
+[satellite]
+keps_path = "./data/keps.txt"
+prediction_hours = 24
+pass_step_seconds = 60
+min_elevation_deg = 0.0
