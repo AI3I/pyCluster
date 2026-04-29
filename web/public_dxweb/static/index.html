@@ -2783,8 +2783,8 @@ function updateGreyLine() {
     const tLat  = Math.atan2(-Math.cos(dR), Math.tan(subLatR)) * 180/Math.PI;
     pts.push([Math.max(-89, Math.min(89, tLat)), lng]);
   }
-  // Close through the opposite pole so the filled mask stays on the night side.
-  const pole = sub.lat >= 0 ? 89.9 : -89.9;
+  // Close through the dark pole so the filled mask stays on the night side.
+  const pole = sub.lat >= 0 ? -89.9 : 89.9;
   pts.push([pole, 180]);
   pts.push([pole, -180]);
   greyLineLayer = L.polygon(pts, {

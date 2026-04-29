@@ -127,7 +127,7 @@ This installs:
 - application tree under `/home/pycluster/pyCluster`
 - `pycluster.service`
 - `pyclusterweb.service`
-- `pycluster-cty-refresh.timer`
+- `pycluster-data-refresh.timer`
   - keeps `CTY.DAT` and `wpxloc.raw` current from the Country Files refresh path
 - `pycluster-retention.timer`
 - fail2ban filters and jails for pyCluster auth failures
@@ -229,6 +229,7 @@ Both paths:
 
 - force `mfa_email_otp=off` for the principal/base callsign
 - clear outstanding OTP challenges for that callsign and its SSIDs
+- remove any authenticator-app TOTP secret
 - leave the password unchanged
 - write an audit record
 
@@ -238,7 +239,7 @@ If every sysop is locked out, recover locally on the host:
 cd /home/pycluster/pyCluster
 sqlite3 data/pycluster.db "
 DELETE FROM mfa_challenges;
-DELETE FROM user_prefs WHERE call='AI3I' AND pref_key='mfa_email_otp';
+DELETE FROM user_prefs WHERE call='AI3I' AND pref_key IN ('mfa_email_otp','mfa_totp_secret');
 INSERT INTO user_prefs(call,pref_key,pref_value,updated_epoch)
 VALUES('AI3I','mfa_email_otp','off',strftime('%s','now'))
 ON CONFLICT(call,pref_key) DO UPDATE SET
@@ -343,6 +344,68 @@ Typical nginx setup choices:
 - `--tls-mode none`
 - `--tls-mode self-signed`
 - `--tls-mode letsencrypt --email admin@example.net`
+
+The helper writes pyCluster-owned nginx `server` blocks under `/etc/nginx/conf.d` by default. It does not edit the distribution default site in place; it disables the packaged default listener and installs pyCluster reverse-proxy files instead.
+
+Expected files:
+
+- `/etc/nginx/conf.d/pycluster-public.conf`
+- `/etc/nginx/conf.d/pycluster-sysop.conf`, only when `--sysop-host` is used
+
+The public site proxies to `127.0.0.1:8081`. The sysop site proxies to `127.0.0.1:8080`. Those backend listeners stay local; nginx is the public entry point.
+
+Examples:
+
+```bash
+# Public web only, HTTP, useful for a private LAN or a lab node.
+sudo ./deploy/setup-nginx.sh \
+  --public-host pycluster.example.net \
+  --tls-mode none
+
+# Public web plus a separate sysop hostname, self-signed TLS.
+sudo ./deploy/setup-nginx.sh \
+  --public-host pycluster.example.net \
+  --sysop-host sysop-pycluster.example.net \
+  --tls-mode self-signed
+
+# Public web plus Let's Encrypt. The email is required by Certbot.
+sudo ./deploy/setup-nginx.sh \
+  --public-host pycluster.example.net \
+  --tls-mode letsencrypt \
+  --email admin@example.net
+```
+
+Generated nginx shape:
+
+```nginx
+server {
+    listen 80;
+    server_name pycluster.example.net;
+
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade_public;
+    }
+}
+```
+
+If `--sysop-host` is provided, the same pattern is generated for the sysop listener with `proxy_pass http://127.0.0.1:8080;`. Without `--sysop-host`, only the public web UI is exposed through nginx.
+
+Common nginx and Let's Encrypt checks:
+
+- confirm DNS for every requested hostname already points at the pyCluster host before using `--tls-mode letsencrypt`
+- pass `--email you@example.net`; Certbot requires it and setup stops early when it is missing
+- make sure ports `80` and `443` are reachable from the public Internet for HTTP-01 certificate validation
+- run `sudo nginx -t` after manual edits
+- run `sudo ./deploy/doctor.sh` to confirm pyCluster services, local health endpoints, and fail2ban state
+
+If setup reports that ports `80` or `443` are already in use, identify the owner before retrying. pyCluster expects to own the host nginx path cleanly; do not overwrite a working site configuration unless you intentionally decided this host is dedicated to pyCluster.
 
 ## Optional Dependencies
 

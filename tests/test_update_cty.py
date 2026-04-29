@@ -46,6 +46,23 @@ def test_update_cty_main_refreshes_cty_and_wpxloc(tmp_path, monkeypatch, capsys)
     assert (tmp_path / "data" / "wpxloc.raw").exists()
 
 
+def test_update_cty_defaults_to_neutral_data_path(tmp_path, monkeypatch, capsys) -> None:
+    mod = _load_update_cty_module()
+    config = tmp_path / "config" / "pycluster.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[public_web]\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "_download", lambda url, label, min_size=65536: (label + "\n").encode("ascii") * 5000)
+    monkeypatch.setattr(mod, "_validate_cty", lambda path: (1234, 56))
+    monkeypatch.setattr(mod, "_validate_wpxloc", lambda path: (2345, 67))
+    monkeypatch.setattr("sys.argv", ["update_cty.py", "--config", str(config), "--cty-only"])
+
+    rc = mod.main()
+    assert rc == 0
+    assert (tmp_path / "data" / "cty.dat").exists()
+    assert not (tmp_path / "fixtures" / "live" / "dxspider" / "cty.dat").exists()
+
+
 def test_update_cty_main_honors_cty_only(tmp_path, monkeypatch, capsys) -> None:
     mod = _load_update_cty_module()
     config = tmp_path / "config" / "pycluster.toml"

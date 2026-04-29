@@ -2,6 +2,39 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.7 - 2026-04-29
+
+### Added
+
+- System Operator web controls for QRZ XML credentials used by `show/qrz`
+- Saved peer deletion from the System Operator peer editor
+- Google Authenticator-compatible TOTP MFA enrollment and login verification
+- Satellite pass prediction for `show/satellite <target>` using local TLE/keps data
+- Dedicated public-web taxonomy editor in the System Operator web console
+- More aggressive telnet scanner `fail2ban` jail for repeated invalid login attempts
+- Public web controls for hiding spot popups and the sidebar
+
+### Changed
+
+- Default fresh-install authentication gates are off until a sysop enables them
+- System Operator maintenance actions are grouped under the Maintenance node-settings pane
+- System Operator terminology and recent-authentication-failure labels are clearer
+- SMTP settings now include a direct test-email action from the web console
+- System Operator peer health now separates live transport activity from stale inbound protocol state
+
+### Fixed
+
+- Remote `talk` routing now relays direct talk messages over node links
+- Local announce, WX, WCY, and WWV posts are delivered to local users and relayed to peers
+- Cluster user totals now use explicit remote roster reports instead of protocol frame counters
+- Saved inbound peer definitions can be stored without a transport address and remain visible/editable in the System Operator peer table
+- pyCluster-profile peers now receive keepalive frames, and one-way active links report as transmit-active/receive-quiet instead of just stale
+- Live WWV announcements use the aligned table-style header instead of running into the prompt
+- New peer creation clears the whole peer editor, including the peer filter
+- Let's Encrypt setup fails early when required certificate input is missing or host web ports are already occupied by a non-nginx service
+- Public web spot toasts no longer cover the sidebar
+- User deletion removes the full local account footprint instead of leaving stale preferences behind
+
 ## 1.0.6 - 2026-04-10
 
 ### Added

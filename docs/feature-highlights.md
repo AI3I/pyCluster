@@ -82,7 +82,7 @@ Highlights:
 - callsign blocking with reason tracking
 - per-user channel and posting controls
 - structured auth-failure logging
-- shipped fail2ban support
+- shipped fail2ban support for core auth, web auth, and fast telnet scanner attempts
 - current-ban and recent-failure visibility in the sysop UI
 
 ## Operational Improvements
@@ -96,6 +96,7 @@ Highlights:
 - `systemd` services
 - install, upgrade, repair, and uninstall scripts
 - doctor script for host checks
+- supported nginx helper for public web and optional sysop reverse proxy on `80/443`
 - validated deployment on Debian 12/13, Ubuntu 24.04/25.10, Fedora 42/43, and SELinux-enforcing EL-family hosts
 - Python 3.11+ baseline, with older distro generations intentionally left out of the supported path
 
@@ -105,7 +106,7 @@ Instead of relying on whatever CTY file happens to exist on a host:
 
 - pyCluster ships a bundled `cty.dat`
 - install/upgrade attempt a best-effort refresh
-- weekly refresh is supported by timer
+- weekly refresh of `CTY.DAT` and `wpxloc.raw` is supported by `pycluster-data-refresh.timer`
 
 ### Better Observability
 
