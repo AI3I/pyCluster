@@ -9,4 +9,5 @@ build/
 *.egg-info/
 config/pycluster.local.toml
 .codex
+.claude/
 .deploy-files.txt
