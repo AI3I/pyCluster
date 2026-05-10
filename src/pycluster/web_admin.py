@@ -1188,6 +1188,24 @@ class WebAdminServer:
   --input-bg:rgba(255,255,255,.04);
   --input-border:#1e2d3d;
   --button-text:#08111b;
+  --button-primary-bg:#58a6ff;
+  --button-primary-border:#3b82c4;
+  --button-good-bg:#2f8f68;
+  --button-good-border:#246f52;
+  --button-warn-bg:#c96b49;
+  --button-warn-border:#9f4f35;
+  --button-info-bg:#2f91b5;
+  --button-info-border:#236f8b;
+  --button-attention-bg:#d99a2b;
+  --button-attention-border:#aa741f;
+  --button-attention-text:#1b1206;
+  --button-special-bg:#7b61d1;
+  --button-special-border:#604ba8;
+  --button-on-color:#ffffff;
+  --button-success-bg:#2f8f68;
+  --button-success-border:#246f52;
+  --button-failed-bg:#a33a3a;
+  --button-failed-border:#812c2c;
   --secondary-bg:rgba(255,255,255,.03);
   --secondary-border:#1e2d3d;
   --theme-bg:rgba(255,255,255,.05);
@@ -1227,6 +1245,24 @@ html.light{
   --input-bg:rgba(0,0,0,.03);
   --input-border:#d1d5db;
   --button-text:#ffffff;
+  --button-primary-bg:#1d6fa4;
+  --button-primary-border:#175a85;
+  --button-good-bg:#1f7a59;
+  --button-good-border:#176247;
+  --button-warn-bg:#b95732;
+  --button-warn-border:#934326;
+  --button-info-bg:#2b7f9f;
+  --button-info-border:#21647d;
+  --button-attention-bg:#b7791f;
+  --button-attention-border:#8f5d16;
+  --button-attention-text:#ffffff;
+  --button-special-bg:#6657c8;
+  --button-special-border:#5144a3;
+  --button-on-color:#ffffff;
+  --button-success-bg:#1f7a59;
+  --button-success-border:#176247;
+  --button-failed-bg:#9f3434;
+  --button-failed-border:#7d2929;
   --secondary-bg:rgba(0,0,0,.03);
   --secondary-border:#d1d5db;
   --theme-bg:rgba(0,0,0,.04);
@@ -1667,8 +1703,8 @@ button{
   cursor:pointer;
   padding:10px 14px;
   border-radius:10px;
-  border:1px solid var(--accent);
-  background:var(--accent);
+  border:1px solid var(--button-primary-border);
+  background:var(--button-primary-bg);
   color:var(--button-text);
   font-weight:600;
 }
@@ -1686,22 +1722,22 @@ button.busy{
   box-shadow:inset 0 0 0 999px rgba(255,255,255,.08);
 }
 button.done{
-  background:#1d6d49;
-  border-color:#1d6d49;
-  color:#fff;
+  background:var(--button-success-bg);
+  border-color:var(--button-success-border);
+  color:var(--button-on-color);
 }
 button.secondary.done{
   background:#234e3d;
   border-color:#234e3d;
 }
 button.warn.done{
-  background:#1d6d49;
-  border-color:#1d6d49;
+  background:var(--button-success-bg);
+  border-color:var(--button-success-border);
 }
 button.failed{
-  background:#8b2e2e;
-  border-color:#8b2e2e;
-  color:#fff;
+  background:var(--button-failed-bg);
+  border-color:var(--button-failed-border);
+  color:var(--button-on-color);
 }
 button.secondary.failed{
   background:#6f3232;
@@ -1713,24 +1749,29 @@ button.secondary{
   border-color:var(--secondary-border);
 }
 button.warn{
-  background:var(--warn);
-  border-color:#8c4529;
-  color:#fff;
+  background:var(--button-warn-bg);
+  border-color:var(--button-warn-border);
+  color:var(--button-on-color);
 }
 button.good{
-  background:#1d6d49;
-  border-color:#1d6d49;
-  color:#fff;
+  background:var(--button-good-bg);
+  border-color:var(--button-good-border);
+  color:var(--button-on-color);
+}
+button.info{
+  background:var(--button-info-bg);
+  border-color:var(--button-info-border);
+  color:var(--button-on-color);
 }
 button.attention{
-  background:#fbbf24;
-  border-color:#f59e0b;
-  color:#201102;
+  background:var(--button-attention-bg);
+  border-color:var(--button-attention-border);
+  color:var(--button-attention-text);
 }
 button.special{
-  background:#6f42c1;
-  border-color:#6f42c1;
-  color:#fff;
+  background:var(--button-special-bg);
+  border-color:var(--button-special-border);
+  color:var(--button-on-color);
 }
 .users-statusrow{
   display:flex;
@@ -1784,12 +1825,16 @@ button.special{
   flex-wrap:wrap;
   gap:10px;
   margin-bottom:14px;
+  min-width:0;
+  max-width:100%;
 }
 .subtabs{
   display:flex;
   flex-wrap:wrap;
   gap:10px;
   margin-bottom:14px;
+  min-width:0;
+  max-width:100%;
 }
 .node-tab{
   background:var(--panel-soft);
@@ -1893,6 +1938,8 @@ button.special{
   flex-wrap:wrap;
   gap:10px;
   margin-bottom:12px;
+  min-width:0;
+  max-width:100%;
 }
 .users-browser-stage{
   min-height:248px;
@@ -2098,6 +2145,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   input,textarea,select{font-size:16px}
   .tablewrap table{min-width:720px}
   .tablewrap.compact table{min-width:640px}
+  .users-statusrow button{flex:1 1 100%}
 }
 @media (max-width: 560px){
   .shell{padding:8px 8px 18px}
@@ -2108,10 +2156,13 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   .statusline{font-size:12px; text-align:left}
   .node-tabs,.subtabs,.users-browser-tabs{
     display:grid;
-    grid-template-columns:1fr;
+    grid-template-columns:repeat(2,minmax(0,1fr));
     gap:8px;
+    width:100%;
+    min-width:0;
   }
-  .node-tab,.subtab{width:100%; justify-content:center}
+  .node-tab,.subtab{width:100%; min-width:0; justify-content:center; min-height:38px; padding-left:8px; padding-right:8px; white-space:normal}
+  .users-browser-tabs .subtab{overflow-wrap:anywhere}
   .browser-toolbar,
   .browser-toolbar .browser-search,
   .browser-toolbar .browser-nav{
@@ -2124,6 +2175,9 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   .dataset-pills{flex-direction:column; align-items:flex-start}
   .users-actionbar .users-action-group{flex-direction:column}
   .users-actionbar .users-action-group button{width:100%}
+}
+@media (max-width: 380px){
+  .node-tabs,.subtabs,.users-browser-tabs{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -2282,7 +2336,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="field"><label for="smtp_test_email" title="Recipient address for a one-click SMTP delivery test using the current Mail settings.">SMTP Test Recipient</label><input id="smtp_test_email" placeholder="sysop@example.net" title="Sends a test email without changing user records. Save changed Mail settings first."></div>
             </div>
             <div class="actions" style="margin-top:12px">
-              <button class="attention" id="sendSmtpTest" title="Send a test email using the current node SMTP configuration.">Send SMTP Test Email</button>
+              <button class="info" id="sendSmtpTest" title="Send a test email using the current node SMTP configuration.">Send SMTP Test Email</button>
             </div>
           </div>
           <div class="node-group" id="node-group-qrz">
@@ -2438,15 +2492,15 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <div class="users-actionbar">
                   <div class="users-action-group">
                     <button class="special" id="saveUserPassword">Set Password</button>
-                    <button class="attention" id="resetUserMfa">Reset MFA</button>
+                    <button class="special" id="resetUserMfa">Reset MFA</button>
                     <button id="saveUser">Save User</button>
                     <button class="good" id="newUser">New User</button>
                     <button class="warn" id="deleteUser" disabled>Remove User</button>
                   </div>
                   <div class="users-action-group">
-                    <button class="attention" id="sendVerification">Send Verification</button>
-                    <button class="attention" id="sendMfaTest">Send MFA Test Email</button>
-                    <button class="attention" id="enrollTotp">Enroll Authenticator</button>
+                    <button class="info" id="sendVerification">Send Verification</button>
+                    <button class="info" id="sendMfaTest">Send MFA Test Email</button>
+                    <button class="special" id="enrollTotp">Enroll Authenticator</button>
                   </div>
                 </div>
               </section>
@@ -2521,11 +2575,11 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </div>
           </div>
           <div class="actions" style="margin-top:12px">
-            <button id="peerRefresh" title="Reload live peer connection details in the table below.">Refresh</button>
+            <button class="info" id="peerRefresh" title="Reload live peer connection details in the table below.">Refresh</button>
             <button class="good" id="pconnect" title="Create an outbound node-link connection to the selected peer DSN.">Connect</button>
             <button class="warn" id="pdisconnect" title="Disconnect the selected live peer session.">Disconnect</button>
             <button class="special" id="peerSave" title="Save this outbound peer target without opening the link immediately.">Save Peer</button>
-            <button class="attention" id="newPeer" title="Clear the editor and create a new outbound peer definition.">New Peer</button>
+            <button class="good" id="newPeer" title="Clear the editor and create a new outbound peer definition.">New Peer</button>
             <button class="warn" id="peerDelete" title="Delete the saved peer target and disconnect any live session.">Delete Peer</button>
           </div>
           <div class="tablewrap" style="margin-top:14px">
@@ -2559,7 +2613,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
           <div class="actions" style="margin-top:12px">
             <button class="good" id="protoSave" title="Persist the current protocol health thresholds.">Save Thresholds</button>
-            <button id="phload" title="Reload protocol history using the current peer filter and history limit.">Reload History</button>
+            <button class="info" id="phload" title="Reload protocol history using the current peer filter and history limit.">Reload History</button>
             <button class="special" id="phreset" title="Delete stored protocol history for the current peer filter, or for all peers if no filter is set.">Reset Protocol History</button>
             <button class="special" id="reset" title="Clear policy-drop counters, optionally limited by the current peer filter.">Reset Policy Drops</button>
           </div>
@@ -2688,7 +2742,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <section>
               <h3>Security</h3>
               <div class="actions" style="margin:8px 0 12px">
-                <button id="securityReload" title="Reload recent login failures and current fail2ban bans.">Reload Security</button>
+                <button class="info" id="securityReload" title="Reload recent login failures and current fail2ban bans.">Reload Security</button>
               </div>
               <section>
                 <h3>Recent Authentication Failures</h3>

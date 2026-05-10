@@ -102,6 +102,13 @@ def test_web_admin_static_includes_mobile_breakpoints() -> None:
     assert ".actions button{flex:1 1 160px}" in text
     assert ".tablewrap table{min-width:720px}" in text
     assert ".node-tabs,.subtabs,.users-browser-tabs{" in text
+    assert "grid-template-columns:repeat(2,minmax(0,1fr));" in text
+    assert "width:100%;" in text
+    assert "min-width:0;" in text
+    assert "white-space:normal" in text
+    assert ".users-browser-tabs .subtab{overflow-wrap:anywhere}" in text
+    assert "@media (max-width: 380px)" in text
+    assert ".users-statusrow button{flex:1 1 100%}" in text
     assert ".browser-toolbar .browser-search," in text
 
 
@@ -273,7 +280,7 @@ def test_public_web_static_offsets_toasts_clear_of_sidebar() -> None:
     assert "--sidebar-toast-offset: calc(var(--sidebar-width) + 28px);" in text
     assert "right:var(--sidebar-toast-offset);" in text
     assert "bottom:100px;" in text
-    assert "#toast-wrap { right:16px; bottom:100px; }" in text
+    assert "#toast-wrap { left:12px; right:12px; bottom:calc(env(safe-area-inset-bottom, 0px) + 148px);" in text
 
 
 def test_public_web_static_keeps_login_actions_out_of_header() -> None:

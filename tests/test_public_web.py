@@ -392,6 +392,14 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "const REGISTER_REQUEST = '/api/register/request';" in text
     assert "@media (max-width:1100px)" in text
     assert "@media (max-width:760px)" in text
+    assert "#content { flex-direction:column; overflow:auto; -webkit-overflow-scrolling:touch; }" in text
+    assert "#main { flex:0 0 auto; }" in text
+    assert "#sidebar {" in text and "flex:0 0 auto;" in text
+    assert "#toast-wrap { left:12px; right:12px; bottom:calc(env(safe-area-inset-bottom, 0px) + 148px);" in text
+    assert ".toast { max-width:none; }" in text
+    assert ".footer-controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));" in text
+    assert "@media (max-width:420px)" in text
+    assert ".profile-modal-actions { display:grid; grid-template-columns:1fr; }" in text
 
 
 def test_public_dxweb_auth_locked_sidebar_tabs_stay_visible() -> None:
