@@ -18,7 +18,7 @@ from .auth import hash_password, is_password_hash, verify_password
 from .config import AppConfig, node_presentation_defaults, parse_telnet_ports, save_config
 from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
-from .geomag import canonicalize_wcy_text, canonicalize_wwv_text
+from .geomag import canonicalize_wwv_text
 from .maidenhead import coords_to_locator, extract_locator
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
@@ -31,7 +31,7 @@ from .public_web import _DEFAULT_ACTIVITY_RULES, _DEFAULT_COMMENT_TAGS, _DEFAULT
 from .registration import has_valid_email, mark_email_unverified, mark_email_verified, registration_state
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
-from .upgrade_manager import detect_upgrade_availability, migration_hooks, queue_upgrade_request, read_upgrade_status, repo_root_from_config, upgrade_paths
+from .upgrade_manager import detect_upgrade_availability, migration_hooks, queue_upgrade_request, read_upgrade_status, repo_root_from_config, source_repo_root, upgrade_paths
 
 
 LOG = logging.getLogger(__name__)
@@ -144,6 +144,7 @@ class WebAdminServer:
         self.audit_rows_fn = audit_rows_fn
         self.config_path = str(config_path).strip() if config_path else ""
         self.repo_root = repo_root_from_config(self.config_path)
+        self.upgrade_source_root = source_repo_root(self.repo_root)
         self._upgrade_paths = upgrade_paths(self.repo_root)
         self._web_sessions: dict[str, tuple[str, int, bool]] = {}
         self._server: asyncio.AbstractServer | None = None
@@ -337,12 +338,13 @@ class WebAdminServer:
 
     def _upgrade_status_json(self) -> dict[str, object]:
         state = read_upgrade_status(self._upgrade_paths.status_path)
-        availability = detect_upgrade_availability(self.repo_root, __version__)
+        availability = detect_upgrade_availability(self.upgrade_source_root, __version__)
         return {
             "status": state,
             "availability": availability,
-            "migrations": migration_hooks(self.repo_root),
+            "migrations": migration_hooks(self.upgrade_source_root),
             "request_path": str(self._upgrade_paths.request_path),
+            "source_repo_root": str(self.upgrade_source_root),
             "log_path": str(self._upgrade_paths.log_path),
             "service_unit": "pycluster-upgrade.service",
             "watch_unit": "pycluster-upgrade.path",
@@ -491,6 +493,26 @@ class WebAdminServer:
         if mfa_email_otp not in {"required", "off"}:
             mfa_email_otp = "default"
         mfa_totp_enabled = bool(str(await self.store.get_user_pref(base_call, "mfa_totp_secret") or "").strip())
+        if mfa_email_otp == "required":
+            mfa_email_effective = True
+        elif mfa_email_otp == "off":
+            mfa_email_effective = False
+        else:
+            mfa_email_effective = self._mfa.required_for(is_sysop=privilege == "sysop")
+        mfa_enabled = bool(mfa_totp_enabled or mfa_email_effective)
+        mfa_methods = []
+        if mfa_totp_enabled:
+            mfa_methods.append("Authenticator")
+        if mfa_email_effective:
+            mfa_methods.append("Email OTP")
+        if mfa_email_otp == "required":
+            mfa_policy = "required override"
+        elif mfa_email_otp == "off":
+            mfa_policy = "off override"
+        elif mfa_email_effective:
+            mfa_policy = "node policy"
+        else:
+            mfa_policy = "not required by node policy"
         reg_state, email_verified_epoch, grace_logins_remaining = await registration_state(self.store, base_call)
         return {
             "call": call,
@@ -525,8 +547,13 @@ class WebAdminServer:
             "mail_last_error": last_mail_error,
             "mfa_email_otp": mfa_email_otp,
             "mfa_totp_enabled": mfa_totp_enabled,
+            "mfa_email_effective": mfa_email_effective,
+            "mfa_enabled": mfa_enabled,
+            "mfa_status": "enabled" if mfa_enabled else "disabled",
+            "mfa_methods": mfa_methods,
+            "mfa_policy": mfa_policy,
             "registration_state": reg_state,
-            "email_verified": email_verified_epoch > 0 and reg_state == "verified",
+            "email_verified": email_verified_epoch > 0,
             "email_verified_epoch": email_verified_epoch,
             "grace_logins_remaining": grace_logins_remaining,
             "registration_locked": reg_state == "locked",
@@ -632,7 +659,11 @@ class WebAdminServer:
             return True
         if override == "off":
             return False
-        return self._mfa.required_for(is_sysop=is_sysop)
+        if await self._totp_secret_for_call(call):
+            return True
+        if not self._mfa.required_for(is_sysop=is_sysop):
+            return False
+        return has_valid_email(await self._email_for_call(base_call.upper()))
 
     async def _totp_secret_for_call(self, call: str) -> str:
         base_call = call.split("-", 1)[0].upper()
@@ -746,11 +777,19 @@ class WebAdminServer:
         target = call.upper()
         base = target.split("-", 1)[0]
         blocked_login = False
+        target_row = await self.store.get_user_registry(target)
+        target_exists = target_row is not None
         privilege = ""
         for candidate in (target, base):
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
                 blocked_login = True
+        if target_exists:
+            privilege = str(target_row["privilege"] or "").strip().lower()
+            if not privilege:
+                privilege = str(await self.store.get_user_pref(target, "privilege") or "").strip().lower()
+            return privilege, blocked_login
+        for candidate in (target, base):
             row = await self.store.get_user_registry(candidate)
             if row and not privilege:
                 privilege = str(row["privilege"] or "").strip().lower()
@@ -761,7 +800,9 @@ class WebAdminServer:
     async def _access_allowed(self, call: str, channel: str, capability: str) -> bool:
         target = call.upper()
         base = target.split("-", 1)[0]
-        for candidate in (target, base):
+        target_exists = await self.store.get_user_registry(target) is not None
+        candidates = (target,) if target_exists else (target, base)
+        for candidate in candidates:
             raw = await self.store.get_user_pref(candidate, self._access_pref_key(channel, capability))
             if raw is None or str(raw).strip() == "":
                 continue
@@ -968,6 +1009,8 @@ class WebAdminServer:
             "pc18_proto": node_cfg.get(pfx + "pc18.proto", ""),
             "pc18_software": node_cfg.get(pfx + "pc18.software", ""),
             "pc18_summary": node_cfg.get(pfx + "pc18.summary", ""),
+            "pc16_node": node_cfg.get(pfx + "pc16.node", ""),
+            "pc16_user_count": node_cfg.get(pfx + "pc16.user_count", ""),
             "pc24_call": node_cfg.get(pfx + "pc24.call", ""),
             "pc24_flag": node_cfg.get(pfx + "pc24.flag", ""),
             "pc50_call": node_cfg.get(pfx + "pc50.call", ""),
@@ -997,6 +1040,8 @@ class WebAdminServer:
                 "pc18_proto",
                 "pc18_software",
                 "pc18_summary",
+                "pc16_node",
+                "pc16_user_count",
                 "pc24_call",
                 "pc24_flag",
                 "pc50_call",
@@ -1050,6 +1095,7 @@ class WebAdminServer:
             "pc18_proto": state["pc18_proto"],
             "pc18_software": state["pc18_software"],
             "pc18_summary": state["pc18_summary"],
+            "pc16": {"node": state["pc16_node"], "user_count": state["pc16_user_count"]},
             "change_count": _to_int(state["change_count"], 0),
             "flap_score": _to_int(state["flap_score"], 0),
             "last_change_epoch": last_change_epoch,
@@ -2215,7 +2261,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <div class="node-group" id="node-group-smtp">
             <div class="form-grid">
               <div class="field"><label for="smtp_host" title="SMTP host used to send MFA email codes.">SMTP Host</label><input id="smtp_host" placeholder="smtp.example.net" title="Node-wide SMTP relay hostname for MFA delivery."></div>
-              <div class="field"><label for="smtp_port" title="SMTP port for the configured relay.">SMTP Port</label><input id="smtp_port" type="number" min="1" max="65535" value="587" title="Typical values are 25, 465, or 587."></div>
+              <div class="field"><label for="smtp_port" title="SMTP port for the configured relay.">SMTP Port</label><div class="select-shell"><select id="smtp_port" title="Use Submission for authenticated outbound mail or SMTP for a plain relay."><option value="587">Submission (587)</option><option value="25">SMTP (25)</option></select></div></div>
               <div class="field"><label for="smtp_username" title="Optional SMTP username when the relay requires authentication.">SMTP Username</label><input id="smtp_username" placeholder="mailer" title="Leave blank for relays that do not require SMTP AUTH."></div>
               <div class="field"><label for="smtp_password" title="SMTP password or app password for the configured relay.">SMTP Password</label><input id="smtp_password" type="password" placeholder="SMTP password" title="Stored in local config for MFA delivery."></div>
               <div class="field"><label for="smtp_from_addr" title="From address used in MFA email delivery.">From Address</label><input id="smtp_from_addr" placeholder="pycluster@example.net" title="Envelope/display sender for OTP messages."></div>
@@ -2243,7 +2289,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.7" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.8" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>
@@ -2317,8 +2363,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   <h3>Local Users</h3>
                   <div class="tablewrap">
                     <table>
-                      <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
-                      <tbody id="userRows"><tr><td colspan="9">Loading local users...</td></tr></tbody>
+                      <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>MFA</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
+                      <tbody id="userRows"><tr><td colspan="10">Loading local users...</td></tr></tbody>
                     </table>
                   </div>
                 </div>
@@ -2335,8 +2381,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   <h3>Clusters</h3>
                   <div class="tablewrap">
                     <table>
-                      <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
-                      <tbody id="clusterRows"><tr><td colspan="9">Loading cluster peers...</td></tr></tbody>
+                      <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>MFA</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
+                      <tbody id="clusterRows"><tr><td colspan="10">Loading cluster peers...</td></tr></tbody>
                     </table>
                   </div>
                 </div>
@@ -2375,6 +2421,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <section>
                 <h3 id="userEditorTitle">User Details</h3>
                 <div class="subtle" id="userMailStatus" style="margin-bottom:10px">Mail status for the selected user will appear here.</div>
+                <div class="subtle" id="userMfaStatus" style="margin-bottom:10px">MFA status for the selected user will appear here.</div>
                 <div class="subtle" id="userRegistrationStatus" style="margin-bottom:10px">Registration status for the selected user will appear here.</div>
                 <div class="form-grid">
                 <div class="field"><label for="user_call" title="Local callsign record to create or edit on this node.">Callsign</label><input id="user_call" placeholder="N0CALL" title="Use the base callsign or an SSID variant for the exact local record you want to manage."></div>
@@ -2390,16 +2437,16 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 </div>
                 <div class="users-actionbar">
                   <div class="users-action-group">
-                    <button class="good" id="newUser">New User</button>
-                    <button id="saveUser">Save User</button>
                     <button class="special" id="saveUserPassword">Set Password</button>
+                    <button class="attention" id="resetUserMfa">Reset MFA</button>
+                    <button id="saveUser">Save User</button>
+                    <button class="good" id="newUser">New User</button>
                     <button class="warn" id="deleteUser" disabled>Remove User</button>
                   </div>
                   <div class="users-action-group">
                     <button class="attention" id="sendVerification">Send Verification</button>
                     <button class="attention" id="sendMfaTest">Send MFA Test Email</button>
                     <button class="attention" id="enrollTotp">Enroll Authenticator</button>
-                    <button class="attention" id="resetUserMfa">Reset MFA</button>
                   </div>
                 </div>
               </section>
@@ -2420,6 +2467,9 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                         <input id="user_unlocked_state" type="checkbox" disabled>
                         <label for="user_unlocked_state">Locked</label>
                       </div>
+                      <button class="attention" id="unlockAccount" disabled title="Clear the selected user's locked account state and failed-password counter.">Unlock Account</button>
+                      <button class="warn" id="blockUser" disabled>Block User</button>
+                      <button class="good" id="unblockUser" disabled>Unblock User</button>
                     </div>
                   </div>
                 </div>
@@ -2471,11 +2521,11 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </div>
           </div>
           <div class="actions" style="margin-top:12px">
-            <button class="attention" id="newPeer" title="Clear the editor and create a new outbound peer definition.">New Peer</button>
-            <button class="special" id="peerSave" title="Save this outbound peer target without opening the link immediately.">Save Peer</button>
             <button id="peerRefresh" title="Reload live peer connection details in the table below.">Refresh</button>
             <button class="good" id="pconnect" title="Create an outbound node-link connection to the selected peer DSN.">Connect</button>
             <button class="warn" id="pdisconnect" title="Disconnect the selected live peer session.">Disconnect</button>
+            <button class="special" id="peerSave" title="Save this outbound peer target without opening the link immediately.">Save Peer</button>
+            <button class="attention" id="newPeer" title="Clear the editor and create a new outbound peer definition.">New Peer</button>
             <button class="warn" id="peerDelete" title="Delete the saved peer target and disconnect any live session.">Delete Peer</button>
           </div>
           <div class="tablewrap" style="margin-top:14px">
@@ -2555,14 +2605,13 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="field"><label for="dx" title="DX callsign for a manually posted spot.">DX Call</label><input id="dx" placeholder="K1ABC" title="Destination or DX station being spotted."></div>
             <div class="field"><label for="freq" title="Frequency in kilohertz for a manual spot.">Frequency kHz</label><input id="freq" placeholder="14074.0" title="Use kilohertz, for example 14074.0 or 18100.0."></div>
             <div class="field"><label for="info" title="Comment, mode, or context for the manual spot. Supported modes include CW, WSPR, RTTY, FT8, FT4, FT2, JS8, JT9, JT65, Q65, MSK144, FSK441, MFSK, OLIVIA, DOMINO, THOR, HELL, ROS, VARA, PACTOR, WINMOR, ARDOP, PSK, FAX, SSTV, ATV, SSB, AM, FM, and DATA. Activity keywords include RARE, EME, SAT, WWFF, POTA, SOTA, IOTA, BOTA, and GMA.">Spot Info</label><input id="info" placeholder="FT8, split up 2, POTA" title="Supported modes include CW, WSPR, RTTY, FT8, FT4, FT2, JS8, JT9, JT65, Q65, MSK144, FSK441, MFSK, OLIVIA, DOMINO, THOR, HELL, ROS, VARA, PACTOR, WINMOR, ARDOP, PSK, FAX, SSTV, ATV, SSB, AM, FM, and DATA. Activity keywords include RARE, EME, SAT, WWFF, POTA, SOTA, IOTA, BOTA, and GMA."></div>
-            <div class="field"><label for="scope" title="Distribution scope for announce messages only.">Announce Scope</label><input id="scope" placeholder="LOCAL | FULL | SYSOP" title="Used only for announce. WCY, WWV, WX, and chat are always local-category posts here."></div>
+            <div class="field"><label for="scope" title="Distribution scope for announce messages only.">Announce Scope</label><input id="scope" placeholder="LOCAL | FULL | SYSOP" title="Used only for announce. WWV, WX, and chat are always local-category posts here."></div>
           </div>
-          <div class="field" style="margin-top:12px"><label for="text" title="Text body for chat, announce, WCY, WWV, or WX posts.">Message / Bulletin Text</label><textarea id="text" placeholder="Enter chat, announce, WCY, WWV, or WX text here before posting." title="Required for Chat, Announce, WCY, WWV, and WX actions."></textarea></div>
+          <div class="field" style="margin-top:12px"><label for="text" title="Text body for chat, announce, WWV, or WX posts.">Message / Bulletin Text</label><textarea id="text" placeholder="Enter chat, announce, WWV, or WX text here before posting." title="Required for Chat, Announce, WWV, and WX actions."></textarea></div>
           <div class="actions" style="margin-top:12px">
             <button id="spot" title="Post a DX spot using the current web-logged-in operator callsign.">Post Spot</button>
             <button class="secondary" id="chat" title="Post a local chat-style bulletin.">Chat</button>
             <button class="secondary" id="announce" title="Post an announce bulletin using the selected scope.">Announce</button>
-            <button class="secondary" id="wcy" title="Post a WCY-style propagation bulletin.">WCY</button>
             <button class="secondary" id="wwv" title="Post a WWV-style propagation bulletin.">WWV</button>
             <button class="secondary" id="wx" title="Post a weather bulletin.">WX</button>
           </div>
@@ -2783,7 +2832,7 @@ async function loadUserBrowser(panel = currentUserBrowser) {
   const target = String(panel || currentUserBrowser || 'local').toLowerCase();
   const userSearch = encodeURIComponent(byId('user_search').value.trim());
   if (target === 'local') {
-    const payload = await j('/api/users?exclude_privilege=sysop&exclude_blocked=1&limit=' + USER_PAGE_SIZE + '&offset=' + encodeURIComponent(userOffset) + (userSearch ? '&search=' + userSearch : ''));
+    const payload = await j('/api/users?exclude_privilege=sysop&exclude_blocked=1&exclude_clusters=1&limit=' + USER_PAGE_SIZE + '&offset=' + encodeURIComponent(userOffset) + (userSearch ? '&search=' + userSearch : ''));
     if (normalizeUserPage(payload || {})) {
       await loadUserBrowser(target);
       return;
@@ -3320,6 +3369,11 @@ function fillUserForm(row) {
   if (Number(data.mail_outbox_issues || 0) > 0) mailStatus += ` • delivery issues: ${Number(data.mail_outbox_issues || 0)}`;
   if (data.mail_last_error) mailStatus += ` • last error: ${data.mail_last_error}`;
   setText('userMailStatus', mailStatus);
+  const mfaMethods = Array.isArray(data.mfa_methods) && data.mfa_methods.length ? data.mfa_methods.join(', ') : 'none';
+  let mfaStatus = `MFA ${data.mfa_enabled ? 'enabled' : 'disabled'} • methods: ${mfaMethods}`;
+  mfaStatus += ` • policy: ${data.mfa_policy || 'not required by node policy'}`;
+  if (data.mfa_email_otp) mfaStatus += ` • email override: ${data.mfa_email_otp}`;
+  setText('userMfaStatus', mfaStatus);
   let regStatus = `Principal ${data.principal_call || data.call || '-'}`;
   regStatus += ` • state: ${data.registration_state || 'pending'}`;
   regStatus += ` • email verified: ${data.email_verified ? 'yes' : 'no'}`;
@@ -3332,6 +3386,8 @@ function fillUserForm(row) {
   setText('userSelectionHint', selectedUserCall ? `Selected user: ${selectedUserCall}. Click any row below to load a different editor record.` : 'Select a user below to open the editor.');
   setText('registrationSelectionHint', selectedUserCall ? `Selected user: ${selectedUserCall}. Pending requests stay here while the editor remains on the right.` : 'Approve requests here, or select an existing user from the other tabs to edit details on the right.');
   setText('saveUser', selectedUserCall ? 'Update User' : 'Save User');
+  byId('blockUser').disabled = !selectedUserCall || !!data.blocked_login;
+  byId('unblockUser').disabled = !selectedUserCall || !data.blocked_login;
   byId('deleteUser').disabled = !selectedUserCall;
 }
 function clearUserForm(defaultCall='') {
@@ -3350,12 +3406,15 @@ function clearUserForm(defaultCall='') {
   byId('user_password').value = '';
   applyPrivilegeDefaults('');
   setText('userMailStatus', 'Mail status for the selected user will appear here.');
+  setText('userMfaStatus', 'MFA status for the selected user will appear here.');
   setText('userRegistrationStatus', 'Registration status for the selected user will appear here.');
   setText('userSelectionHint', 'Select a user below to open the editor.');
   setText('registrationSelectionHint', 'Approve requests here, or select an existing user from the other tabs to edit details on the right.');
   setRegistrationActionState(false, false, false);
   setText('userEditorTitle', 'User Details');
   setText('saveUser', 'Save User');
+  byId('blockUser').disabled = true;
+  byId('unblockUser').disabled = true;
   byId('deleteUser').disabled = true;
 }
 function setRegistrationActionState(verified, locked, enabled) {
@@ -3363,6 +3422,8 @@ function setRegistrationActionState(verified, locked, enabled) {
   if (verifiedState) verifiedState.checked = !!verified;
   const unlockedState = byId('user_unlocked_state');
   if (unlockedState) unlockedState.checked = !!locked;
+  const unlockButton = byId('unlockAccount');
+  if (unlockButton) unlockButton.disabled = !enabled || !locked || !selectedUserCall;
 }
 function bindSelectableRows(body, rows) {
   body.querySelectorAll('tr[data-call]').forEach((tr) => {
@@ -3419,6 +3480,11 @@ function bulletinPostingEnabled(access) {
   const channels = ['telnet','web'];
   const caps = ['chat','wx','wcy','wwv'];
   return channels.some((channel) => caps.some((cap) => !!(((access || {})[channel] || {})[cap])));
+}
+function mfaStatusMark(row) {
+  const methods = Array.isArray(row.mfa_methods) && row.mfa_methods.length ? row.mfa_methods.join(', ') : 'none';
+  const title = `MFA ${row.mfa_enabled ? 'enabled' : 'disabled'}; methods: ${methods}; policy: ${row.mfa_policy || 'not required by node policy'}`;
+  return mark(!!row.mfa_enabled, title, title);
 }
 function setSysopRows(rows) {
   const body = byId('sysopRows');
@@ -3575,7 +3641,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
   if (prevId && byId(prevId)) byId(prevId).disabled = offset <= 0;
   if (nextId && byId(nextId)) byId(nextId).disabled = offset + limit >= total;
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="9">${esc(emptyText)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="10">${esc(emptyText)}</td></tr>`;
     return;
   }
   const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
@@ -3584,6 +3650,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
     <td>${esc(row.home_node || '-')}</td>
     <td title="${esc(row.last_login_peer || 'No recorded telnet login path')}">${mark(!!(((row.access || {}).telnet || {}).login), 'Telnet login allowed', 'Telnet login blocked')}</td>
     <td title="${esc(row.last_login_peer || 'No recorded web login path')}">${mark(!!(((row.access || {}).web || {}).login), 'Web login allowed', 'Web login blocked')}</td>
+    <td>${mfaStatusMark(row)}</td>
     <td>${mark(dxPostingEnabled(row.access), 'DX spots or announce traffic allowed on one or more channels', 'DX spots and announce traffic blocked on all channels')}</td>
     <td>${mark(bulletinPostingEnabled(row.access), 'Chat, WX, WCY, or WWV traffic allowed on one or more channels', 'Chat and bulletin-style traffic blocked on all channels')}</td>
     <td title="${esc(row.last_login_peer || 'No recorded inbound path')}">${esc(fmtEpoch(row.last_login_epoch))}</td>
@@ -3591,7 +3658,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
   </tr>`);
   const fillers = [];
   for (let i = rendered.length; i < USER_PAGE_SIZE; i += 1) {
-    fillers.push('<tr class="filler"><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>');
+    fillers.push('<tr class="filler"><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>');
   }
   body.innerHTML = rendered.concat(fillers).join('');
   bindSelectableRows(body, rows);
@@ -4009,30 +4076,56 @@ byId('userNext').onclick = async () => {
   userOffset += USER_PAGE_SIZE;
   await loadUserBrowser('local');
 };
-byId('saveUser').onclick = async () => {
+function userEditorPayload() {
+  return {
+    original_call: selectedUserCall || '',
+    call: byId('user_call').value.trim(),
+    display_name: byId('user_name').value.trim(),
+    home_node: byId('user_home_node').value.trim(),
+    node_family: byId('user_node_family').value.trim(),
+    mfa_email_otp: byId('user_mfa_email_otp').value.trim(),
+    qth: byId('user_qth').value.trim(),
+    qra: byId('user_grid').value.trim().toUpperCase(),
+    location: byId('user_location').value.trim(),
+    email: byId('user_email').value.trim(),
+    privilege: byId('user_privilege').value.trim(),
+    blocked_reason: byId('user_block_reason').value.trim().slice(0, 80),
+    access: collectAccessMatrix(),
+  };
+}
+async function saveUserEditor(successMessage, failureMessage) {
   try {
-    const payload = {
-      original_call: selectedUserCall || '',
-      call: byId('user_call').value.trim(),
-      display_name: byId('user_name').value.trim(),
-      home_node: byId('user_home_node').value.trim(),
-      node_family: byId('user_node_family').value.trim(),
-      mfa_email_otp: byId('user_mfa_email_otp').value.trim(),
-      qth: byId('user_qth').value.trim(),
-      qra: byId('user_grid').value.trim().toUpperCase(),
-      location: byId('user_location').value.trim(),
-      email: byId('user_email').value.trim(),
-      privilege: byId('user_privilege').value.trim(),
-      blocked_reason: byId('user_block_reason').value.trim().slice(0, 80),
-      access: collectAccessMatrix(),
-    };
+    const payload = userEditorPayload();
     const r = await j('/api/users', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     if (r && r.ok && r.user) fillUserForm(r.user);
-    say(r && r.ok ? 'User record saved.' : 'Saving user failed.', !!(r && r.ok));
+    say(r && r.ok ? successMessage : failureMessage, !!(r && r.ok));
     await load();
   } catch (err) {
-    say('Saving user failed: ' + errText(err), false);
+    say(failureMessage + ': ' + errText(err), false);
   }
+}
+byId('saveUser').onclick = async () => {
+  await saveUserEditor('User record saved.', 'Saving user failed');
+};
+byId('blockUser').onclick = async () => {
+  const call = byId('user_call').value.trim();
+  if (!call) {
+    say('Select a user before blocking access.', false);
+    return;
+  }
+  byId('user_privilege').value = 'blocked';
+  applyPrivilegeDefaults('blocked');
+  await saveUserEditor('User blocked.', 'Blocking user failed');
+};
+byId('unblockUser').onclick = async () => {
+  const call = byId('user_call').value.trim();
+  if (!call) {
+    say('Select a user before unblocking access.', false);
+    return;
+  }
+  byId('user_privilege').value = 'user';
+  applyPrivilegeDefaults('user');
+  await saveUserEditor('User unblocked.', 'Unblocking user failed');
 };
 byId('saveUserPassword').onclick = async () => {
   const call = byId('user_call').value.trim();
@@ -4100,6 +4193,21 @@ byId('sendVerification').onclick = async () => {
     say('Sending verification failed: ' + errText(err), false);
   }
 };
+byId('unlockAccount').onclick = async () => {
+  const call = byId('user_call').value.trim();
+  if (!call) {
+    say('A callsign is required before unlocking an account.', false);
+    return;
+  }
+  try {
+    const r = await j('/api/users/unlock', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
+    if (r && r.ok && r.user) fillUserForm(r.user);
+    say(r && r.ok ? 'Account unlocked for ' + call + '.' : 'Unlocking account failed.', !!(r && r.ok));
+    await load();
+  } catch (err) {
+    say('Unlocking account failed: ' + errText(err), false);
+  }
+};
 byId('resetUserMfa').onclick = async () => {
   const call = byId('user_call').value.trim();
   if (!call) {
@@ -4125,7 +4233,7 @@ byId('enrollTotp').onclick = async () => {
     const r = await j('/api/users/mfa/totp/enroll', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
     if (r && r.ok && r.user) fillUserForm(r.user);
     if (r && r.ok) {
-      window.prompt('Authenticator setup URI for ' + call + ':', r.otpauth_uri || r.secret || '');
+      window.prompt('Authenticator setup key for ' + call + ':', r.secret || '');
     }
     say(r && r.ok ? 'Authenticator MFA enrolled for ' + call + '.' : 'Authenticator MFA enrollment failed.', !!(r && r.ok));
     await load();
@@ -4233,7 +4341,6 @@ byId('spot').onclick = async () => {
 };
 byId('chat').onclick = async () => { await postText('/api/chat', {text: byId('text').value}, 'Chat'); };
 byId('announce').onclick = async () => { await postText('/api/announce', {text: byId('text').value, scope: byId('scope').value || 'LOCAL'}, 'Announce'); };
-byId('wcy').onclick = async () => { await postText('/api/wcy', {text: byId('text').value}, 'WCY'); };
 byId('wwv').onclick = async () => { await postText('/api/wwv', {text: byId('text').value}, 'WWV'); };
 byId('wx').onclick = async () => { await postText('/api/wx', {text: byId('text').value}, 'WX'); };
 byId('protoSave').onclick = async () => {
@@ -4792,6 +4899,7 @@ if (restoreWebSession()) {
                     self._upgrade_paths.request_path,
                     requested_by=requested_by,
                     current_version=__version__,
+                    source_repo_root=str(self.upgrade_source_root),
                 )
                 self._audit("control", f"{requested_by} queued a system upgrade")
                 await self._write_response(writer, 200, self._json({"ok": True, "queued": True, "request": request}))
@@ -4889,9 +4997,11 @@ if (restoreWebSession()) {
                         exclude_privilege = "sysop"
                     exclude_blocked = str(q.get("exclude_blocked", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
                     clusters_only = str(q.get("clusters", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
+                    exclude_clusters = str(q.get("exclude_clusters", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
                     search = str(q.get("search", [""])[0]).strip()
                     blocked_only = str(q.get("blocked", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
-                    if blocked_only or exclude_privilege or exclude_blocked or clusters_only:
+                    cluster_families = {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}
+                    if blocked_only or exclude_privilege or exclude_blocked or clusters_only or exclude_clusters:
                         rows = await self.store.list_user_registry(limit=1000, offset=0, privilege=privilege, search=search)
                         body_all = [await self._user_registry_json(r) for r in rows]
                         if exclude_privilege:
@@ -4901,7 +5011,9 @@ if (restoreWebSession()) {
                         if blocked_only:
                             body_all = [r for r in body_all if bool(r.get("blocked_login"))]
                         if clusters_only:
-                            body_all = [r for r in body_all if str(r.get("node_family", "")).strip().lower() in {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}]
+                            body_all = [r for r in body_all if str(r.get("node_family", "")).strip().lower() in cluster_families]
+                        if exclude_clusters:
+                            body_all = [r for r in body_all if str(r.get("node_family", "")).strip().lower() not in cluster_families]
                         total = len(body_all)
                         body_rows = body_all[offset : offset + limit]
                     else:
@@ -4926,6 +5038,7 @@ if (restoreWebSession()) {
                                 "exclude_privilege": exclude_privilege,
                                 "exclude_blocked": exclude_blocked,
                                 "clusters": clusters_only,
+                                "exclude_clusters": exclude_clusters,
                                 "blocked": blocked_only,
                                 "search": search,
                             }
@@ -5150,7 +5263,7 @@ if (restoreWebSession()) {
                     qth=str(req["qth"] or ""),
                     qra=str(req["qra"] or ""),
                     email=str(req["email"] or ""),
-                    privilege="",
+                    privilege="user",
                 )
                 if int(req["email_verified"] or 0):
                     await mark_email_verified(self.store, call, now_epoch=now)
@@ -5263,6 +5376,47 @@ if (restoreWebSession()) {
                     writer,
                     200,
                     self._json({"ok": True, "removed": removed, "call": call, "user": await self._user_registry_json(row) if row else {"call": call, "has_password": False}}),
+                )
+                return
+
+            if path == "/api/users/unlock":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                if not _is_valid_admin_record_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                now = int(time.time())
+                base_call = call.split("-", 1)[0]
+                await self.store.upsert_user_registry(base_call, now)
+                _state, verified_epoch, _remaining = await registration_state(self.store, base_call)
+                await self.store.set_user_pref(base_call, "registration_state", "verified" if verified_epoch > 0 else "pending", now)
+                if verified_epoch <= 0:
+                    await self.store.set_user_pref(base_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
+                await self.store.delete_user_pref(base_call, "failed_password_count")
+                await self.store.delete_user_pref(base_call, "failed_password_locked_epoch")
+                cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                row = await self.store.get_user_registry(call)
+                if row is None and call != base_call:
+                    row = await self.store.get_user_registry(base_call)
+                self._audit("sysop", f"{self._authorized_call(headers)} unlocked account {base_call} challenges={cleared}")
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json(
+                        {
+                            "ok": True,
+                            "call": call,
+                            "principal": base_call,
+                            "challenges_cleared": cleared,
+                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": base_call},
+                        }
+                    ),
                 )
                 return
 
@@ -5844,6 +5998,20 @@ if (restoreWebSession()) {
                 if not peer:
                     await self._write_response(writer, 400, self._json({"error": "peer is required"}))
                     return
+                if not dsn and self.link_desired_peers_fn:
+                    desired_rows = await self.link_desired_peers_fn()
+                    for row in desired_rows:
+                        if str(row.get("peer", "")).strip().lower() != peer.lower():
+                            continue
+                        dsn = str(row.get("dsn", "")).strip()
+                        if not password:
+                            password = str(row.get("password", "")).strip()
+                        if not str(payload.get("profile", "")).strip():
+                            profile = str(row.get("profile", "")).strip() or profile
+                        break
+                if not dsn:
+                    await self._write_response(writer, 400, self._json({"error": "peer transport address is required"}))
+                    return
                 try:
                     await self.link_connect_fn(peer, dsn, profile, True, password)
                 except Exception as exc:
@@ -5896,7 +6064,10 @@ if (restoreWebSession()) {
                 if not peer:
                     await self._write_response(writer, 400, self._json({"error": "peer is required"}))
                     return
-                ok = bool(await self.link_disconnect_fn(peer))
+                try:
+                    ok = bool(await self.link_disconnect_fn(peer, False))
+                except TypeError:
+                    ok = bool(await self.link_disconnect_fn(peer))
                 self._audit("disconnect", f"{self._authorized_call(headers)} disconnected peer {peer} ok={int(ok)}")
                 await self._write_response(writer, 200, self._json({"ok": ok, "peer": peer}))
                 return
@@ -6039,7 +6210,10 @@ if (restoreWebSession()) {
                 await self._write_response(writer, 200, self._json({"ok": True, "posted_by": call, "category": "chat"}))
                 return
 
-            if path in {"/api/announce", "/api/wcy", "/api/wwv", "/api/wx"}:
+            if path == "/api/wcy":
+                await self._write_response(writer, 403, self._json({"error": "WCY posting is not available from System Tools"}))
+                return
+            if path in {"/api/announce", "/api/wwv", "/api/wx"}:
                 if method != "POST":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
@@ -6060,9 +6234,7 @@ if (restoreWebSession()) {
                         self._json({"error": f"{category} posting not allowed via web"}),
                     )
                     return
-                if category == "wcy":
-                    text = canonicalize_wcy_text(text) or text
-                elif category == "wwv":
+                if category == "wwv":
                     text = canonicalize_wwv_text(text) or text
                 scope = str(payload.get("scope", "LOCAL")).strip().upper() or "LOCAL"
                 if category != "announce":

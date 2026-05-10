@@ -32,8 +32,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `accept/announce` | `complete` | `accept/announce` |  |
 | `accept/route` | `complete` | `accept/route` |  |
 | `accept/spots` | `complete` | `accept/spots` |  |
-| `accept/wcy` | `complete` | `accept/wcy` |  |
-| `accept/wwv` | `complete` | `accept/wwv` |  |
 | `agwrestart` | `complete` | `agwrestart` | real behavior path; privilege-gated |
 | `announce` | `complete` | `announce` |  |
 | `apropos` | `complete` | `apropos` |  |
@@ -45,8 +43,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `clear/dupefile` | `complete` | `clear/dupefile` |  |
 | `clear/route` | `complete` | `clear/route` |  |
 | `clear/spots` | `complete` | `clear/spots` |  |
-| `clear/wcy` | `complete` | `clear/wcy` |  |
-| `clear/wwv` | `complete` | `clear/wwv` |  |
 | `connect` | `complete` | `connect` |  |
 | `create/user` | `complete` | `create/user` |  |
 | `dbavail` | `complete` | `dbavail` |  |
@@ -103,8 +99,6 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `reject/announce` | `complete` | `reject/announce` |  |
 | `reject/route` | `complete` | `reject/route` |  |
 | `reject/spots` | `complete` | `reject/spots` |  |
-| `reject/wcy` | `complete` | `reject/wcy` |  |
-| `reject/wwv` | `complete` | `reject/wwv` |  |
 | `reply` | `complete` | `reply` |  |
 | `rinit` | `complete` | `rinit` | real behavior path; privilege-gated |
 | `run` | `complete` | `run` |  |

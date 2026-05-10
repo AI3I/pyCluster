@@ -1,8 +1,6 @@
 accept/announce
 accept/route
 accept/spots
-accept/wcy
-accept/wwv
 agwrestart
 announce
 apropos
@@ -14,8 +12,6 @@ clear/announce
 clear/dupefile
 clear/route
 clear/spots
-clear/wcy
-clear/wwv
 connect
 create/user
 dbavail
@@ -72,8 +68,6 @@ read
 reject/announce
 reject/route
 reject/spots
-reject/wcy
-reject/wwv
 reply
 rinit
 run

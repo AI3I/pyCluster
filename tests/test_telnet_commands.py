@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from pycluster import __version__
+from pycluster import telnet_server as telnet_server_mod
 from pycluster.auth import is_password_hash, verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.ctydat import load_cty, lookup
@@ -15,6 +16,12 @@ from pycluster.models import Spot
 from pycluster.mfa import totp_code
 from pycluster.telnet_server import Session, TelnetClusterServer
 from pycluster.store import SpotStore
+
+_SAMPLE_TLE = (
+    "ISS (ZARYA)\n"
+    "1 25544U 98067A   24100.50000000  .00016717  00000+0  10270-3 0  9000\n"
+    "2 25544  51.6400 120.0000 0005000  40.0000 320.0000 15.50000000  9000\n"
+)
 
 
 class _DummyWriter:
@@ -44,6 +51,8 @@ def _write_cty(tmp_path: Path) -> str:
     path.write_text(
         "United States: 5: 8: NA: 37.0: 95.0: 5.0: K:\n"
         " K, N, W, =K1ABC;\n"
+        "Hawaii: 31: 61: OC: 21.0: 157.0: 10.0: KH6:\n"
+        " KH6;\n"
         "Canada: 5: 9: NA: 45.0: 73.0: 5.0: VE:\n"
         " VE, =VE3XYZ;\n"
         "Japan: 25: 45: AS: 35.0: 139.0: -9.0: JA:\n"
@@ -93,6 +102,40 @@ def test_dispatch_show_and_aliases(tmp_path) -> None:
             keep, out = await srv._execute_command("N0CALL", "users")
             assert keep is True
             assert "N0CALL" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_muf_path_report_defaults_to_forward_hourly_rows(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "muf_path_forward_hours.db")
+        cty_path = _write_cty(tmp_path)
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16", node_locator="FN20"),
+            telnet=TelnetConfig(),
+            web=WebConfig(),
+            public_web=PublicWebConfig(cty_dat_path=cty_path),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_bulletin("wwv", "WWV", "LOCAL", now - 7200, "SFI=150 A=6 K=2 Quiet")
+            _, out = await srv._execute_command("N0CALL", "show/muf K")
+            rows = [
+                line for line in out.splitlines()
+                if len(line.split()) >= 4
+                and line.split()[0].isdigit()
+                and line.split()[1].isdigit()
+                and "." in line.split()[2]
+            ]
+            assert len(rows) == 12
+            current_hour = datetime.now(timezone.utc).hour
+            hours = [int(line.split()[0]) for line in rows[:4]]
+            assert hours == [(current_hour + idx) % 24 for idx in range(4)]
         finally:
             await store.close()
 
@@ -439,10 +482,12 @@ def test_set_maxconnect_command(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_command_case_insensitive_and_abbrev_dispatch(tmp_path) -> None:
+def test_command_case_insensitive_and_abbrev_dispatch(tmp_path, monkeypatch) -> None:
     async def run() -> None:
         db = str(tmp_path / "abbrev.db")
         cfg = _mk_config(db)
+        cfg.satellite.keps_path = str(tmp_path / "abbrev-keps.txt")
+        monkeypatch.setattr(telnet_server_mod, "_download_text_url", lambda _url: _SAMPLE_TLE)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(
@@ -1662,15 +1707,13 @@ def test_show_filter_sorted_and_preview_test_modes(tmp_path) -> None:
             await srv._execute_command("N0CALL", "reject/spots 1 by N9")
             await srv._execute_command("N0CALL", "accept/route 2 peer east*")
             await srv._execute_command("N0CALL", "reject/route 1 peer west*")
-            await srv._execute_command("N0CALL", "accept/wx 3 by N0")
-            await srv._execute_command("N0CALL", "reject/wx 1 by W1")
 
             _, out = await srv._execute_command("N0CALL", "show/filter")
             i_rej = out.find("reject/spots 1 by N9")
             i_acc = out.find("accept/spots 5 on 20m")
             assert i_rej >= 0 and i_acc >= 0 and i_rej < i_acc
             assert "show/filter test spots" in out
-            assert "show/filter test <announce|wcy|wwv|wx>" in out
+            assert "show/filter test announce" in out
             assert "add --verbose after family" in out
 
             _, out = await srv._execute_command("N0CALL", "show/filter test spots 14074 W1AW N9XYZ FT8")
@@ -1683,8 +1726,7 @@ def test_show_filter_sorted_and_preview_test_modes(tmp_path) -> None:
             assert "Winning Rule: Reject rule matched in slot 1: peer west*" in out
 
             _, out = await srv._execute_command("N0CALL", "show/filter test wx --verbose N0ABC local weather")
-            assert "Decision: allow" in out
-            assert "Winning Rule: Accept rule matched in slot 3: by N0" in out
+            assert "show/filter test <spots|route|announce>" in out
         finally:
             await store.close()
 
@@ -1746,6 +1788,31 @@ def test_show_dx_applies_spot_filters(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/dx 20")
             assert "W1AW" in out
             assert "K3LR" not in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_dx_filtering_fills_requested_count_from_deeper_history(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "spot_filter_show_limit.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            for idx in range(5):
+                await store.add_spot(Spot(7050.0 + idx, f"K3L{idx}", now + idx, "CW", "K1AAA", "N2WQ-1", ""))
+            await store.add_spot(Spot(14074.0, "W1AW", now - 1, "FT8", "K1AAA", "N2WQ-1", ""))
+            await store.add_spot(Spot(14326.8, "W0MES", now - 2, "IA", "WA2MCR", "N2WQ-1", ""))
+            await srv._execute_command("N0CALL", "accept/spots 1 on 20m")
+
+            _, out = await srv._execute_command("N0CALL", "show/dx 2")
+            assert "W1AW" in out
+            assert "W0MES" in out
+            assert "K3L" not in out
         finally:
             await store.close()
 
@@ -1948,7 +2015,7 @@ def test_publish_spot_uses_live_dx_format_without_blank_lines(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_wcy_filters_apply_to_live_and_show(tmp_path) -> None:
+def test_wcy_filters_are_not_registered_or_applied_to_live_and_show(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "wcy_filters.db")
         cfg = _mk_config(db)
@@ -1959,21 +2026,22 @@ def test_wcy_filters_apply_to_live_and_show(tmp_path) -> None:
         srv._sessions[1] = Session(call="N0CALL", writer=w_n0, connected_at=datetime.now(timezone.utc))
         srv._sessions[2] = Session(call="K1ABC", writer=w_k1, connected_at=datetime.now(timezone.utc))
         try:
-            await srv._execute_command("N0CALL", "accept/wcy 1 by K1")
+            _, out = await srv._execute_command("N0CALL", "accept/wcy 1 by K1")
+            assert out.strip() == "?"
 
             await srv.publish_bulletin("wcy", "K1ABC", "LOCAL", "A=5 K=2")
             assert b"WCY K1ABC: A=5 K=2" in bytes(w_n0.buffer)
 
             before = len(w_n0.buffer)
             await srv.publish_bulletin("wcy", "W1AW", "LOCAL", "A=9 K=4")
-            assert len(w_n0.buffer) == before
+            assert len(w_n0.buffer) > before
 
             now = int(datetime.now(timezone.utc).timestamp())
             await store.add_bulletin("wcy", "K1ABC", "LOCAL", now, "A=4 K=1")
             await store.add_bulletin("wcy", "W1AW", "LOCAL", now, "A=7 K=3")
             _, out = await srv._execute_command("N0CALL", "show/wcy")
             assert "K1ABC" in out
-            assert "W1AW" not in out
+            assert "W1AW" in out
         finally:
             await store.close()
 
@@ -2040,6 +2108,10 @@ def test_msg_talk_announce_and_show_log(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "announce full test notice")
             assert "Announcement accepted (full):" in out
             assert b"ANNOUNCE/FULL N0CALL: test notice" in bytes(w2.buffer)
+
+            _, out = await srv._execute_command("N0CALL", "ann/full slash notice")
+            assert "Announcement accepted (full):" in out
+            assert b"ANNOUNCE/FULL N0CALL: slash notice" in bytes(w2.buffer)
 
             _, out = await srv._execute_command("N0CALL", "wx clear and cold")
             assert "wx: accepted" in out
@@ -2631,6 +2703,8 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             assert "Reference: QRA FN42" in out and "Grayline status:" in out and ("sunrise in" in out or "sunset in" in out)
             _, out = await srv._execute_command("N0CALL", "show/moon")
             assert "Reference: QRA FN42" in out and "Age:" in out and "Illumination:" in out
+            assert "Elevation:" in out and "Azimuth:" in out
+            assert "Moonrise:" in out and "Moonset:" in out
             _, out = await srv._execute_command("N0CALL", "show/heading G")
             assert "Heading to " in out or "No heading data for G." in out
             if "Heading to " in out:
@@ -2641,6 +2715,31 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             await srv._execute_command("N0CALL", "wwv SFI=150 A=6 K=2")
             _, out = await srv._execute_command("N0CALL", "show/muf")
             assert "SFI: 150" in out and "Estimated MUF3000:" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_show_moon_supports_dxcc_target_with_rise_set_and_elevation(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_moon_target.db")
+        cty_path = _write_cty(tmp_path)
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16", node_locator="FN20"),
+            telnet=TelnetConfig(),
+            web=WebConfig(),
+            public_web=PublicWebConfig(cty_dat_path=cty_path),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            _, out = await srv._execute_command("N0CALL", "sh/moon KH6")
+            assert "Moon status:" in out
+            assert "Reference: Hawaii" in out
+            assert "Elevation:" in out and "Azimuth:" in out
+            assert "Moonrise:" in out and "Moonset:" in out
         finally:
             await store.close()
 
@@ -2803,7 +2902,7 @@ def test_show_wcy_falls_back_to_derived_wwv_when_no_wcy_entries(tmp_path) -> Non
     asyncio.run(run())
 
 
-def test_show_wcy_derived_fallback_uses_wcy_filters_not_wwv_filters(tmp_path) -> None:
+def test_show_wcy_derived_fallback_ignores_removed_wcy_wwv_filters(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "show_wcy_derived_filters.db")
         cfg = _mk_config(db)
@@ -2818,15 +2917,17 @@ def test_show_wcy_derived_fallback_uses_wcy_filters_not_wwv_filters(tmp_path) ->
             now = int(datetime.now(timezone.utc).timestamp())
             await store.add_bulletin("wwv", "VE7CC", "LOCAL", now, "SFI=108 A=4 K=1 No Storms -> Moderate w/G2")
 
-            await srv._execute_command("N0CALL", "accept/wcy 1 by VE7")
-            await srv._execute_command("N0CALL", "accept/wwv 1 by W1")
+            _, out = await srv._execute_command("N0CALL", "accept/wcy 1 by VE7")
+            assert out.strip() == "?"
+            _, out = await srv._execute_command("N0CALL", "accept/wwv 1 by W1")
+            assert out.strip() == "?"
 
             _, out = await srv._execute_command("N0CALL", "show/wcy")
             assert "Derived from WWV feed" in out
             assert "VE7CC" in out
 
             _, out = await srv._execute_command("N0CALL", "show/wwv")
-            assert "VE7CC" not in out
+            assert "VE7CC" in out
         finally:
             await store.close()
 
@@ -3286,10 +3387,12 @@ def test_dxspider_wcy_and_wwv_command_syntax_is_canonicalized(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_set_unset_and_extended_group_families(tmp_path) -> None:
+def test_set_unset_and_extended_group_families(tmp_path, monkeypatch) -> None:
     async def run() -> None:
         db = str(tmp_path / "ext.db")
         cfg = _mk_config(db)
+        cfg.satellite.keps_path = str(tmp_path / "downloaded-keps.txt")
+        monkeypatch.setattr(telnet_server_mod, "_download_text_url", lambda _url: _SAMPLE_TLE)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(
@@ -3319,6 +3422,7 @@ def test_set_unset_and_extended_group_families(tmp_path) -> None:
             assert "Forward latitude/longitude set to" in out
             _, out = await srv._execute_command("N0CALL", "get/keps")
             assert "Keplerian elements request accepted." in out
+            assert (tmp_path / "downloaded-keps.txt").exists()
         finally:
             await store.close()
 
@@ -3351,10 +3455,12 @@ def test_forward_commands_persist(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_top_level_compat_batch_commands(tmp_path) -> None:
+def test_top_level_compat_batch_commands(tmp_path, monkeypatch) -> None:
     async def run() -> None:
         db = str(tmp_path / "topcompat.db")
         cfg = _mk_config(db)
+        cfg.satellite.keps_path = str(tmp_path / "topcompat-keps.txt")
+        monkeypatch.setattr(telnet_server_mod, "_download_text_url", lambda _url: _SAMPLE_TLE)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(
@@ -3428,6 +3534,8 @@ def test_top_level_compat_batch_commands(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "get/keps")
             assert "Keplerian elements request accepted." in out
             assert await store.get_user_pref("N0CALL", "keps_last_request_epoch") is not None
+            assert await store.get_user_pref("N0CALL", "keps_last_update_epoch") is not None
+            assert (tmp_path / "topcompat-keps.txt").exists()
         finally:
             await store.close()
 
@@ -4647,6 +4755,165 @@ def test_sysop_namespace_handles_user_management(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_user_can_manage_own_mfa_from_telnet(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_user_mfa_self_service.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("K1ABC", now, privilege="user", email="k1abc@example.test")
+
+            _, out = await srv._execute_command("K1ABC", "mfa")
+            assert "MFA for K1ABC: disabled" in out
+
+            _, out = await srv._execute_command("K1ABC", "set/mfa email")
+            assert "Email MFA enabled for K1ABC." in out
+            assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "required"
+
+            _, out = await srv._execute_command("K1ABC", "set/mfa authenticator")
+            assert "Authenticator MFA enabled for K1ABC." in out
+            assert "Setup key:" in out
+            assert await store.get_user_pref("K1ABC", "mfa_totp_secret")
+
+            _, out = await srv._execute_command("K1ABC", "unset/mfa")
+            assert "MFA disabled for K1ABC." in out
+            assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("K1ABC", "mfa_totp_secret") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_global_mfa_default_waits_for_user_mfa_material(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_mfa_default_material.db")
+        cfg = _mk_config(db)
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("K1ABC", now, privilege="user", email="")
+            assert await srv._mfa_required_for_call("K1ABC", is_sysop=False) is False
+
+            await store.upsert_user_registry("K1ABC", now, privilege="user", email="k1abc@example.test")
+            assert await srv._mfa_required_for_call("K1ABC", is_sysop=False) is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_sysop_peer_commands_cover_accounts_and_saved_peers(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "sysop_peer_commands.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        saved: dict[str, dict[str, object]] = {}
+        ops: list[tuple[object, ...]] = []
+
+        async def _save(peer: str, dsn: str, profile: str = "dxspider", reconnect: bool = True, password: str | None = "") -> None:
+            saved[peer] = {
+                "peer": peer,
+                "dsn": dsn,
+                "profile": profile,
+                "reconnect": "on" if reconnect else "off",
+                "password": password,
+            }
+            ops.append(("save", peer, dsn, profile, reconnect, password))
+
+        async def _delete(peer: str) -> bool:
+            ops.append(("delete", peer))
+            return saved.pop(peer, None) is not None
+
+        async def _desired() -> list[dict[str, object]]:
+            return list(saved.values())
+
+        async def _stats() -> dict[str, dict[str, object]]:
+            return {"PEER1": {"profile": "pycluster", "inbound": False}}
+
+        async def _connect(peer: str, dsn: str) -> None:
+            ops.append(("connect", peer, dsn))
+
+        async def _disconnect(peer: str) -> bool:
+            ops.append(("disconnect", peer))
+            return peer == "PEER1"
+
+        async def _profile(peer: str, profile: str) -> bool:
+            ops.append(("profile", peer, profile))
+            return peer == "PEER1"
+
+        srv = TelnetClusterServer(
+            cfg,
+            store,
+            datetime.now(timezone.utc),
+            link_stats_fn=_stats,
+            link_set_profile_fn=_profile,
+            link_connect_fn=_connect,
+            link_disconnect_fn=_disconnect,
+            link_desired_peers_fn=_desired,
+            link_save_peer_fn=_save,
+            link_delete_peer_fn=_delete,
+        )
+        srv._sessions[1] = Session(
+            call="AI3I",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I", now, privilege="sysop")
+
+            _, out = await srv._execute_command("AI3I", "sysop/peeraccount add N9JR-2 pycluster")
+            assert "Peer account N9JR-2 configured as pycluster." in out
+            assert await store.get_user_pref("N9JR-2", "node_family") == "pycluster"
+
+            _, out = await srv._execute_command("AI3I", "sysop/peeraccount password N9JR-2 sharedsecret")
+            assert "Peer account password updated for N9JR-2." in out
+            saved_hash = await store.get_user_pref("N9JR-2", "password")
+            assert is_password_hash(saved_hash)
+            assert verify_password("sharedsecret", saved_hash)
+
+            _, out = await srv._execute_command("AI3I", "sysop/peeraccount show N9JR-2")
+            assert "Node Family: pycluster" in out
+            assert "Password Set: yes" in out
+
+            _, out = await srv._execute_command("AI3I", "sysop/peer add PEER1 tcp://example.net:7300 pycluster")
+            assert "Saved peer PEER1 with profile pycluster." in out
+            assert saved["PEER1"]["dsn"] == "tcp://example.net:7300"
+
+            _, out = await srv._execute_command("AI3I", "sysop/peer set PEER1 retry off")
+            assert "Saved peer PEER1: retry updated." in out
+            assert saved["PEER1"]["reconnect"] == "off"
+            assert saved["PEER1"]["password"] is None
+
+            _, out = await srv._execute_command("AI3I", "sysop/peer show PEER1")
+            assert "PEER1" in out
+            assert "saved profile pycluster" in out
+
+            _, out = await srv._execute_command("AI3I", "sysop/peerprofile PEER1 dxspider")
+            assert "Profile for peer PEER1 set to dxspider." in out
+            assert ("profile", "PEER1", "dxspider") in ops
+
+            _, out = await srv._execute_command("AI3I", "sysop/peer connect PEER1")
+            assert "Connection attempt started for PEER1" in out
+            assert ("connect", "PEER1", "tcp://example.net:7300") in ops
+
+            _, out = await srv._execute_command("AI3I", "sysop/peer disconnect PEER1")
+            assert "Disconnected PEER1." in out
+
+            _, out = await srv._execute_command("AI3I", "sysop/peer delete PEER1")
+            assert "Deleted peer PEER1." in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_sysop_services_and_restart(tmp_path) -> None:
     restarted: list[str] = []
 
@@ -4870,6 +5137,35 @@ def test_non_authenticated_users_are_read_only_by_default(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_explicit_ssid_user_does_not_inherit_base_call_access(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ssid_access_inheritance.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="AI3I", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        srv._sessions[2] = Session(call="AI3I-1", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I", now, privilege="user")
+            await store.upsert_user_registry("AI3I-1", now, privilege="")
+
+            assert await srv._access_allowed("AI3I", "telnet", "spots") is True
+            assert await srv._access_allowed("AI3I-1", "telnet", "spots") is False
+            assert await srv._privilege_level_for("AI3I-1") == 0
+
+            _, out = await srv._execute_command("AI3I-1", "dx 14074.0 N0TST test")
+            assert "dx: not allowed via telnet" in out
+
+            await store.upsert_user_registry("AI3I", now, privilege="sysop")
+            _, out = await srv._execute_command("AI3I-1", "sysop/users")
+            assert "permission denied" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_sysop_path_reports_user_and_peer_paths(tmp_path) -> None:
     async def _stats():
         return {
@@ -5077,7 +5373,7 @@ def test_startup_commands_manage_and_execute(tmp_path) -> None:
             outs = await srv._run_startup_commands("N0CALL")
             joined = "".join(outs)
             assert "Z" in joined
-            assert "-Jan-" in joined or "-Feb-" in joined or "-Mar-" in joined or "-Apr-" in joined
+            assert any(f"-{month}-" in joined for month in ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))
             assert "skipped unsafe command" in joined
 
             _, out = await srv._execute_command("N0CALL", "unset/startup")
@@ -5427,6 +5723,87 @@ def test_telnet_login_prompts_for_password_when_required(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_bad_passwords_lock_account_until_sysop_unlock(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "login_bad_password_locks.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-15", require_password=True),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, privilege="user")
+        await store.set_user_pref("N0CALL", "password", "pw1", now)
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            for _idx in range(5):
+                reader, writer = await asyncio.open_connection(host, port)
+                await asyncio.wait_for(reader.readuntil(b"login: "), timeout=2.0)
+                writer.write(b"N0CALL\r\n")
+                await writer.drain()
+                await asyncio.wait_for(reader.readuntil(b"password: "), timeout=2.0)
+                writer.write(b"bad-password\r\n")
+                await writer.drain()
+                deny = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+                assert b"Login failed" in deny
+                writer.close()
+                await writer.wait_closed()
+
+            assert await store.get_user_pref("N0CALL", "registration_state") == "locked"
+            assert await store.get_user_pref("N0CALL", "failed_password_count") == "5"
+
+            reader, writer = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(reader.readuntil(b"login: "), timeout=2.0)
+            writer.write(b"N0CALL\r\n")
+            await writer.drain()
+            locked = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+            assert b"Account N0CALL is locked" in locked
+            assert b"password:" not in locked
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_failed_password_counter_sets_locked_state(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "failed_password_counter.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            for _idx in range(5):
+                await srv._record_telnet_password_failure("N0CALL-1", ("203.0.113.10", 50000))
+
+            assert await store.get_user_pref("N0CALL", "registration_state") == "locked"
+            assert await store.get_user_pref("N0CALL", "failed_password_count") == "5"
+            row = await store.get_user_registry("N0CALL")
+            assert row is not None
+
+            await srv._clear_telnet_password_failures("N0CALL-1")
+            assert await store.get_user_pref("N0CALL", "failed_password_count") is None
+            assert await store.get_user_pref("N0CALL", "failed_password_locked_epoch") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_telnet_first_login_forces_password_creation(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "first_login_password.db")
@@ -5681,11 +6058,11 @@ def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_pat
             await asyncio.wait_for(r1.readuntil(b"Home node: "), timeout=2.0)
             w1.write(b"W1AW\r\n")
             await w1.drain()
-            await asyncio.wait_for(r1.readuntil(b"QTH / location: "), timeout=2.0)
-            w1.write(b"\r\n")
-            await w1.drain()
             await asyncio.wait_for(r1.readuntil(b"Grid square: "), timeout=2.0)
             w1.write(b"FN42\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"QTH / location: "), timeout=2.0)
+            w1.write(b"\r\n")
             await w1.drain()
             await asyncio.wait_for(r1.readuntil(b"Email address: "), timeout=2.0)
             w1.write(b"alice@example.test\r\n")
@@ -5706,6 +6083,84 @@ def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_pat
             await w1.wait_closed()
         finally:
             await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_first_login_interview_uses_entered_qra_before_location_estimate(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "interview_qra_before_qth.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry(
+            "N0CALL",
+            now,
+            display_name="Alice Example",
+            home_node="W1AW",
+            email="alice@example.test",
+            privilege="user",
+        )
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        reader.feed_data(b"EN63AA\r\nMilwaukee, WI\r\n")
+        reader.feed_eof()
+        try:
+            ok = await srv._run_first_login_interview(
+                "N0CALL",
+                reader,
+                writer,  # type: ignore[arg-type]
+                node_family="",
+                password_set=True,
+            )
+            assert ok is True
+            prompts = bytes(writer.buffer)
+            assert prompts.index(b"Grid square: ") < prompts.index(b"QTH / location: ")
+            row = await store.get_user_registry("N0CALL")
+            assert row is not None
+            assert str(row["qra"]) == "EN63AA"
+            assert str(row["qth"]) == "Milwaukee, WI"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_first_login_interview_defaults_blank_qra_to_node_locator(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "interview_qra_node_default.db")
+        cfg = _mk_config(db)
+        cfg.node.node_locator = "FN20"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry(
+            "N0CALL",
+            now,
+            display_name="Alice Example",
+            home_node="W1AW",
+            email="alice@example.test",
+            privilege="user",
+        )
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        reader.feed_data(b"\r\n\r\n\r\n")
+        reader.feed_eof()
+        try:
+            ok = await srv._run_first_login_interview(
+                "N0CALL",
+                reader,
+                writer,  # type: ignore[arg-type]
+                node_family="",
+                password_set=True,
+            )
+            assert ok is True
+            row = await store.get_user_registry("N0CALL")
+            assert row is not None
+            assert str(row["qra"]) == "FN20"
+        finally:
             await store.close()
 
     asyncio.run(run())

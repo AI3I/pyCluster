@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from datetime import datetime, timezone, timedelta
+import fnmatch
 import hashlib
 import json
 import logging
@@ -25,12 +26,12 @@ from .ctydat import load_cty, lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
-from .geomag import canonicalize_wcy_text, canonicalize_wwv_text
+from .geomag import canonicalize_wwv_text
 from .maidenhead import coords_to_locator, extract_locator
-from .mfa import EmailOtpManager, SMTPMailer, verify_totp
+from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path
-from .registration import has_valid_email, registration_state
+from .registration import has_valid_email, mark_email_verified, registration_state
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
 
@@ -381,6 +382,18 @@ class PublicWebServer:
         email_verified: bool,
     ) -> None:
         now = int(time.time())
+        await self.store.upsert_user_registry(
+            call,
+            now,
+            display_name=display_name,
+            home_node=home_node,
+            qth=qth,
+            qra=qra,
+            email=email,
+            privilege="",
+        )
+        if email_verified:
+            await mark_email_verified(self.store, call, now_epoch=now)
         await self.store.upsert_registration_request(
             call,
             now,
@@ -444,7 +457,11 @@ class PublicWebServer:
             return True
         if override == "off":
             return False
-        return self._mfa.required_for(is_sysop=is_sysop)
+        if await self._totp_secret_for_call(call):
+            return True
+        if not self._mfa.required_for(is_sysop=is_sysop):
+            return False
+        return has_valid_email(await self._email_for_call(base_call.upper()))
 
     async def _totp_secret_for_call(self, call: str) -> str:
         base_call = call.split("-", 1)[0].upper()
@@ -454,6 +471,32 @@ class PublicWebServer:
             if secret:
                 return secret
         return ""
+
+    async def _mfa_snapshot(self, call: str) -> dict[str, object]:
+        base_call = call.split("-", 1)[0].upper()
+        raw = str(await self.store.get_user_pref(base_call, "mfa_email_otp") or "").strip().lower()
+        email_override = raw if raw in {"required", "off"} else "default"
+        totp_enabled = bool(str(await self.store.get_user_pref(base_call, "mfa_totp_secret") or "").strip())
+        reg = await self.store.get_user_registry(base_call)
+        is_sysop = str(reg["privilege"] or "").strip().lower() in {"sysop", "admin"} if reg is not None else False
+        if email_override == "required":
+            email_effective = True
+        elif email_override == "off":
+            email_effective = False
+        else:
+            email_effective = self._mfa.required_for(is_sysop=is_sysop)
+        methods = []
+        if totp_enabled:
+            methods.append("Authenticator")
+        if email_effective:
+            methods.append("Email OTP")
+        return {
+            "email_otp": email_override,
+            "totp_enabled": totp_enabled,
+            "enabled": bool(totp_enabled or email_effective),
+            "methods": methods,
+            "policy": "required override" if email_override == "required" else ("off override" if email_override == "off" else ("node policy" if email_effective else "not required by node policy")),
+        }
 
     def _dataset_status(self) -> dict[str, dict[str, object]]:
         self._refresh_datafiles_if_changed()
@@ -639,11 +682,19 @@ class PublicWebServer:
         target = call.upper()
         base = target.split("-", 1)[0]
         blocked_login = False
-        privilege = ""
+        target_row = await self.store.get_user_registry(target)
+        target_exists = target_row is not None
         for candidate in (target, base):
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
                 blocked_login = True
+        if target_exists:
+            privilege = str(target_row["privilege"] or "").strip().lower()
+            if not privilege:
+                privilege = str(await self.store.get_user_pref(target, "privilege") or "").strip().lower()
+            return privilege, blocked_login
+        privilege = ""
+        for candidate in (target, base):
             row = await self.store.get_user_registry(candidate)
             if row and not privilege:
                 privilege = str(row["privilege"] or "").strip().lower()
@@ -661,7 +712,9 @@ class PublicWebServer:
     async def _access_allowed(self, call: str, channel: str, capability: str) -> bool:
         target = call.upper()
         base = target.split("-", 1)[0]
-        for candidate in (target, base):
+        target_exists = await self.store.get_user_registry(target) is not None
+        candidates = (target,) if target_exists else (target, base)
+        for candidate in candidates:
             raw = await self.store.get_user_pref(candidate, self._access_pref_key(channel, capability))
             if raw is None or str(raw).strip() == "":
                 continue
@@ -926,10 +979,83 @@ class PublicWebServer:
             "qth": str(row.get("qth") or "").strip(),
             "qra": str(row.get("qra") or "").strip().upper(),
             "homenode": str(await self.store.get_user_pref(call, "homenode") or "").strip().upper(),
+            "mfa": await self._mfa_snapshot(call),
             "watch_seed": await self._watch_seed_for_call(call),
         }
 
-    async def _api_spots(self, q: dict[str, list[str]]) -> list[dict[str, object]]:
+    def _spot_payload_matches_expr(self, spot: dict[str, object], expr: str) -> bool:
+        text = str(expr or "").strip()
+        if not text:
+            return False
+        low = text.lower()
+        toks = low.split()
+        if not toks:
+            return False
+        first = toks[0]
+        rest = " ".join(toks[1:]).strip()
+        dx_call = str(spot.get("dx_call") or "").upper()
+        spotter = str(spot.get("spotter") or "").upper()
+        comment = str(spot.get("comment") or "")
+
+        if first == "on" and rest:
+            return str(spot.get("band") or "").lower() == rest.split()[0].lower()
+        if first == "by" and rest:
+            pat = rest.upper()
+            return fnmatch.fnmatchcase(spotter, pat) if any(ch in pat for ch in "*?") else spotter.startswith(pat)
+        if first in {"dx", "call"} and rest:
+            pat = rest.upper()
+            return fnmatch.fnmatchcase(dx_call, pat) if any(ch in pat for ch in "*?") else dx_call.startswith(pat)
+        if first == "call_zone" and rest:
+            wanted = {int(tok) for tok in re.split(r"[,\s]+", rest) if tok.strip().isdigit()}
+            return bool(wanted) and int(spot.get("dx_cqz") or 0) in wanted
+        if first == "call_itu" and rest:
+            wanted = {int(tok) for tok in re.split(r"[,\s]+", rest) if tok.strip().isdigit()}
+            return bool(wanted) and int(spot.get("dx_ituz") or 0) in wanted
+        if first in {"spotter_cont", "by_cont"} and rest:
+            wanted = {tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
+            return bool(wanted) and str(spot.get("spotter_continent") or "").upper() in wanted
+        if first in {"spotter_zone", "by_zone"} and rest:
+            ent = lookup(spotter) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(spotter)
+            wanted = {int(tok) for tok in re.split(r"[,\s]+", rest) if tok.strip().isdigit()}
+            return bool(ent and wanted) and ent.cq_zone in wanted
+        if first in {"spotter_itu", "by_itu"} and rest:
+            ent = lookup(spotter) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(spotter)
+            wanted = {int(tok) for tok in re.split(r"[,\s]+", rest) if tok.strip().isdigit()}
+            return bool(ent and wanted) and ent.itu_zone in wanted
+        if first == "info" and rest:
+            return rest in comment.lower()
+        hay = f"{spot.get('freq') or ''} {dx_call} {spotter} {comment}".lower()
+        return low in hay
+
+    async def _spot_passes_stored_filters(self, call: str, spot: dict[str, object]) -> bool:
+        accept: list[tuple[int, str]] = []
+        reject: list[tuple[int, str]] = []
+        for row in await self.store.list_filter_rules(call):
+            if str(row["family"] or "").strip().lower() != "spots":
+                continue
+            action = str(row["action"] or "").strip().lower()
+            item = (int(row["slot"] or 0), str(row["expr"] or ""))
+            if action == "accept":
+                accept.append(item)
+            elif action == "reject":
+                reject.append(item)
+        matches: list[tuple[int, str]] = []
+        for slot, expr in accept:
+            if self._spot_payload_matches_expr(spot, expr):
+                matches.append((slot, "accept"))
+        for slot, expr in reject:
+            if self._spot_payload_matches_expr(spot, expr):
+                matches.append((slot, "reject"))
+        if matches:
+            matches.sort(key=lambda item: (item[0], 0 if item[1] == "reject" else 1))
+            return matches[0][1] == "accept"
+        return not accept
+
+    async def _api_spots(self, q: dict[str, list[str]], call: str = "") -> list[dict[str, object]]:
         limit = self._parse_limit(q, "limit", 200, 1, 500)
         band = str(q.get("band", [""])[0] or "").strip()
         mode = str(q.get("mode", [""])[0] or "").strip()
@@ -950,6 +1076,12 @@ class PublicWebServer:
                 or search in str(r["spotter"]).lower()
                 or search in str(r["comment"]).lower()
             ]
+        if call:
+            filtered = []
+            for spot in payload:
+                if await self._spot_passes_stored_filters(call, spot):
+                    filtered.append(spot)
+            payload = filtered
         return payload[:limit]
 
     async def _api_bulletins(self, q: dict[str, list[str]]) -> list[dict[str, object]]:
@@ -1281,6 +1413,45 @@ class PublicWebServer:
         except Exception as exc:
             return ({"error": str(exc)}, 503)
 
+    async def _api_kp(self) -> tuple[dict[str, object], int]:
+        try:
+            req = urllib.request.Request(
+                "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
+                headers={
+                    "User-Agent": f"pyCluster/{__version__} (+{self.config.node.website_url or 'https://github.com/AI3I/pyCluster'})",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                payload = json.loads(r.read().decode("utf-8", errors="replace"))
+            day_map: dict[str, float] = {}
+            rows = payload[1:] if isinstance(payload, list) and payload and isinstance(payload[0], list) else payload
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, list) and len(row) >= 2:
+                        day = str(row[0] or "")[:10]
+                        raw_kp = row[1]
+                    elif isinstance(row, dict):
+                        day = str(row.get("time_tag") or row.get("time") or row.get("date") or "")[:10]
+                        raw_kp = row.get("kp") or row.get("Kp") or row.get("planetary_k_index")
+                    else:
+                        continue
+                    try:
+                        kp = float(str(raw_kp).strip())
+                    except (TypeError, ValueError):
+                        continue
+                    if day:
+                        day_map[day] = max(day_map.get(day, 0.0), kp)
+            today = datetime.now(timezone.utc).date()
+            days = []
+            for offset in range(6, -1, -1):
+                day = (today - timedelta(days=offset)).isoformat()
+                value = day_map.get(day)
+                days.append({"date": day, "kp": value if value is not None else None})
+            return ({"days": days}, 200)
+        except Exception as exc:
+            return ({"error": str(exc), "days": []}, 503)
+
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             head = await reader.readuntil(b"\r\n\r\n")
@@ -1532,7 +1703,7 @@ class PublicWebServer:
                 if method != "GET":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
-                await self._write_response(writer, 200, self._json(await self._api_spots(q)))
+                await self._write_response(writer, 200, self._json(await self._api_spots(q, self._web_call_from_headers(headers) or "")))
                 return
             if path == "/api/bulletins":
                 if method != "GET":
@@ -1580,6 +1751,125 @@ class PublicWebServer:
                     self._json({"ok": True, "call": call, "profile": await self._web_profile_snapshot(call)}),
                 )
                 return
+            if path == "/api/profile/mfa":
+                call = self._web_call_from_headers(headers)
+                if not call:
+                    await self._write_response(writer, 401, self._json({"error": "web login required"}))
+                    return
+                base_call = call.split("-", 1)[0].upper()
+                now = int(time.time())
+                if method == "GET":
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "mfa": await self._mfa_snapshot(call)}))
+                    return
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                payload = self._parse_json_body(body)
+                action = str(payload.get("action", "")).strip().lower()
+                if action in {"email", "required", "on"}:
+                    email = await self._email_for_call(base_call)
+                    if not has_valid_email(email):
+                        await self._write_response(writer, 400, self._json({"error": "valid email required"}))
+                        return
+                    await self.store.set_user_pref(base_call, "mfa_email_otp", "required", now)
+                    self._audit("user", f"{call} enabled email MFA")
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "mfa": await self._mfa_snapshot(call)}))
+                    return
+                if action in {"default"}:
+                    await self.store.delete_user_pref(base_call, "mfa_email_otp")
+                    self._audit("user", f"{call} reset email MFA to default")
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "mfa": await self._mfa_snapshot(call)}))
+                    return
+                if action in {"off", "reset", "disable"}:
+                    await self.store.set_user_pref(base_call, "mfa_email_otp", "off", now)
+                    await self.store.delete_user_pref(base_call, "mfa_totp_secret")
+                    cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                    self._audit("user", f"{call} disabled MFA challenges={cleared}")
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "challenges_cleared": cleared, "mfa": await self._mfa_snapshot(call)}))
+                    return
+                if action in {"totp", "authenticator"}:
+                    secret = generate_totp_secret()
+                    await self.store.set_user_pref(base_call, "mfa_totp_secret", secret, now)
+                    await self.store.set_user_pref(base_call, "mfa_email_otp", "required", now)
+                    cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                    uri = totp_otpauth_uri(
+                        issuer=self.config.mfa.issuer.strip() or self.config.node.node_call,
+                        account=base_call,
+                        secret=secret,
+                    )
+                    self._audit("user", f"{call} enrolled authenticator MFA challenges={cleared}")
+                    await self._write_response(
+                        writer,
+                        200,
+                        self._json(
+                            {
+                                "ok": True,
+                                "call": call,
+                                "secret": secret,
+                                "otpauth_uri": uri,
+                                "challenges_cleared": cleared,
+                                "mfa": await self._mfa_snapshot(call),
+                            }
+                        ),
+                    )
+                    return
+                await self._write_response(writer, 400, self._json({"error": "invalid mfa action"}))
+                return
+            if path == "/api/filters/spots":
+                call = self._web_call_from_headers(headers)
+                if not call:
+                    await self._write_response(writer, 401, self._json({"error": "web login required"}))
+                    return
+                if method == "GET":
+                    rows = [
+                        {
+                            "family": str(row["family"] or ""),
+                            "action": str(row["action"] or ""),
+                            "slot": int(row["slot"] or 0),
+                            "expr": str(row["expr"] or ""),
+                        }
+                        for row in await self.store.list_filter_rules(call)
+                        if str(row["family"] or "").strip().lower() == "spots"
+                    ]
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "rules": rows}))
+                    return
+                if method == "POST":
+                    payload = self._parse_json_body(body)
+                    action = str(payload.get("action", "accept")).strip().lower()
+                    if action not in {"accept", "reject", "clear"}:
+                        await self._write_response(writer, 400, self._json({"error": "invalid filter action"}))
+                        return
+                    try:
+                        slot = int(payload.get("slot", 8))
+                    except Exception:
+                        await self._write_response(writer, 400, self._json({"error": "invalid filter slot"}))
+                        return
+                    if slot < 0 or slot > 9:
+                        await self._write_response(writer, 400, self._json({"error": "filter slot must be 0-9"}))
+                        return
+                    now = int(time.time())
+                    if action == "clear":
+                        await self.store.clear_filter_rules(call, "spots", slot)
+                    else:
+                        expr = str(payload.get("expr", "")).strip()[:160]
+                        if not expr:
+                            await self._write_response(writer, 400, self._json({"error": "filter expression is required"}))
+                            return
+                        await self.store.set_filter_rule(call, "spots", action, slot, expr, now)
+                    rows = [
+                        {
+                            "family": str(row["family"] or ""),
+                            "action": str(row["action"] or ""),
+                            "slot": int(row["slot"] or 0),
+                            "expr": str(row["expr"] or ""),
+                        }
+                        for row in await self.store.list_filter_rules(call)
+                        if str(row["family"] or "").strip().lower() == "spots"
+                    ]
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "rules": rows}))
+                    return
+                await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                return
             if path == "/api/stats":
                 if method != "GET":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
@@ -1615,6 +1905,13 @@ class PublicWebServer:
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
                 body, code = await self._api_solar()
+                await self._write_response(writer, code, self._json(body))
+                return
+            if path == "/api/kp":
+                if method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                body, code = await self._api_kp()
                 await self._write_response(writer, code, self._json(body))
                 return
             if path == "/api/public/branding":
@@ -1720,7 +2017,10 @@ class PublicWebServer:
                     await self.relay_chat_fn(call, text)
                 await self._write_response(writer, 200, self._json({"ok": True, "posted_by": call, "category": "chat"}))
                 return
-            if path in {"/api/announce", "/api/wcy", "/api/wwv", "/api/wx"}:
+            if path == "/api/wcy":
+                await self._write_response(writer, 403, self._json({"error": "WCY posting is not available from the public web"}))
+                return
+            if path in {"/api/announce", "/api/wwv", "/api/wx"}:
                 if method != "POST":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
@@ -1737,9 +2037,7 @@ class PublicWebServer:
                 if not await self._access_allowed(call, "web", category):
                     await self._write_response(writer, 403, self._json({"error": f"{category} posting not allowed via web"}))
                     return
-                if category == "wcy":
-                    text = canonicalize_wcy_text(text) or text
-                elif category == "wwv":
+                if category == "wwv":
                     text = canonicalize_wwv_text(text) or text
                 scope = str(payload.get("scope", "LOCAL")).strip().upper() or "LOCAL"
                 if category != "announce":

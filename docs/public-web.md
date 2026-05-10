@@ -15,6 +15,7 @@ Core live spot view.
 Features:
 
 - filter by band, mode, activity, continent, zone, and text
+- filter by spotter continent for logged-in operators; the selected spotter-continent rule is stored as a normal spot filter for the callsign
 - count of filtered vs total spots
 - `RARE` badge support for selected entities
 - `All` reset button when a filter is active
@@ -49,6 +50,16 @@ Shows:
 - known nodes
 - family and version when explicitly learned
 
+### Propagation
+
+Solar and geomagnetic dashboard.
+
+Shows:
+
+- solar flux, sunspots, A index, K index, X-ray class, and solar wind
+- band-condition summaries from the solar feed
+- seven-day Planetary Kp values served through `/api/kp`
+
 ### Watch
 
 Authenticated user watch/alerting page.
@@ -82,6 +93,14 @@ Profile fields:
 - grid square
 - home node
 
+MFA controls:
+
+- view current MFA status and effective policy
+- enable email OTP MFA
+- enroll an authenticator app and display the manual setup key
+- return email MFA to the node default
+- disable user-level MFA and clear outstanding challenges
+
 ## Posting Controls
 
 Depending on node policy, a user may be allowed to post:
@@ -90,7 +109,6 @@ Depending on node policy, a user may be allowed to post:
 - chat/talk
 - announce
 - WX
-- WCY
 - WWV
 
 Disabled actions in the UI reflect local policy.

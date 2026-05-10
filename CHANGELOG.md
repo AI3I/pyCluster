@@ -2,6 +2,28 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.8 - 2026-05-10
+
+### Added
+
+- User self-service MFA controls in public web and telnet.
+- System Operator user controls for block/unblock, account unlock, MFA status, and authenticator enrollment.
+- Public web spot filtering enhancements and backend Kp propagation data.
+- Console upgrade worker support for using the source checkout path.
+
+### Changed
+
+- Cluster peer records are separated from local users in the System Operator console.
+- Node-wide MFA defaults wait for usable user MFA material instead of locking users out before setup.
+- Data refresh timers, deployment units, and operations documentation were refreshed.
+
+### Fixed
+
+- SSID users no longer inherit base-call permissions when they have explicit local records.
+- Telnet keepalive handling, password prompt echo handling, `announce/full`, `show/muf`, and `show/moon` behavior were tightened.
+- Public web registration approval and email verification state now produce authenticated, verified user records.
+- Saved peer connect/disconnect flows preserve stored peer definitions and credentials.
+
 ## 1.0.7 - 2026-04-29
 
 ### Added

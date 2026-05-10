@@ -1,10 +1,10 @@
 [Unit]
-Description=Weekly pyCluster runtime data refresh
+Description=Frequent pyCluster runtime data refresh
 
 [Timer]
-OnCalendar=weekly
+OnCalendar=*-*-* 00/6:15:00
 Persistent=true
-RandomizedDelaySec=2h
+RandomizedDelaySec=30m
 Unit=pycluster-data-refresh.service
 
 [Install]

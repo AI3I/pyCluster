@@ -66,22 +66,18 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `wwv`
 - `wx`
 
-## accept/* (5)
+## accept/* (3)
 
 - `accept/announce`
 - `accept/route`
 - `accept/spots`
-- `accept/wcy`
-- `accept/wwv`
 
-## clear/* (6)
+## clear/* (4)
 
 - `clear/announce`
 - `clear/dupefile`
 - `clear/route`
 - `clear/spots`
-- `clear/wcy`
-- `clear/wwv`
 
 ## create/* (1)
 
@@ -118,13 +114,11 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `load/swop`
 - `load/usdb`
 
-## reject/* (5)
+## reject/* (3)
 
 - `reject/announce`
 - `reject/route`
 - `reject/spots`
-- `reject/wcy`
-- `reject/wwv`
 
 ## set/* (63)
 

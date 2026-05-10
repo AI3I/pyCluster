@@ -5,6 +5,6 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/pycluster/pyCluster
+WorkingDirectory=/usr/src/pyCluster
 Environment=PYTHONPATH=/home/pycluster/pyCluster/src
-ExecStart=/usr/local/bin/pycluster-python /home/pycluster/pyCluster/scripts/run_upgrade_request.py --repo-root /home/pycluster/pyCluster --owner pycluster:pycluster
+ExecStart=/usr/local/bin/pycluster-python /usr/src/pyCluster/scripts/run_upgrade_request.py --repo-root /usr/src/pyCluster --request /home/pycluster/pyCluster/data/upgrade-request.json --status /home/pycluster/pyCluster/data/upgrade-status.json --log /home/pycluster/pyCluster/logs/upgrade.log --lock /home/pycluster/pyCluster/data/upgrade.lock --owner pycluster:pycluster

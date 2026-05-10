@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fnmatch
 import json
 import logging
@@ -12,6 +12,7 @@ import time
 import textwrap
 from pathlib import Path
 from typing import Callable, Awaitable
+import urllib.request
 
 from . import __version__
 from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, default_access_allowed
@@ -41,11 +42,28 @@ from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
 from .maidenhead import coords_to_locator, extract_locator, locator_to_coords
-from .mfa import EmailOtpManager, SMTPMailer, verify_totp
+from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .wm7d import WM7DClient, WM7DLookupError
 
 
 LOG = logging.getLogger(__name__)
+_DEFAULT_KEPS_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle"
+
+
+def _download_text_url(url: str, *, timeout: float = 30.0, max_bytes: int = 2_000_000) -> str:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "pyCluster/1.0 (+https://github.com/AI3I/pyCluster)",
+            "Accept": "text/plain,*/*;q=0.8",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise RuntimeError("downloaded keps file is too large")
+    return data.decode("utf-8", errors="replace")
+_AUTH_FAILURE_LOCK_THRESHOLD = 5
 
 _US_STATE_CQ_ZONE = {
     "CT": 5, "MA": 5, "ME": 5, "NH": 5, "RI": 5, "VT": 5,
@@ -117,6 +135,8 @@ class EventLogEntry:
 
 class TelnetClusterServer:
     _TELNET_IAC = 255
+    _TELNET_NOP = 241
+    _TELNET_AYT = 246
     _TELNET_WILL = 251
     _TELNET_WONT = 252
     _TELNET_DO = 253
@@ -188,6 +208,9 @@ class TelnetClusterServer:
         "sysop/sysops",
         "sysop/access",
         "sysop/path",
+        "sysop/peer",
+        "sysop/peeraccount",
+        "sysop/peerprofile",
         "sysop/setaccess",
         "sysop/audit",
         "sysop/services",
@@ -222,6 +245,8 @@ class TelnetClusterServer:
         link_disconnect_fn: Callable[[str], Awaitable[bool]] | None = None,
         link_clear_policy_fn: Callable[[str | None], Awaitable[int]] | None = None,
         link_desired_peers_fn: Callable[[], Awaitable[list[dict[str, object]]]] | None = None,
+        link_save_peer_fn: Callable[[str, str, str, bool, str | None], Awaitable[None]] | None = None,
+        link_delete_peer_fn: Callable[[str], Awaitable[bool]] | None = None,
         component_status_fn: Callable[[], Awaitable[list[dict[str, object]]]] | None = None,
         component_restart_fn: Callable[[str], Awaitable[tuple[bool, str]]] | None = None,
         on_chat_fn: Callable[[str, str], Awaitable[None]] | None = None,
@@ -249,6 +274,8 @@ class TelnetClusterServer:
         self._link_disconnect_fn = link_disconnect_fn
         self._link_clear_policy_fn = link_clear_policy_fn
         self._link_desired_peers_fn = link_desired_peers_fn
+        self._link_save_peer_fn = link_save_peer_fn
+        self._link_delete_peer_fn = link_delete_peer_fn
         self._component_status_fn = component_status_fn
         self._component_restart_fn = component_restart_fn
         self._on_chat_fn = on_chat_fn
@@ -322,7 +349,12 @@ class TelnetClusterServer:
             i += 2
         return bytes(out)
 
-    async def _read_telnet_byte(self, reader: asyncio.StreamReader, timeout: float) -> bytes | None:
+    async def _read_telnet_byte(
+        self,
+        reader: asyncio.StreamReader,
+        timeout: float,
+        writer: asyncio.StreamWriter | None = None,
+    ) -> bytes | None:
         try:
             raw = await (asyncio.wait_for(reader.read(1), timeout=timeout) if timeout > 0 else reader.read(1))
         except asyncio.TimeoutError:
@@ -340,6 +372,13 @@ class TelnetClusterServer:
             cmd = nxt[0]
             if cmd == 255:
                 return b"\xff"
+            if cmd == self._TELNET_NOP:
+                return b""
+            if cmd == self._TELNET_AYT:
+                if writer is not None:
+                    writer.write(("\r\n" + self._string("telnet.ayt", "[Yes]") + "\r\n").encode("utf-8"))
+                    await writer.drain()
+                return b""
             if cmd in {251, 252, 253, 254}:
                 try:
                     _ = await (asyncio.wait_for(reader.read(1), timeout=timeout) if timeout > 0 else reader.read(1))
@@ -420,11 +459,19 @@ class TelnetClusterServer:
         target = call.upper()
         base = target.split("-", 1)[0]
         blocked_login = False
-        privilege = ""
+        target_row = await self.store.get_user_registry(target)
+        target_exists = target_row is not None
         for candidate in (target, base):
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
                 blocked_login = True
+        if target_exists:
+            privilege = str(target_row["privilege"] or "").strip().lower()
+            if not privilege:
+                privilege = str(await self.store.get_user_pref(target, "privilege") or "").strip().lower()
+            return privilege, blocked_login
+        privilege = ""
+        for candidate in (target, base):
             row = await self.store.get_user_registry(candidate)
             if row and not privilege:
                 privilege = str(row["privilege"] or "").strip().lower()
@@ -435,7 +482,9 @@ class TelnetClusterServer:
     async def _access_allowed(self, call: str, channel: str, capability: str) -> bool:
         target = call.upper()
         base = target.split("-", 1)[0]
-        for candidate in (target, base):
+        target_exists = await self.store.get_user_registry(target) is not None
+        candidates = (target,) if target_exists else (target, base)
+        for candidate in candidates:
             raw = await self.store.get_user_pref(candidate, self._access_pref_key(channel, capability))
             if raw is None or str(raw).strip() == "":
                 continue
@@ -559,6 +608,26 @@ class TelnetClusterServer:
 
     def _log_auth_failure(self, channel: str, peer, call: str, reason: str) -> None:
         log_auth_failure(LOG, channel, self._peer_host(peer), self._auth_log_call(call), reason)
+
+    async def _record_telnet_password_failure(self, call: str, peer) -> None:
+        base_call = call.split("-", 1)[0].upper()
+        now = int(datetime.now(timezone.utc).timestamp())
+        raw_count = await self.store.get_user_pref(base_call, "failed_password_count")
+        try:
+            count = int(str(raw_count or "0").strip() or "0") + 1
+        except ValueError:
+            count = 1
+        await self.store.set_user_pref(base_call, "failed_password_count", str(count), now)
+        if count >= _AUTH_FAILURE_LOCK_THRESHOLD:
+            await self.store.upsert_user_registry(base_call, now)
+            await self.store.set_user_pref(base_call, "registration_state", "locked", now)
+            await self.store.set_user_pref(base_call, "failed_password_locked_epoch", str(now), now)
+            self._log_auth_failure("telnet", peer, call, "account_locked_failed_password")
+
+    async def _clear_telnet_password_failures(self, call: str) -> None:
+        base_call = call.split("-", 1)[0].upper()
+        await self.store.delete_user_pref(base_call, "failed_password_count")
+        await self.store.delete_user_pref(base_call, "failed_password_locked_epoch")
 
     async def _apply_page_size(self, call: str, lines: list[str], explicit_limit: bool = False) -> list[str]:
         if explicit_limit:
@@ -887,6 +956,41 @@ class TelnetClusterServer:
                 for tok in wanted
             )
 
+        if first in {"spotter_cont", "by_cont"} and rest:
+            ent = lookup(spotter) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(spotter)
+            if not ent:
+                return False
+            wanted = {tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
+            return bool(wanted) and ent.continent.upper() in wanted
+
+        if first in {"spotter_zone", "by_zone"} and rest:
+            ent = lookup(spotter) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(spotter)
+            if not ent:
+                return False
+            wanted = {
+                int(tok)
+                for tok in re.split(r"[,\s]+", rest)
+                if tok.strip().isdigit()
+            }
+            return bool(wanted) and ent.cq_zone in wanted
+
+        if first in {"spotter_itu", "by_itu"} and rest:
+            ent = lookup(spotter) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(spotter)
+            if not ent:
+                return False
+            wanted = {
+                int(tok)
+                for tok in re.split(r"[,\s]+", rest)
+                if tok.strip().isdigit()
+            }
+            return bool(wanted) and ent.itu_zone in wanted
+
         if first == "info" and rest:
             return rest in (info or "").lower()
 
@@ -1080,7 +1184,7 @@ class TelnetClusterServer:
         for s in self._sessions.values():
             if s.call == sender:
                 continue
-            if category.lower() in {"announce", "wcy", "wwv"}:
+            if category.lower() == "announce":
                 if not await self._text_family_passes_filters(s.call, category.lower(), sender, text):
                     continue
             lead = "\r\n" if not s.async_line_open else ""
@@ -1132,11 +1236,11 @@ class TelnetClusterServer:
         t.async_line_open = True
         return 1
 
-    async def _readline(self, reader: asyncio.StreamReader) -> str | None:
+    async def _readline(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter | None = None) -> str | None:
         timeout = float(self.config.telnet.idle_timeout_seconds or 0)
         raw = bytearray()
         while True:
-            b = await self._read_telnet_byte(reader, timeout)
+            b = await self._read_telnet_byte(reader, timeout, writer)
             if b is None:
                 return None if not raw else raw.decode("utf-8", errors="replace").strip()
             if b == b"":
@@ -1159,7 +1263,7 @@ class TelnetClusterServer:
         chars: list[str] = []
         timeout = float(self.config.telnet.idle_timeout_seconds or 0)
         while True:
-            raw = await self._read_telnet_byte(reader, timeout)
+            raw = await self._read_telnet_byte(reader, timeout, writer)
             if raw is None:
                 await self._set_telnet_password_echo(reader, writer, suppress=False)
                 return None
@@ -1209,26 +1313,26 @@ class TelnetClusterServer:
             return
 
     async def _prompt_new_password(self, call: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
-        await self._write(writer, "A password is required before continuing.\r\n")
-        await self._write(writer, "new password: ")
+        await self._write(writer, self._string("password_setup.required", "A password is required before continuing.") + "\r\n")
+        await self._write(writer, self._string("password_setup.new_prompt", "new password: "))
         first = await self._read_password(reader, writer)
         if first is None:
             return False
         first = first.strip()
         if not first:
-            await self._write(writer, "Password setup failed.\r\n")
+            await self._write(writer, self._string("password_setup.failed", "Password setup failed.") + "\r\n")
             return False
-        await self._write(writer, "confirm password: ")
+        await self._write(writer, self._string("password_setup.confirm_prompt", "confirm password: "))
         second = await self._read_password(reader, writer)
         if second is None:
             return False
         if first != second.strip():
-            await self._write(writer, "Passwords did not match.\r\n")
+            await self._write(writer, self._string("password_setup.mismatch", "Passwords did not match.") + "\r\n")
             return False
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(call, "password", hash_password(first), now)
         self._log_event("user", f"{call} initial_password_set")
-        await self._write(writer, f"Password set for {call}.\r\n")
+        await self._write(writer, self._render_string("password_setup.set", "Password set for {call}.", call=call) + "\r\n")
         return True
 
     async def _prompt_optional_value(
@@ -1240,7 +1344,7 @@ class TelnetClusterServer:
         **values: object,
     ) -> str | None:
         await self._write(writer, self._render_string(catalog_key, default, **values))
-        line = await self._readline(reader)
+        line = await self._readline(reader, writer)
         if line is None:
             return None
         return line.strip()
@@ -1478,7 +1582,11 @@ class TelnetClusterServer:
             return True
         if override == "off":
             return False
-        return self._mfa.required_for(is_sysop=is_sysop)
+        if await self._totp_secret_for_call(call):
+            return True
+        if not self._mfa.required_for(is_sysop=is_sysop):
+            return False
+        return has_valid_email(await self._email_for_call(base_call.upper()))
 
     async def _totp_secret_for_call(self, call: str) -> str:
         base_call = call.split("-", 1)[0].upper()
@@ -1514,13 +1622,13 @@ class TelnetClusterServer:
             )
             return False
         if not self._smtp.enabled():
-            await self._write(writer, "Email verification delivery is not configured\r\n")
+            await self._write(writer, self._string("registration.verify_delivery_unconfigured", "Email verification delivery is not configured") + "\r\n")
             return False
         try:
             challenge_id, _expires = await self._mfa.issue(call=call, email=email, purpose="telnet-verify")
         except Exception:
             LOG.exception("telnet registration verification delivery failed call=%s", call)
-            await self._write(writer, "Email verification delivery failed\r\n")
+            await self._write(writer, self._string("registration.verify_delivery_failed", "Email verification delivery failed") + "\r\n")
             return False
         await self._write(writer, self._string("registration.verify_sent", "A verification code has been sent to your registered email address.") + "\r\n")
         await self._write(writer, self._string("registration.verify_prompt", "verification code: "))
@@ -1598,7 +1706,7 @@ class TelnetClusterServer:
                 call=call,
             ),
         )
-        answer = await self._readline(reader)
+        answer = await self._readline(reader, writer)
         if answer is None:
             return False
         if answer.strip().lower() in {"n", "no"}:
@@ -1652,7 +1760,7 @@ class TelnetClusterServer:
             challenge_id, _expires = await self._mfa.issue(call=call, email=email, purpose="telnet-register")
         except Exception:
             LOG.exception("telnet registration request verification failed call=%s", call)
-            await self._write(writer, "Email verification delivery failed\r\n")
+            await self._write(writer, self._string("registration.verify_delivery_failed", "Email verification delivery failed") + "\r\n")
             return False
         await self._write(writer, self._string("registration.verify_sent", "A verification code has been sent to your registered email address.") + "\r\n")
         await self._write(writer, self._string("registration.verify_prompt", "verification code: "))
@@ -1693,34 +1801,34 @@ class TelnetClusterServer:
             return True
         totp_secret = await self._totp_secret_for_call(call)
         if totp_secret:
-            await self._write(writer, "authenticator code: ")
+            await self._write(writer, self._string("mfa.authenticator_prompt", "authenticator code: "))
             supplied_totp = await self._read_password(reader, writer)
             if supplied_totp is None:
                 return False
             if not verify_totp(totp_secret, supplied_totp):
-                await self._write(writer, "Login failed (invalid code)\r\n")
+                await self._write(writer, self._string("mfa.invalid_code", "Login failed (invalid code)") + "\r\n")
                 return False
             return True
         email = await self._email_for_call(call)
         if not email:
-            await self._write(writer, "MFA email not configured\r\n")
+            await self._write(writer, self._string("mfa.email_missing", "MFA email not configured") + "\r\n")
             return False
         if not self._smtp.enabled():
-            await self._write(writer, "MFA delivery is not configured\r\n")
+            await self._write(writer, self._string("mfa.delivery_unconfigured", "MFA delivery is not configured") + "\r\n")
             return False
         try:
             challenge_id, _expires = await self._mfa.issue(call=call, email=email, purpose="telnet")
         except Exception:
             LOG.exception("telnet mfa delivery failed call=%s", call)
-            await self._write(writer, "MFA delivery failed\r\n")
+            await self._write(writer, self._string("mfa.delivery_failed", "MFA delivery failed") + "\r\n")
             return False
-        await self._write(writer, "otp: ")
+        await self._write(writer, self._string("mfa.otp_prompt", "otp: "))
         supplied_otp = await self._read_password(reader, writer)
         if supplied_otp is None:
             return False
         ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="telnet", otp=supplied_otp)
         if not ok:
-            await self._write(writer, f"Login failed ({reason})\r\n")
+            await self._write(writer, self._render_string("login.failed_reason", "Login failed ({reason})", reason=reason) + "\r\n")
             return False
         return True
 
@@ -1912,27 +2020,6 @@ class TelnetClusterServer:
                 prefs["homenode"] = normalized
                 reg_row["home_node"] = normalized
 
-        if not str(reg_row.get("qth") or "").strip():
-            qth = await self._prompt_optional_value(
-                reader,
-                writer,
-                "registration.interview_qth",
-                "QTH / location: ",
-                call=call,
-            )
-            if qth is None:
-                return False
-            if qth:
-                qth = qth[:80]
-                await self.store.upsert_user_registry(call, now, qth=qth)
-                reg_row["qth"] = qth
-                loc = await self._sync_location_defaults(call, qth)
-                if loc:
-                    reg_row["qra"] = loc
-                    prefs["qra"] = loc
-                    prefs["forward_lat"] = str(await self.store.get_user_pref(call, "forward_lat") or "")
-                    prefs["forward_lon"] = str(await self.store.get_user_pref(call, "forward_lon") or "")
-
         if not str(reg_row.get("qra") or "").strip():
             qra = await self._prompt_optional_value(
                 reader,
@@ -1949,6 +2036,37 @@ class TelnetClusterServer:
                 await self._sync_locator_defaults(call, locator, overwrite_coords=False)
                 await self._backfill_location_from_qra(call, locator)
                 reg_row["qra"] = locator
+                prefs["qra"] = locator
+
+        if not str(reg_row.get("qth") or "").strip():
+            qth = await self._prompt_optional_value(
+                reader,
+                writer,
+                "registration.interview_qth",
+                "QTH / location: ",
+                call=call,
+            )
+            if qth is None:
+                return False
+            if qth:
+                qth = qth[:80]
+                await self.store.upsert_user_registry(call, now, qth=qth)
+                reg_row["qth"] = qth
+                if not str(reg_row.get("qra") or "").strip():
+                    loc = await self._sync_location_defaults(call, qth)
+                    if loc:
+                        reg_row["qra"] = loc
+                        prefs["qra"] = loc
+                        prefs["forward_lat"] = str(await self.store.get_user_pref(call, "forward_lat") or "")
+                        prefs["forward_lon"] = str(await self.store.get_user_pref(call, "forward_lon") or "")
+
+        if not str(reg_row.get("qra") or "").strip():
+            node_locator = extract_locator(str(self.config.node.node_locator or "").strip().upper())
+            if node_locator:
+                await self.store.upsert_user_registry(call, now, qra=node_locator)
+                await self._sync_locator_defaults(call, node_locator, overwrite_coords=False)
+                reg_row["qra"] = node_locator
+                prefs["qra"] = node_locator
 
         has_coords = bool(str(await self.store.get_user_pref(call, "forward_lat") or "").strip() and str(await self.store.get_user_pref(call, "forward_lon") or "").strip())
         if not has_coords:
@@ -2059,6 +2177,8 @@ class TelnetClusterServer:
 
     async def _cmd_show_dx(self, _call: str, arg: str | None) -> str:
         query = parse_sh_dx_args(arg)
+        requested_limit = query.limit
+        query.limit = 200
         rows = await self.store.search_spots(query)
         if not rows:
             return self._string("show.dx.empty", "No spots available") + "\r\n"
@@ -2087,6 +2207,8 @@ class TelnetClusterServer:
             )
             line += await self._dx_line_suffix_for_call(_call, str(row["dx_call"]))
             lines.append(line)
+            if len(lines) >= requested_limit:
+                break
         if not lines:
             return self._string("show.dx.empty", "No spots available") + "\r\n"
         return "\r\n".join(lines) + "\r\n"
@@ -2141,6 +2263,7 @@ class TelnetClusterServer:
                     "System Operator:",
                     "  sysop/users, sysop/sysops, sysop/showuser <call>",
                     "  sysop/access <call>, sysop/path <call|peer>, sysop/setaccess ...",
+                    "  sysop/peer show, sysop/peeraccount show <peer-call>",
                     "  sysop/password <call> <newpass>, sysop/clearmfa <call>",
                     "  sysop/services, sysop/restart <telnet|sysopweb|all>",
                     "  sysop/audit [category] [limit]",
@@ -2357,6 +2480,7 @@ class TelnetClusterServer:
             "links": "Show connected peer links.",
             "mail": "List unread and recent personal messages.",
             "merge": "Run a startup-safe merge alias.",
+            "mfa": "Show or manage your multi-factor authentication status.",
             "motd": "Show the message of the day.",
             "msg": "Send a personal message to a user.",
             "node": "Show node or home-node information for a callsign.",
@@ -2920,14 +3044,14 @@ class TelnetClusterServer:
         lines.append(self._string("filters.preview", "Preview:"))
         lines.append(self._string("filters.preview_spots", "  show/filter test spots <freq_khz> <dx_call> <spotter> [info]"))
         lines.append(self._string("filters.preview_route", "  show/filter test route <peer>"))
-        lines.append(self._string("filters.preview_text", "  show/filter test <announce|wcy|wwv|wx> <sender> <text>"))
+        lines.append(self._string("filters.preview_text", "  show/filter test announce <sender> <text>"))
         lines.append(self._string("filters.preview_verbose", "  add --verbose after family to include winning rule"))
         lines = await self._apply_page_size(call, lines, explicit_limit=bool(rest_toks))
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_filter_test(self, target: str, toks: list[str]) -> str:
         if not toks:
-            return self._string("filters.test_usage", "Usage: show/filter [<call>] test <spots [--verbose] <freq_khz> <dx_call> <spotter> [info] | route [--verbose] <peer> | <announce|wcy|wwv|wx> [--verbose] <sender> <text>>") + "\r\n"
+            return self._string("filters.test_usage", "Usage: show/filter [<call>] test <spots [--verbose] <freq_khz> <dx_call> <spotter> [info] | route [--verbose] <peer> | announce [--verbose] <sender> <text>>") + "\r\n"
         fam = toks[0].lower()
         args = toks[1:]
         verbose = False
@@ -2979,7 +3103,7 @@ class TelnetClusterServer:
             if verbose and detail:
                 lines.append(self._render_string("filters.winning_rule", "  Winning Rule: {detail}", detail=detail))
             return await self._format_console_lines(target, lines)
-        if fam in {"announce", "wcy", "wwv", "wx"}:
+        if fam == "announce":
             if len(args) < 2:
                 return self._render_string("filters.test_text_usage", "Usage: show/filter test {family} <sender> <text>", family=fam) + "\r\n"
             sender = args[0].upper()
@@ -2997,7 +3121,7 @@ class TelnetClusterServer:
             if verbose and detail:
                 lines.append(self._render_string("filters.winning_rule", "  Winning Rule: {detail}", detail=detail))
             return await self._format_console_lines(target, lines)
-        return self._string("filters.test_generic_usage", "Usage: show/filter test <spots|route|announce|wcy|wwv|wx> ...") + "\r\n"
+        return self._string("filters.test_generic_usage", "Usage: show/filter test <spots|route|announce> ...") + "\r\n"
 
     async def _cmd_show_configuration(self, _call: str, _arg: str | None) -> str:
         ports = ",".join(str(p) for p in self._configured_ports())
@@ -3605,10 +3729,21 @@ class TelnetClusterServer:
         if arg and arg.strip():
             tok = arg.split()[0].upper()
             if is_valid_call(tok):
-                target = tok
+                row = await self.store.get_user_registry(tok)
+                prefs = await self._load_prefs_for_call(tok)
+                if row is not None or str(prefs.get("qra") or "").strip():
+                    target = tok
+                elif self._geo_lookup(tok) is not None:
+                    target = tok
+                else:
+                    target = tok
             elif self._geo_lookup(tok) is not None:
                 target = tok
         if target != call.upper() and is_valid_call(target):
+            row = await self.store.get_user_registry(target)
+            prefs = await self._load_prefs_for_call(target)
+            if row is None and not str(prefs.get("qra") or "").strip() and self._geo_lookup(target) is not None:
+                return target
             denied = await self._require_privilege(call, 2, cmd)
             if denied:
                 return denied
@@ -4084,6 +4219,96 @@ class TelnetClusterServer:
         )
         return max(0.0, min(180.0, 90.0 - math.degrees(altitude)))
 
+    def _julian_day(self, when: datetime) -> float:
+        return when.astimezone(timezone.utc).timestamp() / 86400.0 + 2440587.5
+
+    def _moon_ra_dec_deg(self, when: datetime) -> tuple[float, float]:
+        days = self._julian_day(when) - 2451543.5
+        node = math.radians((125.1228 - 0.0529538083 * days) % 360.0)
+        inclination = math.radians(5.1454)
+        perigee = math.radians((318.0634 + 0.1643573223 * days) % 360.0)
+        mean_anomaly_deg = (115.3654 + 13.0649929509 * days) % 360.0
+        mean_anomaly = math.radians(mean_anomaly_deg)
+        eccentricity = 0.0549
+        eccentric_anomaly = math.radians(
+            mean_anomaly_deg
+            + math.degrees(eccentricity * math.sin(mean_anomaly) * (1.0 + eccentricity * math.cos(mean_anomaly)))
+        )
+        semi_major = 60.2666
+        xv = semi_major * (math.cos(eccentric_anomaly) - eccentricity)
+        yv = semi_major * math.sqrt(1.0 - eccentricity * eccentricity) * math.sin(eccentric_anomaly)
+        true_anomaly = math.atan2(yv, xv)
+        radius = math.hypot(xv, yv)
+
+        arg = true_anomaly + perigee
+        xh = radius * (math.cos(node) * math.cos(arg) - math.sin(node) * math.sin(arg) * math.cos(inclination))
+        yh = radius * (math.sin(node) * math.cos(arg) + math.cos(node) * math.sin(arg) * math.cos(inclination))
+        zh = radius * (math.sin(arg) * math.sin(inclination))
+
+        obliquity = math.radians(23.4393 - 3.563e-7 * days)
+        xe = xh
+        ye = yh * math.cos(obliquity) - zh * math.sin(obliquity)
+        ze = yh * math.sin(obliquity) + zh * math.cos(obliquity)
+        ra = math.degrees(math.atan2(ye, xe)) % 360.0
+        dec = math.degrees(math.atan2(ze, math.hypot(xe, ye)))
+        return ra, dec
+
+    def _moon_alt_az(self, when: datetime, lat: float, lon: float) -> tuple[float, float]:
+        ra, dec = self._moon_ra_dec_deg(when)
+        days = self._julian_day(when) - 2451545.0
+        gmst_hours = (18.697374558 + 24.06570982441908 * days) % 24.0
+        lst_deg = (gmst_hours * 15.0 + lon) % 360.0
+        hour_angle = math.radians(((lst_deg - ra + 540.0) % 360.0) - 180.0)
+        lat_r = math.radians(lat)
+        dec_r = math.radians(dec)
+        altitude = math.asin(
+            max(
+                -1.0,
+                min(
+                    1.0,
+                    math.sin(lat_r) * math.sin(dec_r)
+                    + math.cos(lat_r) * math.cos(dec_r) * math.cos(hour_angle),
+                ),
+            )
+        )
+        azimuth = math.degrees(
+            math.atan2(
+                -math.sin(hour_angle),
+                math.tan(dec_r) * math.cos(lat_r) - math.sin(lat_r) * math.cos(hour_angle),
+            )
+        )
+        return math.degrees(altitude), (azimuth + 360.0) % 360.0
+
+    def _moon_event_time(self, start: datetime, lat: float, lon: float, *, rising: bool) -> str | None:
+        threshold = -0.3
+        step = timedelta(minutes=10)
+        prev_t = start
+        prev_alt = self._moon_alt_az(prev_t, lat, lon)[0] - threshold
+        for idx in range(1, int((48 * 60) / 10) + 1):
+            cur_t = start + step * idx
+            cur_alt = self._moon_alt_az(cur_t, lat, lon)[0] - threshold
+            crossed = prev_alt <= 0.0 < cur_alt if rising else prev_alt >= 0.0 > cur_alt
+            if crossed:
+                lo = prev_t
+                hi = cur_t
+                for _ in range(12):
+                    mid = lo + (hi - lo) / 2
+                    mid_alt = self._moon_alt_az(mid, lat, lon)[0] - threshold
+                    if rising:
+                        if mid_alt >= 0.0:
+                            hi = mid
+                        else:
+                            lo = mid
+                    else:
+                        if mid_alt <= 0.0:
+                            hi = mid
+                        else:
+                            lo = mid
+                return hi.strftime("%H:%M UTC")
+            prev_t = cur_t
+            prev_alt = cur_alt
+        return None
+
     def _path_midpoint(self, lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float, float]:
         lat1r = math.radians(lat1)
         lon1r = math.radians(lon1)
@@ -4179,6 +4404,11 @@ class TelnetClusterServer:
             phase_name = "waning crescent"
         else:
             phase_name = "new"
+        now_dt = datetime.now(timezone.utc)
+        elevation, azimuth = self._moon_alt_az(now_dt, lat, lon)
+        moonrise = self._moon_event_time(now_dt, lat, lon, rising=True)
+        moonset = self._moon_event_time(now_dt, lat, lon, rising=False)
+        missing_event = self._string("show.moon.event_missing", "not in next 48h")
         lines = [
             self._string("show.moon.title", "Moon status:"),
             self._render_string("show.moon.reference", "  Reference: {source}", source=source),
@@ -4187,6 +4417,10 @@ class TelnetClusterServer:
             self._render_string("show.moon.age", "  Age: {age:.2f} days", age=age),
             self._render_string("show.moon.illumination", "  Illumination: {illumination:.1f}%", illumination=illum * 100),
             self._render_string("show.moon.phase_name", "  Phase: {phase}", phase=phase_name),
+            self._render_string("show.moon.elevation", "  Elevation: {elevation:.1f} deg", elevation=elevation),
+            self._render_string("show.moon.azimuth", "  Azimuth: {azimuth:.1f} deg", azimuth=azimuth),
+            self._render_string("show.moon.moonrise", "  Moonrise: {value}", value=moonrise or missing_event),
+            self._render_string("show.moon.moonset", "  Moonset: {value}", value=moonset or missing_event),
         ]
         return await self._format_console_lines(call, lines)
 
@@ -4194,11 +4428,13 @@ class TelnetClusterServer:
         toks = [t for t in (arg or "").split() if t]
         target = ""
         limit = 20
+        explicit_limit = False
         long_form = False
         for tok in toks:
             tl = tok.lower()
             if tok.isdigit():
                 limit = max(1, min(int(tok), 200))
+                explicit_limit = True
                 continue
             if tl in {"l", "long"}:
                 long_form = True
@@ -4308,11 +4544,13 @@ class TelnetClusterServer:
         freq_cols = [1.8, 3.5, 7.0, 10.1, 14.0, 18.1, 21.0, 24.9, 28.0, 50.0]
         header = self._string("show.muf.dxspider_header", "UT LT  MUF Zen  1.8  3.5  7.0 10.1 14.0 18.1 21.0 24.9 28.0 50.0")
         lines.append(header)
-        for r, sfi, _a, _k, text in samples[:max(2, min(limit, 24))]:
-            ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc)
+        forecast_hours = max(2, min(limit if explicit_limit else 12, 24))
+        now_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        for hour_offset in range(forecast_hours):
+            ts = now_hour + timedelta(hours=hour_offset)
             ut = ts.hour
             local = int((ut + round(path_mid_lon / 15.0)) % 24)
-            muf = 8.0 + 0.12 * sfi
+            muf = latest_muf
             zen = self._solar_zenith_angle(ts, path_mid_lat, path_mid_lon)
             displayed_muf = self._effective_muf_for_zenith(muf, zen)
             row = f"{ut:2d} {local:2d} {displayed_muf:4.1f} {zen:4.0f}"
@@ -5223,8 +5461,6 @@ class TelnetClusterServer:
             for r in rows:
                 sender = str(r["sender"] or "")
                 body = str(r["body"] or "")
-                if not await self._text_family_passes_filters(call, category, sender, body):
-                    continue
                 reading = parse_wcy_text(body)
                 if reading is None:
                     continue
@@ -5247,8 +5483,6 @@ class TelnetClusterServer:
             for r in fallback:
                 sender = str(r["sender"] or "")
                 body = str(r["body"] or "")
-                if not await self._text_family_passes_filters(call, "wcy", sender, body):
-                    continue
                 reading = parse_wwv_text(body)
                 if reading is None:
                     continue
@@ -5274,8 +5508,6 @@ class TelnetClusterServer:
             for r in rows:
                 sender = str(r["sender"] or "")
                 body = str(r["body"] or "")
-                if not await self._text_family_passes_filters(call, category, sender, body):
-                    continue
                 reading = parse_wwv_text(body)
                 if reading is None:
                     continue
@@ -5295,7 +5527,7 @@ class TelnetClusterServer:
         for r in rows:
             sender = str(r["sender"] or "")
             body = str(r["body"] or "")
-            if category in {"announce", "wcy", "wwv"}:
+            if category == "announce":
                 if not await self._text_family_passes_filters(call, category, sender, body):
                     continue
             ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc).strftime("%-d-%b-%Y %H%MZ")
@@ -6187,6 +6419,95 @@ class TelnetClusterServer:
             cleared=cleared,
         ) + "\r\n"
 
+    async def _cmd_mfa(self, call: str, _arg: str | None) -> str:
+        principal = call.split("-", 1)[0].upper()
+        raw = str(await self.store.get_user_pref(principal, "mfa_email_otp") or "").strip().lower()
+        email_override = raw if raw in {"required", "off"} else "default"
+        totp_enabled = bool(str(await self.store.get_user_pref(principal, "mfa_totp_secret") or "").strip())
+        is_sysop = await self._privilege_level_for(principal) >= 2
+        if email_override == "required":
+            email_effective = True
+        elif email_override == "off":
+            email_effective = False
+        else:
+            email_effective = self._mfa.required_for(is_sysop=is_sysop)
+        methods = []
+        if totp_enabled:
+            methods.append(self._string("mfa.method_authenticator", "Authenticator"))
+        if email_effective:
+            methods.append(self._string("mfa.method_email", "Email OTP"))
+        method_text = ", ".join(methods) if methods else self._string("mfa.method_none", "none")
+        if email_override == "required":
+            policy = self._string("mfa.policy_required", "required override")
+        elif email_override == "off":
+            policy = self._string("mfa.policy_off", "off override")
+        elif email_effective:
+            policy = self._string("mfa.policy_node", "node policy")
+        else:
+            policy = self._string("mfa.policy_default", "not required by node policy")
+        state = self._string("mfa.state_enabled", "enabled") if (totp_enabled or email_effective) else self._string("mfa.state_disabled", "disabled")
+        return self._render_string(
+            "mfa.status",
+            "MFA for {call}: {state}; methods: {methods}; email override: {override}; policy: {policy}.",
+            call=principal,
+            state=state,
+            methods=method_text,
+            override=email_override,
+            policy=policy,
+        ) + "\r\n"
+
+    async def _cmd_set_mfa(self, call: str, arg: str | None) -> str:
+        mode = str(arg or "email").strip().lower()
+        if mode in {"", "on"}:
+            mode = "email"
+        if mode not in {"email", "totp", "authenticator", "default"}:
+            return self._string("mfa.set_usage", "Usage: set/mfa [email|authenticator|default]") + "\r\n"
+        principal = call.split("-", 1)[0].upper()
+        now = int(datetime.now(timezone.utc).timestamp())
+        if mode == "default":
+            await self.store.delete_user_pref(principal, "mfa_email_otp")
+            self._log_event("user", f"{call} set/mfa default")
+            return self._render_string("mfa.default_done", "MFA email override reset to node default for {call}.", call=principal) + "\r\n"
+        email = await self._email_for_call(principal)
+        if mode == "email":
+            if not has_valid_email(email):
+                return self._render_string("mfa.valid_email_required", "A valid email address is required before enabling email MFA for {call}.", call=principal) + "\r\n"
+            await self.store.set_user_pref(principal, "mfa_email_otp", "required", now)
+            self._log_event("user", f"{call} set/mfa email")
+            return self._render_string("mfa.email_enabled", "Email MFA enabled for {call}.", call=principal) + "\r\n"
+        secret = generate_totp_secret()
+        await self.store.set_user_pref(principal, "mfa_totp_secret", secret, now)
+        await self.store.set_user_pref(principal, "mfa_email_otp", "required", now)
+        cleared = await self.store.delete_mfa_challenges_for_call(principal, include_ssids=True)
+        uri = totp_otpauth_uri(
+            issuer=self.config.mfa.issuer.strip() or self.config.node.node_call,
+            account=principal,
+            secret=secret,
+        )
+        self._log_event("user", f"{call} set/mfa authenticator challenges={cleared}")
+        return "\r\n".join(
+            [
+                self._render_string("mfa.authenticator_enabled", "Authenticator MFA enabled for {call}.", call=principal),
+                self._render_string("mfa.authenticator_secret", "Setup key: {secret}", secret=secret),
+                self._render_string("mfa.authenticator_uri", "Setup URI: {uri}", uri=uri),
+                "",
+            ]
+        )
+
+    async def _cmd_unset_mfa(self, call: str, _arg: str | None) -> str:
+        principal = call.split("-", 1)[0].upper()
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.set_user_pref(principal, "mfa_email_otp", "off", now)
+        await self.store.delete_user_pref(principal, "mfa_totp_secret")
+        cleared = await self.store.delete_mfa_challenges_for_call(principal, include_ssids=True)
+        self._log_event("user", f"{call} unset/mfa challenges={cleared}")
+        return self._render_string(
+            "mfa.disabled",
+            "MFA disabled for {call}. Outstanding challenges cleared: {cleared}.",
+            call=principal,
+            cleared=cleared,
+        ) + "\r\n"
+
     async def _cmd_sysop_homenode(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/homenode")
         if denied:
@@ -6300,13 +6621,199 @@ class TelnetClusterServer:
         ]
         return "\r\n".join(lines) + "\r\n"
 
-    async def _cmd_sysop_spotlimit(self, call: str, arg: str | None) -> str:
-        denied = await self._require_privilege(call, 2, "sysop/spotlimit")
+    async def _cmd_sysop_peeraccount(self, call: str, arg: str | None) -> str:
+        denied = await self._require_privilege(call, 2, "sysop/peeraccount")
         if denied:
             return denied
         toks = [t for t in (arg or "").split() if t]
         if not toks:
-            return "Usage: sysop/spotlimit <default|call> [off|default|<max_per_window> [window_seconds]]\r\n"
+            return self._string("sysop.peeraccount_usage", "Usage: sysop/peeraccount <add|password|show> <peer-call> [pycluster|dxspider|dxnet|arcluster|clx|password]") + "\r\n"
+        action = toks[0].lower()
+        families = {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}
+        now = int(datetime.now(timezone.utc).timestamp())
+        if action == "add":
+            if len(toks) != 3:
+                return self._string("sysop.peeraccount_add_usage", "Usage: sysop/peeraccount add <peer-call> <pycluster|dxspider|dxnet|arcluster|clx>") + "\r\n"
+            target = toks[1].upper()
+            family = toks[2].lower()
+            if not is_valid_call(target) or family not in families:
+                return self._string("sysop.peeraccount_add_usage", "Usage: sysop/peeraccount add <peer-call> <pycluster|dxspider|dxnet|arcluster|clx>") + "\r\n"
+            await self.store.upsert_user_registry(target, now)
+            await self.store.set_user_pref(target, "node_family", family, now)
+            self._log_event("sysop", f"{call} sysop/peeraccount add {target} {family}")
+            return self._render_string("sysop.peeraccount_added", "Peer account {target} configured as {family}.", target=target, family=family) + "\r\n"
+        if action == "password":
+            if len(toks) < 3:
+                return self._string("sysop.peeraccount_password_usage", "Usage: sysop/peeraccount password <peer-call> <password>") + "\r\n"
+            target = toks[1].upper()
+            if not is_valid_call(target):
+                return self._string("sysop.peeraccount_password_usage", "Usage: sysop/peeraccount password <peer-call> <password>") + "\r\n"
+            password = " ".join(toks[2:]).strip()
+            if not password:
+                return self._string("sysop.peeraccount_password_usage", "Usage: sysop/peeraccount password <peer-call> <password>") + "\r\n"
+            await self.store.upsert_user_registry(target, now)
+            await self.store.set_user_pref(target, "password", hash_password(password), now)
+            self._log_event("sysop", f"{call} sysop/peeraccount password {target}")
+            return self._render_string("sysop.peeraccount_password_updated", "Peer account password updated for {target}.", target=target) + "\r\n"
+        if action == "show":
+            if len(toks) != 2:
+                return self._string("sysop.peeraccount_show_usage", "Usage: sysop/peeraccount show <peer-call>") + "\r\n"
+            target = toks[1].upper()
+            if not is_valid_call(target):
+                return self._string("sysop.peeraccount_show_usage", "Usage: sysop/peeraccount show <peer-call>") + "\r\n"
+            row = await self.store.get_user_registry(target)
+            family = await self._node_family_for_login(target)
+            password_set = bool(str(await self.store.get_user_pref(target, "password") or "").strip())
+            blocked = str(await self.store.get_user_pref(target, "blocked_login") or "").strip().lower() in {"1", "on", "yes", "true"}
+            lines = [
+                self._render_string("sysop.peeraccount_show_title", "Peer account {target}:", target=target),
+                self._render_string("sysop.peeraccount_show_exists", "  Exists: {value}", value="yes" if row else "no"),
+                self._render_string("sysop.peeraccount_show_family", "  Node Family: {value}", value=family or "-"),
+                self._render_string("sysop.peeraccount_show_password", "  Password Set: {value}", value="yes" if password_set else "no"),
+                self._render_string("sysop.peeraccount_show_blocked", "  Login Blocked: {value}", value="yes" if blocked else "no"),
+            ]
+            return "\r\n".join(lines) + "\r\n"
+        return self._string("sysop.peeraccount_usage", "Usage: sysop/peeraccount <add|password|show> <peer-call> [pycluster|dxspider|dxnet|arcluster|clx|password]") + "\r\n"
+
+    async def _cmd_sysop_peerprofile(self, call: str, arg: str | None) -> str:
+        denied = await self._require_privilege(call, 2, "sysop/peerprofile")
+        if denied:
+            return denied
+        toks = [t for t in (arg or "").split() if t]
+        families = {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}
+        if len(toks) != 2 or toks[1].lower() not in families:
+            return self._string("sysop.peerprofile_usage", "Usage: sysop/peerprofile <peer> <pycluster|dxspider|dxnet|arcluster|clx>") + "\r\n"
+        if not self._link_set_profile_fn:
+            return self._string("sysop.peerprofile_unavailable", "Peer profile control is unavailable in this runtime.") + "\r\n"
+        peer = toks[0]
+        profile = toks[1].lower()
+        ok = await self._link_set_profile_fn(peer, profile)
+        if ok:
+            self._log_event("sysop", f"{call} sysop/peerprofile {peer} {profile}")
+            return self._render_string("sysop.peerprofile_updated", "Profile for peer {peer} set to {profile}.", peer=peer, profile=profile) + "\r\n"
+        return self._render_string("sysop.peer_missing_create", "No saved or live peer named {peer}; use the SysOp web Peers and Links view or create/connect the peer first.", peer=peer) + "\r\n"
+
+    async def _cmd_sysop_peer(self, call: str, arg: str | None) -> str:
+        denied = await self._require_privilege(call, 2, "sysop/peer")
+        if denied:
+            return denied
+        toks = [t for t in (arg or "").split() if t]
+        if not toks:
+            return self._string("sysop.peer_usage", "Usage: sysop/peer <show|add|set|delete|connect|disconnect> ...") + "\r\n"
+        action = toks[0].lower()
+        if action == "show":
+            desired = await self._link_desired_peers_fn() if self._link_desired_peers_fn else []
+            stats = await self._link_stats_fn() if self._link_stats_fn else {}
+            flt = toks[1].lower() if len(toks) > 1 else ""
+            rows = []
+            for row in desired:
+                peer = str(row.get("peer", "") or "")
+                if flt and flt not in peer.lower():
+                    continue
+                rows.append(
+                    self._render_string(
+                        "sysop.peer_saved_row",
+                        "  {peer:<16} saved profile {profile} retry {retry} live {live}",
+                        peer=peer,
+                        profile=row.get("profile", "-") or "-",
+                        retry=row.get("reconnect", "-") or "-",
+                        live="yes" if peer in stats else "no",
+                    )
+                )
+            for peer, st in stats.items():
+                if flt and flt not in peer.lower():
+                    continue
+                if any(line.strip().startswith(str(peer)) for line in rows):
+                    continue
+                rows.append(
+                    self._render_string(
+                        "sysop.peer_live_row",
+                        "  {peer:<16} live profile {profile} inbound {inbound}",
+                        peer=peer,
+                        profile=st.get("profile", "-") or "-",
+                        inbound="yes" if st.get("inbound") else "no",
+                    )
+                )
+            if not rows:
+                return self._string("sysop.peer_no_match", "No saved or live peers match.") + "\r\n" if flt else self._string("sysop.peer_none", "No saved or live peers.") + "\r\n"
+            return self._string("sysop.peer_title", "Peers:") + "\r\n" + "\r\n".join(rows) + "\r\n"
+        if action == "add":
+            if len(toks) < 3:
+                return self._string("sysop.peer_add_usage", "Usage: sysop/peer add <peer> <dsn> [profile]") + "\r\n"
+            if not self._link_save_peer_fn:
+                return self._string("sysop.peer_save_unavailable", "Peer save is unavailable in this runtime.") + "\r\n"
+            peer = toks[1]
+            dsn = toks[2]
+            profile = toks[3].lower() if len(toks) > 3 else "dxspider"
+            if profile not in {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}:
+                return self._string("sysop.peer_add_profile_usage", "Usage: sysop/peer add <peer> <dsn> [pycluster|dxspider|dxnet|arcluster|clx]") + "\r\n"
+            await self._link_save_peer_fn(peer, dsn, profile, True, "")
+            self._log_event("sysop", f"{call} sysop/peer add {peer} {profile}")
+            return self._render_string("sysop.peer_saved", "Saved peer {peer} with profile {profile}.", peer=peer, profile=profile) + "\r\n"
+        if action == "set":
+            if len(toks) < 4:
+                return self._string("sysop.peer_set_usage", "Usage: sysop/peer set <peer> <dsn|profile|password|retry> <value>") + "\r\n"
+            if not self._link_save_peer_fn:
+                return self._string("sysop.peer_save_unavailable", "Peer save is unavailable in this runtime.") + "\r\n"
+            peer = toks[1]
+            field = toks[2].lower()
+            value = " ".join(toks[3:]).strip()
+            desired = await self._link_desired_peers_fn() if self._link_desired_peers_fn else []
+            row = next((r for r in desired if str(r.get("peer", "")).lower() == peer.lower()), {})
+            dsn = str(row.get("dsn", "") or "")
+            profile = str(row.get("profile", "") or "dxspider").lower()
+            reconnect = str(row.get("reconnect", "on") or "on").lower() in {"1", "on", "yes", "true"}
+            password: str | None = None
+            if field == "dsn":
+                dsn = value
+            elif field == "profile":
+                if value.lower() not in {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}:
+                    return self._string("sysop.peer_set_profile_usage", "Usage: sysop/peer set <peer> profile <pycluster|dxspider|dxnet|arcluster|clx>") + "\r\n"
+                profile = value.lower()
+            elif field == "password":
+                password = value
+            elif field == "retry":
+                state = value.lower()
+                if state not in {"on", "off"}:
+                    return self._string("sysop.peer_set_retry_usage", "Usage: sysop/peer set <peer> retry <on|off>") + "\r\n"
+                reconnect = state == "on"
+            else:
+                return self._string("sysop.peer_set_usage", "Usage: sysop/peer set <peer> <dsn|profile|password|retry> <value>") + "\r\n"
+            await self._link_save_peer_fn(peer, dsn, profile, reconnect, password)
+            self._log_event("sysop", f"{call} sysop/peer set {peer} {field}")
+            return self._render_string("sysop.peer_field_updated", "Saved peer {peer}: {field} updated.", peer=peer, field=field) + "\r\n"
+        if action == "delete":
+            if len(toks) != 2:
+                return self._string("sysop.peer_delete_usage", "Usage: sysop/peer delete <peer>") + "\r\n"
+            if not self._link_delete_peer_fn:
+                return self._string("sysop.peer_delete_unavailable", "Peer delete is unavailable in this runtime.") + "\r\n"
+            ok = await self._link_delete_peer_fn(toks[1])
+            if ok:
+                self._log_event("sysop", f"{call} sysop/peer delete {toks[1]}")
+                return self._render_string("sysop.peer_deleted", "Deleted peer {peer}.", peer=toks[1]) + "\r\n"
+            return self._render_string("sysop.peer_missing", "No saved or live peer named {peer}.", peer=toks[1]) + "\r\n"
+        if action == "connect":
+            if len(toks) != 2:
+                return self._string("sysop.peer_connect_usage", "Usage: sysop/peer connect <peer>") + "\r\n"
+            desired = await self._link_desired_peers_fn() if self._link_desired_peers_fn else []
+            row = next((r for r in desired if str(r.get("peer", "")).lower() == toks[1].lower()), None)
+            if not row:
+                return self._render_string("sysop.peer_saved_missing", "No saved peer named {peer}.", peer=toks[1]) + "\r\n"
+            return await self._cmd_connect(call, f"{row.get('peer')} {row.get('dsn')}")
+        if action == "disconnect":
+            if len(toks) != 2:
+                return self._string("sysop.peer_disconnect_usage", "Usage: sysop/peer disconnect <peer>") + "\r\n"
+            return await self._cmd_disconnect(call, toks[1])
+        return self._string("sysop.peer_usage", "Usage: sysop/peer <show|add|set|delete|connect|disconnect> ...") + "\r\n"
+
+    async def _cmd_sysop_spotlimit(self, call: str, arg: str | None) -> str:
+        denied = await self._require_privilege(call, 2, "sysop/spotlimit")
+        if denied:
+            return denied
+        usage = self._string("sysop.spotlimit_usage", "Usage: sysop/spotlimit <default|call> [off|default|<max_per_window> [window_seconds]]")
+        toks = [t for t in (arg or "").split() if t]
+        if not toks:
+            return usage + "\r\n"
         target = toks[0].upper()
         now = int(datetime.now(timezone.utc).timestamp())
         if target == "DEFAULT":
@@ -6315,12 +6822,12 @@ class TelnetClusterServer:
                 default_window = await self.store.get_user_pref(self.config.node.node_call, SPOT_THROTTLE_WINDOW_KEY)
                 policy = await load_spot_throttle_policy(self.store, self.config.node.node_call, call)
                 lines = [
-                    "Spot throttle defaults:",
-                    f"  Enabled: {'on' if policy.enabled else 'off'}",
-                    f"  Max Per Window: {policy.max_per_window}",
-                    f"  Window Seconds: {policy.window_seconds}",
-                    f"  Stored Max Override: {default_max or '(default)'}",
-                    f"  Stored Window Override: {default_window or '(default)'}",
+                    self._string("sysop.spotlimit_defaults_title", "Spot throttle defaults:"),
+                    self._render_string("sysop.spotlimit_enabled", "  Enabled: {value}", value="on" if policy.enabled else "off"),
+                    self._render_string("sysop.spotlimit_default_max", "  Max Per Window: {value}", value=policy.max_per_window),
+                    self._render_string("sysop.spotlimit_default_window", "  Window Seconds: {value}", value=policy.window_seconds),
+                    self._render_string("sysop.spotlimit_stored_max", "  Stored Max Override: {value}", value=default_max or "(default)"),
+                    self._render_string("sysop.spotlimit_stored_window", "  Stored Window Override: {value}", value=default_window or "(default)"),
                 ]
                 return "\r\n".join(lines) + "\r\n"
             action = toks[1].lower()
@@ -6328,19 +6835,19 @@ class TelnetClusterServer:
                 await self.store.set_user_pref(self.config.node.node_call, SPOT_THROTTLE_MAX_KEY, "0", now)
                 await self.store.set_user_pref(self.config.node.node_call, SPOT_THROTTLE_WINDOW_KEY, "0", now)
                 self._log_event("sysop", f"{call} sysop/spotlimit default off")
-                return "Spot throttle defaults disabled.\r\n"
+                return self._string("sysop.spotlimit_defaults_disabled", "Spot throttle defaults disabled.") + "\r\n"
             if action == "default":
                 await self.store.delete_user_pref(self.config.node.node_call, SPOT_THROTTLE_MAX_KEY)
                 await self.store.delete_user_pref(self.config.node.node_call, SPOT_THROTTLE_WINDOW_KEY)
                 self._log_event("sysop", f"{call} sysop/spotlimit default reset")
-                return "Spot throttle defaults reset.\r\n"
+                return self._string("sysop.spotlimit_defaults_reset", "Spot throttle defaults reset.") + "\r\n"
             try:
                 max_per_window = int(toks[1])
                 window_seconds = int(toks[2]) if len(toks) > 2 else None
             except ValueError:
-                return "Usage: sysop/spotlimit <default|call> [off|default|<max_per_window> [window_seconds]]\r\n"
+                return usage + "\r\n"
             if max_per_window < 0 or (window_seconds is not None and window_seconds < 0):
-                return "sysop/spotlimit: values must be non-negative\r\n"
+                return self._string("sysop.spotlimit_nonnegative", "sysop/spotlimit: values must be non-negative") + "\r\n"
             await self.store.set_user_pref(self.config.node.node_call, SPOT_THROTTLE_MAX_KEY, str(max_per_window), now)
             if window_seconds is not None:
                 await self.store.set_user_pref(self.config.node.node_call, SPOT_THROTTLE_WINDOW_KEY, str(window_seconds), now)
@@ -6349,24 +6856,25 @@ class TelnetClusterServer:
                 f"{call} sysop/spotlimit default max={max_per_window}"
                 + (f" window={window_seconds}" if window_seconds is not None else ""),
             )
-            return (
-                f"Spot throttle defaults updated: max={max_per_window}"
-                + (f" window={window_seconds}s" if window_seconds is not None else "")
-                + "\r\n"
-            )
+            return self._render_string(
+                "sysop.spotlimit_defaults_updated",
+                "Spot throttle defaults updated: max={max_per_window}{window_suffix}",
+                max_per_window=max_per_window,
+                window_suffix=f" window={window_seconds}s" if window_seconds is not None else "",
+            ) + "\r\n"
         if not is_valid_call(target):
-            return "Usage: sysop/spotlimit <default|call> [off|default|<max_per_window> [window_seconds]]\r\n"
+            return usage + "\r\n"
         if len(toks) == 1:
             policy = await check_spot_throttle(self.store, self.config.node.node_call, target, now)
             lines = [
-                f"Spot throttle for {target}:",
-                f"  Enabled: {'on' if policy.enabled else 'off'}",
-                f"  Exempt: {'yes' if policy.exempt else 'no'}",
-                f"  Privilege: {policy.privilege or 'non-authenticated'}",
-                f"  Max Per Window: {policy.max_per_window}",
-                f"  Window Seconds: {policy.window_seconds}",
-                f"  Recent Count: {policy.recent_count}",
-                f"  Override Scope: {policy.override_scope or 'default'}",
+                self._render_string("sysop.spotlimit_user_title", "Spot throttle for {target}:", target=target),
+                self._render_string("sysop.spotlimit_enabled", "  Enabled: {value}", value="on" if policy.enabled else "off"),
+                self._render_string("sysop.spotlimit_user_exempt", "  Exempt: {value}", value="yes" if policy.exempt else "no"),
+                self._render_string("sysop.spotlimit_user_privilege", "  Privilege: {value}", value=policy.privilege or "non-authenticated"),
+                self._render_string("sysop.spotlimit_default_max", "  Max Per Window: {value}", value=policy.max_per_window),
+                self._render_string("sysop.spotlimit_default_window", "  Window Seconds: {value}", value=policy.window_seconds),
+                self._render_string("sysop.spotlimit_user_recent", "  Recent Count: {value}", value=policy.recent_count),
+                self._render_string("sysop.spotlimit_user_scope", "  Override Scope: {value}", value=policy.override_scope or "default"),
             ]
             return "\r\n".join(lines) + "\r\n"
         action = toks[1].lower()
@@ -6384,9 +6892,9 @@ class TelnetClusterServer:
             max_per_window = int(toks[1])
             window_seconds = int(toks[2]) if len(toks) > 2 else None
         except ValueError:
-            return "Usage: sysop/spotlimit <default|call> [off|default|<max_per_window> [window_seconds]]\r\n"
+            return usage + "\r\n"
         if max_per_window < 0 or (window_seconds is not None and window_seconds < 0):
-            return "sysop/spotlimit: values must be non-negative\r\n"
+            return self._string("sysop.spotlimit_nonnegative", "sysop/spotlimit: values must be non-negative") + "\r\n"
         await self.store.delete_user_pref(target, SPOT_THROTTLE_EXEMPT_KEY)
         await self.store.set_user_pref(target, SPOT_THROTTLE_MAX_KEY, str(max_per_window), now)
         if window_seconds is not None:
@@ -6396,11 +6904,13 @@ class TelnetClusterServer:
             f"{call} sysop/spotlimit {target} max={max_per_window}"
             + (f" window={window_seconds}" if window_seconds is not None else ""),
         )
-        return (
-            f"Spot throttle updated for {target}: max={max_per_window}"
-            + (f" window={window_seconds}s" if window_seconds is not None else "")
-            + "\r\n"
-        )
+        return self._render_string(
+            "sysop.spotlimit_user_updated",
+            "Spot throttle updated for {target}: max={max_per_window}{window_suffix}",
+            target=target,
+            max_per_window=max_per_window,
+            window_suffix=f" window={window_seconds}s" if window_seconds is not None else "",
+        ) + "\r\n"
 
     async def _cmd_sysop_setaccess(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/setaccess")
@@ -7352,9 +7862,37 @@ class TelnetClusterServer:
 
     async def _cmd_get_keps(self, call: str, _arg: str | None) -> str:
         now = int(datetime.now(timezone.utc).timestamp())
+        keps_path = str(getattr(self.config.satellite, "keps_path", "./data/keps.txt") or "").strip()
+        if not keps_path:
+            return self._string("compat.keps_not_configured", "Keplerian elements update failed: satellite.keps_path is not configured.") + "\r\n"
+        target = Path(keps_path).expanduser()
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        try:
+            text = _download_text_url(_DEFAULT_KEPS_URL)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(f".{target.name}.tmp")
+            tmp.write_text(text, encoding="utf-8")
+            count = len(load_tles(tmp))
+            if count <= 0:
+                raise RuntimeError("no TLE records were found in the downloaded keps file")
+            tmp.replace(target)
+        except Exception as exc:
+            self._log_event("keps", f"{call} get/keps failed: {exc}")
+            return self._render_string(
+                "compat.keps_failed",
+                "Keplerian elements update failed: {error}",
+                error=str(exc),
+            ) + "\r\n"
         await self.store.set_user_pref(call.upper(), "keps_last_request_epoch", str(now), now)
+        await self.store.set_user_pref(call.upper(), "keps_last_update_epoch", str(now), now)
         self._log_event("keps", f"{call} get/keps")
-        return "Keplerian elements request accepted.\r\n"
+        return self._render_string(
+            "compat.keps_ok",
+            "Keplerian elements request accepted. Updated {count} TLE record(s) in {path}.",
+            count=count,
+            path=str(target),
+        ) + "\r\n"
 
     async def _cmd_debug_top(self, call: str, arg: str | None) -> str:
         text = (arg or "").strip().lower()
@@ -7364,7 +7902,7 @@ class TelnetClusterServer:
             return await self._cmd_set_named_var(call, None, "debug", "on")
         if text in {"0", "off", "no", "false"}:
             return await self._cmd_unset_named_var(call, None, "debug")
-        return "Usage: debug [on|off]\r\n"
+        return self._string("debug.usage", "Usage: debug [on|off]") + "\r\n"
 
     async def _cmd_rcmd_top(self, call: str, arg: str | None) -> str:
         text = (arg or "").strip()
@@ -7825,15 +8363,15 @@ class TelnetClusterServer:
             prefs = await self._load_prefs_for_call(_call)
             route = prefs.get("routepc19", "off")
             lines = [
-                "PC capability summary:",
-                f"  Supported: {','.join(f'PC{x}' for x in supported)}",
-                f"  Route PC19: {route}",
+                self._string("pc.summary_title", "PC capability summary:"),
+                self._render_string("pc.supported", "  Supported: {value}", value=",".join(f"PC{x}" for x in supported)),
+                self._render_string("pc.route_pc19", "  Route PC19: {value}", value=route),
             ]
             return await self._format_console_lines(_call, lines)
         toks = [t for t in text.split() if t]
         tok = toks[0].upper().removeprefix("PC")
         if tok not in supported:
-            return "Usage: pc [11|24|50|61|92|93]\r\n"
+            return self._string("pc.usage", "Usage: pc [11|24|50|61|92|93]") + "\r\n"
         mapping = {
             "11": ("announce", "relay.announce"),
             "24": ("dx", "relay.spots"),
@@ -7846,7 +8384,7 @@ class TelnetClusterServer:
         if len(toks) >= 2:
             val = toks[1].strip().lower()
             if val not in {"on", "off"}:
-                return "Usage: pc [11|24|50|61|92|93] [on|off]\r\n"
+                return self._string("pc.set_usage", "Usage: pc [11|24|50|61|92|93] [on|off]") + "\r\n"
             await self._persist_pref(_call.upper(), pref_key, val)
             self._log_event("pc", f"{_call} pc{tok} {val}")
         prefs = await self._load_prefs_for_call(_call)
@@ -7898,7 +8436,7 @@ class TelnetClusterServer:
         key = f"sysop/{first.lower()}"
         handler = self._build_registry().get(key)
         if not handler:
-            return "?\r\n"
+            return self._string("commands.unknown", "?") + "\r\n"
         return await handler(call, rest or None)
 
     async def _cmd_forward_latlong(self, call: str, arg: str | None) -> str:
@@ -8874,10 +9412,17 @@ class TelnetClusterServer:
 
         toks = cmdline.split()
         first = toks[0].lower()
-        resolved_top = self._resolve_top_token(first)
-        if resolved_top:
-            first = resolved_top
         rest = " ".join(toks[1:]) if len(toks) > 1 else None
+        if "/" in first:
+            head, slash_arg = first.split("/", 1)
+            resolved_head = self._resolve_top_token(head)
+            if resolved_head == "announce" and slash_arg:
+                first = resolved_head
+                rest = f"{slash_arg} {rest}".strip() if rest else slash_arg
+        else:
+            resolved_top = self._resolve_top_token(first)
+            if resolved_top:
+                first = resolved_top
 
         # top-level immediate
         try:
@@ -8959,6 +9504,8 @@ class TelnetClusterServer:
                 return True, await self._cmd_debug_top(call, rest)
             if first == "rcmd":
                 return True, await self._cmd_rcmd_top(call, rest)
+            if first == "mfa":
+                return True, await self._cmd_mfa(call, rest)
             if first == "privilege":
                 return True, await self._cmd_privilege_top(call, rest)
             if first == "save":
@@ -9123,6 +9670,7 @@ class TelnetClusterServer:
             "set/qra": lambda c, a: self._cmd_set_named_var(c, a, "qra", ""),
             "set/qth": lambda c, a: self._cmd_set_named_var(c, a, "qth", ""),
             "set/location": lambda c, a: self._cmd_set_named_var(c, a, "location", ""),
+            "set/mfa": self._cmd_set_mfa,
             "set/name": lambda c, a: self._cmd_set_named_var(c, a, "name", ""),
             "set/startup": self._cmd_set_startup,
             "set/usdb": self._cmd_set_usdb,
@@ -9191,6 +9739,9 @@ class TelnetClusterServer:
             "sysop/sysops": self._cmd_sysop_sysops,
             "sysop/access": self._cmd_sysop_access,
             "sysop/path": self._cmd_sysop_path,
+            "sysop/peer": self._cmd_sysop_peer,
+            "sysop/peeraccount": self._cmd_sysop_peeraccount,
+            "sysop/peerprofile": self._cmd_sysop_peerprofile,
             "sysop/spotlimit": self._cmd_sysop_spotlimit,
             "sysop/setaccess": self._cmd_sysop_setaccess,
             "sysop/setprompt": self._cmd_sysop_setprompt,
@@ -9240,6 +9791,7 @@ class TelnetClusterServer:
             "unset/email": lambda c, a: self._cmd_unset_contact_field(c, a, "email"),
             "unset/hops": lambda c, a: self._cmd_unset_named_var(c, a, "hops"),
             "unset/logininfo": lambda c, a: self._cmd_unset_named_var(c, a, "logininfo"),
+            "unset/mfa": self._cmd_unset_mfa,
             "unset/passphrase": lambda c, a: self._cmd_unset_named_var(c, a, "passphrase"),
             "unset/password": lambda c, a: self._cmd_unset_named_var(c, a, "password"),
             "unset/privilege": self._cmd_unset_privilege,
@@ -9264,24 +9816,15 @@ class TelnetClusterServer:
             "accept/rbn": lambda c, a: self._cmd_filter_alias_expr(c, a, "spots", "accept", "rbn", "rbn"),
             "accept/announce": lambda c, a: self._cmd_filter_add(c, a, "announce", "accept"),
             "accept/route": lambda c, a: self._cmd_filter_add(c, a, "route", "accept"),
-            "accept/wcy": lambda c, a: self._cmd_filter_add(c, a, "wcy", "accept"),
-            "accept/wwv": lambda c, a: self._cmd_filter_add(c, a, "wwv", "accept"),
-            "accept/wx": lambda c, a: self._cmd_filter_add(c, a, "wx", "accept"),
             "reject/spots": lambda c, a: self._cmd_filter_add(c, a, "spots", "reject"),
             "reject/rbn": lambda c, a: self._cmd_filter_alias_expr(c, a, "spots", "reject", "rbn", "rbn"),
             "reject/announce": lambda c, a: self._cmd_filter_add(c, a, "announce", "reject"),
             "reject/route": lambda c, a: self._cmd_filter_add(c, a, "route", "reject"),
-            "reject/wcy": lambda c, a: self._cmd_filter_add(c, a, "wcy", "reject"),
-            "reject/wwv": lambda c, a: self._cmd_filter_add(c, a, "wwv", "reject"),
-            "reject/wx": lambda c, a: self._cmd_filter_add(c, a, "wx", "reject"),
             # clear/*
             "clear/spots": lambda c, a: self._cmd_filter_clear(c, a, "spots"),
             "clear/rbn": lambda c, a: self._cmd_filter_clear_expr(c, a, "spots", "rbn", "rbn"),
             "clear/announce": lambda c, a: self._cmd_filter_clear(c, a, "announce"),
             "clear/route": lambda c, a: self._cmd_filter_clear(c, a, "route"),
-            "clear/wcy": lambda c, a: self._cmd_filter_clear(c, a, "wcy"),
-            "clear/wwv": lambda c, a: self._cmd_filter_clear(c, a, "wwv"),
-            "clear/wx": lambda c, a: self._cmd_filter_clear(c, a, "wx"),
             "clear/dupefile": self._cmd_clear_dupefile,
             "clear/protohistory": self._cmd_clear_protohistory,
             "clear/prhist": self._cmd_clear_protohistory,
@@ -9457,8 +10000,8 @@ class TelnetClusterServer:
             handoff = False
 
             try:
-                await self._write(writer, "login: ")
-                raw_call = await self._readline(reader)
+                await self._write(writer, self._string("login.prompt", "login: "))
+                raw_call = await self._readline(reader, writer)
                 if raw_call is None:
                     writer.close()
                     await writer.wait_closed()
@@ -9467,7 +10010,7 @@ class TelnetClusterServer:
                 call = self._sanitize_login_call(raw_call)
                 if not call or not is_valid_call(call):
                     self._log_auth_failure("telnet", peer, call or raw_call, "invalid_callsign")
-                    await self._write(writer, "Invalid callsign\r\n")
+                    await self._write(writer, self._string("login.invalid_callsign", "Invalid callsign") + "\r\n")
                     writer.close()
                     await writer.wait_closed()
                     return
@@ -9480,13 +10023,28 @@ class TelnetClusterServer:
                         break
                 if blocked:
                     self._log_auth_failure("telnet", peer, call, "blocked_login")
-                    await self._write(writer, "Login blocked\r\n")
+                    await self._write(writer, self._string("login.blocked", "Login blocked") + "\r\n")
+                    writer.close()
+                    await writer.wait_closed()
+                    return
+                lock_state, _lock_verified_epoch, _lock_remaining = await registration_state(self.store, base_call)
+                if lock_state == "locked":
+                    self._log_auth_failure("telnet", peer, call, "account_locked")
+                    await self._write(
+                        writer,
+                        self._render_string(
+                            "account.locked",
+                            "Account {call} is locked. Contact a sysop.",
+                            call=base_call,
+                        )
+                        + "\r\n",
+                    )
                     writer.close()
                     await writer.wait_closed()
                     return
                 if not await self._access_allowed(call, "telnet", "login"):
                     self._log_auth_failure("telnet", peer, call, "telnet_login_not_allowed")
-                    await self._write(writer, "Login not allowed via telnet\r\n")
+                    await self._write(writer, self._string("login.not_allowed_telnet", "Login not allowed via telnet") + "\r\n")
                     writer.close()
                     await writer.wait_closed()
                     return
@@ -9554,7 +10112,7 @@ class TelnetClusterServer:
                     password_just_set = True
                 if require_password and not password_just_set:
                     await self._set_telnet_password_echo(reader, writer, suppress=True)
-                    await self._write(writer, "password: ")
+                    await self._write(writer, self._string("login.password_prompt", "password: "))
                     supplied_password = await self._read_password(reader, writer)
                     if supplied_password is None:
                         writer.close()
@@ -9563,12 +10121,14 @@ class TelnetClusterServer:
                     if expected_password is not None and str(expected_password).strip():
                         if not verify_password(supplied_password, str(expected_password)):
                             self._log_auth_failure("telnet", peer, call, "bad_password")
-                            await self._write(writer, "Login failed\r\n")
+                            await self._record_telnet_password_failure(call, peer)
+                            await self._write(writer, self._string("login.failed", "Login failed") + "\r\n")
                             writer.close()
                             await writer.wait_closed()
                             return
                         if not is_password_hash(str(expected_password)):
                             await self.store.set_user_pref(call, "password", hash_password(supplied_password), int(datetime.now(timezone.utc).timestamp()))
+                        await self._clear_telnet_password_failures(call)
                 if self.config.node.verified_email_required_for_telnet and not node_family and password_set:
                     if not await self._require_verified_email_for_login(call, reader, writer):
                         self._log_auth_failure("telnet", peer, call, "email_verification_required")
@@ -9587,7 +10147,16 @@ class TelnetClusterServer:
                 maxconnect = await self._maxconnect_for_call(call)
                 active_for_call = self._active_sessions_for_call(call)
                 if maxconnect > 0 and active_for_call >= maxconnect:
-                    await self._write(writer, f"Too many connections for {call}. Maximum allowed: {maxconnect}\r\n")
+                    await self._write(
+                        writer,
+                        self._render_string(
+                            "login.too_many_connections",
+                            "Too many connections for {call}. Maximum allowed: {maxconnect}",
+                            call=call,
+                            maxconnect=maxconnect,
+                        )
+                        + "\r\n",
+                    )
                     writer.close()
                     await writer.wait_closed()
                     return
@@ -9642,7 +10211,7 @@ class TelnetClusterServer:
                     await self._write(writer, await self._prompt(call))
 
                 while True:
-                    line = await self._readline(reader)
+                    line = await self._readline(reader, writer)
                     if line is None:
                         break
                     keep_going, output = await self._execute_command(call, line)
@@ -9677,7 +10246,7 @@ class TelnetClusterServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> bool:
-        await self._write(writer, f"Hello {call}\r\n")
+        await self._write(writer, self._render_string("login.hello", "Hello {call}", call=call) + "\r\n")
         await self._write(writer, await self._prompt(call))
         first = await self._readline(reader)
         if first is None:
@@ -9693,5 +10262,5 @@ class TelnetClusterServer:
             if self._on_node_login_fn:
                 return await self._on_node_login_fn(call, peer_name, reader, writer, None)
             return False
-        await self._write(writer, "Node login requires a cluster client handshake.\r\n")
+        await self._write(writer, self._string("login.node_handshake_required", "Node login requires a cluster client handshake.") + "\r\n")
         return False

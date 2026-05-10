@@ -155,6 +155,7 @@ Peer roles:
 
 Operational tasks:
 
+- create or update the peer's local node account
 - define saved peers
 - connect or disconnect peers
 - view live traffic and health
@@ -164,14 +165,33 @@ Operational tasks:
 
 Typical outbound-peer workflow:
 
-1. click `New Peer`
-2. enter:
+1. confirm the remote sysop created an account for this node's login callsign
+2. click `New Peer`
+3. enter:
    - peer name
    - transport address
    - cluster family
-3. optionally set a peer password
-4. save the peer
-5. connect it
+4. optionally set the peer password that matches the remote account
+5. save the peer
+6. connect it
+
+Typical inbound-peer workflow:
+
+1. create or update a local user record for the remote node callsign
+2. set `node_family` for that account, for example `pycluster` or `dxspider`
+3. set a password if this node requires one for the peer
+4. coordinate the login callsign, password, and expected family with the remote sysop
+5. let the remote node connect inbound
+
+Useful peer-account telnet commands:
+
+```text
+sysop/peeraccount add N9JR-2 pycluster
+sysop/peeraccount password N9JR-2 shared-secret
+sysop/peeraccount show N9JR-2
+```
+
+A saved peer definition and a peer account are different things. The saved peer controls how pyCluster opens an outbound connection. The account controls whether an inbound or remote-authenticated node login is accepted and which node-family behavior pyCluster applies.
 
 Important distinction:
 

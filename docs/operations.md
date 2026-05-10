@@ -9,7 +9,7 @@ Typical production services:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-data-refresh.timer`
-  - refreshes both `CTY.DAT` and `wpxloc.raw`
+  - checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
 - `pycluster-retention.timer`
 
 Validated operational environments so far:
@@ -65,6 +65,17 @@ Supported operational scripts:
 - `deploy/repair.sh`
 - `deploy/uninstall.sh`
 - `deploy/doctor.sh`
+
+The System Operator console upgrade button queues a request under the live runtime tree, then the `pycluster-upgrade.path` unit runs the worker from `/usr/src/pyCluster`. The worker advances that source checkout before running `deploy/upgrade.sh`, which syncs the updated tree into `/home/pycluster/pyCluster`.
+
+Upgrade, repair, and uninstall operations preserve the runtime `config/`, `data/`, and `logs/` directories and create timestamped archives under `/root/pycluster-backups/` before making destructive changes. If an older installed checkout does not yet include automatic preflight backups, create one manually first:
+
+```bash
+sudo install -d -m 0700 /root/pycluster-backups
+sudo tar -C /home/pycluster -czf /root/pycluster-backups/manual-pre-upgrade_$(date -u +%Y%m%dT%H%M%SZ).tar.gz pyCluster/config pyCluster/data pyCluster/logs
+```
+
+If a manual backup races with actively written logs, stop `pycluster.service` and `pyclusterweb.service`, repeat the backup, and then run `deploy/upgrade.sh`; the upgrade script restarts both services.
 
 ## Doctor Output
 
@@ -136,7 +147,7 @@ This refreshes both `CTY.DAT` and `wpxloc.raw` unless you pass `--cty-only`.
 Automatic:
 
 - `pycluster-data-refresh.timer`
-  - refreshes both `CTY.DAT` and `wpxloc.raw`
+  - checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
 
 ## Security Operations
 

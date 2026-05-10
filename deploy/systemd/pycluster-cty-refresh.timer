@@ -1,10 +1,10 @@
 [Unit]
-Description=Weekly pyCluster country data refresh
+Description=Frequent pyCluster country data refresh
 
 [Timer]
-OnCalendar=weekly
+OnCalendar=*-*-* 00/6:15:00
 Persistent=true
-RandomizedDelaySec=2h
+RandomizedDelaySec=30m
 Unit=pycluster-cty-refresh.service
 
 [Install]

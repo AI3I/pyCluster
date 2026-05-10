@@ -33,6 +33,8 @@ async def registration_state(store: SpotStore, call: str) -> tuple[str, int, int
         grace_remaining = max(0, int(str(grace_raw or "0").strip() or "0"))
     except ValueError:
         grace_remaining = 0
+    if state == "locked":
+        return state, verified_epoch, grace_remaining
     if verified_epoch > 0:
         state = "verified"
     return state, verified_epoch, grace_remaining

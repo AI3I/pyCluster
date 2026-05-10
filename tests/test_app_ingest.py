@@ -130,6 +130,11 @@ def test_connect_peer_sends_legacy_dxspider_init_frames(tmp_path) -> None:
             assert prefs["peer.outbound.ai3i-15.name"] == "AI3I-15"
             assert prefs["peer.outbound.ai3i-15.dsn"] == "dxspider://dxspider.ai3i.net:7300?login=AI3I-16&client=AI3I-15"
             assert prefs["peer.outbound.ai3i-15.reconnect"] == "on"
+            row = await app.store.get_user_registry("AI3I-15")
+            assert row is not None
+            assert int(row["last_login_epoch"] or 0) > 0
+            assert str(row["last_login_peer"]) == "node-link outbound dxspider host dxspider.ai3i.net:7300"
+            assert await app.store.get_user_pref("AI3I-15", "node_family") == "dxspider"
             node_call = app.config.node.node_call.upper()
             assert [frame.pc_type for _, frame in sent] == ["PC19", "PC16", "PC22"]
             assert sent[0][1].payload_fields == ["1", node_call, "0", "5457", "H1", ""]
@@ -366,6 +371,9 @@ def test_peer_password_is_stored_separately_from_dsn_and_injected_on_connect(tmp
             prefs = await app.store.list_user_prefs(app.config.node.node_call)
             assert prefs["peer.outbound.ai3i-16.dsn"] == "dxspider://dxspider.ai3i.net:7300?login=AI3I-15&client=AI3I-16"
             assert prefs["peer.outbound.ai3i-16.password"] == "sekret"
+            row = await app.store.get_user_registry("AI3I-16")
+            assert row is not None
+            assert await app.store.get_user_pref("AI3I-16", "node_family") == "dxspider"
 
             rows = await app.desired_peer_status()
             assert len(rows) == 1
@@ -612,6 +620,39 @@ def test_ingest_pc10_delivers_talk_without_creating_mail(tmp_path) -> None:
             rows = await app.store.list_messages("AI3I", limit=5)
             assert rows == []
             assert b"TALK N0CALL: hello from cluster mail" in bytes(writer.buffer)
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc10_suppresses_duplicate_talk_from_multiple_peers(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc10_duplicate.db")
+        app = ClusterApp(_mk_config(db))
+        writer = _DummyWriter()
+        drops: list[tuple[str, str]] = []
+
+        async def _mark_policy_drop(peer: str, reason: str) -> None:
+            drops.append((peer, reason))
+
+        app.node_link.mark_policy_drop = _mark_policy_drop  # type: ignore[method-assign]
+        try:
+            app.telnet._sessions[1] = Session(
+                call="AI3I",
+                writer=writer,
+                connected_at=datetime.now(timezone.utc),
+            )
+            msg = Pc10Message.from_fields(
+                ["N0CALL", "AI3I-15", "hello once", "*", "AI3I", "AI3I-16", "~"]
+            )
+            frame = WirePcFrame("PC10", msg.to_fields())
+            await app._handle_node_link_item("PEER1", frame, msg)
+            await app._handle_node_link_item("PEER2", frame, msg)
+
+            payload = bytes(writer.buffer)
+            assert payload.count(b"TALK N0CALL: hello once") == 1
+            assert ("PEER2", "ingest_pc10_duplicate") in drops
         finally:
             await app.store.close()
 
@@ -2308,6 +2349,11 @@ def test_app_wire_proto_state_burst_records_peer_history(tmp_path) -> None:
             raw_hist = prefs.get(f"proto.peer.{tag}.history", "[]")
             hist = json.loads(raw_hist)
             assert isinstance(hist, list)
+            assert any(
+                str(ev.get("key", "")) == "pc50.count" and str(ev.get("from", "")) == "" and str(ev.get("to", "")) == "63"
+                for ev in hist
+                if isinstance(ev, dict)
+            )
             assert any(str(ev.get("key", "")) == "pc24.flag" for ev in hist if isinstance(ev, dict))
 
             stats = await app.node_link.stats()

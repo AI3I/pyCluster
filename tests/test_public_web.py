@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
 import re
+from types import SimpleNamespace
 
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.mfa import EmailOtpManager, totp_code
 from pycluster import __version__
+from pycluster import public_web as public_web_mod
 from pycluster.models import Spot
 from pycluster.public_web import PublicWebServer
 from pycluster.store import SpotStore
@@ -35,6 +37,52 @@ def _write_wpxloc(tmp_path: Path) -> str:
         encoding="ascii",
     )
     return str(path)
+
+
+def test_public_web_static_uses_backend_kp_endpoint() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert "const KP     = '/api/kp';" in text
+    assert "fetch(KP)" in text
+    assert "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json" not in text
+
+
+def test_public_web_kp_endpoint_normalizes_seven_day_values(tmp_path, monkeypatch) -> None:
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            today = datetime.now(timezone.utc).date()
+            yesterday = today - timedelta(days=1)
+            rows = [
+                ["time_tag", "Kp", "a_running", "station_count"],
+                [f"{yesterday.isoformat()} 00:00:00.000", "1.00", "1", "8"],
+                [f"{yesterday.isoformat()} 03:00:00.000", "3.33", "3", "8"],
+                [f"{today.isoformat()} 00:00:00.000", "2.67", "2", "8"],
+            ]
+            return json.dumps(rows).encode("utf-8")
+
+    async def run() -> None:
+        db = str(tmp_path / "public_web_kp.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        monkeypatch.setattr(public_web_mod.urllib.request, "urlopen", lambda *_args, **_kwargs: _Resp())
+        try:
+            code, _, body = await _http_request(srv, "/api/kp")
+            assert code == 200
+            payload = json.loads(body.decode("utf-8"))
+            assert len(payload["days"]) == 7
+            assert payload["days"][-1]["kp"] == 2.67
+            assert payload["days"][-2]["kp"] == 3.33
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
 
 async def _http_request(
     srv: PublicWebServer,
@@ -328,6 +376,15 @@ def test_public_dxweb_frequency_formatter_preserves_100hz_resolution() -> None:
     assert "return truncated.toFixed(1);" in text
 
 
+def test_public_dxweb_static_includes_spotter_continent_filter_controls() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert "Spotter Continent" in text
+    assert 'data-ftype="spotterCont"' in text
+    assert "const FILTER_SPOTS = '/api/filters/spots';" in text
+    assert "spotter_cont " in text
+    assert "await webJson(API+'?limit=500')" in text
+
+
 def test_public_dxweb_static_includes_footer_register_modal() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
     assert 'id="register-modal-bg"' in text
@@ -335,6 +392,36 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "const REGISTER_REQUEST = '/api/register/request';" in text
     assert "@media (max-width:1100px)" in text
     assert "@media (max-width:760px)" in text
+
+
+def test_public_dxweb_auth_locked_sidebar_tabs_stay_visible() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+
+    watch = re.search(r'<button[^>]+id="tab-watch"[^>]*>', text)
+    operate = re.search(r'<button[^>]+id="tab-operate"[^>]*>', text)
+    assert watch and operate
+    assert "hidden" not in watch.group(0)
+    assert "hidden" not in operate.group(0)
+    assert "auth-locked" in watch.group(0)
+    assert "auth-locked" in operate.group(0)
+    assert "disabled" in watch.group(0)
+    assert "disabled" in operate.group(0)
+    assert 'aria-disabled="true"' in watch.group(0)
+    assert 'aria-disabled="true"' in operate.group(0)
+    assert "tab.disabled = !loggedIn;" in text
+    assert "tab.classList.toggle('auth-locked', !loggedIn);" in text
+    assert "operateTab.disabled" in text
+    assert "watchTab.disabled" in text
+
+
+def test_public_dxweb_operate_panel_does_not_offer_wcy_posting() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert 'id="post-wcy-btn"' not in text
+    assert "const POST_WCY" not in text
+    assert "submitPublicAction('wcy')" not in text
+    assert "wcy: POST_WCY" not in text
+    assert "Enter chat, announce, WX, WCY, or WWV text here" not in text
+    assert "Use this box for chat, announce, WX, WCY, and WWV posts." not in text
 
 
 def test_public_web_login_failure_logs_structured_authfail(tmp_path, caplog) -> None:
@@ -761,6 +848,7 @@ def test_public_web_auth_and_posting(tmp_path) -> None:
             me = json.loads(body.decode("utf-8"))
             assert me["call"] == "AI3I"
             assert me["access"]["chat"] is True
+            assert me["profile"]["mfa"]["enabled"] is False
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -794,6 +882,148 @@ def test_public_web_auth_and_posting(tmp_path) -> None:
             )
             assert code == 200
             assert json.loads(body.decode("utf-8"))["category"] == "announce"
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/wcy",
+                json.dumps({"text": "A=8 K=2"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 403
+            assert "WCY posting is not available from the public web" in body.decode("utf-8")
+            assert await store.list_bulletins("wcy", limit=1) == []
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_spot_filters_are_persisted_and_applied_to_logged_in_spots(tmp_path, monkeypatch) -> None:
+    def _lookup(call: str):
+        if call.upper().startswith("EU"):
+            return SimpleNamespace(name="Germany", continent="EU", cq_zone=14, itu_zone=28, lat=51.0, lon=10.0)
+        return SimpleNamespace(name="United States", continent="NA", cq_zone=5, itu_zone=8, lat=40.0, lon=-75.0)
+
+    async def run() -> None:
+        db = str(tmp_path / "public_web_persisted_filters.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+        await store.add_spot(Spot(14074.0, "K1ABC", now, "FT8", "EU1SPT", "AI3I-15", ""))
+        await store.add_spot(Spot(14075.0, "K1ABD", now - 1, "FT8", "N0SPT", "AI3I-15", ""))
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._cty_loaded = True
+        monkeypatch.setattr(public_web_mod, "lookup", _lookup)
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            token = json.loads(body.decode("utf-8"))["token"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/filters/spots",
+                json.dumps({"action": "accept", "slot": 8, "expr": "spotter_cont EU"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            assert await store.list_filter_rules("AI3I")
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "GET",
+                "/api/spots?limit=10",
+                headers={"X-Web-Token": token},
+            )
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert [row["spotter"] for row in rows] == ["EU1SPT"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/filters/spots",
+                json.dumps({"action": "clear", "slot": 8}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            assert not await store.list_filter_rules("AI3I")
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_user_can_manage_own_mfa(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_user_mfa_self_service.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            token = json.loads(body.decode("utf-8"))["token"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
+                json.dumps({"action": "email"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["mfa"]["email_otp"] == "required"
+            assert data["mfa"]["enabled"] is True
+            assert await store.get_user_pref("AI3I", "mfa_email_otp") == "required"
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
+                json.dumps({"action": "authenticator"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["secret"]
+            assert data["otpauth_uri"].startswith("otpauth://totp/")
+            assert data["mfa"]["totp_enabled"] is True
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == data["secret"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
+                json.dumps({"action": "off"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["mfa"]["enabled"] is False
+            assert await store.get_user_pref("AI3I", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") is None
         finally:
             await store.close()
 
@@ -1036,6 +1266,12 @@ def test_public_web_registration_request_verifies_email_and_queues_pending_reque
             assert str(req["status"]) == "pending"
             assert str(req["email"]) == "new@example.test"
             assert int(req["email_verified"]) == 1
+            user = await store.get_user_registry("N1NEW")
+            assert user is not None
+            assert str(user["privilege"]) == ""
+            assert str(user["email"]) == "new@example.test"
+            assert await store.get_user_pref("N1NEW", "registration_state") == "verified"
+            assert await store.get_user_pref("N1NEW", "email_verified_epoch") is not None
             assert any(rcpt == "sysop@example.test" for rcpt, _subject, _body in sent)
             assert any(rcpt == "new@example.test" for rcpt, _subject, _body in sent)
         finally:
@@ -1074,6 +1310,25 @@ def test_public_web_non_authenticated_users_are_read_only_by_default(tmp_path) -
             )
             assert code == 403
             assert json.loads(body.decode("utf-8"))["error"] == "spot posting not allowed via web"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_explicit_ssid_user_does_not_inherit_base_call_access(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_ssid_access_inheritance.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.upsert_user_registry("AI3I-1", now, privilege="", email="ai3i-1@example.test")
+        await store.set_user_pref("AI3I", "access.web.spots", "on", now)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            assert await srv._access_allowed("AI3I", "web", "spots") is True
+            assert await srv._access_allowed("AI3I-1", "web", "spots") is False
         finally:
             await store.close()
 

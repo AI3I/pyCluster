@@ -18,6 +18,11 @@ from pycluster.store import SpotStore
 from pycluster.web_admin import WebAdminServer
 
 
+def _assert_text_order(text: str, *needles: str) -> None:
+    offsets = [text.index(needle) for needle in needles]
+    assert offsets == sorted(offsets)
+
+
 def _mk_config(db_path: str, admin_token: str = "") -> AppConfig:
     return AppConfig(
         node=NodeConfig(),
@@ -112,6 +117,7 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     assert 'id="user-browser-clusters"' in text
     assert 'id="user-browser-sysops"' in text
     assert 'id="user-browser-requests"' in text
+    assert "exclude_clusters=1" in text
     assert 'data-telemetry-panel="overview"' in text
     assert 'data-telemetry-panel="audit"' in text
     assert 'data-telemetry-panel="security"' in text
@@ -146,6 +152,24 @@ def test_web_admin_static_uses_full_width_user_action_bar() -> None:
     assert ".users-actionbar{" in text
     assert 'class="users-actionbar"' in text
     assert 'class="users-action-group"' in text
+    assert 'id="blockUser" disabled' in text
+    assert 'id="unblockUser" disabled' in text
+    assert "byId('blockUser').onclick" in text
+    assert "byId('unblockUser').onclick" in text
+    _assert_text_order(
+        text,
+        'id="saveUserPassword"',
+        'id="resetUserMfa"',
+        'id="saveUser"',
+        'id="newUser"',
+        'id="deleteUser"',
+    )
+    _assert_text_order(
+        text,
+        'id="sendVerification"',
+        'id="sendMfaTest"',
+        'id="enrollTotp"',
+    )
     assert "display:flex;" in text
     assert "flex-wrap:wrap;" in text
 
@@ -159,6 +183,15 @@ def test_web_admin_static_peer_table_uses_content_width_columns() -> None:
     assert 'id="peerDelete"' in text
     assert "byId('peer').value = '';" in text
     assert "j('/api/peer/delete'" in text
+    _assert_text_order(
+        text,
+        'id="peerRefresh"',
+        'id="pconnect"',
+        'id="pdisconnect"',
+        'id="peerSave"',
+        'id="newPeer"',
+        'id="peerDelete"',
+    )
 
 
 def test_web_admin_static_exposes_qrz_settings() -> None:
@@ -187,8 +220,22 @@ def test_web_admin_static_exposes_totp_mfa_controls() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert 'id="enrollTotp"' in text
     assert "/api/users/mfa/totp/enroll" in text
-    assert "Authenticator setup URI" in text
+    assert "Authenticator setup key" in text
+    assert "window.prompt('Authenticator setup URI" not in text
     assert "mfa_method" in text
+    assert 'id="userMfaStatus"' in text
+    assert "<th>MFA</th>" in text
+    assert "function mfaStatusMark(row)" in text
+    assert "data.mfa_enabled ? 'enabled' : 'disabled'" in text
+
+
+def test_web_admin_system_tools_do_not_offer_wcy_posting() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'id="wcy"' not in text
+    assert "byId('wcy')" not in text
+    assert "postText('/api/wcy'" not in text
+    assert "Enter chat, announce, WCY, WWV, or WX text here" not in text
+    assert "Required for Chat, Announce, WCY, WWV, and WX actions." not in text
 
 
 def test_web_admin_static_shows_registration_state_controls() -> None:
@@ -196,6 +243,10 @@ def test_web_admin_static_shows_registration_state_controls() -> None:
     assert 'id="user_verified_state" type="checkbox" disabled' in text
     assert 'id="user_unlocked_state" type="checkbox" disabled' in text
     assert '<label for="user_unlocked_state">Locked</label>' in text
+    assert 'id="unlockAccount" disabled' in text
+    assert "byId('unlockAccount').onclick" in text
+    _assert_text_order(text, 'id="unlockAccount"', 'id="blockUser"', 'id="unblockUser"')
+    assert "/api/users/unlock" in text
     assert 'id="markVerified">Verify Now<' not in text
     assert 'id="unlockRegistration">Unlock Now<' not in text
     assert '<h3>Access Matrix</h3>' in text
@@ -206,6 +257,7 @@ def test_web_admin_static_shows_registration_state_controls() -> None:
     assert "function setRegistrationActionState(verified, locked, enabled)" in text
     assert "verifiedState.checked = !!verified" in text
     assert "unlockedState.checked = !!locked" in text
+    assert "unlockButton.disabled = !enabled || !locked || !selectedUserCall" in text
 
 
 def test_web_admin_static_includes_location_detail_field() -> None:
@@ -281,6 +333,10 @@ def test_web_admin_static_exposes_taxonomy_editor() -> None:
 def test_web_admin_static_exposes_mail_tab_smtp_test() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert 'data-node-group="smtp">Mail (SMTP)</button>' in text
+    assert '<select id="smtp_port"' in text
+    assert '<option value="587">Submission (587)</option>' in text
+    assert '<option value="25">SMTP (25)</option>' in text
+    assert 'id="smtp_port" type="number"' not in text
     assert 'id="smtp_test_email"' in text
     assert 'id="sendSmtpTest"' in text
     assert "j('/api/node/smtp-test'" in text
@@ -461,7 +517,7 @@ def test_web_login_and_spot_post(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_registration_approval_creates_limited_user_record(tmp_path) -> None:
+def test_registration_approval_creates_authenticated_user_record(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "approve_registration.db")
         cfg = _mk_config(db, admin_token="adm")
@@ -492,10 +548,12 @@ def test_registration_approval_creates_limited_user_record(tmp_path) -> None:
             assert code == 200
             payload = json.loads(body.decode("utf-8"))
             assert payload["ok"] is True
-            assert payload["user"]["privilege"] == ""
+            assert payload["user"]["privilege"] == "user"
+            assert payload["user"]["registration_state"] == "verified"
+            assert payload["user"]["email_verified"] is True
             assert payload["user"]["access"]["telnet"]["login"] is True
-            assert payload["user"]["access"]["telnet"]["spots"] is False
-            assert payload["user"]["access"]["web"]["announce"] is False
+            assert payload["user"]["access"]["telnet"]["spots"] is True
+            assert payload["user"]["access"]["web"]["announce"] is True
         finally:
             await store.close()
 
@@ -1040,12 +1098,39 @@ def test_web_access_policy_controls_login_and_posting(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_explicit_ssid_user_does_not_inherit_base_call_access(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_ssid_access_inheritance.db")
+        cfg = _mk_config(db, admin_token="")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
+            await store.upsert_user_registry("AI3I-1", now, privilege="", email="ai3i-1@example.test")
+            await store.set_user_pref("AI3I", "access.web.spots", "on", now)
+
+            assert await srv._access_allowed("AI3I", "web", "spots") is True
+            assert await srv._access_allowed("AI3I-1", "web", "spots") is False
+            assert await srv._admin_privileged_call("AI3I") is True
+            assert await srv._admin_privileged_call("AI3I-1") is False
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_admin_auth.db")
         cfg = _mk_config(db, admin_token="adm")
         store = SpotStore(db)
-        ops: list[tuple[str, str, str]] = []
+        ops: list[tuple[object, ...]] = []
 
         async def _stats():
             return {"peer1": {"policy_dropped": 2, "policy_reasons": {"route_filter": 2}}}
@@ -1056,8 +1141,8 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
         async def _connect(peer: str, dsn: str, profile: str = "dxspider", persist: bool = True, password: str = "") -> None:
             ops.append(("connect", peer, dsn, profile, persist, password))
 
-        async def _disconnect(peer: str) -> bool:
-            ops.append(("disconnect", peer, ""))
+        async def _disconnect(peer: str, forget: bool = True) -> bool:
+            ops.append(("disconnect", peer, forget))
             return peer == "peer1"
 
         async def _set_profile(peer: str, profile: str) -> bool:
@@ -1066,6 +1151,17 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
 
         async def _save(peer: str, dsn: str, profile: str = "dxspider", reconnect: bool = True, password: str = "") -> None:
             ops.append(("save", peer, dsn, profile, reconnect, password))
+
+        async def _desired() -> list[dict[str, object]]:
+            return [
+                {
+                    "peer": "peer1",
+                    "dsn": "tcp://127.0.0.1:7300",
+                    "profile": "dxspider",
+                    "password": "sekret",
+                    "reconnect_enabled": True,
+                }
+            ]
 
         async def _delete(peer: str) -> bool:
             ops.append(("delete", peer, ""))
@@ -1081,6 +1177,7 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             link_connect_fn=_connect,
             link_disconnect_fn=_disconnect,
             link_set_profile_fn=_set_profile,
+            link_desired_peers_fn=_desired,
             link_save_peer_fn=_save,
             link_delete_peer_fn=_delete,
         )
@@ -1168,6 +1265,16 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             code, _, body = await _http_request(
                 srv,
                 "POST",
+                "/api/peer/connect",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"peer": "peer1"}).encode("utf-8"),
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
                 "/api/peer/save",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
                 body=json.dumps({"peer": "inbound1", "dsn": "", "profile": "dxspider", "reconnect": False}).encode("utf-8"),
@@ -1218,7 +1325,7 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             assert ("save", "inbound1", "", "dxspider", False, "") in ops
             assert ("connect", "peer1", "tcp://127.0.0.1:7300", "dxspider", True, "sekret") in ops
             assert ("profile", "peer1", "arcluster") in ops
-            assert ("disconnect", "peer1", "") in ops
+            assert ("disconnect", "peer1", False) in ops
             assert ("delete", "peer1", "") in ops
         finally:
             await store.close()
@@ -1959,9 +2066,9 @@ def test_web_admin_upgrade_status_and_request(tmp_path, monkeypatch) -> None:
         monkeypatch.setattr("pycluster.web_admin.detect_upgrade_availability", lambda repo_root, current_version: {
             "current_version": current_version,
             "latest_local_tag": "v1.0.6",
-            "latest_remote_tag": "v1.0.7",
+            "latest_remote_tag": "v1.0.9",
             "available": True,
-            "available_version": "1.0.7",
+            "available_version": "1.0.9",
             "remote_checked": True,
             "remote_error": "",
         })
@@ -1976,7 +2083,7 @@ def test_web_admin_upgrade_status_and_request(tmp_path, monkeypatch) -> None:
             assert code == 200
             data = json.loads(body.decode("utf-8"))
             assert data["availability"]["available"] is True
-            assert data["availability"]["available_version"] == "1.0.7"
+            assert data["availability"]["available_version"] == "1.0.9"
             assert data["migrations"] == ["run_upgrade_1_0_1"]
             assert data["status"]["state"] == "idle"
 
@@ -1992,6 +2099,7 @@ def test_web_admin_upgrade_status_and_request(tmp_path, monkeypatch) -> None:
             assert data["ok"] is True
             queued = json.loads((repo_root / "data" / "upgrade-request.json").read_text(encoding="utf-8"))
             assert queued["current_version"] == __version__
+            assert queued["source_repo_root"] == str(repo_root)
 
             (repo_root / "data").mkdir(parents=True, exist_ok=True)
             (repo_root / "data" / "upgrade-status.json").write_text(
@@ -2200,15 +2308,15 @@ def test_web_chat_and_bulletin_posts(tmp_path) -> None:
                 headers={"Content-Type": "application/json", "X-Web-Token": tok},
                 body=json.dumps({"text": "A=8 K=2"}).encode("utf-8"),
             )
-            assert code == 200
-            assert json.loads(body.decode("utf-8"))["category"] == "wcy"
+            assert code == 403
+            assert "WCY posting is not available from System Tools" in body.decode("utf-8")
 
             rows_chat = await store.list_bulletins("chat", limit=5)
             rows_ann = await store.list_bulletins("announce", limit=5)
             rows_wcy = await store.list_bulletins("wcy", limit=5)
             assert rows_chat and "hello chat" in str(rows_chat[0]["body"])
             assert rows_ann and str(rows_ann[0]["scope"]) == "FULL"
-            assert rows_wcy and "A=8 K=2" in str(rows_wcy[0]["body"])
+            assert rows_wcy == []
             assert chats and relayed_chats
             assert bullets and relayed_bullets
         finally:
@@ -2540,6 +2648,7 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             await store.upsert_user_registry("AI3I", now, display_name="John", qth="PA", email="ai3i@example.org", privilege="sysop")
             await store.upsert_user_registry("K1ABC", now, display_name="Alice", qth="MA", privilege="user")
             await store.upsert_user_registry("W3XYZ", now, display_name="Bob", qth="MD", privilege="user")
+            await store.set_user_pref("K1ABC", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
             await store.add_message("N0CALL", "K1ABC", now, "hello inbox", origin_node="AI3I-15", route_node="", delivery_state="delivered", delivered_epoch=now)
             await store.add_message("K1ABC", "PEERCALL", now, "hello outbox", origin_node="AI3I-15", route_node="PEER1", delivery_state="pending")
             sent_id = await store.add_message("K1ABC", "PEER404", now, "cannot route", origin_node="AI3I-15", route_node="PEER404", delivery_state="undeliverable", error_text="no configured route to peer")
@@ -2568,6 +2677,10 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             assert data["rows"][0]["mail_outbox_issues"] == 1
             assert data["rows"][0]["mail_last_error"] == "no configured route to peer"
             assert data["rows"][0]["mfa_email_otp"] == "default"
+            assert data["rows"][0]["mfa_enabled"] is True
+            assert data["rows"][0]["mfa_status"] == "enabled"
+            assert data["rows"][0]["mfa_methods"] == ["Authenticator"]
+            assert data["rows"][0]["mfa_policy"] == "not required by node policy"
             assert data["rows"][0]["principal_call"] == "K1ABC"
             assert data["rows"][0]["registration_state"] == "pending"
             assert data["rows"][0]["email_verified"] is False
@@ -2581,6 +2694,13 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             assert len(data["rows"]) == 1
             assert data["rows"][0]["call"] == "K1ABC"
             assert data["rows"][0]["node_family"] == "pycluster"
+
+            code, _, body = await _http_request(srv, "GET", "/api/users?exclude_clusters=1", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["exclude_clusters"] is True
+            assert data["total"] == 2
+            assert {row["call"] for row in data["rows"]} == {"AI3I", "W3XYZ"}
 
             code, _, body = await _http_request(
                 srv,
@@ -2603,6 +2723,9 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             assert data["ok"] is True
             assert data["user"]["display_name"] == "Alice Updated"
             assert data["user"]["mfa_email_otp"] == "required"
+            assert data["user"]["mfa_enabled"] is True
+            assert set(data["user"]["mfa_methods"]) == {"Authenticator", "Email OTP"}
+            assert data["user"]["mfa_policy"] == "required override"
             row = await store.get_user_registry("K1ABC")
             assert row is not None
             assert str(row["privilege"]) == "sysop"
@@ -2878,6 +3001,60 @@ def test_web_users_can_send_verify_and_unlock_registration(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_can_unlock_failed_password_account_without_clearing_verified_email(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_user_unlock_failed_password.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+            await store.set_user_pref("AI3I", "registration_state", "locked", now)
+            await store.set_user_pref("AI3I", "failed_password_count", "5", now)
+            await store.set_user_pref("AI3I", "failed_password_locked_epoch", str(now), now)
+
+            code, _, body = await _http_request(
+                srv,
+                "GET",
+                "/api/users?search=AI3I",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 200
+            before = json.loads(body.decode("utf-8"))["rows"][0]
+            assert before["registration_state"] == "locked"
+            assert before["registration_locked"] is True
+            assert before["email_verified"] is True
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/unlock",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["user"]["registration_state"] == "verified"
+            assert data["user"]["registration_locked"] is False
+            assert data["user"]["email_verified"] is True
+            assert await store.get_user_pref("AI3I", "registration_state") == "verified"
+            assert await store.get_user_pref("AI3I", "email_verified_epoch") == str(now)
+            assert await store.get_user_pref("AI3I", "failed_password_count") is None
+            assert await store.get_user_pref("AI3I", "failed_password_locked_epoch") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_admin_registration_queue_can_list_approve_and_deny(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_registration_queue.db")
@@ -2931,10 +3108,13 @@ def test_web_admin_registration_queue_can_list_approve_and_deny(tmp_path) -> Non
             data = json.loads(body.decode("utf-8"))
             assert data["ok"] is True
             assert data["user"]["email"] == "new@example.test"
+            assert data["user"]["privilege"] == "user"
             assert data["user"]["registration_state"] == "verified"
+            assert data["user"]["email_verified"] is True
             row = await store.get_user_registry("N1NEW")
             assert row is not None
             assert str(row["display_name"]) == "New User"
+            assert str(row["privilege"]) == "user"
             assert await store.get_user_pref("N1NEW", "email_verified_epoch") is not None
             req = await store.get_registration_request("N1NEW")
             assert req is not None
@@ -3134,6 +3314,10 @@ def test_web_proto_summary_values(tmp_path) -> None:
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.pc24.flag", "1", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.history", json.dumps([{"epoch": now, "key": "pc24.flag", "from": "0", "to": "1"}]), now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.peer1.last_epoch", str(now), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.pc16.node", "K2PY-2", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.pc16.user_count", "3", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.history", json.dumps([{"epoch": now - 5, "key": "pc16.node", "from": "", "to": "K2PY-2"}]), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.peer2.last_epoch", str(now), now)
         try:
             code, _, _ = await _http_request(srv, "GET", "/api/proto/summary")
             assert code == 401
@@ -3141,10 +3325,10 @@ def test_web_proto_summary_values(tmp_path) -> None:
             assert code == 200
             summary = json.loads(body.decode("utf-8"))
             assert summary["peers"] == 2
-            assert summary["known"] == 1
-            assert summary["unknown"] == 1
-            assert summary["history_events"] == 1
-            assert summary["history_peers"] == 1
+            assert summary["known"] == 2
+            assert summary["unknown"] == 0
+            assert summary["history_events"] == 2
+            assert summary["history_peers"] == 2
             assert summary["latest_history_epoch"] == now
         finally:
             await store.close()

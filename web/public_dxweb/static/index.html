@@ -650,6 +650,13 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 }
 .sb-tab:hover { color:var(--text-primary); border-color:var(--accent); }
 .sb-tab.active { background:rgba(88,166,255,.12); border-color:var(--accent); color:var(--accent); }
+.sb-tab.auth-locked,
+.sb-tab:disabled {
+  opacity:.45; cursor:not-allowed; color:var(--text-dim); border-color:var(--border-btn);
+  background:var(--bg-btn);
+}
+.sb-tab.auth-locked:hover,
+.sb-tab:disabled:hover { color:var(--text-dim); border-color:var(--border-btn); background:var(--bg-btn); }
 .sb-panel { display:none; flex-direction:column; gap:10px; }
 .sb-panel.active { display:flex; }
 
@@ -1173,8 +1180,8 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
       <div class="sb-tabs">
         <button class="sb-tab active" data-panel="filters">Filters</button>
         <button class="sb-tab" data-panel="metrics">Metrics</button>
-        <button class="sb-tab hidden" id="tab-watch" data-panel="watch">Watch</button>
-        <button class="sb-tab hidden" id="tab-operate" data-panel="operate">Operate</button>
+        <button class="sb-tab auth-locked" id="tab-watch" data-panel="watch" disabled aria-disabled="true" title="Log in to use Watch">Watch</button>
+        <button class="sb-tab auth-locked" id="tab-operate" data-panel="operate" disabled aria-disabled="true" title="Log in to use Operate">Operate</button>
       </div>
 
       <!-- ── Filters panel ── -->
@@ -1237,6 +1244,20 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
             <button data-ftype="cont" data-fval="AS">AS</button>
             <button data-ftype="cont" data-fval="OC">OC</button>
             <button data-ftype="cont" data-fval="AN">AN</button>
+          </div>
+        </div>
+
+        <div class="filter-section">
+          <span class="filter-label">Spotter Continent</span>
+          <div class="filter-row">
+            <button class="active" data-ftype="spotterCont" data-fval="ALL">All</button>
+            <button data-ftype="spotterCont" data-fval="NA">NA</button>
+            <button data-ftype="spotterCont" data-fval="SA">SA</button>
+            <button data-ftype="spotterCont" data-fval="EU">EU</button>
+            <button data-ftype="spotterCont" data-fval="AF">AF</button>
+            <button data-ftype="spotterCont" data-fval="AS">AS</button>
+            <button data-ftype="spotterCont" data-fval="OC">OC</button>
+            <button data-ftype="spotterCont" data-fval="AN">AN</button>
           </div>
         </div>
 
@@ -1381,15 +1402,14 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <div class="filter-section">
           <span class="filter-label">Message / Bulletin Text</span>
           <div class="operate-card" style="display:flex;flex-direction:column;gap:6px">
-            <textarea id="post-text" style="width:100%;min-height:86px;border:1px solid var(--border-btn);background:var(--bg-search);color:var(--text-primary);border-radius:12px;padding:10px;font:0.74rem/1.4 'Exo',system-ui,Arial,sans-serif;resize:vertical" placeholder="Enter chat, announce, WX, WCY, or WWV text here"></textarea>
+            <textarea id="post-text" style="width:100%;min-height:86px;border:1px solid var(--border-btn);background:var(--bg-search);color:var(--text-primary);border-radius:12px;padding:10px;font:0.74rem/1.4 'Exo',system-ui,Arial,sans-serif;resize:vertical" placeholder="Enter chat, announce, WX, or WWV text here"></textarea>
             <div class="filter-row operate-actions">
               <button id="post-chat-btn">Chat</button>
               <button id="post-announce-btn">Announce</button>
               <button id="post-wx-btn">WX</button>
-              <button id="post-wcy-btn">WCY</button>
               <button id="post-wwv-btn">WWV</button>
             </div>
-            <div class="operate-note">Use this box for chat, announce, WX, WCY, and WWV posts.</div>
+            <div class="operate-note">Use this box for chat, announce, WX, and WWV posts.</div>
           </div>
         </div>
 
@@ -1705,8 +1725,16 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <label for="profile-homenode">Home Node</label>
         <input id="profile-homenode" type="text" maxlength="16" placeholder="Home node">
       </div>
+      <div class="field span-2">
+        <label>MFA</label>
+        <div id="profile-mfa-summary" class="register-help"></div>
+      </div>
     </div>
     <div class="profile-modal-actions">
+      <button id="profile-mfa-email" type="button">Email MFA</button>
+      <button id="profile-mfa-authenticator" type="button">Authenticator</button>
+      <button id="profile-mfa-default" type="button">Default</button>
+      <button id="profile-mfa-off" type="button">Disable MFA</button>
       <button id="profile-cancel" type="button">Cancel</button>
       <button id="profile-save" class="primary" type="button">Save Profile</button>
     </div>
@@ -1792,18 +1820,20 @@ const BULLETINS = '/api/bulletins';
 const STATS  = '/api/stats';
 const LEADER = '/api/leaderboard';
 const SOLAR  = '/api/solar';
+const KP     = '/api/kp';
 const BRAND  = '/api/public/branding';
 const TAXONOMY = '/api/public/taxonomy';
 const AUTH_LOGIN = '/api/auth/login';
 const AUTH_LOGOUT = '/api/auth/logout';
 const AUTH_ME = '/api/auth/me';
+const FILTER_SPOTS = '/api/filters/spots';
 const REGISTER_REQUEST = '/api/register/request';
 const PROFILE_SAVE = '/api/profile';
+const PROFILE_MFA = '/api/profile/mfa';
 const POST_SPOT = '/api/spot';
 const POST_CHAT = '/api/chat';
 const POST_ANNOUNCE = '/api/announce';
 const POST_WX = '/api/wx';
-const POST_WCY = '/api/wcy';
 const POST_WWV = '/api/wwv';
 const WS_URL = `${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
 const WEB_SESSION_KEY = 'pycluster-public-session';
@@ -1946,7 +1976,7 @@ document.querySelectorAll('.stats-rng-btn').forEach(btn => {
 });
 
 // ================================================================ State
-let filters     = { band:'ALL', mode:'ALL', activity:'ALL', cont:'ALL' };
+let filters     = { band:'ALL', mode:'ALL', activity:'ALL', cont:'ALL', spotterCont:'ALL' };
 let commentTagFilter = 'ALL';
 let timeRangeHrs = 24;
 let searchTerm  = '';
@@ -1991,11 +2021,12 @@ function bindSpotFilterButtons() {
   document.querySelectorAll('[data-ftype]').forEach(btn => {
     if (btn.dataset.bound === '1') return;
     btn.dataset.bound = '1';
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const type = btn.dataset.ftype;
       document.querySelectorAll(`[data-ftype="${type}"]`).forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
       filters[type] = btn.dataset.fval;
+      if (type === 'spotterCont') await saveSpotterContinentFilter(filters[type]);
       renderTable();
     });
   });
@@ -2037,8 +2068,8 @@ function activateMainPage(page) {
 function activateSidebarPanel(panel) {
   const operateTab = document.getElementById('tab-operate');
   const watchTab = document.getElementById('tab-watch');
-  if (panel === 'operate' && operateTab && operateTab.classList.contains('hidden')) panel = 'filters';
-  if (panel === 'watch' && watchTab && watchTab.classList.contains('hidden')) panel = 'filters';
+  if (panel === 'operate' && operateTab && operateTab.disabled) panel = 'filters';
+  if (panel === 'watch' && watchTab && watchTab.disabled) panel = 'filters';
   document.querySelectorAll('.sb-tab').forEach(t => t.classList.toggle('active', t.dataset.panel === panel));
   document.querySelectorAll('.sb-panel').forEach(p => p.classList.toggle('active', p.id === `sb-panel-${panel}`));
 }
@@ -2090,7 +2121,6 @@ function setOperateBusy(on) {
     'post-chat-btn',
     'post-announce-btn',
     'post-wx-btn',
-    'post-wcy-btn',
     'post-wwv-btn',
   ].forEach(id => {
     const el = document.getElementById(id);
@@ -2165,12 +2195,21 @@ function setProfileStatus(msg, cls='') {
   el.className = `profile-modal-status${cls ? ` ${cls}` : ''}`;
 }
 
+function renderProfileMfa() {
+  const el = document.getElementById('profile-mfa-summary');
+  if (!el) return;
+  const mfa = webProfile?.mfa || {};
+  const methods = Array.isArray(mfa.methods) && mfa.methods.length ? mfa.methods.join(', ') : 'none';
+  el.textContent = `Status: ${mfa.enabled ? 'enabled' : 'disabled'}; methods: ${methods}; email override: ${mfa.email_otp || 'default'}; policy: ${mfa.policy || 'not required by node policy'}.`;
+}
+
 function openProfileModal() {
   if (!(webToken && webCall)) return;
   document.getElementById('profile-name').value = webProfile?.name || '';
   document.getElementById('profile-qth').value = webProfile?.qth || '';
   document.getElementById('profile-qra').value = webProfile?.qra || '';
   document.getElementById('profile-homenode').value = webProfile?.homenode || '';
+  renderProfileMfa();
   setProfileStatus('');
   document.getElementById('profile-modal-bg')?.classList.add('open');
 }
@@ -2309,13 +2348,43 @@ async function saveProfile() {
   }
 }
 
+async function updateProfileMfa(action) {
+  if (!(webToken && webCall)) return;
+  try {
+    setProfileStatus('Updating MFA...', '');
+    const body = await webJson(PROFILE_MFA, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action})
+    });
+    webProfile.mfa = body.mfa || {};
+    saveWebSession();
+    renderProfileMfa();
+    if (body.secret) {
+      setProfileStatus(`Authenticator setup key: ${body.secret}`, 'warn');
+    } else {
+      setProfileStatus('MFA updated.', 'ok');
+    }
+  } catch (err) {
+    setProfileStatus(err.message || 'MFA update failed.', 'err');
+  }
+}
+
 function applyOperatorState() {
   const loggedIn = !!(webToken && webCall);
   const operateTab = document.getElementById('tab-operate');
   const watchTab = document.getElementById('tab-watch');
   const busy = opBusyCount > 0;
-  if (operateTab) operateTab.classList.toggle('hidden', !loggedIn);
-  if (watchTab) watchTab.classList.toggle('hidden', !loggedIn);
+  [
+    [operateTab, 'Log in to use Operate'],
+    [watchTab, 'Log in to use Watch'],
+  ].forEach(([tab, lockedTitle]) => {
+    if (!tab) return;
+    tab.disabled = !loggedIn;
+    tab.setAttribute('aria-disabled', loggedIn ? 'false' : 'true');
+    tab.classList.toggle('auth-locked', !loggedIn);
+    tab.title = loggedIn ? '' : lockedTitle;
+  });
   if (!loggedIn) {
     const activeRestricted = document.querySelector(
       '.sb-tab.active[data-panel="operate"], .sb-panel.active#sb-panel-operate, .sb-tab.active[data-panel="watch"], .sb-panel.active#sb-panel-watch'
@@ -2326,7 +2395,6 @@ function applyOperatorState() {
   const chatAllowed = loggedIn && webAccess.chat !== false;
   const announceAllowed = loggedIn && webAccess.announce !== false;
   const wxAllowed = loggedIn && webAccess.wx !== false;
-  const wcyAllowed = loggedIn && webAccess.wcy !== false;
   const wwvAllowed = loggedIn && webAccess.wwv !== false;
   const accessEl = document.getElementById('op-access');
 
@@ -2335,13 +2403,12 @@ function applyOperatorState() {
     if (el) el.disabled = !spotAllowed;
   });
   const textEl = document.getElementById('post-text');
-  if (textEl) textEl.disabled = !(chatAllowed || announceAllowed || wxAllowed || wcyAllowed || wwvAllowed);
+  if (textEl) textEl.disabled = !(chatAllowed || announceAllowed || wxAllowed || wwvAllowed);
   const btnState = {
     'post-spot-btn': spotAllowed,
     'post-chat-btn': chatAllowed,
     'post-announce-btn': announceAllowed,
     'post-wx-btn': wxAllowed,
-    'post-wcy-btn': wcyAllowed,
     'post-wwv-btn': wwvAllowed,
   };
   Object.entries(btnState).forEach(([id, enabled]) => {
@@ -2354,7 +2421,6 @@ function applyOperatorState() {
       ['chat', chatAllowed],
       ['announce', announceAllowed],
       ['wx', wxAllowed],
-      ['wcy', wcyAllowed],
       ['wwv', wwvAllowed],
     ];
     accessEl.innerHTML = caps.map(([label, on]) => `<span class="operate-cap ${on ? 'on' : ''}">${label}</span>`).join('');
@@ -2372,7 +2438,6 @@ function applyOperatorState() {
     chatAllowed ? 'chat' : '',
     announceAllowed ? 'announce' : '',
     wxAllowed ? 'wx' : '',
-    wcyAllowed ? 'wcy' : '',
     wwvAllowed ? 'wwv' : '',
   ].filter(Boolean);
   opSetStatus(`Logged in as ${webCall}${allowed.length ? ` · ${allowed.join(', ')}` : ''}`, true);
@@ -2452,6 +2517,24 @@ async function webJson(url, opts={}) {
   return body;
 }
 
+async function saveSpotterContinentFilter(value) {
+  if (!webToken) return;
+  try {
+    const cont = String(value || 'ALL').toUpperCase();
+    const payload = cont === 'ALL'
+      ? {action:'clear', slot:8}
+      : {action:'accept', slot:8, expr:'spotter_cont ' + cont};
+    await webJson(FILTER_SPOTS, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+    await fetchSpots();
+  } catch (err) {
+    opSetWarn('Saving spotter filter failed: ' + (err.message || err));
+  }
+}
+
 async function restoreWebSession() {
   loadWebSession();
   syncServerWatchSeedFromProfile();
@@ -2495,6 +2578,7 @@ async function performOperatorLogin(call, password, setStatus, clearPassword) {
     syncServerWatchSeedFromProfile();
     renderWatchlist();
     applyOperatorState();
+    await fetchSpots();
     clearPassword();
     setStatus(`Logged in as ${webCall}.`, true);
     return true;
@@ -2581,7 +2665,6 @@ async function submitPublicAction(kind) {
       chat: POST_CHAT,
       announce: POST_ANNOUNCE,
       wx: POST_WX,
-      wcy: POST_WCY,
       wwv: POST_WWV,
     };
     const payload = kind === 'announce' ? {text, scope:'FULL'} : {text};
@@ -3273,6 +3356,7 @@ function filteredSpots() {
     if (cqzFilter && s.dx_cqz !== cqzFilter) return false;
     if (ituFilter && s.dx_ituz !== ituFilter) return false;
     if (filters.cont !== 'ALL' && s.dx_continent !== filters.cont) return false;
+    if (filters.spotterCont !== 'ALL' && s.spotter_continent !== filters.spotterCont) return false;
     if (commentTagFilter !== 'ALL') {
       const tagDef = COMMENT_TAGS.find(t => t.label === commentTagFilter);
       if (!tagDef || !tagDef.re.test(s.comment)) return false;
@@ -3303,6 +3387,7 @@ function hasActiveSpotFilter() {
     || filters.mode !== 'ALL'
     || filters.activity !== 'ALL'
     || filters.cont !== 'ALL'
+    || filters.spotterCont !== 'ALL'
     || commentTagFilter !== 'ALL'
     || cqzFilter > 0
     || ituFilter > 0
@@ -3310,7 +3395,7 @@ function hasActiveSpotFilter() {
 }
 
 function syncSpotFilterUi() {
-  ['band','mode','activity','cont'].forEach(type => {
+  ['band','mode','activity','cont','spotterCont'].forEach(type => {
     document.querySelectorAll(`[data-ftype="${type}"]`).forEach(btn => {
       btn.classList.toggle('active', btn.dataset.fval === filters[type]);
     });
@@ -3333,10 +3418,12 @@ function clearSpotFilters() {
   filters.mode = 'ALL';
   filters.activity = 'ALL';
   filters.cont = 'ALL';
+  filters.spotterCont = 'ALL';
   commentTagFilter = 'ALL';
   cqzFilter = 0;
   ituFilter = 0;
   searchTerm = '';
+  saveSpotterContinentFilter('ALL');
   syncSpotFilterUi();
   renderTable();
 }
@@ -4068,7 +4155,7 @@ renderWatchProfiles();
 // ================================================================ Fetch spots
 async function fetchSpots() {
   try {
-    allSpots = await fetch(API+'?limit=500').then(r=>r.json());
+    allSpots = await webJson(API+'?limit=500');
     dedupeAllSpots();
     await loadStats();
     renderTable();
@@ -4177,15 +4264,14 @@ async function loadKpChart() {
   const canvas = document.getElementById('kp-chart');
   if (!canvas) return;
   try {
-    const raw = await fetch('https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json').then(r=>r.json());
-    const dayMap={};
-    raw.slice(1).forEach(row=>{
-      const day=row[0].substring(0,10), kp=parseFloat(row[1]);
-      if(!isNaN(kp)) dayMap[day]=Math.max(dayMap[day]??0,kp);
+    const payload = await fetch(KP).then(r=>r.json());
+    const rows = Array.isArray(payload && payload.days) ? payload.days : [];
+    if (!rows.length) throw new Error(payload && payload.error ? payload.error : 'missing Kp rows');
+    const days = rows.map(row => String(row.date || '').substring(0,10));
+    const vals = rows.map(row => {
+      const kp = parseFloat(row.kp);
+      return isNaN(kp) ? null : kp;
     });
-    const days=[];
-    for(let i=6;i>=0;i--){const d=new Date();d.setUTCDate(d.getUTCDate()-i);days.push(d.toISOString().substring(0,10));}
-    const vals=days.map(d=>dayMap[d]??null);
     const lbls=days.map(d=>d.substring(5).replace('-','/'));
     const dpr=window.devicePixelRatio||1;
     const W=canvas.parentElement.clientWidth-32, H=80;
@@ -4362,6 +4448,10 @@ document.getElementById('spot-modal-bg').addEventListener('click', e => {
 document.getElementById('profile-close').addEventListener('click', closeProfileModal);
 document.getElementById('profile-cancel').addEventListener('click', closeProfileModal);
 document.getElementById('profile-save').addEventListener('click', saveProfile);
+document.getElementById('profile-mfa-email').addEventListener('click', () => updateProfileMfa('email'));
+document.getElementById('profile-mfa-authenticator').addEventListener('click', () => updateProfileMfa('authenticator'));
+document.getElementById('profile-mfa-default').addEventListener('click', () => updateProfileMfa('default'));
+document.getElementById('profile-mfa-off').addEventListener('click', () => updateProfileMfa('off'));
 document.getElementById('profile-modal-bg').addEventListener('click', e => {
   if (e.target.id==='profile-modal-bg') closeProfileModal();
 });
@@ -4677,6 +4767,7 @@ function applyPreset(preset) {
   filters.mode     = preset.mode     || 'ALL';
   filters.activity = preset.activity || 'ALL';
   filters.cont     = preset.cont     || 'ALL';
+  filters.spotterCont = preset.spotterCont || 'ALL';
   cqzFilter        = preset.cqzFilter  || 0;
   ituFilter        = preset.ituFilter  || 0;
   timeRangeHrs     = preset.timeRangeHrs || 24;
@@ -4743,9 +4834,6 @@ document.getElementById('post-announce-btn')?.addEventListener('click', () => {
 });
 document.getElementById('post-wx-btn')?.addEventListener('click', () => {
   submitPublicAction('wx');
-});
-document.getElementById('post-wcy-btn')?.addEventListener('click', () => {
-  submitPublicAction('wcy');
 });
 document.getElementById('post-wwv-btn')?.addEventListener('click', () => {
   submitPublicAction('wwv');

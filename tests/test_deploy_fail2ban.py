@@ -45,6 +45,8 @@ def test_data_refresh_service_uses_generic_names_and_migrates_legacy_timer() -> 
     assert "pycluster-data-refresh.timer" in lib
     assert "seed_runtime_data_from_fixtures()" in lib
     assert "pycluster-data-refresh.service" in timer
+    assert "OnCalendar=*-*-* 00/6:15:00" in timer
+    assert "RandomizedDelaySec=30m" in timer
     assert "runtime data refresh" in timer
     assert "runtime data refresh" in service
     assert "systemctl disable --now \"$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME\"" in lib
