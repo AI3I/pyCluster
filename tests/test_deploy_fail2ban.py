@@ -52,3 +52,17 @@ def test_data_refresh_service_uses_generic_names_and_migrates_legacy_timer() -> 
     assert "systemctl disable --now \"$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME\"" in lib
     assert "data refresh timer" in doctor
     assert "PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" in uninstall
+
+
+def test_upgrade_and_repair_refresh_invalid_strings_catalog() -> None:
+    lib = Path("/home/jdlewis/GitHub/pyCluster/deploy/lib.sh").read_text(encoding="utf-8")
+    upgrade = Path("/home/jdlewis/GitHub/pyCluster/deploy/upgrade.sh").read_text(encoding="utf-8")
+    repair = Path("/home/jdlewis/GitHub/pyCluster/deploy/repair.sh").read_text(encoding="utf-8")
+
+    assert "validate_or_refresh_strings_toml()" in lib
+    assert "tomllib.loads(Path(sys.argv[1]).read_text" in lib
+    assert "invalid strings.toml detected" in lib
+    assert "cp -a \"$dest\" \"$backup\"" in lib
+    assert "install -o \"$PYCLUSTER_USER\" -g \"$PYCLUSTER_GROUP\" -m 0640 \"$src\" \"$dest\"" in lib
+    assert "validate_or_refresh_strings_toml" in upgrade
+    assert "validate_or_refresh_strings_toml" in repair

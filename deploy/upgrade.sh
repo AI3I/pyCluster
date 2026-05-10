@@ -19,6 +19,7 @@ seed_runtime_data_from_fixtures
 install_config_if_missing
 install_optional_config_if_missing "config/strings.toml" "strings.toml"
 install_optional_config_if_missing "config/pycluster.local.toml.example" "pycluster.local.toml.example"
+validate_or_refresh_strings_toml
 ensure_selinux_contexts
 install_or_refresh_service
 ensure_fail2ban_packages

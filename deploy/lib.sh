@@ -362,6 +362,32 @@ install_optional_config_if_missing() {
   fi
 }
 
+validate_or_refresh_strings_toml() {
+  local root src dest backup ts
+  root="$(repo_root)"
+  src="$root/config/strings.toml"
+  dest="$(dirname "$PYCLUSTER_CONFIG_DEST")/strings.toml"
+  [ -f "$src" ] || return 0
+  if [ ! -f "$dest" ]; then
+    install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$src" "$dest"
+    return 0
+  fi
+  if "$PYCLUSTER_PYTHON_LINK" - "$dest" >/dev/null 2>&1 <<'PY'; then
+import sys
+import tomllib
+from pathlib import Path
+
+tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+PY
+    return 0
+  fi
+  ts="$(timestamp_utc)"
+  backup="$dest.invalid_$ts"
+  warn "invalid strings.toml detected; backing it up to $backup and installing bundled defaults"
+  cp -a "$dest" "$backup"
+  install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$src" "$dest"
+}
+
 install_or_refresh_service() {
   local root
   root="$(repo_root)"
