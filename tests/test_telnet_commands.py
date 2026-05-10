@@ -2482,8 +2482,17 @@ def test_show_dx_appends_cty_suffix_when_enabled(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_repo_cty_fixture_includes_recent_tx5_tx7_entities() -> None:
-    cty_path = Path(__file__).resolve().parents[1] / "fixtures" / "live" / "dxspider" / "cty.dat"
+def test_cty_loader_supports_recent_tx5_tx7_entities(tmp_path) -> None:
+    cty_path = tmp_path / "cty.dat"
+    cty_path.write_text(
+        "Austral Islands: 32: 63: OC: -23.37: 149.48: 10.0: TX5:\n"
+        "    TX5EU,TX5N;\n"
+        "Clipperton Island: 10: 11: NA: 10.30: 109.22: 8.0: TX5:\n"
+        "    TX5S;\n"
+        "Marquesas Islands: 31: 63: OC: -9.00: 139.50: 9.5: TX7:\n"
+        "    TX7N;\n",
+        encoding="ascii",
+    )
     load_cty(str(cty_path))
     assert lookup("TX5EU").name == "Austral Islands"
     assert lookup("TX5N").name == "Austral Islands"

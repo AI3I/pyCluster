@@ -89,8 +89,8 @@ CTY data is local and refreshable.
 
 Design goals:
 
-- stable bundled baseline
-- optional refresh from Country Files
+- refresh-managed runtime files
+- optional local overrides when needed
 - local overrides when urgent real-world exact calls appear before operators refresh
 
 ## Node-Link Model

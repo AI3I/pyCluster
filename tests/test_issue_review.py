@@ -23,7 +23,14 @@ class _DummyWriter:
 
 
 def _mk_config(db: str) -> AppConfig:
-    cty_path = Path(__file__).resolve().parents[1] / "fixtures/live/dxspider/cty.dat"
+    cty_path = Path(db).with_name("cty.dat")
+    cty_path.write_text(
+        "United States: 05: 08: NA: 37.00: 95.00: 5.0: K:\n"
+        "    K,N,W;\n"
+        "England: 14: 27: EU: 52.00: 0.10: 0.0: G:\n"
+        "    G;\n",
+        encoding="ascii",
+    )
     return AppConfig(
         node=NodeConfig(node_call="N9JR-3", qth="Milwaukee, WI"),
         telnet=TelnetConfig(),

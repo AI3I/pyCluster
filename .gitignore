@@ -11,3 +11,5 @@ config/pycluster.local.toml
 .codex
 .claude/
 .deploy-files.txt
+fixtures/live/dxspider/cty.dat
+fixtures/live/dxspider/wpxloc.raw
