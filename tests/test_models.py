@@ -1,4 +1,4 @@
-from pycluster.models import is_valid_call, parse_spot_record
+from pycluster.models import is_plausible_spot_call, is_plausible_spotter_call, is_valid_call, parse_spot_record
 
 
 def test_callsign_validation() -> None:
@@ -11,6 +11,13 @@ def test_callsign_validation() -> None:
     assert not is_valid_call("bad call")
     assert not is_valid_call("W3NH//B")
     assert not is_valid_call("/W3NH")
+
+
+def test_rbn_skimmer_spotter_validation() -> None:
+    assert is_plausible_spot_call("KO4BHX")
+    assert not is_plausible_spot_call("KO4BHX-#")
+    assert is_plausible_spotter_call("KO4BHX-#")
+    assert not is_plausible_spotter_call("KO4BHX-##")
 
 
 def test_parse_spot_record() -> None:

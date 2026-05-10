@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__
 from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, default_access_allowed
 from .auth import hash_password, is_password_hash, verify_password
-from .config import AppConfig, node_presentation_defaults, parse_telnet_ports, save_config
+from .config import AppConfig, RBNFeedConfig, node_presentation_defaults, parse_telnet_ports, save_config
 from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .geomag import canonicalize_wwv_text
@@ -118,6 +118,8 @@ class WebAdminServer:
         telnet_rebind_fn=None,
         event_log_fn=None,
         audit_rows_fn=None,
+        rbn_status_fn=None,
+        rbn_reconfigure_fn=None,
         config_path: str | None = None,
     ) -> None:
         self.config = config
@@ -142,6 +144,8 @@ class WebAdminServer:
         self.telnet_rebind_fn = telnet_rebind_fn
         self.event_log_fn = event_log_fn
         self.audit_rows_fn = audit_rows_fn
+        self.rbn_status_fn = rbn_status_fn
+        self.rbn_reconfigure_fn = rbn_reconfigure_fn
         self.config_path = str(config_path).strip() if config_path else ""
         self.repo_root = repo_root_from_config(self.config_path)
         self.upgrade_source_root = source_repo_root(self.repo_root)
@@ -413,6 +417,17 @@ class WebAdminServer:
             "satellite_prediction_hours": int(self.config.satellite.prediction_hours),
             "satellite_pass_step_seconds": int(self.config.satellite.pass_step_seconds),
             "satellite_min_elevation_deg": float(self.config.satellite.min_elevation_deg),
+            "rbn_enabled": bool(self.config.rbn.enabled),
+            "rbn_host": self.config.rbn.host,
+            "rbn_port": int(self.config.rbn.port),
+            "rbn_ports": ",".join(str(port) for port in (self.config.rbn.ports or (self.config.rbn.port,))),
+            "rbn_feeds": "\n".join(f"{feed.name},{feed.host},{int(feed.port)}" for feed in self.config.rbn.feeds),
+            "rbn_callsign": self.config.rbn.callsign,
+            "rbn_password": self.config.rbn.password,
+            "rbn_source_node": self.config.rbn.source_node,
+            "rbn_startup_commands": "\n".join(self.config.rbn.startup_commands),
+            "rbn_reconnect_seconds": int(self.config.rbn.reconnect_seconds),
+            "rbn_status": self.rbn_status_fn() if self.rbn_status_fn else {},
             "mfa_enabled": bool(self.config.mfa.enabled),
             "mfa_require_for_sysop": bool(self.config.mfa.require_for_sysop),
             "mfa_require_for_users": bool(self.config.mfa.require_for_users),
@@ -1561,7 +1576,7 @@ html.light .panel{ box-shadow:0 10px 24px rgba(17,24,39,.06); }
   gap:12px;
 }
 .form-grid.one{grid-template-columns:1fr}
-.field.span2{grid-column:1 / -1}
+.field.span2,.field.wide{grid-column:1 / -1}
 .field{
   display:grid;
   gap:6px;
@@ -2223,6 +2238,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="sidebar-metric"><label>Spots</label><strong id="navSpots">-</strong></div>
             <div class="sidebar-metric"><label>Telnet</label><strong id="navTelnet">-</strong></div>
             <div class="sidebar-metric"><label>Web</label><strong id="navWeb">-</strong></div>
+            <div class="sidebar-metric"><label>RBN</label><strong id="navRbn">-</strong></div>
           </div>
         </div>
       </section>
@@ -2243,6 +2259,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <button class="node-tab" type="button" data-node-group="smtp">Mail (SMTP)</button>
             <button class="node-tab" type="button" data-node-group="qrz">Lookup (QRZ)</button>
             <button class="node-tab" type="button" data-node-group="satellite">Satellite</button>
+            <button class="node-tab" type="button" data-node-group="rbn">RBN</button>
             <button class="node-tab" type="button" data-node-group="maintenance">Maintenance</button>
           </div>
           <div class="node-group active" id="node-group-general">
@@ -2343,7 +2360,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.8" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.9" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>
@@ -2353,6 +2370,24 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="field"><label for="satellite_prediction_hours" title="How far ahead show/satellite searches for passes.">Prediction Window (hours)</label><input id="satellite_prediction_hours" type="number" min="1" max="168" value="24" title="Search window for upcoming satellite passes."></div>
               <div class="field"><label for="satellite_pass_step_seconds" title="Sampling interval for pass prediction. Smaller values are slower but more precise.">Pass Step (seconds)</label><input id="satellite_pass_step_seconds" type="number" min="15" max="600" value="60" title="Sampling interval for pass prediction."></div>
               <div class="field"><label for="satellite_min_elevation_deg" title="Minimum elevation angle needed for a pass to be reported.">Minimum Elevation</label><input id="satellite_min_elevation_deg" type="number" min="0" max="90" value="0" title="Only passes above this elevation are shown."></div>
+            </div>
+          </div>
+          <div class="node-group" id="node-group-rbn">
+            <div class="form-grid">
+              <div class="checkrow attention" title="Enable direct telnet ingestion from an RBN-enabled cluster or feed.">
+                <input id="rbn_enabled" type="checkbox">
+                <label for="rbn_enabled">Enable RBN Feed</label>
+              </div>
+              <div class="field"><label for="rbn_host" title="RBN-enabled telnet feed hostname.">Feed Host</label><input id="rbn_host" placeholder="rbn-enabled-cluster.example" title="Hostname for an RBN-enabled telnet cluster or feed."></div>
+              <div class="field"><label for="rbn_port" title="Legacy single RBN-enabled telnet feed port.">Default Port</label><input id="rbn_port" type="number" min="1" max="65535" value="7300" title="Legacy/default feed port used when Feed Ports is blank."></div>
+              <div class="field"><label for="rbn_ports" title="Comma-separated RBN feed ports to connect at the same host. Use 7000,7001 for public CW/RTTY plus FT8.">Feed Ports</label><input id="rbn_ports" placeholder="7000,7001" title="Comma-separated feed ports. Public RBN uses 7000 for CW/RTTY and 7001 for FT8."></div>
+              <div class="field"><label for="rbn_callsign" title="Callsign used to log in to the feed.">Login Call</label><input id="rbn_callsign" placeholder="N0CALL" title="Callsign sent at the feed login prompt. Defaults to the node call if blank."></div>
+              <div class="field"><label for="rbn_password" title="Optional feed password.">Feed Password</label><input id="rbn_password" type="password" placeholder="Feed password" title="Optional password sent if the feed prompts for one."></div>
+              <div class="field"><label for="rbn_source_node" title="Source label stored on locally ingested RBN spots.">Source Node</label><input id="rbn_source_node" placeholder="RBN" title="Source node label stored with locally ingested RBN spots."></div>
+              <div class="field"><label for="rbn_reconnect_seconds" title="Delay before reconnecting after feed disconnect.">Reconnect Seconds</label><input id="rbn_reconnect_seconds" type="number" min="5" max="3600" value="60" title="Delay before retrying a disconnected RBN feed."></div>
+              <div class="field wide"><label for="rbn_feeds" title="Optional named feeds, one per line: name,host,port. Named feeds override Feed Host/Ports when set.">Named Feeds</label><textarea id="rbn_feeds" rows="3" placeholder="CW/RTTY,telnet.reversebeacon.net,7000&#10;FT8,telnet.reversebeacon.net,7001" title="Optional named feeds, one per line: name,host,port."></textarea></div>
+              <div class="field wide"><label for="rbn_startup_commands" title="Commands sent after login, one per line.">Startup Commands</label><textarea id="rbn_startup_commands" rows="3" placeholder="set/skimmer" title="Commands sent after feed login, one per line."></textarea></div>
+              <div class="field wide"><label title="Current direct RBN feed state.">Feed Status</label><div class="subtle" id="rbnStatus" style="font-weight:700">RBN feed status unavailable.</div></div>
             </div>
           </div>
           <div class="node-group" id="node-group-maintenance">
@@ -3719,7 +3754,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
 }
 function fillNodeForm(data) {
   if (!data) return;
-  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','motd','prompt_template','smtp_host','smtp_username','smtp_password','smtp_from_addr','smtp_from_name','qrz_username','qrz_password','qrz_agent','qrz_api_url','satellite_keps_path','mfa_issuer'].forEach((key) => {
+  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','motd','prompt_template','smtp_host','smtp_username','smtp_password','smtp_from_addr','smtp_from_name','qrz_username','qrz_password','qrz_agent','qrz_api_url','satellite_keps_path','rbn_host','rbn_ports','rbn_feeds','rbn_callsign','rbn_password','rbn_source_node','rbn_startup_commands','mfa_issuer'].forEach((key) => {
     if (byId(key) && data[key] !== undefined) byId(key).value = data[key];
   });
   byId('show_status_after_login').checked = !!data.show_status_after_login;
@@ -3729,6 +3764,7 @@ function fillNodeForm(data) {
   byId('verified_email_required_for_telnet').checked = !!data.verified_email_required_for_telnet;
   byId('smtp_starttls').checked = !!data.smtp_starttls;
   byId('smtp_use_ssl').checked = !!data.smtp_use_ssl;
+  byId('rbn_enabled').checked = !!data.rbn_enabled;
   byId('mfa_enabled').checked = !!data.mfa_enabled;
   byId('mfa_require_for_sysop').checked = !!data.mfa_require_for_sysop;
   byId('mfa_require_for_users').checked = !!data.mfa_require_for_users;
@@ -3739,6 +3775,8 @@ function fillNodeForm(data) {
   if (data.satellite_prediction_hours !== undefined) byId('satellite_prediction_hours').value = data.satellite_prediction_hours;
   if (data.satellite_pass_step_seconds !== undefined) byId('satellite_pass_step_seconds').value = data.satellite_pass_step_seconds;
   if (data.satellite_min_elevation_deg !== undefined) byId('satellite_min_elevation_deg').value = data.satellite_min_elevation_deg;
+  if (data.rbn_port !== undefined) byId('rbn_port').value = data.rbn_port;
+  if (data.rbn_reconnect_seconds !== undefined) byId('rbn_reconnect_seconds').value = data.rbn_reconnect_seconds;
   if (data.mfa_otp_ttl_seconds !== undefined) byId('mfa_otp_ttl_seconds').value = data.mfa_otp_ttl_seconds;
   if (data.mfa_otp_length !== undefined) byId('mfa_otp_length').value = data.mfa_otp_length;
   if (data.mfa_max_attempts !== undefined) byId('mfa_max_attempts').value = data.mfa_max_attempts;
@@ -3765,6 +3803,20 @@ function fillNodeForm(data) {
     } catch {}
   }
   byId('retentionStatus').innerHTML = cleanupTail ? `${status}<br>${cleanupTail}` : status;
+  const rbnStatus = data.rbn_status || {};
+  const rbnState = String(rbnStatus.state || (data.rbn_enabled ? 'stopped' : 'disabled'));
+  let rbnText = `Feed is ${esc(rbnState)}.`;
+  const rbnHost = String(rbnStatus.host || data.rbn_host || '').trim();
+  const namedFeeds = Array.isArray(rbnStatus.feeds) && rbnStatus.feeds.length ? rbnStatus.feeds.map(f => `${f.name || f.port}:${f.state || 'stopped'}`).join(', ') : '';
+  const rbnPorts = Array.isArray(rbnStatus.ports) && rbnStatus.ports.length ? rbnStatus.ports.join(',') : String(data.rbn_ports || data.rbn_port || 7300);
+  if (rbnHost) rbnText += ` ${esc(rbnHost)}:${esc(rbnPorts)}.`;
+  if (namedFeeds) rbnText += ` Feeds: ${esc(namedFeeds)}.`;
+  if (rbnStatus.last_connected_at) rbnText += ` Connected: ${esc(rbnStatus.last_connected_at)}.`;
+  if (rbnStatus.last_spot_at) rbnText += ` Last spot: ${esc(rbnStatus.last_spot_at)} ${esc(rbnStatus.last_spot || '')}.`;
+  if (rbnStatus.last_error) rbnText += ` Last error: ${esc(rbnStatus.last_error)}.`;
+  byId('rbnStatus').innerHTML = rbnText;
+  setText('navRbn', rbnState);
+  byId('navRbn').title = rbnText.replace(/<[^>]*>/g, '');
   const datasets = data.datasets || {};
   const cty = datasets.cty || {};
   const wpxloc = datasets.wpxloc || {};
@@ -4044,6 +4096,16 @@ byId('saveNode').onclick = async () => {
         satellite_prediction_hours: parseInt(byId('satellite_prediction_hours').value.trim(), 10) || 24,
         satellite_pass_step_seconds: parseInt(byId('satellite_pass_step_seconds').value.trim(), 10) || 60,
         satellite_min_elevation_deg: parseFloat(byId('satellite_min_elevation_deg').value.trim()) || 0,
+        rbn_enabled: byId('rbn_enabled').checked,
+        rbn_host: byId('rbn_host').value.trim(),
+        rbn_port: parseInt(byId('rbn_port').value.trim(), 10) || 7300,
+        rbn_ports: byId('rbn_ports').value.trim(),
+        rbn_feeds: byId('rbn_feeds').value,
+        rbn_callsign: byId('rbn_callsign').value.trim(),
+        rbn_password: byId('rbn_password').value,
+        rbn_source_node: byId('rbn_source_node').value.trim(),
+        rbn_startup_commands: byId('rbn_startup_commands').value,
+        rbn_reconnect_seconds: parseInt(byId('rbn_reconnect_seconds').value.trim(), 10) || 60,
         mfa_enabled: byId('mfa_enabled').checked,
         mfa_require_for_sysop: byId('mfa_require_for_sysop').checked,
         mfa_require_for_users: byId('mfa_require_for_users').checked,
@@ -4694,6 +4756,16 @@ if (restoreWebSession()) {
                         "satellite_prediction_hours": "24",
                         "satellite_pass_step_seconds": "60",
                         "satellite_min_elevation_deg": "0",
+                        "rbn_enabled": "off",
+                        "rbn_host": "",
+                        "rbn_port": "7300",
+                        "rbn_ports": "",
+                        "rbn_feeds": "",
+                        "rbn_callsign": "",
+                        "rbn_password": "",
+                        "rbn_source_node": "RBN",
+                        "rbn_startup_commands": "",
+                        "rbn_reconnect_seconds": "60",
                         "mfa_enabled": "off",
                         "mfa_require_for_sysop": "off",
                         "mfa_require_for_users": "off",
@@ -4726,12 +4798,13 @@ if (restoreWebSession()) {
                     smtp_updates: dict[str, object] = {}
                     qrz_updates: dict[str, object] = {}
                     satellite_updates: dict[str, object] = {}
+                    rbn_updates: dict[str, object] = {}
                     mfa_updates: dict[str, object] = {}
                     telnet_ports_value: tuple[int, ...] | None = None
                     for key in fields:
                         if key not in payload:
                             continue
-                        if key in {"show_status_after_login", "require_password", "registration_required", "verified_email_required_for_web", "verified_email_required_for_telnet", "retention_enabled", "retention_stale_users_enabled", "smtp_starttls", "smtp_use_ssl", "mfa_enabled", "mfa_require_for_sysop", "mfa_require_for_users"}:
+                        if key in {"show_status_after_login", "require_password", "registration_required", "verified_email_required_for_web", "verified_email_required_for_telnet", "retention_enabled", "retention_stale_users_enabled", "smtp_starttls", "smtp_use_ssl", "rbn_enabled", "mfa_enabled", "mfa_require_for_sysop", "mfa_require_for_users"}:
                             flag = bool(payload.get(key, False))
                             val = "on" if flag else "off"
                             if key in _CONFIG_AUTH_NODE_FIELDS:
@@ -4740,9 +4813,11 @@ if (restoreWebSession()) {
                                 smtp_updates[key[5:]] = flag
                             elif key.startswith("qrz_"):
                                 qrz_updates[key[4:]] = flag
+                            elif key.startswith("rbn_"):
+                                rbn_updates[key[4:]] = flag
                             elif key.startswith("mfa_"):
                                 mfa_updates[key[4:]] = flag
-                        elif key in {"initial_grace_logins", "retention_spots_days", "retention_messages_days", "retention_bulletins_days", "retention_stale_users_days", "smtp_port", "smtp_timeout_seconds", "satellite_prediction_hours", "satellite_pass_step_seconds", "satellite_min_elevation_deg", "mfa_otp_ttl_seconds", "mfa_otp_length", "mfa_max_attempts", "mfa_resend_cooldown_seconds"}:
+                        elif key in {"initial_grace_logins", "retention_spots_days", "retention_messages_days", "retention_bulletins_days", "retention_stale_users_days", "smtp_port", "smtp_timeout_seconds", "satellite_prediction_hours", "satellite_pass_step_seconds", "satellite_min_elevation_deg", "rbn_port", "rbn_reconnect_seconds", "mfa_otp_ttl_seconds", "mfa_otp_length", "mfa_max_attempts", "mfa_resend_cooldown_seconds"}:
                             try:
                                 number = float(payload.get(key, fields[key])) if key == "satellite_min_elevation_deg" else int(payload.get(key, fields[key]))
                             except Exception:
@@ -4766,6 +4841,12 @@ if (restoreWebSession()) {
                             elif key == "satellite_min_elevation_deg":
                                 number = max(0.0, min(90.0, float(number)))
                                 satellite_updates["min_elevation_deg"] = number
+                            elif key == "rbn_port":
+                                number = max(1, min(65535, int(number)))
+                                rbn_updates["port"] = number
+                            elif key == "rbn_reconnect_seconds":
+                                number = max(5, min(3600, int(number)))
+                                rbn_updates["reconnect_seconds"] = number
                             elif key == "mfa_otp_ttl_seconds":
                                 number = max(60, min(3600, number))
                                 mfa_updates["otp_ttl_seconds"] = number
@@ -4803,17 +4884,40 @@ if (restoreWebSession()) {
                                 qrz_updates[key[4:]] = val
                             elif key.startswith("satellite_"):
                                 satellite_updates[key[10:]] = val
+                            elif key.startswith("rbn_"):
+                                if key == "rbn_startup_commands":
+                                    rbn_updates["startup_commands"] = tuple(cmd.strip() for cmd in str(payload.get(key, "")).splitlines() if cmd.strip())
+                                elif key == "rbn_ports":
+                                    rbn_updates["ports"] = parse_telnet_ports(val, int(self.config.rbn.port or 7300)) if val else ()
+                                elif key == "rbn_feeds":
+                                    feeds: list[RBNFeedConfig] = []
+                                    for line in str(payload.get(key, "")).splitlines():
+                                        parts = [part.strip() for part in line.split(",")]
+                                        if len(parts) != 3 or not any(parts):
+                                            continue
+                                        try:
+                                            port = int(parts[2])
+                                        except ValueError:
+                                            await self._write_response(writer, 400, self._json({"error": "invalid rbn_feeds"}))
+                                            return
+                                        if not parts[1] or not (0 < port <= 65535):
+                                            await self._write_response(writer, 400, self._json({"error": "invalid rbn_feeds"}))
+                                            return
+                                        feeds.append(RBNFeedConfig(name=parts[0], host=parts[1], port=port))
+                                    rbn_updates["feeds"] = tuple(feeds)
+                                else:
+                                    rbn_updates[key[4:]] = val
                             elif key.startswith("mfa_"):
                                 mfa_updates[key[4:]] = val
                         if key not in _CONFIG_AUTH_NODE_FIELDS:
-                            if not key.startswith("smtp_") and not key.startswith("qrz_") and not key.startswith("satellite_") and not key.startswith("mfa_"):
+                            if not key.startswith("smtp_") and not key.startswith("qrz_") and not key.startswith("satellite_") and not key.startswith("rbn_") and not key.startswith("mfa_"):
                                 await self.store.set_user_pref(
                                     self.config.node.node_call,
                                     pref_key_map.get(key, key),
                                     val,
                                     now,
                                 )
-                    config_changed = bool(cfg_updates or smtp_updates or qrz_updates or satellite_updates or mfa_updates)
+                    config_changed = bool(cfg_updates or smtp_updates or qrz_updates or satellite_updates or rbn_updates or mfa_updates)
                     if cfg_updates:
                         if "node_call" in cfg_updates:
                             new_node_call = str(cfg_updates["node_call"]).strip().upper()
@@ -4842,6 +4946,9 @@ if (restoreWebSession()) {
                     for key, value in satellite_updates.items():
                         if hasattr(self.config.satellite, key):
                             setattr(self.config.satellite, key, value)
+                    for key, value in rbn_updates.items():
+                        if hasattr(self.config.rbn, key):
+                            setattr(self.config.rbn, key, value)
                     for key, value in mfa_updates.items():
                         if hasattr(self.config.mfa, key):
                             setattr(self.config.mfa, key, value)
@@ -4861,6 +4968,12 @@ if (restoreWebSession()) {
                             await self.telnet_rebind_fn(tuple(ports))
                         except Exception as exc:
                             await self._write_response(writer, 500, self._json({"error": f"telnet rebind failed: {exc}"}))
+                            return
+                    if rbn_updates and self.rbn_reconfigure_fn:
+                        try:
+                            await self.rbn_reconfigure_fn()
+                        except Exception as exc:
+                            await self._write_response(writer, 500, self._json({"error": f"rbn reconfigure failed: {exc}"}))
                             return
                     await self._write_response(writer, 200, self._json({"ok": True, **self._node_presentation_json(await self._node_presentation())}))
                     return

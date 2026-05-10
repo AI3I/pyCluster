@@ -830,7 +830,7 @@ show_program = "Show pyCluster program and version information."
 show_prompt = "Show the current prompt template."
 show_protohistory = "Show recorded protocol state changes."
 show_qth = "Show your location details."
-show_rbn = "Show whether RBN spots are enabled."
+show_rbn = "Show recent RBN/Skimmer reports for a callsign."
 show_register = "Show whether automatic registration is enabled."
 show_satellite = "Show recent satellite-related traffic."
 show_station = "Show station profile and last-spot details."
@@ -906,6 +906,13 @@ empty = "No WX entries"
 
 [show.dx]
 empty = "No spots available"
+
+[show.rbn]
+title = "RBN reports for {call} ({status}):"
+empty = "No RBN reports for {call}."
+line = "  {when} {freq:8.1f}  {spotter:<12} {info}"
+status_on = "on"
+status_off = "off"
 
 [show.dxcc]
 usage = "Usage: show/dxcc <prefix>"
@@ -1780,6 +1787,10 @@ color = "#3fb950"
 pattern = '\blotw\b'
 label = "LoTW"
 color = "#58a6ff"
+[[public_web.taxonomy.comment_tags]]
+pattern = '\brbn\b|\bskimmer\b|\b\d{1,3}\s*db\b|\b\d{1,3}\s*wpm\b|\bq:\d+\b'
+label = "RBN"
+color = "#38bdf8"
 [[public_web.taxonomy.comment_tags]]
 pattern = '\bbeacon\b'
 label = "BEACON"

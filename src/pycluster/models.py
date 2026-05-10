@@ -84,6 +84,13 @@ def is_plausible_spot_call(value: str) -> bool:
     return any(ch.isalpha() for ch in joined) and any(ch.isdigit() for ch in joined)
 
 
+def is_plausible_spotter_call(value: str) -> bool:
+    call = normalize_call(value)
+    if call.endswith("-#"):
+        return is_plausible_spot_call(call[:-2])
+    return is_plausible_spot_call(call)
+
+
 def parse_spot_record(line: str) -> Spot:
     parts = line.rstrip("\n").split("^")
     if len(parts) < 8:

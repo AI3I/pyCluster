@@ -55,6 +55,7 @@ It also supports direct commands such as:
 | Command | Purpose |
 |---|---|
 | `show/dx` or `sh/dx` | Show recent DX spots. |
+| `show/rbn [call] [limit]` | Show recent RBN/Skimmer reports for your base callsign or another callsign. |
 | `show/node [call]` | Show local node state or stored node/user routing info. |
 | `show/cluster` | Show a compact cluster summary. |
 | `show/users` | Show currently connected users and session details. |

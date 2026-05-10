@@ -223,6 +223,26 @@ def test_web_admin_static_exposes_satellite_settings() -> None:
     assert "satellite_keps_path: byId('satellite_keps_path').value.trim()" in text
 
 
+def test_web_admin_static_exposes_rbn_settings() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'data-node-group="rbn"' in text
+    assert 'id="node-group-rbn"' in text
+    assert 'id="rbn_enabled"' in text
+    assert 'id="rbn_host"' in text
+    assert 'id="rbn_port"' in text
+    assert 'id="rbn_ports"' in text
+    assert 'id="rbn_feeds"' in text
+    assert 'id="rbn_callsign"' in text
+    assert 'id="rbn_startup_commands"' in text
+    assert 'id="rbnStatus"' in text
+    assert 'id="navRbn"' in text
+    assert "setText('navRbn', rbnState);" in text
+    assert "const rbnStatus = data.rbn_status || {};" in text
+    assert "rbn_host: byId('rbn_host').value.trim()" in text
+    assert "rbn_ports: byId('rbn_ports').value.trim()" in text
+    assert "rbn_feeds: byId('rbn_feeds').value" in text
+
+
 def test_web_admin_static_exposes_totp_mfa_controls() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert 'id="enrollTotp"' in text
@@ -324,6 +344,10 @@ def test_public_web_greyline_mask_closes_through_dark_pole() -> None:
     assert "const tLat  = Math.atan2(-Math.cos(dR), Math.tan(subLatR))" in text
     assert "const pole = sub.lat >= 0 ? -89.9 : 89.9;" in text
     assert "Close through the dark pole" in text
+    assert "24.06570982441908*D + utcH" not in text
+    assert "#map .leaflet-tile { filter:brightness(1.42) contrast(.86) saturate(.84); }" in text
+    assert "html.light #map .leaflet-tile { filter:none; }" in text
+    assert "color:'rgba(255,211,42,0.78)'" in text
 
 
 def test_web_admin_static_exposes_taxonomy_editor() -> None:
@@ -1807,11 +1831,19 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             encoding="utf-8",
         )
         store = SpotStore(db)
+        rbn_reconfigured = 0
+
+        async def _rbn_reconfigure() -> None:
+            nonlocal rbn_reconfigured
+            rbn_reconfigured += 1
+
         srv = WebAdminServer(
             config=cfg,
             store=store,
             started_at=datetime.now(timezone.utc),
             session_count_fn=lambda: 0,
+            rbn_status_fn=lambda: {"state": "connected", "host": "rbn.example.test", "port": 7550},
+            rbn_reconfigure_fn=_rbn_reconfigure,
             config_path=str(cfg_path),
         )
         try:
@@ -1827,6 +1859,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["welcome_title"] == "Welcome"
             assert data["motd"] == "Default MOTD"
             assert data["software_version"] == f"pyCluster {__version__}"
+            assert data["rbn_status"]["state"] == "connected"
             assert data["retention_stale_users_enabled"] is False
             assert data["retention_stale_users_days"] == 365
 
@@ -1864,6 +1897,16 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
                 "satellite_prediction_hours": 48,
                 "satellite_pass_step_seconds": 120,
                 "satellite_min_elevation_deg": 5.5,
+                "rbn_enabled": True,
+                "rbn_host": "rbn.example.test",
+                "rbn_port": 7550,
+                "rbn_ports": "7000,7001",
+                "rbn_feeds": "CW/RTTY,telnet.reversebeacon.net,7000\nFT8,telnet.reversebeacon.net,7001",
+                "rbn_callsign": "AI3I-15",
+                "rbn_password": "rbn-pass",
+                "rbn_source_node": "RBN",
+                "rbn_startup_commands": "set/skimmer\nset/skimmer cw\n",
+                "rbn_reconnect_seconds": 120,
                 "mfa_enabled": True,
                 "mfa_require_for_sysop": True,
                 "mfa_require_for_users": False,
@@ -1915,6 +1958,17 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["satellite_prediction_hours"] == 48
             assert data["satellite_pass_step_seconds"] == 120
             assert data["satellite_min_elevation_deg"] == 5.5
+            assert data["rbn_enabled"] is True
+            assert data["rbn_host"] == "rbn.example.test"
+            assert data["rbn_port"] == 7550
+            assert data["rbn_ports"] == "7000,7001"
+            assert data["rbn_feeds"] == "CW/RTTY,telnet.reversebeacon.net,7000\nFT8,telnet.reversebeacon.net,7001"
+            assert data["rbn_callsign"] == "AI3I-15"
+            assert data["rbn_password"] == "rbn-pass"
+            assert data["rbn_source_node"] == "RBN"
+            assert data["rbn_startup_commands"] == "set/skimmer\nset/skimmer cw"
+            assert data["rbn_reconnect_seconds"] == 120
+            assert rbn_reconfigured == 1
             assert data["mfa_enabled"] is True
             assert data["mfa_require_for_sysop"] is True
             assert data["mfa_require_for_users"] is False
@@ -1955,6 +2009,19 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert saved["satellite"]["prediction_hours"] == 48
             assert saved["satellite"]["pass_step_seconds"] == 120
             assert saved["satellite"]["min_elevation_deg"] == 5.5
+            assert saved["rbn"]["enabled"] is True
+            assert saved["rbn"]["host"] == "rbn.example.test"
+            assert saved["rbn"]["port"] == 7550
+            assert saved["rbn"]["ports"] == [7000, 7001]
+            assert saved["rbn"]["feeds"] == [
+                {"name": "CW/RTTY", "host": "telnet.reversebeacon.net", "port": 7000},
+                {"name": "FT8", "host": "telnet.reversebeacon.net", "port": 7001},
+            ]
+            assert saved["rbn"]["callsign"] == "AI3I-15"
+            assert saved["rbn"]["password"] == "rbn-pass"
+            assert saved["rbn"]["source_node"] == "RBN"
+            assert saved["rbn"]["startup_commands"] == ["set/skimmer", "set/skimmer cw"]
+            assert saved["rbn"]["reconnect_seconds"] == 120
             assert saved["mfa"]["enabled"] is True
             assert saved["mfa"]["issuer"] == "AI3I Cluster"
             assert saved["mfa"]["resend_cooldown_seconds"] == 45
@@ -2029,6 +2096,7 @@ def test_web_admin_console_page_includes_software_version_slot(tmp_path) -> None
             assert code == 200
             html = body.decode("utf-8")
             assert 'id="navVersion"' in html
+            assert 'id="navRbn"' in html
             assert "Software</label>" in html
             assert 'id="retention_stale_users_enabled"' in html
             assert 'id="smtp_host"' in html

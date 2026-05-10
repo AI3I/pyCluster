@@ -80,16 +80,14 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current release: `1.0.8`
+Current development release: `1.0.9`
 
-Recent highlights in `1.0.8`:
+Recent highlights in `1.0.9`:
 
-- user and SysOp MFA controls now cover email OTP, authenticator apps, status visibility, reset, and self-service enable/disable flows
-- System Operator web user controls now cover block/unblock, unlock, cluster-peer separation, peer reconnect/disconnect, and saved-peer handling
-- public web filtering, Kp propagation data, and profile-backed watch behavior were expanded and regression-covered
-- telnet registration, `show/muf`, `show/moon`, `announce/full`, keepalives, talk routing, and password-entry behavior were tightened
-- upgrade handling now uses the source checkout path for console-triggered upgrades and records safer status through the worker
-- CTY/WPX refresh, deployment units, fail2ban handling, and operational docs were refreshed for the 1.0.8 deployment path
+- RBN/Skimmer spots can be identified, filtered, shown with `show/rbn`, and ingested from an optional direct telnet feed
+- Skimmer spotter suffixes such as `-#` are accepted when storing received RBN-style spots
+- node-link peers receive fresh PC18 identity advertisements on outbound reconnects
+- upgrade and repair paths protect runtime string catalogs by backing up invalid `strings.toml` files and restoring bundled defaults
 
 ## 🖥️ Interfaces
 
@@ -361,7 +359,7 @@ By default this refreshes both `CTY.DAT` and `wpxloc.raw`. Use `--cty-only` if y
 Automatic refresh:
 
 - `pycluster-data-refresh.timer`
-  - refreshes both `CTY.DAT` and `wpxloc.raw`
+  - runs shortly after boot and then refreshes both `CTY.DAT` and `wpxloc.raw` every 6 hours
 
 The System Operator web console and telnet `show/configuration` also report dataset load state, path, and version/date when available.
 

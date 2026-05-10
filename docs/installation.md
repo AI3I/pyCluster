@@ -128,7 +128,7 @@ This installs:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-data-refresh.timer`
-  - checks every 6 hours for updated `CTY.DAT` and `wpxloc.raw` from the Country Files refresh path
+  - runs shortly after boot and then every 6 hours for updated `CTY.DAT` and `wpxloc.raw` from the Country Files refresh path
 - `pycluster-retention.timer`
 - fail2ban filters and jails for pyCluster auth failures
 - logrotate policy for `/var/log/pycluster/authfail.log`

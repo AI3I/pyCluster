@@ -328,7 +328,7 @@ Healthy baseline:
 - core service active
 - public web service active
 - nginx active when the host is publishing web UI on `80/443`
-- CTY refresh timer active
+- CTY/WPX data refresh timer active
 - wpxloc.raw configured and current if you use DXSpider-style WPX/location data
 - database present
 - security logging and `fail2ban` functioning

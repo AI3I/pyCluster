@@ -388,6 +388,30 @@ PY
   install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$src" "$dest"
 }
 
+normalize_country_data_config_paths() {
+  [ -f "$PYCLUSTER_CONFIG_DEST" ] || return 0
+  "$PYCLUSTER_PYTHON_LINK" - "$PYCLUSTER_CONFIG_DEST" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+updated = text
+for key, filename in (("cty_dat_path", "cty.dat"), ("wpxloc_raw_path", "wpxloc.raw")):
+    pattern = re.compile(
+        rf"^(\s*{re.escape(key)}\s*=\s*)([\"'])\.?/?fixtures/live/dxspider/{re.escape(filename)}\2\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    updated = pattern.sub(rf'\1"./data/{filename}"', updated)
+if updated != text:
+    backup = path.with_suffix(path.suffix + ".country-paths.bak")
+    backup.write_text(text, encoding="utf-8")
+    path.write_text(updated, encoding="utf-8")
+PY
+  chown "$PYCLUSTER_USER:$PYCLUSTER_GROUP" "$PYCLUSTER_CONFIG_DEST" "$PYCLUSTER_CONFIG_DEST.country-paths.bak" >/dev/null 2>&1 || true
+}
+
 install_or_refresh_service() {
   local root
   root="$(repo_root)"

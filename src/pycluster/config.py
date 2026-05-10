@@ -91,6 +91,27 @@ class SatelliteConfig:
 
 
 @dataclass(slots=True)
+class RBNConfig:
+    enabled: bool = False
+    host: str = ""
+    port: int = 7300
+    ports: tuple[int, ...] = ()
+    callsign: str = ""
+    password: str = ""
+    source_node: str = "RBN"
+    startup_commands: tuple[str, ...] = ()
+    reconnect_seconds: int = 60
+    feeds: tuple["RBNFeedConfig", ...] = ()
+
+
+@dataclass(slots=True)
+class RBNFeedConfig:
+    name: str = ""
+    host: str = ""
+    port: int = 7300
+
+
+@dataclass(slots=True)
 class MFAConfig:
     enabled: bool = False
     require_for_sysop: bool = False
@@ -112,6 +133,7 @@ class AppConfig:
     qrz: QRZConfig = field(default_factory=QRZConfig)
     smtp: SMTPConfig = field(default_factory=SMTPConfig)
     satellite: SatelliteConfig = field(default_factory=SatelliteConfig)
+    rbn: RBNConfig = field(default_factory=RBNConfig)
     mfa: MFAConfig = field(default_factory=MFAConfig)
 
 
@@ -227,9 +249,35 @@ def load_config(path: str | Path) -> AppConfig:
     qrz = QRZConfig(**_load_section(data, "qrz")) if "qrz" in data else QRZConfig()
     smtp = SMTPConfig(**_load_section(data, "smtp")) if "smtp" in data else SMTPConfig()
     satellite = SatelliteConfig(**_load_section(data, "satellite")) if "satellite" in data else SatelliteConfig()
+    rbn_raw = _load_section(data, "rbn") if "rbn" in data else {}
+    if "startup_commands" in rbn_raw:
+        raw_commands = rbn_raw.get("startup_commands")
+        if isinstance(raw_commands, str):
+            rbn_raw["startup_commands"] = tuple(cmd.strip() for cmd in raw_commands.splitlines() if cmd.strip())
+        elif isinstance(raw_commands, (list, tuple)):
+            rbn_raw["startup_commands"] = tuple(str(cmd).strip() for cmd in raw_commands if str(cmd).strip())
+    if "ports" in rbn_raw:
+        rbn_raw["ports"] = parse_telnet_ports(rbn_raw.get("ports"), int(rbn_raw.get("port", 7300) or 7300))
+    if "feeds" in rbn_raw:
+        feeds: list[RBNFeedConfig] = []
+        raw_feeds = rbn_raw.get("feeds")
+        if isinstance(raw_feeds, list):
+            for row in raw_feeds:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name", "")).strip()
+                host = str(row.get("host", "")).strip()
+                try:
+                    port = int(row.get("port", 7300))
+                except (TypeError, ValueError):
+                    port = 7300
+                if host and 0 < port <= 65535:
+                    feeds.append(RBNFeedConfig(name=name, host=host, port=port))
+        rbn_raw["feeds"] = tuple(feeds)
+    rbn = RBNConfig(**rbn_raw)
     mfa = MFAConfig(**_load_section(data, "mfa")) if "mfa" in data else MFAConfig()
 
-    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store, qrz=qrz, smtp=smtp, satellite=satellite, mfa=mfa)
+    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store, qrz=qrz, smtp=smtp, satellite=satellite, rbn=rbn, mfa=mfa)
 
 
 def _toml_value(value: object) -> str:
@@ -243,6 +291,8 @@ def _toml_value(value: object) -> str:
         return json.dumps(value)
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{key} = {_toml_value(row)}" for key, row in value.items()) + " }"
     raise TypeError(f"unsupported TOML value type: {type(value)!r}")
 
 
@@ -256,10 +306,11 @@ def dump_config(config: AppConfig) -> str:
         "qrz": asdict(config.qrz),
         "smtp": asdict(config.smtp),
         "satellite": asdict(config.satellite),
+        "rbn": asdict(config.rbn),
         "mfa": asdict(config.mfa),
     }
     lines: list[str] = []
-    for section in ("node", "telnet", "web", "public_web", "store", "qrz", "smtp", "satellite", "mfa"):
+    for section in ("node", "telnet", "web", "public_web", "store", "qrz", "smtp", "satellite", "rbn", "mfa"):
         lines.append(f"[{section}]")
         for key, value in data[section].items():
             lines.append(f"{key} = {_toml_value(value)}")

@@ -49,6 +49,8 @@ Important fields:
 
 - `host`
 - `port`
+- `ports`
+- `feeds`
 - `max_clients`
 - `idle_timeout_seconds`
 - `max_line_length`
@@ -142,6 +144,31 @@ Notes:
 - `keps_path` points at a local TLE/keps text file, for example `./data/keps.txt`
 - pass prediction uses the caller's QRA/grid square or `forward/latlong` coordinates
 - `show/satellite` without a target still shows recent satellite-tagged DX spots
+
+### `[rbn]`
+
+Optional direct RBN/Skimmer telnet feed ingestion. Leave it disabled unless you have a specific RBN-enabled cluster or feed to consume.
+
+Important fields:
+
+- `enabled`
+- `host`
+- `port`
+- `callsign`
+- `password`
+- `source_node`
+- `startup_commands`
+- `reconnect_seconds`
+
+Notes:
+- `startup_commands` can enable Skimmer traffic on feeds that require it, for example `["set/skimmer"]`
+- `port` keeps backward-compatible single-feed behavior. Set `ports = [7000, 7001]` to connect to multiple feeds at the same host.
+- `feeds` gives each feed a stable label and can replace `host`/`ports`, for example `feeds = [{ name = "CW/RTTY", host = "telnet.reversebeacon.net", port = 7000 }, { name = "FT8", host = "telnet.reversebeacon.net", port = 7001 }]`.
+- The public Reverse Beacon Network relays are `telnet.reversebeacon.net:7000` for CW/RTTY spots and `telnet.reversebeacon.net:7001` for FT8 spots.
+- The public RBN relays are high-throughput raw feeds and do not provide cluster-side filtering; use pyCluster filters and user preferences after ingestion.
+- RBN feed spots are stored as normal spots with `source_node` set from this section
+- users still control display with `set/rbn`, `unset/rbn`, `accept/rbn`, `reject/rbn`, and `show/rbn`
+- use `config/pycluster.local.toml` for host-specific feed credentials
 
 ## Example Paths
 

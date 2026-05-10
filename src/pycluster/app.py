@@ -17,11 +17,12 @@ from .wpxloc import is_loaded as wpx_loaded, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
 from .geomag import WcyReading, WwvReading, canonicalize_wcy_text, canonicalize_wwv_text, parse_wcy_text, parse_wwv_text
 from .maidenhead import extract_locator
-from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
+from .models import Spot, is_plausible_spot_call, is_plausible_spotter_call, is_valid_call, normalize_call
 from .node_link import NodeLinkEngine
 from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, parse_wire_pc_frame
+from .rbn import parse_rbn_dx_line
 from .store import SpotStore
 from .strings import StringCatalog
 from .telnet_server import TelnetClusterServer
@@ -138,6 +139,8 @@ class ClusterApp:
             telnet_rebind_fn=self.telnet.rebind_listeners,
             event_log_fn=self.telnet.record_event,
             audit_rows_fn=self.telnet.audit_rows,
+            rbn_status_fn=self.rbn_feed_status,
+            rbn_reconfigure_fn=self.reconfigure_rbn_feed,
             config_path=config_path,
         )
         self.public_web = PublicWebServer(
@@ -158,6 +161,17 @@ class ClusterApp:
         self._node_ingest_task: asyncio.Task[None] | None = None
         self._peer_reconnect_task: asyncio.Task[None] | None = None
         self._peer_heartbeat_task: asyncio.Task[None] | None = None
+        self._rbn_feed_tasks: dict[str, asyncio.Task[None]] = {}
+        self._rbn_feed_statuses: dict[str, dict[str, object]] = {}
+        self._rbn_feed_status: dict[str, object] = {
+            "state": "disabled" if not config.rbn.enabled else "stopped",
+            "last_connected_at": "",
+            "last_line_at": "",
+            "last_spot_at": "",
+            "last_error": "",
+            "last_error_at": "",
+            "last_spot": "",
+        }
         self._node_ingest_stop = asyncio.Event()
         self._proto_trace_lock = asyncio.Lock()
         self._public_web_started = False
@@ -167,6 +181,87 @@ class ClusterApp:
 
     def _render_string(self, key: str, default: str, **values: object) -> str:
         return self._strings.render(key, default, **values)
+
+    def _utc_status_time(self) -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    def _set_rbn_feed_status(self, feed_key: str | None = None, **updates: object) -> None:
+        self._rbn_feed_status.update(updates)
+        if feed_key:
+            feed_status = self._rbn_feed_statuses.setdefault(feed_key, {})
+            feed_status.update(updates)
+
+    def rbn_feed_status(self) -> dict[str, object]:
+        status = dict(self._rbn_feed_status)
+        status.update(
+            {
+                "enabled": bool(self.config.rbn.enabled),
+                "running": any(not task.done() for task in self._rbn_feed_tasks.values()),
+                "host": str(self.config.rbn.host or ""),
+                "port": int(self.config.rbn.port),
+                "ports": self._rbn_feed_ports(),
+                "feeds": self._rbn_feed_status_payload(),
+            }
+        )
+        return status
+
+    def _rbn_feed_ports(self) -> tuple[int, ...]:
+        return tuple(self.config.rbn.ports or (int(self.config.rbn.port),))
+
+    def _rbn_feed_configs(self) -> tuple[dict[str, object], ...]:
+        if self.config.rbn.feeds:
+            return tuple(
+                {
+                    "key": f"{feed.name or feed.host}:{int(feed.port)}",
+                    "name": feed.name or f"{feed.host}:{int(feed.port)}",
+                    "host": feed.host,
+                    "port": int(feed.port),
+                }
+                for feed in self.config.rbn.feeds
+            )
+        host = str(self.config.rbn.host or "")
+        return tuple(
+            {
+                "key": f"{host}:{port}",
+                "name": f"{host}:{port}" if host else str(port),
+                "host": host,
+                "port": port,
+            }
+            for port in self._rbn_feed_ports()
+        )
+
+    def _rbn_feed_status_payload(self) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for feed in self._rbn_feed_configs():
+            key = str(feed["key"])
+            row = {"name": feed["name"], "host": feed["host"], "port": feed["port"], "state": "stopped"}
+            row.update(self._rbn_feed_statuses.get(key, {}))
+            rows.append(row)
+        return rows
+
+    def _start_rbn_feed_tasks(self) -> None:
+        self._rbn_feed_statuses = {}
+        if not self.config.rbn.enabled:
+            self._set_rbn_feed_status(state="disabled", last_error="")
+            return
+        self._set_rbn_feed_status(state="starting", last_error="")
+        self._rbn_feed_tasks = {
+            str(feed["key"]): asyncio.create_task(self._rbn_feed_loop(feed), name=f"rbn-feed-{feed['name']}")
+            for feed in self._rbn_feed_configs()
+        }
+
+    async def _stop_rbn_feed_tasks(self, *, state: str = "stopped") -> None:
+        if self._rbn_feed_tasks:
+            tasks = list(self._rbn_feed_tasks.values())
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._rbn_feed_tasks = {}
+        self._set_rbn_feed_status(state=state)
+
+    async def reconfigure_rbn_feed(self) -> None:
+        await self._stop_rbn_feed_tasks(state="disabled" if not self.config.rbn.enabled else "stopped")
+        self._start_rbn_feed_tasks()
 
     def _spot_review_reasons(self, dx_call: str, spotter: str) -> list[str]:
         reasons: list[str] = []
@@ -461,9 +556,11 @@ class ClusterApp:
         self._node_ingest_task = asyncio.create_task(self._node_ingest_loop(), name="node-link-ingest")
         self._peer_reconnect_task = asyncio.create_task(self._peer_reconnect_loop(), name="node-link-reconnect")
         self._peer_heartbeat_task = asyncio.create_task(self._peer_heartbeat_loop(), name="node-link-heartbeat")
+        self._start_rbn_feed_tasks()
 
     async def stop(self) -> None:
         self._node_ingest_stop.set()
+        await self._stop_rbn_feed_tasks()
         if self._peer_reconnect_task:
             self._peer_reconnect_task.cancel()
             try:
@@ -503,6 +600,123 @@ class ClusterApp:
                 LOG.exception("peer reconnect loop failed")
             try:
                 await asyncio.wait_for(self._node_ingest_stop.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+
+    @staticmethod
+    def _strip_telnet_bytes(data: bytes) -> bytes:
+        out = bytearray()
+        i = 0
+        while i < len(data):
+            b = data[i]
+            if b != 255:
+                out.append(b)
+                i += 1
+                continue
+            if i + 1 >= len(data):
+                break
+            cmd = data[i + 1]
+            if cmd == 255:
+                out.append(255)
+                i += 2
+                continue
+            if cmd in {251, 252, 253, 254}:
+                i += 3
+                continue
+            if cmd == 250:
+                j = i + 2
+                while j + 1 < len(data):
+                    if data[j] == 255 and data[j + 1] == 240:
+                        j += 2
+                        break
+                    j += 1
+                i = j
+                continue
+            i += 2
+        return bytes(out)
+
+    async def _write_rbn_line(self, writer: asyncio.StreamWriter, line: str) -> None:
+        writer.write((line.rstrip("\r\n") + "\r\n").encode("utf-8", errors="replace"))
+        await writer.drain()
+
+    async def _read_rbn_line(self, reader: asyncio.StreamReader, timeout: float) -> str | None:
+        raw = await asyncio.wait_for(reader.readline(), timeout=timeout)
+        if not raw:
+            return None
+        return self._strip_telnet_bytes(raw).decode("utf-8", errors="replace").strip()
+
+    async def _run_rbn_feed_once(self, feed: dict[str, object]) -> None:
+        cfg = self.config.rbn
+        feed_key = str(feed["key"])
+        host = str(feed["host"] or "").strip()
+        port = int(feed["port"])
+        call = normalize_call(cfg.callsign or self.config.node.node_call)
+        self._set_rbn_feed_status(feed_key, state="connecting", last_error="")
+        if not host or not call:
+            self._set_rbn_feed_status(feed_key, state="error", last_error="RBN feed requires host and callsign", last_error_at=self._utc_status_time())
+            raise RuntimeError("RBN feed requires host and callsign")
+        reader, writer = await asyncio.open_connection(host, int(port))
+        try:
+            self._set_rbn_feed_status(feed_key, state="logging_in")
+            await self._write_rbn_line(writer, call)
+            sent_call = True
+            logged_in = False
+            deadline = asyncio.get_running_loop().time() + 20.0
+            while asyncio.get_running_loop().time() < deadline and not logged_in:
+                line = await self._read_rbn_line(reader, max(0.1, deadline - asyncio.get_running_loop().time()))
+                if line is None:
+                    raise RuntimeError("RBN feed closed before login completed")
+                low = line.lower()
+                if ("login:" in low or "call:" in low) and not sent_call:
+                    await self._write_rbn_line(writer, call)
+                    sent_call = True
+                elif "password:" in low:
+                    await self._write_rbn_line(writer, str(cfg.password or ""))
+                elif ">" in line or "dx de " in low:
+                    logged_in = True
+            if not logged_in:
+                raise RuntimeError("RBN feed did not complete login")
+            self._set_rbn_feed_status(feed_key, state="connected", last_connected_at=self._utc_status_time(), last_error="")
+            for command in cfg.startup_commands:
+                await self._write_rbn_line(writer, command)
+            while not self._node_ingest_stop.is_set():
+                line = await self._read_rbn_line(reader, 300.0)
+                if line is None:
+                    return
+                self._set_rbn_feed_status(feed_key, last_line_at=self._utc_status_time())
+                spot = parse_rbn_dx_line(line, source_node=cfg.source_node)
+                if spot is None:
+                    continue
+                inserted = await self.store.add_spot(spot)
+                if inserted:
+                    self._set_rbn_feed_status(
+                        feed_key,
+                        last_spot_at=self._utc_status_time(),
+                        last_spot=f"{spot.spotter} {spot.freq_khz:.1f} {spot.dx_call} {spot.info}".strip(),
+                    )
+                    await self.telnet.publish_spot(spot)
+                    await self._relay_spot_to_links(spot, exclude_peer=None)
+        finally:
+            if not self._node_ingest_stop.is_set():
+                self._set_rbn_feed_status(feed_key, state="disconnected")
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
+            except (asyncio.TimeoutError, ConnectionError, OSError):
+                pass
+
+    async def _rbn_feed_loop(self, feed: dict[str, object]) -> None:
+        delay = max(5, int(self.config.rbn.reconnect_seconds or 60))
+        while not self._node_ingest_stop.is_set():
+            try:
+                await self._run_rbn_feed_once(feed)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._set_rbn_feed_status(str(feed["key"]), state="error", last_error=str(exc), last_error_at=self._utc_status_time())
+                LOG.warning("RBN feed disconnected; retrying in %ss: %s", delay, exc)
+            try:
+                await asyncio.wait_for(self._node_ingest_stop.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 pass
 
@@ -948,7 +1162,7 @@ class ClusterApp:
             msg = typed if isinstance(typed, Pc11Message) else Pc11Message.from_fields(frame.payload_fields)
             dx_call = normalize_call(msg.dx_call)
             spotter = normalize_call(msg.spotter)
-            if not is_plausible_spot_call(dx_call) or not is_plausible_spot_call(spotter):
+            if not is_plausible_spot_call(dx_call) or not is_plausible_spotter_call(spotter):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_invalid_call")
                 return
             try:
@@ -1018,7 +1232,7 @@ class ClusterApp:
             msg = typed if isinstance(typed, Pc61Message) else Pc61Message.from_fields(frame.payload_fields)
             dx_call = normalize_call(msg.dx_call)
             spotter = normalize_call(msg.spotter)
-            if not is_plausible_spot_call(dx_call) or not is_plausible_spot_call(spotter):
+            if not is_plausible_spot_call(dx_call) or not is_plausible_spotter_call(spotter):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_invalid_call")
                 return
             try:

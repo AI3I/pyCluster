@@ -134,6 +134,7 @@ pyCluster should support RBN as a first-class feature rather than treating it as
 Planned work:
 - explicit user controls such as `accept/rbn`, `reject/rbn`, and `set/rbn`
 - richer RBN-aware filtering and presentation
+- `show/rbn [call] [limit]` telnet visibility for recent Skimmer reports
 - capability awareness when peer software advertises `rbn`
 - web and telnet visibility that makes RBN traffic understandable instead of opaque
 
