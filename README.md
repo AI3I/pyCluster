@@ -60,7 +60,7 @@ Key improvements:
 - integrated audit and security visibility
 - structured auth-failure logging with fail2ban support
 - age-based retention controls with daily cleanup
-- bundled and refreshable CTY data instead of relying on stale host copies
+- refresh-managed CTY data instead of relying on stale host copies
 - Linux-first deployment with systemd tooling
 
 ## Less Manual Admin Work
@@ -346,7 +346,7 @@ That data is used for:
 - operational review cues for unusual spot prefixes
 - sysop visibility into currently loaded country-data versions
 
-pyCluster ships with bundled country-data fixtures, and install/upgrade can perform a best-effort refresh from Country Files.
+pyCluster does not package `CTY.DAT` or `wpxloc.raw` in the repository. Install, upgrade, repair, and the data refresh timer fetch the active runtime copies from Country Files into `data/`.
 
 Manual refresh:
 

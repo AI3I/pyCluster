@@ -1760,7 +1760,13 @@ def test_smtp_mailer_sets_required_rfc5322_headers(monkeypatch) -> None:
 def test_web_admin_node_presentation_includes_dataset_status(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_node_datasets.db")
-        cty_path = Path(__file__).resolve().parents[1] / "fixtures" / "live" / "dxspider" / "cty.dat"
+        cty_path = tmp_path / "cty.dat"
+        cty_path.write_text(
+            "United States: 05: 08: NA: 37.00: 95.00: 5.0: K:\n"
+            "    K,=K1ABC;\n"
+            "VER20260430\n",
+            encoding="ascii",
+        )
         cfg = _mk_config(db, admin_token="adm")
         cfg.public_web.cty_dat_path = str(cty_path)
         cfg.public_web.wpxloc_raw_path = str(tmp_path / "missing-wpxloc.raw")

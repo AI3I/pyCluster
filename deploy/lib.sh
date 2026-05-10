@@ -329,18 +329,6 @@ sync_tree() {
   chown -R "$PYCLUSTER_USER:$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR"
 }
 
-seed_runtime_data_from_fixtures() {
-  local root src dst
-  root="$(repo_root)"
-  for name in cty.dat wpxloc.raw; do
-    src="$root/fixtures/live/dxspider/$name"
-    dst="$PYCLUSTER_APP_DIR/data/$name"
-    if [ ! -f "$dst" ] && [ -f "$src" ]; then
-      install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0644 "$src" "$dst"
-    fi
-  done
-}
-
 install_config_if_missing() {
   local root
   root="$(repo_root)"
