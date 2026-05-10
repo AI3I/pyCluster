@@ -42,6 +42,14 @@ The masthead includes:
 - `Refresh Console`
 - theme toggle
 
+On phone, tablet, and foldable layouts, the console uses mobile-specific
+breakpoints:
+
+- main navigation and subtab rows wrap into responsive grids
+- the Users browser tabs stay visible without horizontal overflow
+- action rows and registration/account controls expand to full-width touch targets
+- large tables remain horizontally scrollable instead of wrapping into unreadable cells
+
 ## Node Settings
 
 This view controls local node identity and welcome-flow presentation.

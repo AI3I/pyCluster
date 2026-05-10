@@ -8,6 +8,17 @@ Default local URL:
 
 ## Main Pages
 
+## Mobile Layout
+
+The public web UI is responsive across desktop, phone, tablet, and foldable
+layouts. On narrower screens:
+
+- the spot map/table and sidebar stack vertically
+- the stacked spot page scrolls so filters, metrics, watch, and operate panels remain reachable
+- footer controls switch to a touch-friendly grid
+- spot popups use a safe-area-aware position above the mobile footer
+- profile, login, and registration modals scroll when the viewport is short
+
 ### Spots
 
 Core live spot view.
