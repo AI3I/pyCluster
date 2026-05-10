@@ -21,7 +21,7 @@ from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
 from .node_link import NodeLinkEngine
 from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
-from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame
+from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, parse_wire_pc_frame
 from .store import SpotStore
 from .strings import StringCatalog
 from .telnet_server import TelnetClusterServer
@@ -321,6 +321,11 @@ class ClusterApp:
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "next_retry_epoch"), "0", now)
         await self.store.delete_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_error"))
         await self._record_outbound_peer_login(name, clean_dsn, profile, now)
+        if wire_profile in {"spider", "dxspider", "pycluster"}:
+            pc18 = parse_wire_pc_frame(dxspider_compat_pc18())
+            if pc18 is not None:
+                await self.node_link.send(name, pc18)
+            await self.node_link.send(name, WirePcFrame("PC20", [""]))
         if dsn.strip().lower().startswith("dxspider://"):
             try:
                 await self._send_legacy_init_config(name)

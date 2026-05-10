@@ -136,10 +136,12 @@ def test_connect_peer_sends_legacy_dxspider_init_frames(tmp_path) -> None:
             assert str(row["last_login_peer"]) == "node-link outbound dxspider host dxspider.ai3i.net:7300"
             assert await app.store.get_user_pref("AI3I-15", "node_family") == "dxspider"
             node_call = app.config.node.node_call.upper()
-            assert [frame.pc_type for _, frame in sent] == ["PC19", "PC16", "PC22"]
-            assert sent[0][1].payload_fields == ["1", node_call, "0", "5457", "H1", ""]
-            assert sent[1][1].payload_fields == [node_call, "AI3I - 1", "H1", ""]
-            assert sent[2][1].payload_fields == [""]
+            assert [frame.pc_type for _, frame in sent] == ["PC18", "PC20", "PC19", "PC16", "PC22"]
+            assert sent[0][1].payload_fields == [f"pyCluster {__version__}", "5457", ""]
+            assert sent[1][1].payload_fields == [""]
+            assert sent[2][1].payload_fields == ["1", node_call, "0", "5457", "H1", ""]
+            assert sent[3][1].payload_fields == [node_call, "AI3I - 1", "H1", ""]
+            assert sent[4][1].payload_fields == [""]
         finally:
             await app.store.close()
 
@@ -277,7 +279,7 @@ def test_reconnect_once_reattaches_persisted_peer_and_tracks_backoff(tmp_path) -
                     "spider",
                 )
             ]
-            assert [frame.pc_type for _, frame in sent] == ["PC19", "PC16", "PC22"]
+            assert [frame.pc_type for _, frame in sent] == ["PC18", "PC20", "PC19", "PC16", "PC22"]
 
             async def _fail(_name: str, _dsn: str, profile: str = "spider") -> None:
                 raise RuntimeError("boom")
@@ -355,11 +357,16 @@ def test_peer_password_is_stored_separately_from_dsn_and_injected_on_connect(tmp
         db = str(tmp_path / "peer_password_separate.db")
         app = ClusterApp(_mk_config(db))
         connected: list[tuple[str, str, str]] = []
+        sent: list[tuple[str, WirePcFrame]] = []
         try:
             async def _connect(name: str, dsn: str, profile: str = "dxspider") -> None:
                 connected.append((name, dsn, profile))
 
+            async def _send(peer: str, frame: WirePcFrame) -> None:
+                sent.append((peer, frame))
+
             app.node_link.connect_dsn = _connect  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
             await app.save_peer_target(
                 "AI3I-16",
                 "dxspider://dxspider.ai3i.net:7300?login=AI3I-15&client=AI3I-16",
@@ -394,6 +401,7 @@ def test_peer_password_is_stored_separately_from_dsn_and_injected_on_connect(tmp
                     "spider",
                 )
             ]
+            assert [frame.pc_type for _, frame in sent[:2]] == ["PC18", "PC20"]
         finally:
             await app.store.close()
 
