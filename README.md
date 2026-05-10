@@ -80,17 +80,16 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current release: `1.0.7`
+Current release: `1.0.8`
 
-Recent highlights in `1.0.7`:
+Recent highlights in `1.0.8`:
 
-- user deletion now removes the full local account footprint instead of leaving stale prefs and records behind
-- System Operator web controls now cover QRZ XML credentials, SMTP test mail, taxonomy editing, peer deletion, and Google Authenticator-compatible TOTP enrollment
-- telnet `talk`, announce, WX, WCY, WWV, satellite pass prediction, and cluster-user totals were tightened and regression-covered
-- peer link reporting now separates connected/disconnected transport state from one-way traffic and protocol freshness
-- public web spot toasts no longer cover the sidebar, and operators can now hide the sidebar entirely
-- nginx, Let's Encrypt, fail2ban, and data-refresh deployment paths are documented and covered by install/repair/upgrade tooling
-- fresh deployments now ship with all authentication toggles off by default until a sysop enables them
+- user and SysOp MFA controls now cover email OTP, authenticator apps, status visibility, reset, and self-service enable/disable flows
+- System Operator web user controls now cover block/unblock, unlock, cluster-peer separation, peer reconnect/disconnect, and saved-peer handling
+- public web filtering, Kp propagation data, and profile-backed watch behavior were expanded and regression-covered
+- telnet registration, `show/muf`, `show/moon`, `announce/full`, keepalives, talk routing, and password-entry behavior were tightened
+- upgrade handling now uses the source checkout path for console-triggered upgrades and records safer status through the worker
+- CTY/WPX refresh, deployment units, fail2ban handling, and operational docs were refreshed for the 1.0.8 deployment path
 
 ## 🖥️ Interfaces
 
@@ -223,8 +222,14 @@ The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh
 - `run_upgrade_1_0_6`
   - moves any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
 
-The upgrade path still preserves the existing `config/pycluster.toml`, local overrides, data, and logs in place.
-`deploy/upgrade.sh`, `deploy/repair.sh`, and `deploy/uninstall.sh` also create timestamped runtime backups under `/root/pycluster-backups/` before making destructive changes to the live tree.
+The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. The source tree is synced into the runtime directory with those paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy.
+
+`deploy/upgrade.sh`, `deploy/repair.sh`, and `deploy/uninstall.sh` also create timestamped runtime backups under `/root/pycluster-backups/` before making destructive changes to the live tree. On older deployments whose local `deploy/upgrade.sh` predates automatic preflight backups, take a manual backup before pulling or running the upgrade:
+
+```bash
+sudo install -d -m 0700 /root/pycluster-backups
+sudo tar -C /home/pycluster -czf /root/pycluster-backups/manual-pre-upgrade_$(date -u +%Y%m%dT%H%M%SZ).tar.gz pyCluster/config pyCluster/data pyCluster/logs
+```
 
 Default listeners:
 
@@ -382,6 +387,7 @@ pyCluster can automatically prune older operational data.
 - [Feature Highlights](docs/feature-highlights.md)
 - [Telnet Commands](docs/telnet-commands.md)
 - [Telnet Command Reference](docs/telnet-command-reference.md)
+- [Command Specification](docs/command-specification.md)
 - [System Operator Web](docs/sysop-web.md)
 - [Public Web UI](docs/public-web.md)
 - [Node Linking](docs/node-linking.md)

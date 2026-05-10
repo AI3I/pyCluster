@@ -215,6 +215,26 @@ def test_telnet_login_line_strips_iac_negotiation_bytes(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_ayt_keepalive_gets_response_and_preserves_line(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "issue_telnet_ayt_keepalive.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        try:
+            reader.feed_data(b"\xff\xf6ping\r\n")
+            reader.feed_eof()
+            line = await srv._readline(reader, writer)
+            assert line == "ping"
+            assert b"[Yes]" in bytes(writer.buffer)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_show_wm7d_returns_lookup_data_for_call(tmp_path, monkeypatch) -> None:
     class _FakeResp:
         def __init__(self, body: str) -> None:

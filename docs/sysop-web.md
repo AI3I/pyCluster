@@ -87,13 +87,17 @@ This view controls local node identity and welcome-flow presentation.
 
 Per-user MFA actions:
 
-- `Enroll Authenticator` creates a Google Authenticator-compatible TOTP secret and setup URI for the selected principal callsign.
+- `Enroll Authenticator` creates a Google Authenticator-compatible TOTP secret for the selected principal callsign and displays the manual setup key.
 - `Reset MFA` disables the per-user MFA override, clears outstanding email OTP challenges, and removes any authenticator secret.
+
+Users can also manage their own MFA from the public web profile popup or from telnet with `mfa`, `set/mfa`, and `unset/mfa`. Node-wide MFA defaults are applied only after a user has usable MFA material, such as a valid email address or authenticator secret.
 
 ### Mail (SMTP)
 
 - `SMTP Host`
 - `SMTP Port`
+  - `Submission (587)`
+  - `SMTP (25)`
 - `SMTP Username`
 - `SMTP Password`
 - `From Email`
@@ -144,9 +148,12 @@ Actions:
 
 - `New User`
 - `Update User`
+- `Block User`
+- `Unblock User`
 - `Set Password`
 - `Remove User`
 - `Send Verification`
+- `Unlock Account`
 - `Reset MFA`
 
 Password behavior:
@@ -172,6 +179,10 @@ If `Blocked` is selected:
 
 - login is blocked for the base callsign and matching SSIDs
 - the notes field also serves as the block reason
+
+The `Block User` and `Unblock User` buttons apply the same access-level changes directly from the editor without manually opening the `Access Level` dropdown.
+
+When the `Locked` state is checked, `Unlock Account` clears the durable account lock, resets the failed-password counter, and preserves an already verified email address.
 
 ### Access Matrix
 
@@ -251,6 +262,8 @@ Meaning:
 - `Refresh`
 - `Connect`
 - `Disconnect`
+
+`Disconnect` closes the live link but keeps the saved peer target in the table as `disconnected`, so it can be selected and reconnected later. `Connect` can use the saved transport address for the selected peer even when the form transport field is empty.
 
 ### Peer Table
 
@@ -364,7 +377,6 @@ This view is for authenticated operator posting.
 - `Post Spot`
 - `Chat`
 - `Announce`
-- `WCY`
 - `WWV`
 - `WX`
 

@@ -128,7 +128,7 @@ This installs:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-data-refresh.timer`
-  - keeps `CTY.DAT` and `wpxloc.raw` current from the Country Files refresh path
+  - checks every 6 hours for updated `CTY.DAT` and `wpxloc.raw` from the Country Files refresh path
 - `pycluster-retention.timer`
 - fail2ban filters and jails for pyCluster auth failures
 - logrotate policy for `/var/log/pycluster/authfail.log`
@@ -151,7 +151,16 @@ The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh
 - `run_upgrade_1_0_6`
   - move any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
 
-`deploy/upgrade.sh`, `deploy/repair.sh`, and `deploy/uninstall.sh` also create timestamped runtime backups under `/root/pycluster-backups/` before making destructive changes to the live tree.
+The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. The source tree is synced into the runtime directory with those paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy.
+
+`deploy/upgrade.sh`, `deploy/repair.sh`, and `deploy/uninstall.sh` also create timestamped runtime backups under `/root/pycluster-backups/` before making destructive changes to the live tree. On older deployments whose local `deploy/upgrade.sh` predates automatic preflight backups, take a manual backup before pulling or running the upgrade:
+
+```bash
+sudo install -d -m 0700 /root/pycluster-backups
+sudo tar -C /home/pycluster -czf /root/pycluster-backups/manual-pre-upgrade_$(date -u +%Y%m%dT%H%M%SZ).tar.gz pyCluster/config pyCluster/data pyCluster/logs
+```
+
+The System Operator console upgrade action uses the same path indirectly: it writes a request in `/home/pycluster/pyCluster/data`, the `pycluster-upgrade.path` unit starts a worker from `/usr/src/pyCluster`, and that worker advances the source checkout before running `deploy/upgrade.sh`.
 
 Recommended before future upgrades:
 

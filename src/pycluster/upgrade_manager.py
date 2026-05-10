@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 import re
 from pathlib import Path
 import subprocess
@@ -25,6 +26,17 @@ def repo_root_from_config(config_path: str | Path | None) -> Path:
     if config_path:
         return Path(config_path).resolve().parent.parent
     return Path(__file__).resolve().parents[2]
+
+
+def source_repo_root(runtime_root: str | Path) -> Path:
+    configured = str(os.environ.get("PYCLUSTER_SOURCE_ROOT", "")).strip()
+    candidates = [Path(configured)] if configured else []
+    candidates.append(Path("/usr/src/pyCluster"))
+    candidates.append(Path(runtime_root))
+    for candidate in candidates:
+        if candidate and (candidate / ".git").exists():
+            return candidate.resolve()
+    return Path(runtime_root).resolve()
 
 
 def upgrade_paths(repo_root: str | Path) -> UpgradePaths:
@@ -142,12 +154,19 @@ def write_upgrade_status(status_path: str | Path, payload: dict[str, object]) ->
     path.chmod(0o664)
 
 
-def queue_upgrade_request(request_path: str | Path, *, requested_by: str, current_version: str) -> dict[str, object]:
+def queue_upgrade_request(
+    request_path: str | Path,
+    *,
+    requested_by: str,
+    current_version: str,
+    source_repo_root: str = "",
+) -> dict[str, object]:
     now = int(time.time())
     payload = {
         "requested_by": str(requested_by or "").strip().upper(),
         "requested_at_epoch": now,
         "current_version": str(current_version).strip(),
+        "source_repo_root": str(source_repo_root or "").strip(),
     }
     path = Path(request_path)
     path.parent.mkdir(parents=True, exist_ok=True)

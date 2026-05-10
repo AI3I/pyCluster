@@ -28,6 +28,25 @@ Supported labels:
 - `clx`
 - `pycluster`
 
+### Peer Account
+
+Node linking is not only a transport setting. A peer also needs an account on the node it logs into.
+
+For inbound links to this pyCluster node:
+
+- create or update a local account for the remote node callsign, including SSID when used
+- set that account's `node_family` to the expected cluster family, such as `pycluster` or `dxspider`
+- set a password when the remote side is expected to authenticate with one
+- make sure the account is not blocked and is allowed to log in through telnet/node-link access
+
+For outbound links from this pyCluster node:
+
+- the remote sysop must create the corresponding account for this node's login callsign
+- the `login=` value in the DSN must match what the remote node expects
+- the optional DSN `password=` value, or saved peer password, must match the remote account when the remote node requires authentication
+
+A saved peer definition tells pyCluster how to connect. The peer account tells the receiving node who is allowed to connect and what node-family behavior to apply after login.
+
 ## Peer Roles
 
 ### Dial-out
@@ -40,6 +59,7 @@ These have:
 - a family
 - retry behavior
 - optional peer password
+- a matching account on the remote node for the local login callsign
 
 ### Accepted
 
@@ -49,6 +69,12 @@ These do not require:
 
 - a DSN/transport address on the local side
 - local retry logic
+
+They still require:
+
+- a local account for the remote peer callsign
+- a configured node family on that account
+- any password or access policy required by the local node
 
 ## pyCluster DSN Example
 
@@ -84,8 +110,14 @@ Useful visibility commands:
 
 Useful sysop commands:
 
-- `sysop/connect`
-- `sysop/disconnect`
+- `sysop/peeraccount add <peer-call> <pycluster|dxspider|dxnet|arcluster|clx>`
+- `sysop/peeraccount password <peer-call> <password>`
+- `sysop/peeraccount show <peer-call>`
+- `sysop/peer show [peer]`
+- `sysop/peer add <peer> <dsn> [profile]`
+- `sysop/peer delete <peer>`
+- `connect <peer> <dsn>`
+- `disconnect <peer>`
 
 In the System Operator web console, the `Peers and Links` editor now exposes `Cluster Family` as an explicit selector, including `pyCluster` for pyCluster-to-pyCluster links.
 

@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 import re
 import signal
+import time
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from .config import AppConfig
@@ -18,6 +19,7 @@ from .geomag import WcyReading, WwvReading, canonicalize_wcy_text, canonicalize_
 from .maidenhead import extract_locator
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
 from .node_link import NodeLinkEngine
+from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame
 from .store import SpotStore
@@ -29,6 +31,7 @@ from .web_admin import WebAdminServer
 
 LOG = logging.getLogger(__name__)
 _BULLETIN_DEDUPE_WINDOW_SECONDS = 900
+_TALK_DEDUPE_WINDOW_SECONDS = 30
 _PC93_PREFIX_RE = re.compile(r"^\[(ANNOUNCE|WCY|WWV|WX)/(LOCAL|FULL|SYSOP)\]\s*(.*)$", re.IGNORECASE)
 _VIA_SUFFIX_RE = re.compile(r"\s*\[via:[^\]]+\]\s*$", re.IGNORECASE)
 _DXSPIDER_PC19_VERSION = "5457"
@@ -88,6 +91,7 @@ class ClusterApp:
         self._outbound_mail: dict[tuple[str, str], dict[str, object]] = {}
         self._outbound_mail_pending_header: dict[str, list[dict[str, object]]] = {}
         self._inbound_mail: dict[tuple[str, str], dict[str, object]] = {}
+        self._recent_talk_ingest: dict[tuple[str, str, str], float] = {}
         self.telnet = TelnetClusterServer(
             config=config,
             store=self.store,
@@ -98,6 +102,8 @@ class ClusterApp:
             link_disconnect_fn=self.disconnect_peer,
             link_clear_policy_fn=self.node_link.clear_policy_drops,
             link_desired_peers_fn=self.desired_peer_status,
+            link_save_peer_fn=self.save_peer_target,
+            link_delete_peer_fn=self.delete_peer_target,
             component_status_fn=self.component_status,
             component_restart_fn=self.restart_component,
             on_chat_fn=self._relay_chat_to_links,
@@ -181,18 +187,43 @@ class ClusterApp:
         slug = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
         return f"{_PEER_PREF_PREFIX}{slug}.{field}"
 
+    def _peer_registry_profile(self, profile: str, dsn: str = "") -> str:
+        p = str(profile or "").strip().lower()
+        if p == "spider" or str(dsn or "").strip().lower().startswith(("dxspider://", "spidertelnet://")):
+            return "dxspider"
+        return normalize_profile(p)
+
+    async def _record_outbound_peer_login(self, name: str, dsn: str, profile: str, epoch: int) -> None:
+        peer_call = normalize_call(name)
+        if not peer_call or not is_valid_call(peer_call):
+            return
+        family = self._peer_registry_profile(profile, dsn)
+        transport, path_hint = describe_transport_dsn(dsn)
+        path_parts = ["node-link", "outbound"]
+        if transport:
+            path_parts.append(transport)
+        if path_hint:
+            path_parts.append(path_hint)
+        await self.store.upsert_user_registry(peer_call, epoch)
+        await self.store.set_user_pref(peer_call, "node_family", family, epoch)
+        await self.store.record_login(peer_call, epoch, " ".join(path_parts))
+
     async def _persist_peer_target(
         self,
         name: str,
         dsn: str,
         profile: str = "dxspider",
         reconnect: bool = True,
-        password: str = "",
+        password: str | None = "",
     ) -> None:
         now = int(datetime.now(timezone.utc).timestamp())
         p = profile.strip().lower() or "dxspider"
         clean_dsn, embedded_password = self._split_peer_password(dsn)
-        secret = str(password or embedded_password or "").strip()
+        if password is None:
+            current_password = await self.store.get_user_pref(self.config.node.node_call, self._peer_pref_key(name, "password"))
+            secret = str(embedded_password or current_password or "").strip()
+        else:
+            secret = str(password or embedded_password or "").strip()
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "name"), name, now)
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "dsn"), clean_dsn, now)
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "profile"), p, now)
@@ -209,6 +240,10 @@ class ClusterApp:
         await self.store.delete_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_error"))
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "retry_count"), "0", now)
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "next_retry_epoch"), "0", now)
+        peer_call = normalize_call(name)
+        if peer_call and is_valid_call(peer_call):
+            await self.store.upsert_user_registry(peer_call, now)
+            await self.store.set_user_pref(peer_call, "node_family", self._peer_registry_profile(p, clean_dsn), now)
 
     async def save_peer_target(
         self,
@@ -216,7 +251,7 @@ class ClusterApp:
         dsn: str,
         profile: str = "dxspider",
         reconnect: bool = True,
-        password: str = "",
+        password: str | None = "",
     ) -> None:
         await self._persist_peer_target(name, dsn, profile=profile, reconnect=reconnect, password=password)
 
@@ -285,6 +320,7 @@ class ClusterApp:
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "retry_count"), "0", now)
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "next_retry_epoch"), "0", now)
         await self.store.delete_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_error"))
+        await self._record_outbound_peer_login(name, clean_dsn, profile, now)
         if dsn.strip().lower().startswith("dxspider://"):
             try:
                 await self._send_legacy_init_config(name)
@@ -719,7 +755,7 @@ class ClusterApp:
         changed_events: list[dict[str, object]] = []
         for key, value in values.items():
             prev = cfg.get(pfx + key)
-            if prev is not None and prev != value:
+            if prev != value:
                 any_changed = True
                 if key in _PROTO_FLAP_KEYS:
                     flap_relevant_changed = True
@@ -735,7 +771,7 @@ class ClusterApp:
                     {
                         "epoch": now,
                         "key": key,
-                        "from": str(prev),
+                        "from": str(prev or ""),
                         "to": str(value),
                     }
                 )
@@ -1130,6 +1166,16 @@ class ClusterApp:
             if not is_valid_call(recipient):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_pc10_invalid_recipient")
                 return
+            now_monotonic = time.monotonic()
+            cutoff = now_monotonic - _TALK_DEDUPE_WINDOW_SECONDS
+            self._recent_talk_ingest = {
+                key: ts for key, ts in self._recent_talk_ingest.items() if ts >= cutoff
+            }
+            dedupe_key = (sender, recipient, body.casefold())
+            if dedupe_key in self._recent_talk_ingest:
+                await self.node_link.mark_policy_drop(peer_name, "ingest_pc10_duplicate")
+                return
+            self._recent_talk_ingest[dedupe_key] = now_monotonic
             delivered = await self.telnet.publish_talk(recipient, sender, body)
             if delivered <= 0:
                 await self.node_link.mark_policy_drop(peer_name, "ingest_pc10_offline")

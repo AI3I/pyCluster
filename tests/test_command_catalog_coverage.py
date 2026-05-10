@@ -131,8 +131,6 @@ PROBE_OVERRIDES: dict[str, str] = {
     "clear/spots": "clear/spots all",
     "clear/announce": "clear/announce all",
     "clear/route": "clear/route all",
-    "clear/wcy": "clear/wcy all",
-    "clear/wwv": "clear/wwv all",
     "load/aliases": "load/aliases N0CALL",
     "load/messages": "load/messages N0CALL",
     "load/usdb": "load/usdb N0CALL",

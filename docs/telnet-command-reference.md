@@ -4,6 +4,8 @@ This page documents the practical telnet command surface in pyCluster.
 
 It is based on the implemented command registry, not just the historical DXSpider command catalog.
 
+For the intended long-term command surface, cleanup policy, and compatibility/deprecation rules, see [Command Specification](command-specification.md). This reference is descriptive; the specification is normative.
+
 ## Command Model
 
 pyCluster uses these main command families:
@@ -102,6 +104,9 @@ sh/dx day 2
 | `set/node <node>` | Set home-routing node alias. |
 | `set/password <newpass>` | Set or change the local password. |
 | `unset/password` | Clear the stored local password. |
+| `mfa` | Show your MFA status, enabled methods, email override, and effective policy. |
+| `set/mfa [email\|authenticator\|default]` | Enable email OTP MFA, enroll an authenticator app, or return email MFA to the node default. |
+| `unset/mfa` | Disable user-level MFA, remove any authenticator secret, and clear outstanding challenges. |
 | `set/passphrase <text>` | Set a passphrase field. |
 | `unset/passphrase` | Clear passphrase field. |
 | `set/page <n>` | Set pagination length. |
@@ -155,15 +160,6 @@ sh/dx day 2
 | `accept/route <expr>` | Add an accept rule for route traffic. |
 | `reject/route <expr>` | Add a reject rule for route traffic. |
 | `clear/route` | Clear route filter rules. |
-| `accept/wcy <expr>` | Add an accept rule for WCY traffic. |
-| `reject/wcy <expr>` | Add a reject rule for WCY traffic. |
-| `clear/wcy` | Clear WCY filter rules. |
-| `accept/wwv <expr>` | Add an accept rule for WWV traffic. |
-| `reject/wwv <expr>` | Add a reject rule for WWV traffic. |
-| `clear/wwv` | Clear WWV filter rules. |
-| `accept/wx <expr>` | Add an accept rule for WX traffic. |
-| `reject/wx <expr>` | Add a reject rule for WX traffic. |
-| `clear/wx` | Clear WX filter rules. |
 | `show/filter` | Show current filter state and user filter settings. |
 
 ### Global Bad Rules
@@ -353,6 +349,16 @@ These commands require sysop privilege and are hidden from ordinary command list
 | `sysop/sysops` | Show system operators. |
 | `sysop/access <call>` | Show a per-user channel/capability access matrix. |
 | `sysop/path <call\|peer>` | Show the recorded inbound path for a user or the live transport path for a peer. |
+| `sysop/peeraccount add <peer-call> <family>` | Create or update the local node-login account required for an inbound peer. |
+| `sysop/peeraccount password <peer-call> <password>` | Set the password for a peer node-login account. |
+| `sysop/peeraccount show <peer-call>` | Show whether a peer account exists, its node family, password state, and login-block state. |
+| `sysop/peer show [peer]` | Show saved and live peers. |
+| `sysop/peer add <peer> <dsn> [profile]` | Save an outbound peer definition. |
+| `sysop/peer set <peer> <dsn\|profile\|password\|retry> <value>` | Update a saved outbound peer definition. |
+| `sysop/peer delete <peer>` | Delete a saved peer definition and disconnect the peer when live. |
+| `sysop/peer connect <peer>` | Connect a saved peer. |
+| `sysop/peer disconnect <peer>` | Disconnect a live peer. |
+| `sysop/peerprofile <peer> <family>` | Set the live peer family/profile explicitly. |
 | `sysop/spotlimit <default\|call> [off\|default\|<max_per_window> [window_seconds]]` | Show or set DX spot posting limits, including node defaults and per-user overrides. |
 | `sysop/setaccess <call> <channel\|all> <capability\|all> <on\|off>` | Change user access policy. |
 | `sysop/audit [category] [limit]` | Show recent operator audit events. |
