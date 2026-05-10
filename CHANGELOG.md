@@ -16,6 +16,7 @@ All notable changes to pyCluster should be recorded here.
 - Cluster peer records are separated from local users in the System Operator console.
 - Node-wide MFA defaults wait for usable user MFA material instead of locking users out before setup.
 - Data refresh timers, deployment units, and operations documentation were refreshed.
+- Public web and System Operator controls were polished for mobile and foldable layouts.
 
 ### Fixed
 
@@ -23,6 +24,7 @@ All notable changes to pyCluster should be recorded here.
 - Telnet keepalive handling, password prompt echo handling, `announce/full`, `show/muf`, and `show/moon` behavior were tightened.
 - Public web registration approval and email verification state now produce authenticated, verified user records.
 - Saved peer connect/disconnect flows preserve stored peer definitions and credentials.
+- Mobile public web sidebar, footer controls, toast placement, modals, and System Operator tab rows no longer overflow or disappear on narrow screens.
 
 ## 1.0.7 - 2026-04-29
 
