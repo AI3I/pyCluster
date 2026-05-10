@@ -11,5 +11,17 @@
 [public_web]
 # enabled = true
 
+[rbn]
+# enabled = true
+# host = "telnet.reversebeacon.net"
+# port = 7000
+# ports = [7000, 7001]  # CW/RTTY plus FT8 from the public RBN relays
+# feeds = [
+#   { name = "CW/RTTY", host = "telnet.reversebeacon.net", port = 7000 },
+#   { name = "FT8", host = "telnet.reversebeacon.net", port = 7001 },
+# ]
+# callsign = "N0CALL"
+# startup_commands = []
+
 [store]
 # sqlite_path = "./data/pycluster.db"

@@ -2,6 +2,14 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.9 - Unreleased
+
+### Added
+
+- RBN/Skimmer spot handling now accepts documented `-#` Skimmer spotter suffixes.
+- `show/rbn [call] [limit]` shows recent RBN/Skimmer reports for a callsign.
+- Optional direct RBN-enabled telnet feed ingestion can log in, send startup commands, and store DX-style Skimmer spots.
+
 ## 1.0.8 - 2026-05-10
 
 ### Added

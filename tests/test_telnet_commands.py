@@ -2557,6 +2557,37 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_show_rbn_reports_recent_skimmer_hits_for_call(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_rbn.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime(2026, 5, 6, 0, 52, tzinfo=timezone.utc).timestamp())
+            await store.add_spot(Spot(7007.0, "N9JR", now, "CW 39dB Q:2 Z:4", "KO4BHX-#", "N9JR-2", ""))
+            await store.add_spot(Spot(7074.0, "N9JR", now + 1, "FT8", "W1AW", "N9JR-2", ""))
+            await store.add_spot(Spot(7007.0, "K1ABC", now + 2, "CW 22dB", "KO4BHX-#", "N9JR-2", ""))
+
+            _, out = await srv._execute_command("N9JR-5", "show/rbn")
+
+            assert "RBN reports for N9JR (on):" in out
+            assert "6-May-2026 0052Z" in out
+            assert "7007.0" in out
+            assert "KO4BHX-#" in out
+            assert "CW 39dB Q:2 Z:4" in out
+            assert "W1AW" not in out
+            assert "K1ABC" not in out
+
+            _, out = await srv._execute_command("N0CALL", "show/rbn N9JR")
+            assert "RBN reports for N9JR (on):" in out
+            assert "KO4BHX-#" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_show_dxstats_hfstats_vhfstats(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "show_dxstats.db")

@@ -6,7 +6,7 @@ import re
 
 from pycluster import __version__
 from pycluster.app import ClusterApp
-from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
+from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, RBNFeedConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.models import Spot
 from pycluster.node_link import LinkPeer, NodeLinkEngine
 from pycluster.protocol import Pc10Message, Pc11Message, Pc12Message, Pc23Message, Pc24Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame
@@ -463,6 +463,27 @@ def test_ingest_pc11_adds_spot(tmp_path) -> None:
             prefs = await app.store.list_user_prefs(app.config.node.node_call)
             assert int(prefs.get("proto.peer.peer1.last_epoch", "0")) > 0
             assert prefs.get("proto.peer.peer1.last_pc_type") == "PC11"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc61_accepts_rbn_skimmer_spotter(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc61_rbn_skimmer.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            msg = Pc61Message.from_fields(
+                ["7007.0", "N9JR", "6-May-2026", "0052Z", "CW 39dB Q:2 Z:4", "KO4BHX-#", "N9JR-2", "127.0.0.1", "H1", "~"]
+            )
+            await app._handle_node_link_item("PEER1", WirePcFrame("PC61", msg.to_fields()), msg)
+
+            assert await app.store.count_spots() == 1
+            rows = await app.store.latest_spots(limit=1)
+            assert rows[0]["dx_call"] == "N9JR"
+            assert rows[0]["spotter"] == "KO4BHX-#"
+            assert rows[0]["info"] == "CW 39dB Q:2 Z:4"
         finally:
             await app.store.close()
 
@@ -1986,6 +2007,242 @@ def test_app_start_ingest_loop_processes_node_link_frames_end_to_end(tmp_path) -
             chats = await app.store.list_bulletins("chat", limit=5)
             assert len(chats) == 1
             assert "hello from background ingest" in str(chats[0]["body"])
+        finally:
+            await app.stop()
+
+    asyncio.run(run())
+
+
+def test_app_rbn_feed_ingests_dx_style_skimmer_lines(tmp_path, monkeypatch) -> None:
+    class _FakeRbnReader:
+        def __init__(self) -> None:
+            self.lines = [
+                b"Please enter your call: \r\n",
+                b"N9JR-5 de RBN  6-May-2026 0051Z dxspider >\r\n",
+                b"DX de KO4BHX-#:   7007.0  N9JR         CW  39dB Q:2 Z:4               0052Z\r\n",
+                b"",
+            ]
+
+        async def readline(self) -> bytes:
+            await asyncio.sleep(0)
+            return self.lines.pop(0) if self.lines else b""
+
+    class _FakeRbnWriter:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+            self.closed = False
+
+        def write(self, data: bytes) -> None:
+            self.lines.append(data.decode("utf-8", "replace").strip())
+
+        async def drain(self) -> None:
+            return
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            return
+
+    async def run() -> None:
+        db = str(tmp_path / "app_rbn_feed.db")
+        cfg = _mk_config(db)
+        cfg.node.node_call = "N9JR-2"
+        cfg.rbn.enabled = True
+        cfg.rbn.callsign = "N9JR-5"
+        cfg.rbn.source_node = "RBN"
+        cfg.rbn.startup_commands = ("set/skimmer",)
+        app = ClusterApp(cfg)
+        cfg.rbn.host = "127.0.0.1"
+        cfg.rbn.port = 7300
+        fake_writer = _FakeRbnWriter()
+
+        async def _open_connection(_host: str, _port: int):
+            return _FakeRbnReader(), fake_writer
+
+        monkeypatch.setattr(asyncio, "open_connection", _open_connection)
+
+        async def _noop() -> None:
+            return
+
+        try:
+            app.telnet.start = _noop  # type: ignore[method-assign]
+            app.telnet.stop = _noop  # type: ignore[method-assign]
+            app.web.start = _noop  # type: ignore[method-assign]
+            app.web.stop = _noop  # type: ignore[method-assign]
+            app.public_web.start = _noop  # type: ignore[method-assign]
+            app.public_web.stop = _noop  # type: ignore[method-assign]
+
+            await app.start()
+
+            async def _has_spot() -> bool:
+                return await app.store.count_spots() == 1
+
+            await _wait_until_async(_has_spot, timeout=2.0)
+
+            rows = await app.store.latest_spots(limit=1)
+            assert rows[0]["dx_call"] == "N9JR"
+            assert rows[0]["spotter"] == "KO4BHX-#"
+            assert rows[0]["source_node"] == "RBN"
+            assert rows[0]["info"] == "CW  39dB Q:2 Z:4"
+            assert fake_writer.lines == ["N9JR-5", "set/skimmer"]
+            status = app.rbn_feed_status()
+            assert status["enabled"] is True
+            assert status["host"] == "127.0.0.1"
+            assert status["last_spot_at"]
+            assert "KO4BHX-# 7007.0 N9JR CW  39dB Q:2 Z:4" == status["last_spot"]
+        finally:
+            await app.stop()
+
+    asyncio.run(run())
+
+
+def test_app_rbn_feed_can_ingest_multiple_public_rbn_ports(tmp_path, monkeypatch) -> None:
+    class _FakeRbnReader:
+        def __init__(self, port: int) -> None:
+            dx_call = "UT1KT" if port == 7000 else "K1ABC"
+            mode = "CW    31 dB  22 WPM  CQ" if port == 7000 else "FT8   -08 dB"
+            self.lines = [
+                b"Please enter your call: ",
+                f"AI3I-15 de RELAY 10-May-2026 1637Z >\r\n".encode(),
+                f"DX de OE9GHV-#:  7029.70  {dx_call:<13} {mode}      1637Z\r\n".encode(),
+                b"",
+            ]
+
+        async def readline(self) -> bytes:
+            await asyncio.sleep(0)
+            return self.lines.pop(0) if self.lines else b""
+
+    class _FakeRbnWriter:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def write(self, data: bytes) -> None:
+            self.lines.append(data.decode("utf-8", "replace").strip())
+
+        async def drain(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        async def wait_closed(self) -> None:
+            return
+
+    async def run() -> None:
+        db = str(tmp_path / "app_rbn_multi_feed.db")
+        cfg = _mk_config(db)
+        cfg.node.node_call = "AI3I-15"
+        cfg.rbn.enabled = True
+        cfg.rbn.host = "telnet.reversebeacon.net"
+        cfg.rbn.port = 7000
+        cfg.rbn.ports = (7000, 7001)
+        cfg.rbn.feeds = (
+            RBNFeedConfig(name="CW/RTTY", host="telnet.reversebeacon.net", port=7000),
+            RBNFeedConfig(name="FT8", host="telnet.reversebeacon.net", port=7001),
+        )
+        app = ClusterApp(cfg)
+        opened: list[int] = []
+
+        async def _open_connection(_host: str, port: int):
+            opened.append(port)
+            return _FakeRbnReader(port), _FakeRbnWriter()
+
+        monkeypatch.setattr(asyncio, "open_connection", _open_connection)
+
+        async def _noop() -> None:
+            return
+
+        try:
+            app.telnet.start = _noop  # type: ignore[method-assign]
+            app.telnet.stop = _noop  # type: ignore[method-assign]
+            app.web.start = _noop  # type: ignore[method-assign]
+            app.web.stop = _noop  # type: ignore[method-assign]
+            app.public_web.start = _noop  # type: ignore[method-assign]
+            app.public_web.stop = _noop  # type: ignore[method-assign]
+
+            await app.start()
+
+            async def _has_spots() -> bool:
+                return await app.store.count_spots() == 2
+
+            await _wait_until_async(_has_spots, timeout=2.0)
+            assert sorted(opened) == [7000, 7001]
+            status = app.rbn_feed_status()
+            assert [row["name"] for row in status["feeds"]] == ["CW/RTTY", "FT8"]
+            assert [row["port"] for row in status["feeds"]] == [7000, 7001]
+            assert all(row.get("state") in {"connected", "disconnected"} for row in status["feeds"])
+        finally:
+            await app.stop()
+
+    asyncio.run(run())
+
+
+def test_app_rbn_feed_reconfigure_stops_running_tasks(tmp_path, monkeypatch) -> None:
+    class _HangingRbnReader:
+        async def readline(self) -> bytes:
+            await asyncio.sleep(60)
+            return b""
+
+    class _FakeRbnWriter:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def write(self, _data: bytes) -> None:
+            return
+
+        async def drain(self) -> None:
+            return
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            return
+
+    async def run() -> None:
+        db = str(tmp_path / "app_rbn_reconfigure.db")
+        cfg = _mk_config(db)
+        cfg.node.node_call = "AI3I-15"
+        cfg.rbn.enabled = True
+        cfg.rbn.host = "telnet.reversebeacon.net"
+        cfg.rbn.ports = (7000, 7001)
+        app = ClusterApp(cfg)
+        opened: list[int] = []
+
+        async def _open_connection(_host: str, port: int):
+            opened.append(port)
+            return _HangingRbnReader(), _FakeRbnWriter()
+
+        monkeypatch.setattr(asyncio, "open_connection", _open_connection)
+
+        async def _noop() -> None:
+            return
+
+        try:
+            app.telnet.start = _noop  # type: ignore[method-assign]
+            app.telnet.stop = _noop  # type: ignore[method-assign]
+            app.web.start = _noop  # type: ignore[method-assign]
+            app.web.stop = _noop  # type: ignore[method-assign]
+            app.public_web.start = _noop  # type: ignore[method-assign]
+            app.public_web.stop = _noop  # type: ignore[method-assign]
+
+            await app.start()
+
+            async def _feeds_opened() -> bool:
+                return len(opened) == 2
+
+            await _wait_until_async(_feeds_opened, timeout=2.0)
+            assert app.rbn_feed_status()["running"] is True
+
+            cfg.rbn.enabled = False
+            await app.reconfigure_rbn_feed()
+
+            status = app.rbn_feed_status()
+            assert status["enabled"] is False
+            assert status["running"] is False
+            assert status["state"] == "disabled"
+            assert app._rbn_feed_tasks == {}
         finally:
             await app.stop()
 

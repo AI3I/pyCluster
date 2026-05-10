@@ -782,11 +782,29 @@ def test_bundled_strings_catalog_keeps_expected_comment_labels(tmp_path) -> None
             assert code == 200
             data = json.loads(body.decode("utf-8"))
             labels = {row["label"] for row in data["comment_tags"]}
-            assert {"CQ", "DIGITAL", "VOICE", "QRM", "QRT", "PILEUP", "LoTW", "TNX"} <= labels
+            assert {"CQ", "DIGITAL", "VOICE", "QRM", "QRT", "PILEUP", "LoTW", "RBN", "TNX"} <= labels
         finally:
             await store.close()
 
     asyncio.run(run())
+
+
+def test_public_static_keeps_button_icons_but_not_taxonomy_emoji_labels() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+
+    assert 'id="greyline-toggle"' in text and "🌗" in text
+    assert 'id="audio-icon"' in text
+    assert 'id="theme-icon"' in text
+    assert "⬇ CSV" in text and "⬇ ADIF" in text
+    assert 'id="spot-rbn-btn" type="button" title="Show RBN/Skimmer spots">RBN</button>' in text
+    assert "commentTagFilter = commentTagFilter === 'RBN' ? 'ALL' : 'RBN';" in text
+    assert 'id="sm-close" type="button" title="Close" aria-label="Close spot details">✕</button>' in text
+    assert 'id="profile-close" type="button" title="Close" aria-label="Close profile">✕</button>' in text
+    assert 'id="login-close" type="button" title="Close" aria-label="Close login">✕</button>' in text
+    assert 'id="register-close" type="button" title="Close" aria-label="Close registration">✕</button>' in text
+
+    comment_tags = text.split("let COMMENT_TAGS = [", 1)[1].split("];", 1)[0]
+    assert not re.search(r"label:'[^']*[\U0001F000-\U0001FAFF\u2600-\u27BF]", comment_tags)
 
 
 def test_public_web_stop_closes_tracked_ws_clients(tmp_path) -> None:

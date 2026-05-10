@@ -135,6 +135,7 @@ _DEFAULT_COMMENT_TAGS = [
     {"pattern": r"\bspecial\b|\baward\b|\byear\b|\bday\b|\bses\b", "label": "SPECIAL", "color": "#c084fc"},
     {"pattern": r"\b59\b|\brst\s*59\b|\b5\/9\b|\b5-9\b", "label": "5/9", "color": "#3fb950"},
     {"pattern": r"\blotw\b", "label": "LoTW", "color": "#58a6ff"},
+    {"pattern": r"\brbn\b|\bskimmer\b|\b\d{1,3}\s*db\b|\b\d{1,3}\s*wpm\b|\bq:\d+\b", "label": "RBN", "color": "#38bdf8"},
     {"pattern": r"\bbeacon\b", "label": "BEACON", "color": "#fbbf24"},
     {"pattern": r"\btnx\b|\bthx\b|\btks\b|\bthank|\b73\b", "label": "TNX", "color": "#fb7185"},
     {"pattern": r"\bwwff\b", "label": "WWFF", "color": "#e8d44d"},

@@ -2,6 +2,7 @@
 Description=Frequent pyCluster runtime data refresh
 
 [Timer]
+OnBootSec=2min
 OnCalendar=*-*-* 00/6:15:00
 Persistent=true
 RandomizedDelaySec=30m

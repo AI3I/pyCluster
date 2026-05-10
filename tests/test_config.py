@@ -34,6 +34,10 @@ def _write_base_config(path: Path) -> None:
                 'password = ""',
                 'agent = ""',
                 "",
+                "[rbn]",
+                "enabled = false",
+                'host = ""',
+                "",
             ]
         ),
         encoding="utf-8",
@@ -81,6 +85,7 @@ def test_load_config_merges_sibling_local_override(tmp_path: Path) -> None:
     assert cfg.public_web.enabled is True
     assert cfg.store.sqlite_path == "./data/pycluster.db"
     assert cfg.qrz.username == "AI3I"
+    assert cfg.rbn.enabled is False
 
 
 def test_tracked_default_config_uses_neutral_runtime_data_paths() -> None:
@@ -89,6 +94,29 @@ def test_tracked_default_config_uses_neutral_runtime_data_paths() -> None:
     assert cfg.public_web.cty_dat_path == "./data/cty.dat"
     assert cfg.public_web.wpxloc_raw_path == "./data/wpxloc.raw"
     assert cfg.satellite.keps_path == "./data/keps.txt"
+    assert cfg.rbn.enabled is False
+    assert cfg.rbn.startup_commands == ()
+
+
+def test_load_config_parses_rbn_startup_commands(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    base = config_dir / "pycluster.toml"
+    _write_base_config(base)
+    text = base.read_text(encoding="utf-8").replace(
+        "[rbn]\nenabled = false\nhost = \"\"",
+        "[rbn]\nenabled = true\nhost = \"rbn.example.invalid\"\nports = [7000, 7001]\nstartup_commands = [\"set/skimmer\", \"set/skimmer cw\"]\nfeeds = [{ name = \"CW/RTTY\", host = \"telnet.reversebeacon.net\", port = 7000 }, { name = \"FT8\", host = \"telnet.reversebeacon.net\", port = 7001 }]",
+    )
+    base.write_text(text, encoding="utf-8")
+
+    cfg = load_config(base)
+
+    assert cfg.rbn.enabled is True
+    assert cfg.rbn.host == "rbn.example.invalid"
+    assert cfg.rbn.ports == (7000, 7001)
+    assert [feed.name for feed in cfg.rbn.feeds] == ["CW/RTTY", "FT8"]
+    assert [feed.port for feed in cfg.rbn.feeds] == [7000, 7001]
+    assert cfg.rbn.startup_commands == ("set/skimmer", "set/skimmer cw")
 
 
 def test_load_config_defaults_wpxloc_to_cty_sibling(tmp_path: Path) -> None:

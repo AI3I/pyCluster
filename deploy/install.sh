@@ -16,6 +16,7 @@ sync_tree
 seed_runtime_data_from_fixtures
 ensure_selinux_contexts
 install_config_if_missing
+normalize_country_data_config_paths
 install_optional_config_if_missing "config/strings.toml" "strings.toml"
 install_optional_config_if_missing "config/pycluster.local.toml.example" "pycluster.local.toml.example"
 install_or_refresh_service

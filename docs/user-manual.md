@@ -226,6 +226,8 @@ clear/spots
 accept/rbn CQ
 reject/rbn TEST
 clear/rbn
+show/rbn
+show/rbn N9JR 20
 ```
 
 Inspect filters with:
@@ -239,7 +241,10 @@ Filters are useful when:
 - a band or mode is too noisy
 - you only want certain activity types
 - you want special handling for RBN-style spot traffic
+- you want recent Skimmer reports showing which stations are hearing a callsign
 - you want entity-aware spot filtering by CQ zone, ITU zone, or DXCC entity name/prefix
+
+When the node operator configures a direct RBN-enabled telnet feed, pyCluster can also ingest those Skimmer reports locally. The public RBN relays are `telnet.reversebeacon.net:7000` for CW/RTTY and `telnet.reversebeacon.net:7001` for FT8; configure both with named feeds such as `CW/RTTY,telnet.reversebeacon.net,7000` and `FT8,telnet.reversebeacon.net,7001` in SysOp, or with `feeds` in config. If no direct feed is configured, RBN spots can still arrive through linked cluster peers that relay them.
 
 ## 7. Buddy Lists and User Data
 

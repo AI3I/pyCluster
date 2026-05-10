@@ -29,7 +29,7 @@ from .pathmeta import describe_session_path, normalize_recorded_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
 from .qrz import QRZClient, QRZLookupError
 from .registration import consume_grace_login, has_valid_email, mark_email_unverified, mark_email_verified, registration_state
-from .shdx import BAND_RANGES, parse_sh_dx_args
+from .shdx import BAND_RANGES, ShDxQuery, parse_sh_dx_args
 from .satellite import find_tle, load_tles, predict_passes
 from .spot_throttle import (
     SPOT_THROTTLE_EXEMPT_KEY,
@@ -1005,6 +1005,8 @@ class TelnetClusterServer:
         if "RBN" in text or "SKIMMER" in text:
             return True
         if re.search(r"\b\d{1,3}\s*WPM\b", text):
+            return True
+        if normalize_call(spotter).endswith("-#") and re.search(r"\b\d{1,3}\s*DB\b", text):
             return True
         if re.search(r"\b(?:CQ|TEST)\b", text) and re.search(r"\b\d{1,3}\s*DB\b", text):
             return True
@@ -2217,6 +2219,63 @@ class TelnetClusterServer:
         # In this compatibility model, show/dx already applies user filters.
         return await self._cmd_show_dx(call, arg)
 
+    def _parse_show_rbn_query(self, call: str, arg: str | None) -> tuple[str, ShDxQuery, int]:
+        target = normalize_call(call).split("-", 1)[0]
+        rest: list[str] = []
+        target_set = False
+        for token in (arg or "").split():
+            candidate = normalize_call(token).split("-", 1)[0]
+            if not target_set and token.strip().lower() not in BAND_RANGES and is_valid_call(candidate):
+                target = candidate
+                target_set = True
+                continue
+            rest.append(token)
+        query = parse_sh_dx_args(" ".join(rest))
+        requested_limit = query.limit
+        query.limit = 200
+        query.prefix_pattern = target
+        query.prefix_exact = True
+        return target, query, requested_limit
+
+    async def _cmd_show_rbn(self, call: str, arg: str | None) -> str:
+        target, query, requested_limit = self._parse_show_rbn_query(call, arg)
+        prefs = await self._load_prefs_for_call(normalize_call(call))
+        enabled = self._is_on_value(prefs.get("rbn"), default=True)
+        rows = await self.store.search_spots(query)
+        lines: list[str] = []
+        for row in rows:
+            info = str(row["info"] or "")
+            spotter = str(row["spotter"])
+            if not self._is_rbn_spot(str(row["dx_call"]), spotter, info):
+                continue
+            spot_when = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc)
+            lines.append(
+                self._render_string(
+                    "show.rbn.line",
+                    "  {when} {freq:8.1f}  {spotter:<12} {info}",
+                    when=spot_when.strftime("%-d-%b-%Y %H%MZ"),
+                    freq=float(row["freq_khz"]),
+                    spotter=spotter,
+                    info=info,
+                )
+            )
+            if len(lines) >= requested_limit:
+                break
+        status = self._string("show.rbn.status_on", "on") if enabled else self._string("show.rbn.status_off", "off")
+        out = [
+            self._render_string(
+                "show.rbn.title",
+                "RBN reports for {call} ({status}):",
+                call=target,
+                status=status,
+            )
+        ]
+        if lines:
+            out.extend(lines)
+        else:
+            out.append(self._render_string("show.rbn.empty", "No RBN reports for {call}.", call=target))
+        return "\r\n".join(out) + "\r\n"
+
     async def _cmd_show_dxcc(self, call: str, arg: str | None) -> str:
         pfx = (arg or "").strip().upper()
         if not pfx:
@@ -2603,7 +2662,7 @@ class TelnetClusterServer:
             "protohistory": "Show recorded protocol state changes.",
             "prompt": "Show the current prompt template.",
             "qrz": "Look up a callsign using the configured QRZ XML service.",
-            "rbn": "Show whether RBN spots are enabled.",
+            "rbn": "Show recent RBN/Skimmer reports for a callsign.",
             "rcmd": "Show the configured remote command string.",
             "register": "Show whether automatic registration is enabled.",
             "registered": "Show the stored registry record for a user.",
@@ -9898,7 +9957,7 @@ class TelnetClusterServer:
             "show/echo": lambda c, a: self._show_key_value(c, a, "show/echo", "echo", default="on", readable_label="Echo"),
             "show/here": lambda c, a: self._show_key_value(c, a, "show/here", "here", default="on", readable_label="Here"),
             "show/beep": lambda c, a: self._show_key_value(c, a, "show/beep", "beep", default="off", readable_label="Beep"),
-            "show/rbn": lambda c, a: self._show_key_value(c, a, "show/rbn", "rbn", default="on", readable_label="RBN"),
+            "show/rbn": self._cmd_show_rbn,
             "show/dxcq": lambda c, a: self._show_key_value(c, a, "show/dxcq", "dxcq", default="on", readable_label="DX CQ"),
             "show/dxitu": lambda c, a: self._show_key_value(c, a, "show/dxitu", "dxitu", default="on", readable_label="DX ITU"),
             "show/dxgrid": lambda c, a: self._show_key_value(c, a, "show/dxgrid", "dxgrid", default="on", readable_label="DX Grid"),

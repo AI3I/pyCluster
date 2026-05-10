@@ -106,7 +106,7 @@ Instead of relying on whatever CTY file happens to exist on a host:
 
 - pyCluster ships a bundled `cty.dat`
 - install/upgrade attempt a best-effort refresh
-- `pycluster-data-refresh.timer` checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
+- `pycluster-data-refresh.timer` runs shortly after boot and then checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
 
 ### Better Observability
 

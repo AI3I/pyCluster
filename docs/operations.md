@@ -9,7 +9,7 @@ Typical production services:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-data-refresh.timer`
-  - checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
+  - runs shortly after boot and then checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
 - `pycluster-retention.timer`
 
 Validated operational environments so far:
@@ -147,7 +147,7 @@ This refreshes both `CTY.DAT` and `wpxloc.raw` unless you pass `--cty-only`.
 Automatic:
 
 - `pycluster-data-refresh.timer`
-  - checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
+  - runs shortly after boot and then checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
 
 ## Security Operations
 

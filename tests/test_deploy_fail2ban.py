@@ -44,7 +44,12 @@ def test_data_refresh_service_uses_generic_names_and_migrates_legacy_timer() -> 
     assert "PYCLUSTER_DATA_REFRESH_TIMER_NAME" in lib
     assert "pycluster-data-refresh.timer" in lib
     assert "seed_runtime_data_from_fixtures()" in lib
+    assert "normalize_country_data_config_paths()" in lib
+    assert "re.IGNORECASE" in lib
+    assert "fixtures/live/dxspider" in lib
+    assert '"./data/{filename}"' in lib
     assert "pycluster-data-refresh.service" in timer
+    assert "OnBootSec=2min" in timer
     assert "OnCalendar=*-*-* 00/6:15:00" in timer
     assert "RandomizedDelaySec=30m" in timer
     assert "runtime data refresh" in timer
@@ -52,6 +57,8 @@ def test_data_refresh_service_uses_generic_names_and_migrates_legacy_timer() -> 
     assert "systemctl disable --now \"$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME\"" in lib
     assert "data refresh timer" in doctor
     assert "PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" in uninstall
+    assert "pycluster-auth-scanner.conf" in uninstall
+    assert "pycluster-scanner.local" in uninstall
 
 
 def test_upgrade_and_repair_refresh_invalid_strings_catalog() -> None:
