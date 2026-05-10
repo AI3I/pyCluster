@@ -25,6 +25,8 @@ All notable changes to pyCluster should be recorded here.
 - Public web registration approval and email verification state now produce authenticated, verified user records.
 - Saved peer connect/disconnect flows preserve stored peer definitions and credentials.
 - Mobile public web sidebar, footer controls, toast placement, modals, and System Operator tab rows no longer overflow or disappear on narrow screens.
+- Upgrade and repair scripts now replace an invalid runtime `strings.toml` with the bundled catalog after backing it up.
+- Outbound node-link reconnects now advertise the local PC18 software identity so peers refresh cached pyCluster versions.
 
 ## 1.0.7 - 2026-04-29
 
