@@ -403,9 +403,9 @@ pyCluster is created and led by John D. Lewis, AI3I with help from ChatGPT OpenA
 
 Special thanks for advice, assistance, consideration and testing:
 
-- Eric Tichansky, NO3M
-- Howard Leadmon, WB3FFV
 - Joe Reed, N9JR
+- Howard Leadmon, WB3FFV
+- Eric Tichansky, NO3M
 
 ## 🤝 Contributing
 
