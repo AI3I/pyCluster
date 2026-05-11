@@ -115,12 +115,12 @@ def test_web_admin_static_includes_mobile_breakpoints() -> None:
 def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert 'data-user-browser="local"' in text
-    assert 'data-user-browser="blocked"' in text
+    assert 'data-user-browser="blocked"' not in text
     assert 'data-user-browser="clusters"' in text
     assert 'data-user-browser="sysops"' in text
     assert 'data-user-browser="requests"' in text
     assert 'id="user-browser-local"' in text
-    assert 'id="user-browser-blocked"' in text
+    assert 'id="user-browser-blocked"' not in text
     assert 'id="user-browser-clusters"' in text
     assert 'id="user-browser-sysops"' in text
     assert 'id="user-browser-requests"' in text
@@ -136,22 +136,57 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     assert "function setTelemetryPanel(panel)" in text
     assert "if (key === 'sysop-web') return 'Operator Console';" in text
     assert "if (key === 'registration_request_required') return 'Registration request required';" in text
+    assert "<th>RBN</th>" in text
+    assert '<label>Inbox</label><span>${esc(inboxSummary)}</span>' in text
+    assert '<label>Outbox</label><span>${esc(outboxSummary)}</span>' in text
+    assert "masterAccessEnabled(row.access, 'rbn')" in text
+    assert "data-toggle-capability" in text
 
 
 def test_web_admin_static_uses_clearer_statusline_and_maintenance_actions() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert ".statusline.loading{" in text
+    assert "Loading dashboard data..." in text
+    assert "function sayLoading(text)" in text
     assert "background:transparent;" in text
-    assert "border:0;" in text
     assert "color:var(--text-secondary);" in text
+    assert ".mast-actions .statusline{" in text
+    assert "color:#d7ecff;" in text
+    assert "rgba(88,166,255,.24)" in text
+    assert "el.style.background = 'linear-gradient(180deg, rgba(38,130,190,.96), rgba(22,96,150,.92))';" in text
+    assert "el.style.color = '#ffffff';" in text
     assert ".light .statusline{" in text
+    assert ".light .mast-actions .statusline{" in text
     assert ".statusline.error{" in text
+    assert ".form-grid.compact-controls{" in text
+    assert ".auth-layout{" in text
+    assert ".auth-layout .form-grid.compact-controls{" in text
+    assert ".maintenance-toggle-row{" in text
+    assert 'id="maintenanceStatus"' in text
+    assert 'id="retentionLastRun"' in text
+    assert 'id="retentionLastResult"' in text
+    assert text.index('class="auth-layout"') < text.index('id="require_password"') < text.index('id="initial_grace_logins"')
     maintenance_idx = text.index('id="node-group-maintenance"')
+    retention_idx = text.index('id="retention_enabled"')
+    stale_idx = text.index('id="retention_stale_users_enabled"')
+    spots_idx = text.index('id="retention_spots_days"')
     cleanup_idx = text.index('id="runCleanup"')
     check_idx = text.index('id="checkUpgrade"')
     upgrade_idx = text.index('id="runUpgrade"')
+    assert text.index('class="checkgrid maintenance-toggle-row"') < retention_idx < stale_idx < spots_idx
+    _assert_text_order(
+        text,
+        'id="retention_spots_days"',
+        'id="retention_messages_days"',
+        'id="retention_bulletins_days"',
+        'id="retention_stale_users_days"',
+    )
     assert maintenance_idx < cleanup_idx
     assert maintenance_idx < check_idx
     assert maintenance_idx < upgrade_idx
+    assert text.index('id="initial_grace_logins"') < text.index('id="mfa_resend_cooldown_seconds"')
+    assert text.index('id="qrz_username"') < text.index('id="qrz_api_url"')
+    assert text.index('id="satellite_keps_path"') < text.index('id="satellite_min_elevation_deg"')
 
 
 def test_web_admin_static_uses_full_width_user_action_bar() -> None:
@@ -159,23 +194,29 @@ def test_web_admin_static_uses_full_width_user_action_bar() -> None:
     assert ".users-actionbar{" in text
     assert 'class="users-actionbar"' in text
     assert 'class="users-action-group"' in text
-    assert 'id="blockUser" disabled' in text
-    assert 'id="unblockUser" disabled' in text
-    assert "byId('blockUser').onclick" in text
-    assert "byId('unblockUser').onclick" in text
+    assert 'id="blockUser" disabled' not in text
+    assert 'id="unblockUser" disabled' not in text
+    assert "byId('blockUser').onclick" not in text
+    assert "byId('unblockUser').onclick" not in text
+    assert 'id="user_privilege"' not in text
+    assert 'id="user_sysop"' not in text
+    assert '<label for="user_node_family" title="Select whether this record is a standard user, System Operator, or a managed cluster peer.">User Type</label>' in text
+    assert '<option value="sysop">System Operator</option>' in text
+    assert "privilege: userType === 'sysop' ? 'sysop' : ''" in text
+    assert 'class="users-browser-topbar"' in text
+    assert 'class="attention" id="newUser">New User</button>' in text
+    assert text.index('class="users-browser-tabs"') < text.index('id="newUser">New User</button>')
+    assert 'class="warn iconbtn" id="deleteUser"' in text
+    assert 'class="iconbtn" id="saveUser"' in text
+    assert "window.confirm('Remove user ' + call + '? This cannot be undone.')" in text
+    _assert_text_order(text, 'id="deleteUser"', 'id="saveUser"', 'id="closeUserModal"')
     _assert_text_order(
         text,
         'id="saveUserPassword"',
+        'id="enrollTotp"',
         'id="resetUserMfa"',
-        'id="saveUser"',
-        'id="newUser"',
-        'id="deleteUser"',
-    )
-    _assert_text_order(
-        text,
         'id="sendVerification"',
         'id="sendMfaTest"',
-        'id="enrollTotp"',
     )
     assert "display:flex;" in text
     assert "flex-wrap:wrap;" in text
@@ -187,18 +228,32 @@ def test_web_admin_static_peer_table_uses_content_width_columns() -> None:
     assert "width:max-content;" in text
     assert "table-layout:auto;" in text
     assert 'class="peer-table"' in text
+    assert 'class="peer-toolbar"' in text
+    assert 'id="peerModal"' in text
+    assert 'id="peerModalTitle"' in text
+    assert 'id="peerPathStatus"' in text
+    assert 'id="closePeerModal"' in text
+    assert 'class="attention" id="newPeer"' in text
+    assert 'class="warn iconbtn" id="peerDelete"' in text
+    assert 'class="iconbtn" id="peerSave"' in text
     assert 'id="peerDelete"' in text
     assert "byId('peer').value = '';" in text
     assert "j('/api/peer/delete'" in text
+    assert "openPeerModal();" in text
+    assert "byId('closePeerModal').onclick = closePeerModal;" in text
+    assert "window.confirm('Delete saved peer ' + peer + '? Any live session for this peer will also be disconnected.')" in text
+    _assert_text_order(text, 'id="peername"', 'id="peerpass"', 'id="peerprof"')
+    assert '<label>Connection</label><span>${esc(connection)}</span>' in text
+    assert '<label>Protocol</label><span>${esc(protoText)}</span>' in text
+    assert '<label>Address</label><span>${esc(dsnText)}</span>' in text
     _assert_text_order(
         text,
         'id="peerRefresh"',
+        'id="newPeer"',
         'id="pconnect"',
         'id="pdisconnect"',
-        'id="peerSave"',
-        'id="newPeer"',
-        'id="peerDelete"',
     )
+    _assert_text_order(text, 'id="peerDelete"', 'id="peerSave"', 'id="closePeerModal"')
 
 
 def test_web_admin_static_exposes_qrz_settings() -> None:
@@ -226,6 +281,7 @@ def test_web_admin_static_exposes_satellite_settings() -> None:
 def test_web_admin_static_exposes_rbn_settings() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert 'data-node-group="rbn"' in text
+    assert "Reverse Beacon Network (RBN)" in text
     assert 'id="node-group-rbn"' in text
     assert 'id="rbn_enabled"' in text
     assert 'id="rbn_host"' in text
@@ -235,7 +291,12 @@ def test_web_admin_static_exposes_rbn_settings() -> None:
     assert 'id="rbn_callsign"' in text
     assert 'id="rbn_startup_commands"' in text
     assert 'id="rbnStatus"' in text
+    assert 'id="rbnStatusState"' in text
+    assert 'id="rbnStatusEndpoint"' in text
+    assert 'id="rbnStatusLastSpot"' in text
     assert 'id="navRbn"' in text
+    assert text.index('id="navPeers"') < text.index('id="navRbn"') < text.index('id="navTelnet"')
+    assert "Reverse Beacon Network" in text
     assert "setText('navRbn', rbnState);" in text
     assert "const rbnStatus = data.rbn_status || {};" in text
     assert "rbn_host: byId('rbn_host').value.trim()" in text
@@ -250,8 +311,7 @@ def test_web_admin_static_exposes_totp_mfa_controls() -> None:
     assert "Authenticator setup key" in text
     assert "window.prompt('Authenticator setup URI" not in text
     assert "mfa_method" in text
-    assert 'id="userMfaStatus"' in text
-    assert "<th>MFA</th>" in text
+    assert '<label>MFA</label><span>${esc(mfaStatus)}</span>' in text
     assert "function mfaStatusMark(row)" in text
     assert "data.mfa_enabled ? 'enabled' : 'disabled'" in text
 
@@ -267,31 +327,35 @@ def test_web_admin_system_tools_do_not_offer_wcy_posting() -> None:
 
 def test_web_admin_static_shows_registration_state_controls() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
-    assert 'id="user_verified_state" type="checkbox" disabled' in text
-    assert 'id="user_unlocked_state" type="checkbox" disabled' in text
-    assert '<label for="user_unlocked_state">Locked</label>' in text
-    assert 'id="unlockAccount" disabled' in text
-    assert "byId('unlockAccount').onclick" in text
-    _assert_text_order(text, 'id="unlockAccount"', 'id="blockUser"', 'id="unblockUser"')
+    assert 'id="user_verified_state" type="checkbox" disabled' not in text
+    assert 'id="user_unlocked_state" type="checkbox" disabled' not in text
+    assert 'id="unlockAccount" disabled' not in text
+    assert "byId('unlockAccount').onclick" not in text
+    assert 'class="matrix-toggle' in text
+    assert "function bindMatrixToggles(body)" in text
+    assert "j('/api/users/toggle'" in text
     assert "/api/users/unlock" in text
     assert 'id="markVerified">Verify Now<' not in text
     assert 'id="unlockRegistration">Unlock Now<' not in text
-    assert '<h3>Access Matrix</h3>' in text
-    assert text.index('<h3>Access Matrix</h3>') < text.index('id="user_verified_state"')
-    assert text.index('<h3>Access Matrix</h3>') < text.index('id="user_mfa_email_otp"')
-    assert text.index('<h3>Access Matrix</h3>') < text.index('id="user_privilege"')
+    assert '<h3>Access Matrix</h3>' not in text
+    assert 'id="userPathStatus"' in text
+    assert "<th>Verified</th><th>Locked</th><th>MFA</th><th>Blocked</th><th>Login</th><th>Spots</th><th>RBN</th><th>Chat</th><th>Annc</th><th>WX</th><th>WCY</th><th>WWV</th>" in text
+    assert "<th>Inbox</th>" not in text
+    assert "<th>Outbox</th>" not in text
+    assert '<label>Inbox</label><span>${esc(inboxSummary)}</span>' in text
+    assert '<label>Outbox</label><span>${esc(outboxSummary)}</span>' in text
+    assert 'class="user-status-detail"' in text
+    assert ".status-cell label{" in text
     assert 'id="mfa_require_for_sysop" type="checkbox" checked' not in text
-    assert "function setRegistrationActionState(verified, locked, enabled)" in text
-    assert "verifiedState.checked = !!verified" in text
-    assert "unlockedState.checked = !!locked" in text
-    assert "unlockButton.disabled = !enabled || !locked || !selectedUserCall" in text
+    assert "function setRegistrationActionState(verified, locked, enabled)" not in text
 
 
-def test_web_admin_static_includes_location_detail_field() -> None:
+def test_web_admin_static_omits_location_detail_field() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
-    assert 'id="user_location"' in text
-    assert "Location Detail" in text
-    assert "location: byId('user_location').value.trim()" in text
+    assert 'id="user_location"' not in text
+    assert "Location Detail" not in text
+    assert "location: byId('user_location').value.trim()" not in text
+    assert "location: ''," in text
 
 
 def test_public_web_static_offsets_toasts_clear_of_sidebar() -> None:
@@ -329,9 +393,10 @@ def test_public_web_static_supports_sidebar_hide_toggle() -> None:
     assert "localStorage.getItem('toastPopups')" in text
     assert "document.body.classList.toggle('sidebar-hidden', sidebarHidden);" in text
     assert 'id="footer">' not in text or "footer-controls" in text
-    assert '<button id="toast-toggle" class="on" type="button" title="Hide spot popups" aria-label="Hide spot popups"><span class="footer-control-label">Hide Popups</span></button>' in text
-    assert "const label = toastPopupsEnabled ? 'Hide Popups' : 'Show Popups';" in text
-    assert '<button id="sidebar-toggle" type="button" title="Hide the sidebar" aria-label="Hide the sidebar"><span class="footer-control-label">Hide Sidebar</span></button>' in text
+    assert '<button id="toast-toggle" class="on" type="button" title="Hide spot popups" aria-label="Hide spot popups"><span class="footer-control-label">Popups</span></button>' in text
+    assert "btn.innerHTML = '<span class=\"footer-control-label\">Popups</span>';" in text
+    assert '<button id="sidebar-toggle" class="on" type="button" title="Hide the sidebar" aria-label="Hide the sidebar"><span class="footer-control-label">Sidebar</span></button>' in text
+    assert "btn.innerHTML = '<span class=\"footer-control-label\">Sidebar</span>';" in text
     assert '<span class="footer-control-label">Greyline</span>' in text
     assert '<span class="footer-control-label">Sound</span>' in text
     assert '<span class="footer-control-label">Theme</span>' in text
@@ -357,6 +422,8 @@ def test_web_admin_static_exposes_taxonomy_editor() -> None:
     assert 'id="taxonomy_comment_tags"' in text
     assert "loadTaxonomyEditor" in text
     assert "saveTaxonomy" in text
+    assert "taxonomy-editor" in text
+    assert "ui-monospace" in text
     assert text.index('data-view="telemetry"') < text.index('data-view="taxonomy"')
     assert text.index('<section class="panel view-section" id="telemetry">') < text.index('<section class="panel view-section" id="taxonomy">')
 
@@ -365,7 +432,8 @@ def test_web_admin_static_exposes_mail_tab_smtp_test() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert 'data-node-group="smtp">Mail (SMTP)</button>' in text
     assert '<select id="smtp_port"' in text
-    assert '<option value="587">Submission (587)</option>' in text
+    assert '<option value="587">Submission / STARTTLS (587)</option>' in text
+    assert '<option value="465">Implicit TLS / SMTPS (465)</option>' in text
     assert '<option value="25">SMTP (25)</option>' in text
     assert 'id="smtp_port" type="number"' not in text
     assert 'id="smtp_test_email"' in text
@@ -461,19 +529,31 @@ def test_web_admin_taxonomy_roundtrip(tmp_path) -> None:
 
 def test_web_admin_static_switches_to_editor_when_user_selected() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert 'id="userModal"' in text
+    assert 'id="closeUserModal"' in text
     assert 'id="userEditorTitle"' in text
-    assert 'id="userMailStatus"' in text
-    assert 'id="userRegistrationStatus"' in text
-    assert "Select a user below to open the editor." in text
+    assert '<label>Mail</label><span>${esc(mailStatus)}</span>' not in text
+    assert '<label>Registration</label><span>${esc(regStatus)}</span>' in text
+    assert 'parts.append(f"{label}: {\'allowed\' if allowed else \'blocked\'}")' in text
+    assert 'labels.append(f"{label}: {\'/\'.join(channels)}")' in text
+    assert "No posting access" in text
+    assert "function renderPostingAccessMatrix" in text
+    assert '<div class="access-head">Channel</div>' in text
+    assert ".access-summary-grid .access-state.on{" in text
+    assert "color:#3fb950;" in text
+    assert ".access-summary-grid .access-state.off{" in text
+    assert '<div class="status-cell wide"><label>Posting Access</label>${renderPostingAccessMatrix' in text
+    assert "Click on a user to edit account details." in text
+    assert "openUserModal();" in text
 
 
-def test_web_admin_static_uses_five_row_user_pages_and_fixed_browser_geometry() -> None:
+def test_web_admin_static_uses_ten_row_user_pages_and_fixed_browser_geometry() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
-    assert "const USER_PAGE_SIZE = 5;" in text
+    assert "const USER_PAGE_SIZE = 10;" in text
     assert ".users-browser-stage{" in text
-    assert "min-height:248px;" in text
+    assert "min-height:430px;" in text
     assert ".users-browser-stage .tablewrap{" in text
-    assert "min-height:176px;" in text
+    assert "min-height:356px;" in text
     assert 'class="browser-toolbar"' in text
     assert 'id="userSearch"' in text
     assert 'id="userPrev"' in text
@@ -817,6 +897,7 @@ def test_web_admin_login_can_use_totp_authenticator(tmp_path) -> None:
         await store.upsert_user_registry("AI3I", now, privilege="sysop", email="")
         await store.set_user_pref("AI3I", "password", "pw1", now)
         await store.set_user_pref("AI3I", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+        await store.set_user_pref("AI3I", "mfa_email_otp", "required", now)
         try:
             code, _, body = await _http_request(
                 srv,
@@ -2103,6 +2184,7 @@ def test_web_admin_console_page_includes_software_version_slot(tmp_path) -> None
             html = body.decode("utf-8")
             assert 'id="navVersion"' in html
             assert 'id="navRbn"' in html
+            assert 'id="navPeers"' in html
             assert "Software</label>" in html
             assert 'id="retention_stale_users_enabled"' in html
             assert 'id="smtp_host"' in html
@@ -2121,7 +2203,7 @@ def test_web_admin_console_page_includes_software_version_slot(tmp_path) -> None
             assert 'id="checkUpgrade"' in html
             assert 'id="runUpgrade"' in html
             assert 'class="tablewrap compact"' in html
-            assert 'id="userMailStatus"' in html
+            assert 'id="userPathStatus"' in html
         finally:
             await store.close()
 
@@ -2722,8 +2804,6 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             started_at=datetime.now(timezone.utc),
             session_count_fn=lambda: 0,
         )
-        orig = web_admin_mod.resolve_location_to_coords
-        web_admin_mod.resolve_location_to_coords = lambda text: (42.3601, -71.0589) if text == "Boston" else None
         try:
             await store.set_user_pref("AI3I", "password", "pw", now)
             await store.upsert_user_registry("AI3I", now, display_name="John", qth="PA", email="ai3i@example.org", privilege="sysop")
@@ -2810,6 +2890,8 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             row = await store.get_user_registry("K1ABC")
             assert row is not None
             assert str(row["privilege"]) == "sysop"
+            assert str(row["qth"]) == "Boston"
+            assert str(row["qra"]) == ""
             assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "required"
 
             code, _, body = await _http_request(
@@ -2824,7 +2906,6 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             assert data["ok"] is True
             assert await store.get_user_registry("W3XYZ") is None
         finally:
-            web_admin_mod.resolve_location_to_coords = orig
             await store.close()
 
     asyncio.run(run())
@@ -3298,8 +3379,8 @@ def test_web_users_access_matrix_applies_to_base_and_ssids(tmp_path) -> None:
                         "display_name": "Blocked User",
                         "privilege": "user",
                         "access": {
-                            "telnet": {"login": False},
-                            "web": {"login": False},
+                            "telnet": {"login": False, "rbn": False},
+                            "web": {"login": False, "rbn": True},
                         },
                     }
                 ).encode("utf-8"),
@@ -3307,8 +3388,12 @@ def test_web_users_access_matrix_applies_to_base_and_ssids(tmp_path) -> None:
             assert code == 200
             data = json.loads(body.decode("utf-8"))
             assert data["user"]["access"]["telnet"]["login"] is False
+            assert data["user"]["access"]["telnet"]["rbn"] is False
+            assert data["user"]["access"]["web"]["rbn"] is True
             assert await store.get_user_pref("ZZ1AA", "access.telnet.login") == "off"
+            assert await store.get_user_pref("ZZ1AA", "access.telnet.rbn") == "off"
             assert await store.get_user_pref("ZZ1AA", "access.web.login") == "off"
+            assert await store.get_user_pref("ZZ1AA", "access.web.rbn") == "on"
 
             code, _, _ = await _http_request(
                 srv,
@@ -3327,6 +3412,179 @@ def test_web_users_access_matrix_applies_to_base_and_ssids(tmp_path) -> None:
                 body=json.dumps({"call": "ZZ1AA-2", "password": ""}).encode("utf-8"),
             )
             assert code == 401
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_users_matrix_toggle_endpoint_updates_status_and_access(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_users_matrix_toggle.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("ZZ2AA", now, privilege="user", email="zz2aa@example.org")
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "access", "capability": "spots", "value": False}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["ok"] is True
+            assert data["user"]["access"]["telnet"]["spots"] is False
+            assert data["user"]["access"]["web"]["spots"] is False
+            assert await store.get_user_pref("ZZ2AA", "access.telnet.spots") == "off"
+            assert await store.get_user_pref("ZZ2AA", "access.web.spots") == "off"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "verified", "value": True}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["email_verified"] is True
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "locked", "value": False}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["registration_locked"] is True
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "locked", "value": True}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["registration_locked"] is False
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "blocked", "value": False}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["blocked_login"] is True
+            assert await store.get_user_pref("ZZ2AA", "blocked_login") == "on"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "blocked", "value": True}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["blocked_login"] is False
+            assert await store.get_user_pref("ZZ2AA", "blocked_login") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_users_cluster_peer_records_are_managed_defaults(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_users_cluster_defaults.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I-15", now, privilege="sysop")
+            await store.set_user_pref("AI3I-15", "node_family", "pycluster", now)
+            await store.set_user_pref("AI3I-15", "blocked_login", "on", now)
+            await store.set_user_pref("AI3I-15", "mfa_email_otp", "required", now)
+            await store.set_user_pref("AI3I-15", "access.telnet.spots", "off", now)
+
+            code, _, body = await _http_request(
+                srv,
+                "GET",
+                "/api/users?clusters=1",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 200
+            row = json.loads(body.decode("utf-8"))["rows"][0]
+            assert row["node_family"] == "pycluster"
+            assert row["privilege"] == ""
+            assert row["blocked_login"] is False
+            assert row["mfa_enabled"] is False
+            assert row["mfa_email_otp"] == "off"
+            assert row["email_verified"] is True
+            assert row["registration_state"] == "verified"
+            assert row["access"]["telnet"]["spots"] is True
+            assert row["access"]["web"]["wwv"] is True
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "AI3I-15", "kind": "blocked", "value": False}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["blocked_login"] is False
+            assert data["user"]["access"]["telnet"]["spots"] is True
+            assert await store.get_user_pref("AI3I-15", "blocked_login") is None
+            assert await store.get_user_pref("AI3I-15", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("AI3I-15", "access.telnet.spots") == "on"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps(
+                    {
+                        "call": "AI3I-16",
+                        "node_family": "dxspider",
+                        "privilege": "sysop",
+                        "mfa_email_otp": "required",
+                    }
+                ).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["node_family"] == "dxspider"
+            assert data["user"]["privilege"] == ""
+            assert data["user"]["mfa_enabled"] is False
+            assert data["user"]["email_verified"] is True
+            assert data["user"]["access"]["telnet"]["login"] is True
+            assert await store.get_user_pref("AI3I-16", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("AI3I-16", "access.web.rbn") == "on"
         finally:
             await store.close()
 
@@ -3587,6 +3845,10 @@ def test_web_protocol_page_focuses_on_alerts_and_history(tmp_path) -> None:
             assert "Loading policy drops..." in html
             assert "j('/api/proto/summary')" in html
             assert "j('/api/policydrop' + (peer ? '?peer=' + peer : ''))" in html
+            assert ".form-grid.compact-controls{" in html
+            assert 'class="form-grid compact-controls"' in html
+            assert html.index('id="pstale"') < html.index('id="pflap"') < html.index('id="pwindow"') < html.index('id="phlim"')
+            assert html.index('id="dx"') < html.index('id="freq"') < html.index('id="info"') < html.index('id="scope"')
         finally:
             await store.close()
 

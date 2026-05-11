@@ -13,6 +13,7 @@
 <style>
 /* ================================================================ theme variables */
 :root {
+  color-scheme: dark;
   --sidebar-width: 320px;
   --sidebar-toast-offset: calc(var(--sidebar-width) + 28px);
   --bg-body:        #090d13;
@@ -52,6 +53,7 @@
   --sb-thumb-hover: #2a4a6e;
 }
 html.light {
+  color-scheme: light;
   --bg-body:        #f3f4f6;
   --bg-header:      linear-gradient(160deg, #ffffff 0%, #f0f5ff 60%, #e8f0fa 100%);
   --bg-header-wave: linear-gradient(90deg, transparent, #5a90c8 30%, #1d6fa4 50%, #5a90c8 70%, transparent);
@@ -513,14 +515,42 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
   text-overflow:ellipsis;
 }
 .footer-user-edit {
-  border:none;
-  background:none;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:28px;
+  padding:0 12px;
+  border:1px solid rgba(88,166,255,.32);
+  border-radius:999px;
+  background:rgba(88,166,255,.10);
   color:var(--text-spotter);
   cursor:pointer;
   font:inherit;
-  padding:0;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.05em;
 }
-.footer-user-edit:hover { color:var(--accent); }
+.footer-user-edit:hover { color:var(--accent); border-color:var(--accent); background:var(--row-hover); }
+#footer-edit-profile {
+  border-color:rgba(34,197,94,.35);
+  background:rgba(34,197,94,.12);
+  color:#86efac;
+}
+#footer-edit-profile:hover {
+  border-color:#22c55e;
+  background:rgba(34,197,94,.18);
+  color:#bbf7d0;
+}
+#footer-logout {
+  border-color:rgba(248,81,73,.35);
+  background:rgba(248,81,73,.10);
+  color:#fca5a5;
+}
+#footer-logout:hover {
+  border-color:#f85149;
+  background:rgba(248,81,73,.16);
+  color:#fecaca;
+}
 .footer-user-login {
   display:inline-flex;
   align-items:center;
@@ -619,7 +649,9 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .footer-controls #audio-toggle:hover,
 .footer-controls #greyline-toggle:hover,
 .footer-controls #theme-toggle:hover { transform:none; }
+.footer-controls #sidebar-toggle.on,
 .footer-controls #toast-toggle.on { border-color:rgba(88,166,255,.45); color:var(--accent); background:rgba(88,166,255,.12); }
+.footer-controls #sidebar-toggle.off,
 .footer-controls #toast-toggle.off { color:var(--text-muted); }
 .footer-controls #theme-toggle:hover { color:var(--accent); }
 .footer-controls .footer-control-label { font-size:0.68rem; line-height:1; }
@@ -667,8 +699,11 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .watch-type {
   background:var(--bg-search); border:1px solid var(--border-btn); border-radius:12px;
   color:var(--text-primary); padding:3px 8px; font-size:0.72rem; font-family:inherit;
-  min-width:88px; flex-shrink:0;
+  min-width:88px; flex-shrink:0; color-scheme:dark;
 }
+.watch-type option { background:#0d1320; color:#e6edf3; }
+html.light .watch-type { color-scheme:light; }
+html.light .watch-type option { background:#ffffff; color:#111827; }
 .watch-input {
   background:var(--bg-search); border:1px solid var(--border-btn); border-radius:12px;
   color:var(--text-primary); padding:3px 8px; font-size:0.72rem; font-family:inherit;
@@ -796,8 +831,9 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 }
 .operate-cap {
   border:1px solid var(--border-btn);
-  background:var(--bg-btn);
-  color:var(--text-muted);
+  background:rgba(248,81,73,.10);
+  color:#fca5a5;
+  border-color:rgba(248,81,73,.35);
   border-radius:999px;
   padding:2px 7px;
   font-size:0.60rem;
@@ -805,9 +841,9 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
   text-transform:uppercase;
 }
 .operate-cap.on {
-  color:var(--accent);
-  border-color:var(--accent);
-  background:rgba(88,166,255,.10);
+  color:#86efac;
+  border-color:rgba(34,197,94,.45);
+  background:rgba(34,197,94,.12);
 }
 .operate-status-ok { color:#3fb950 !important; }
 .operate-status-err { color:#f87171 !important; }
@@ -938,7 +974,26 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 }
 .profile-modal-grid input:focus { outline:none; border-color:var(--accent); }
 .profile-modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
+.profile-modal-actions { flex-wrap:wrap; }
+.profile-mfa-settings {
+  margin-top:14px;
+}
+.profile-mfa-settings-label {
+  display:block;
+  margin-bottom:6px;
+  color:var(--text-dim);
+  font-size:0.66rem;
+  font-weight:700;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+}
+.profile-mfa-actions {
+  margin-top:0;
+  justify-content:flex-start;
+}
 .profile-modal-actions button {
+  flex:0 1 auto;
+  max-width:100%;
   border:1px solid var(--border-btn); background:var(--bg-btn); color:var(--text-primary);
   border-radius:999px; padding:6px 14px; font:0.72rem/1.2 'Exo',system-ui,Arial,sans-serif; cursor:pointer;
 }
@@ -948,6 +1003,82 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .profile-modal-status.ok { color:#3fb950; }
 .profile-modal-status.err { color:#f85149; }
 .profile-modal-status.warn { color:#ffd32a; }
+.profile-mfa-qr {
+  display:none;
+  margin-top:12px;
+  padding:12px;
+  border:1px solid var(--border-card);
+  border-radius:12px;
+  background:var(--bg-btn);
+  text-align:center;
+}
+.profile-mfa-qr.open { display:block; }
+.profile-mfa-qr canvas {
+  width:184px;
+  height:184px;
+  max-width:100%;
+  border:8px solid #fff;
+  border-radius:10px;
+  background:#fff;
+}
+.profile-mfa-qr svg {
+  width:184px;
+  height:184px;
+  max-width:100%;
+  border:8px solid #fff;
+  border-radius:10px;
+  background:#fff;
+}
+.profile-mfa-qr-note {
+  margin-top:8px;
+  color:var(--text-secondary);
+  font-size:0.68rem;
+}
+.profile-mfa-verify {
+  display:flex;
+  justify-content:center;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:10px;
+}
+.profile-mfa-verify input {
+  width:120px;
+  border:1px solid var(--border-btn);
+  background:var(--bg-search);
+  color:var(--text-primary);
+  border-radius:999px;
+  padding:6px 10px;
+  text-align:center;
+  font:0.78rem/1.2 'Exo',system-ui,Arial,sans-serif;
+}
+.profile-mfa-verify button {
+  border:1px solid var(--border-btn);
+  background:var(--bg-btn);
+  color:var(--text-primary);
+  border-radius:999px;
+  padding:6px 14px;
+  font:0.72rem/1.2 'Exo',system-ui,Arial,sans-serif;
+  cursor:pointer;
+}
+.profile-mfa-verify button:hover {
+  border-color:var(--accent);
+  color:var(--accent);
+  background:var(--row-hover);
+}
+.profile-save-icon {
+  position:absolute;
+  top:9px;
+  right:42px;
+  width:30px;
+  height:30px;
+  padding:0;
+  border-radius:999px;
+  border:1px solid rgba(63,185,80,.35);
+  background:rgba(63,185,80,.12);
+  color:#3fb950;
+  cursor:pointer;
+}
+.profile-save-icon:hover { border-color:#3fb950; background:rgba(63,185,80,.18); }
 #profile-modal-bg {
   display:none; position:fixed; inset:0; z-index:6100;
   background:rgba(0,0,0,.55); backdrop-filter:blur(3px);
@@ -1404,9 +1535,8 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
           <div class="operate-auth-row">
             <div id="op-auth-badge" class="operate-auth-badge off">Offline</div>
           </div>
-          <div class="operate-note">Allowed here</div>
+          <div class="operate-note">Capabilities</div>
           <div id="op-access" class="operate-access"></div>
-          <div class="operate-note">Greyed-out actions are disabled by local node policy. Telnet and System Operator access are managed separately.</div>
           <div id="op-status" style="font-size:.70rem;color:var(--text-dim);padding-top:4px">Posting tools are available after web login.</div>
           </div>
         </div>
@@ -1685,8 +1815,8 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
   <div class="footer-block" id="footer-primary">Node <strong style="color:var(--accent);opacity:.7">N0NODE-1</strong></div>
   <div class="footer-block" id="footer-user">Web login: <span class="footer-user-off">&nbsp;Offline</span></div>
   <div class="footer-block footer-controls">
-    <button id="toast-toggle" class="on" type="button" title="Hide spot popups" aria-label="Hide spot popups"><span class="footer-control-label">Hide Popups</span></button>
-    <button id="sidebar-toggle" type="button" title="Hide the sidebar" aria-label="Hide the sidebar"><span class="footer-control-label">Hide Sidebar</span></button>
+    <button id="toast-toggle" class="on" type="button" title="Hide spot popups" aria-label="Hide spot popups"><span class="footer-control-label">Popups</span></button>
+    <button id="sidebar-toggle" class="on" type="button" title="Hide the sidebar" aria-label="Hide the sidebar"><span class="footer-control-label">Sidebar</span></button>
     <button id="greyline-toggle" class="active" title="Toggle grey line overlay" aria-label="Grey line"><span>🌗</span><span class="footer-control-label">Greyline</span></button>
     <button id="audio-toggle" class="off" title="Toggle audio alerts" aria-label="Audio alerts">
       <svg id="audio-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
@@ -1737,6 +1867,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 
 <div id="profile-modal-bg">
   <div id="spot-modal">
+    <button class="profile-save-icon" id="profile-save" type="button" title="Save profile" aria-label="Save profile">💾</button>
     <button class="sm-close" id="profile-close" type="button" title="Close" aria-label="Close profile">✕</button>
     <h2>Edit Profile</h2>
     <div class="profile-modal-grid">
@@ -1748,6 +1879,10 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <label for="profile-qth">Location (QTH)</label>
         <input id="profile-qth" type="text" maxlength="80" placeholder="Location">
       </div>
+      <div class="field span-2">
+        <label for="profile-email">Email Address</label>
+        <input id="profile-email" type="email" maxlength="120" placeholder="Email for account notices and MFA">
+      </div>
       <div class="field">
         <label for="profile-qra">Grid Square</label>
         <input id="profile-qra" type="text" maxlength="16" placeholder="Grid square">
@@ -1756,18 +1891,21 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <label for="profile-homenode">Home Node</label>
         <input id="profile-homenode" type="text" maxlength="16" placeholder="Home node">
       </div>
-      <div class="field span-2">
-        <label>MFA</label>
-        <div id="profile-mfa-summary" class="register-help"></div>
+    </div>
+    <div class="profile-mfa-settings">
+      <span class="profile-mfa-settings-label">MFA Settings</span>
+      <div class="profile-modal-actions profile-mfa-actions">
+      <button id="profile-mfa-authenticator" type="button" data-action="authenticator">Use TOTP</button>
+      <button id="profile-mfa-email" type="button">Disable</button>
+      <button id="profile-mfa-test" type="button">Verify</button>
       </div>
     </div>
-    <div class="profile-modal-actions">
-      <button id="profile-mfa-email" type="button">Email MFA</button>
-      <button id="profile-mfa-authenticator" type="button">Authenticator</button>
-      <button id="profile-mfa-default" type="button">Default</button>
-      <button id="profile-mfa-off" type="button">Disable MFA</button>
-      <button id="profile-cancel" type="button">Cancel</button>
-      <button id="profile-save" class="primary" type="button">Save Profile</button>
+    <div id="profile-mfa-qr" class="profile-mfa-qr" aria-live="polite">
+      <div id="profile-mfa-qr-code"></div>
+      <div class="profile-mfa-qr-note">Scan this QR code with your authenticator app, then enter the generated code and press Verify.</div>
+      <div class="profile-mfa-verify">
+        <input id="profile-mfa-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="123456">
+      </div>
     </div>
     <div id="profile-status" class="profile-modal-status"></div>
   </div>
@@ -1786,6 +1924,10 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
       <div class="field">
         <label for="login-pass">Password</label>
         <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+      </div>
+      <div class="field span-2" id="login-otp-row" style="display:none">
+        <label for="login-otp" id="login-otp-label">MFA Code</label>
+        <input id="login-otp" type="text" inputmode="numeric" maxlength="12" placeholder="Enter verification code" autocomplete="one-time-code">
       </div>
     </div>
     <div class="profile-modal-actions">
@@ -1861,6 +2003,7 @@ const FILTER_SPOTS = '/api/filters/spots';
 const REGISTER_REQUEST = '/api/register/request';
 const PROFILE_SAVE = '/api/profile';
 const PROFILE_MFA = '/api/profile/mfa';
+const PROFILE_PRESETS = '/api/presets';
 const POST_SPOT = '/api/spot';
 const POST_CHAT = '/api/chat';
 const POST_ANNOUNCE = '/api/announce';
@@ -1902,8 +2045,8 @@ function updateSidebarToggle() {
   const btn = document.getElementById('sidebar-toggle');
   if (!btn) return;
   document.body.classList.toggle('sidebar-hidden', sidebarHidden);
-  const label = sidebarHidden ? 'Show Sidebar' : 'Hide Sidebar';
-  btn.innerHTML = `<span class="footer-control-label">${label}</span>`;
+  btn.className = sidebarHidden ? 'off' : 'on';
+  btn.innerHTML = '<span class="footer-control-label">Sidebar</span>';
   btn.title = sidebarHidden ? 'Show the sidebar' : 'Hide the sidebar';
   btn.setAttribute('aria-label', btn.title);
 }
@@ -1912,8 +2055,7 @@ function updateToastToggle() {
   const btn = document.getElementById('toast-toggle');
   if (!btn) return;
   btn.className = toastPopupsEnabled ? 'on' : 'off';
-  const label = toastPopupsEnabled ? 'Hide Popups' : 'Show Popups';
-  btn.innerHTML = `<span class="footer-control-label">${label}</span>`;
+  btn.innerHTML = '<span class="footer-control-label">Popups</span>';
   btn.title = toastPopupsEnabled ? 'Hide spot popups' : 'Show spot popups';
   btn.setAttribute('aria-label', btn.title);
 }
@@ -2036,6 +2178,7 @@ let webAccess   = {};
 let webProfile  = {};
 let opBusyCount = 0;
 let registerChallengeId = '';
+let pendingWebLogin = null;
 let liveStats   = null;
 
 function renderDynamicFilterRow(rowId, type, values) {
@@ -2106,6 +2249,7 @@ function activateSidebarPanel(panel) {
 }
 
 function openOperateLogin() {
+  resetLoginMfa();
   setLoginStatus('');
   document.getElementById('login-modal-bg')?.classList.add('open');
   const callEl = document.getElementById('login-call');
@@ -2116,6 +2260,7 @@ function openOperateLogin() {
 }
 
 function closeLoginModal() {
+  resetLoginMfa();
   document.getElementById('login-modal-bg')?.classList.remove('open');
 }
 
@@ -2124,6 +2269,36 @@ function setLoginStatus(msg, cls='') {
   if (!el) return;
   el.textContent = msg || '';
   el.className = `profile-modal-status${cls ? ` ${cls}` : ''}`;
+}
+
+function resetLoginMfa() {
+  pendingWebLogin = null;
+  const row = document.getElementById('login-otp-row');
+  const otp = document.getElementById('login-otp');
+  const label = document.getElementById('login-otp-label');
+  if (row) row.style.display = 'none';
+  if (otp) otp.value = '';
+  if (label) label.textContent = 'MFA Code';
+}
+
+function showLoginMfa(body, call, password, setStatus) {
+  const method = body.mfa_method === 'email' && body.challenge_id ? 'email' : 'authenticator';
+  pendingWebLogin = {
+    call,
+    password,
+    method,
+    challenge_id: body.challenge_id || '',
+  };
+  const row = document.getElementById('login-otp-row');
+  const otp = document.getElementById('login-otp');
+  const label = document.getElementById('login-otp-label');
+  if (label) label.textContent = 'MFA Code';
+  if (row) row.style.display = '';
+  if (otp) {
+    otp.value = '';
+    otp.focus();
+  }
+  setStatus(method === 'email' ? uiText('login_mfa_email') : uiText('login_mfa_authenticator'), true);
 }
 
 function opSetStatus(msg, ok=true) {
@@ -2226,26 +2401,60 @@ function setProfileStatus(msg, cls='') {
   el.className = `profile-modal-status${cls ? ` ${cls}` : ''}`;
 }
 
+function clearProfileMfaQr() {
+  const box = document.getElementById('profile-mfa-qr');
+  const code = document.getElementById('profile-mfa-qr-code');
+  const otp = document.getElementById('profile-mfa-code');
+  if (box) box.classList.remove('open');
+  if (code) code.innerHTML = '';
+  if (otp) otp.value = '';
+}
+
+function showProfileMfaQr(qrSvg) {
+  const box = document.getElementById('profile-mfa-qr');
+  const code = document.getElementById('profile-mfa-qr-code');
+  if (!(box && code && qrSvg)) return false;
+  code.innerHTML = qrSvg;
+  box.classList.add('open');
+  setTimeout(() => document.getElementById('profile-mfa-code')?.focus(), 0);
+  return true;
+}
+
 function renderProfileMfa() {
   const el = document.getElementById('profile-mfa-summary');
-  if (!el) return;
+  if (el) el.textContent = '';
+  const method = document.getElementById('profile-mfa-authenticator');
+  const disable = document.getElementById('profile-mfa-email');
   const mfa = webProfile?.mfa || {};
-  const methods = Array.isArray(mfa.methods) && mfa.methods.length ? mfa.methods.join(', ') : 'none';
-  el.textContent = `Status: ${mfa.enabled ? 'enabled' : 'disabled'}; methods: ${methods}; email override: ${mfa.email_otp || 'default'}; policy: ${mfa.policy || 'not required by node policy'}.`;
+  const usingTotp = !!mfa.totp_enabled;
+  if (method) {
+    method.textContent = usingTotp ? 'Use Email' : 'Use TOTP';
+    method.dataset.action = usingTotp ? 'email' : 'authenticator';
+    method.title = usingTotp ? 'Switch MFA login to email codes' : 'Switch MFA login to authenticator codes';
+    method.setAttribute('aria-label', method.title);
+  }
+  if (disable) {
+    disable.textContent = 'Disable';
+    disable.title = 'Disable MFA';
+    disable.setAttribute('aria-label', disable.title);
+  }
 }
 
 function openProfileModal() {
   if (!(webToken && webCall)) return;
   document.getElementById('profile-name').value = webProfile?.name || '';
   document.getElementById('profile-qth').value = webProfile?.qth || '';
+  document.getElementById('profile-email').value = webProfile?.email || '';
   document.getElementById('profile-qra').value = webProfile?.qra || '';
   document.getElementById('profile-homenode').value = webProfile?.homenode || '';
   renderProfileMfa();
+  clearProfileMfaQr();
   setProfileStatus('');
   document.getElementById('profile-modal-bg')?.classList.add('open');
 }
 
 function closeProfileModal() {
+  clearProfileMfaQr();
   document.getElementById('profile-modal-bg')?.classList.remove('open');
 }
 
@@ -2357,11 +2566,12 @@ async function saveProfile() {
   const payload = {
     name: (document.getElementById('profile-name')?.value || '').trim(),
     qth: (document.getElementById('profile-qth')?.value || '').trim(),
+    email: (document.getElementById('profile-email')?.value || '').trim(),
     qra: (document.getElementById('profile-qra')?.value || '').trim().toUpperCase(),
     homenode: (document.getElementById('profile-homenode')?.value || '').trim().toUpperCase(),
   };
   try {
-    setProfileStatus('Saving...', '');
+    setProfileStatus(uiText('profile_saving'), '');
     const body = await webJson(PROFILE_SAVE, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -2372,33 +2582,70 @@ async function saveProfile() {
     syncServerWatchSeedFromProfile();
     renderWatchlist();
     applyOperatorState();
-    setProfileStatus('Profile updated.', 'ok');
+    setProfileStatus(uiText('profile_updated'), 'ok');
     setTimeout(closeProfileModal, 500);
   } catch (err) {
-    setProfileStatus(err.message || 'Profile update failed.', 'err');
+    setProfileStatus(err.message || uiText('profile_update_failed'), 'err');
   }
 }
 
-async function updateProfileMfa(action) {
+async function updateProfileMfa(action, extra={}) {
   if (!(webToken && webCall)) return;
   try {
-    setProfileStatus('Updating MFA...', '');
+    setProfileStatus(uiText('profile_mfa_updating'), '');
     const body = await webJson(PROFILE_MFA, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action})
+      body:JSON.stringify(Object.assign({action}, extra))
     });
     webProfile.mfa = body.mfa || {};
     saveWebSession();
     renderProfileMfa();
-    if (body.secret) {
-      setProfileStatus(`Authenticator setup key: ${body.secret}`, 'warn');
+    if (body.qr_svg) {
+      const shown = showProfileMfaQr(body.qr_svg);
+      setProfileStatus(shown ? uiText('profile_mfa_scan_qr') : uiText('profile_mfa_qr_unavailable'), shown ? 'warn' : 'err');
+    } else if (body.email_sent) {
+      setProfileStatus(uiText('profile_mfa_email_sent'), 'warn');
+    } else if (body.verified) {
+      clearProfileMfaQr();
+      setProfileStatus(uiText('profile_mfa_verified'), 'ok');
+    } else if (action === 'email') {
+      clearProfileMfaQr();
+      setProfileStatus(uiText('profile_mfa_email_switched'), 'ok');
+    } else if (action === 'off' || action === 'disable' || action === 'reset') {
+      clearProfileMfaQr();
+      setProfileStatus(uiText('profile_mfa_disabled'), 'ok');
     } else {
-      setProfileStatus('MFA updated.', 'ok');
+      clearProfileMfaQr();
+      setProfileStatus(uiText('profile_mfa_updated'), 'ok');
     }
+    return body;
   } catch (err) {
-    setProfileStatus(err.message || 'MFA update failed.', 'err');
+    setProfileStatus(err.message || uiText('profile_mfa_update_failed'), 'err');
   }
+  return null;
+}
+
+async function verifyProfileMfa() {
+  const mfa = webProfile?.mfa || {};
+  if (!mfa.totp_enabled && mfa.email_otp === 'required') {
+    const sent = await updateProfileMfa('verify');
+    if (!(sent && sent.email_sent && sent.challenge_id)) return;
+    const otp = window.prompt(uiText('profile_mfa_email_prompt'), '');
+    if (!otp) {
+      setProfileStatus(uiText('profile_mfa_email_cancelled'), 'err');
+      return;
+    }
+    await updateProfileMfa('verify', {challenge_id: sent.challenge_id, otp: String(otp).trim()});
+    return;
+  }
+  let otp = (document.getElementById('profile-mfa-code')?.value || '').trim();
+  if (!otp) otp = window.prompt(uiText('profile_mfa_authenticator_prompt'), '') || '';
+  if (!otp.trim()) {
+    setProfileStatus(uiText('profile_mfa_enter_code'), 'err');
+    return;
+  }
+  await updateProfileMfa('verify', {otp: otp.trim()});
 }
 
 function applyOperatorState() {
@@ -2425,6 +2672,7 @@ function applyOperatorState() {
   const spotAllowed = loggedIn && webAccess.spots !== false;
   const chatAllowed = loggedIn && webAccess.chat !== false;
   const announceAllowed = loggedIn && webAccess.announce !== false;
+  const rbnAllowed = loggedIn && webAccess.rbn !== false;
   const wxAllowed = loggedIn && webAccess.wx !== false;
   const wwvAllowed = loggedIn && webAccess.wwv !== false;
   const accessEl = document.getElementById('op-access');
@@ -2448,11 +2696,12 @@ function applyOperatorState() {
   });
   if (accessEl) {
     const caps = [
-      ['spots', spotAllowed],
-      ['chat', chatAllowed],
-      ['announce', announceAllowed],
-      ['wx', wxAllowed],
-      ['wwv', wwvAllowed],
+      ['Spots', spotAllowed],
+      ['RBN', rbnAllowed],
+      ['Chat', chatAllowed],
+      ['Announce', announceAllowed],
+      ['Weather', wxAllowed],
+      ['WWV', wwvAllowed],
     ];
     accessEl.innerHTML = caps.map(([label, on]) => `<span class="operate-cap ${on ? 'on' : ''}">${label}</span>`).join('');
   }
@@ -2464,14 +2713,8 @@ function applyOperatorState() {
     return;
   }
   setAuthBadge(webCall, true);
-  const allowed = [
-    spotAllowed ? 'spots' : '',
-    chatAllowed ? 'chat' : '',
-    announceAllowed ? 'announce' : '',
-    wxAllowed ? 'wx' : '',
-    wwvAllowed ? 'wwv' : '',
-  ].filter(Boolean);
-  opSetStatus(`Logged in as ${webCall}${allowed.length ? ` · ${allowed.join(', ')}` : ''}`, true);
+  const hasPostingCapability = spotAllowed || rbnAllowed || chatAllowed || announceAllowed || wxAllowed || wwvAllowed;
+  opSetStatus(hasPostingCapability ? 'Posting tools ready.' : 'No posting capabilities enabled here', true);
   updateFooterUser();
 }
 
@@ -2529,11 +2772,14 @@ async function loadBulletins() {
 
 async function webJson(url, opts={}) {
   const headers = Object.assign({}, opts.headers || {});
+  const authOptional = !!opts.authOptional;
+  const fetchOpts = Object.assign({}, opts, {headers});
+  delete fetchOpts.authOptional;
   if (webToken) headers['X-Web-Token'] = webToken;
-  const res = await fetch(url, Object.assign({}, opts, {headers}));
+  const res = await fetch(url, fetchOpts);
   let body = {};
   try { body = await res.json(); } catch {}
-  if (res.status === 401 && webToken) {
+  if (res.status === 401 && webToken && !authOptional) {
     webToken = '';
     webCall = '';
     webAccess = {};
@@ -2577,11 +2823,13 @@ async function restoreWebSession() {
     webAccess = me.access || {};
     webProfile = me.profile || {};
     saveWebSession();
+    await loadAccountPresets();
   } catch {
     webToken = '';
     webCall = '';
     webAccess = {};
     webProfile = {};
+    accountPresetsLoaded = false;
     saveWebSession();
   }
   syncServerWatchSeedFromProfile();
@@ -2589,28 +2837,39 @@ async function restoreWebSession() {
   applyOperatorState();
 }
 
-async function performOperatorLogin(call, password, setStatus, clearPassword) {
+async function performOperatorLogin(call, password, setStatus, clearPassword, extra={}) {
   if (!call || !password) {
     setStatus('Callsign and password are required.', false);
     return;
   }
+  if (!extra.otp) resetLoginMfa();
   try {
     setOperateBusy(true);
     const body = await webJson(AUTH_LOGIN, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({call, password})
+      body:JSON.stringify(Object.assign({call, password}, extra))
     });
+    if (body && body.mfa_required) {
+      showLoginMfa(body, call, password, setStatus);
+      return false;
+    }
+    if (!body.token) {
+      setStatus('Login did not return a web session.', false);
+      return false;
+    }
     webToken = body.token || '';
     webCall = body.call || call;
     webAccess = body.access || {};
     webProfile = body.profile || {};
     saveWebSession();
+    await loadAccountPresets();
     syncServerWatchSeedFromProfile();
     renderWatchlist();
     applyOperatorState();
     await fetchSpots();
     clearPassword();
+    resetLoginMfa();
     setStatus(`Logged in as ${webCall}.`, true);
     return true;
   } catch (err) {
@@ -2633,12 +2892,25 @@ async function loginOperator() {
 async function loginOperatorFromModal() {
   const call = (document.getElementById('login-call')?.value || '').trim().toUpperCase();
   const password = document.getElementById('login-pass')?.value || '';
+  const otp = (document.getElementById('login-otp')?.value || '').trim();
+  const extra = {};
+  if (pendingWebLogin && pendingWebLogin.call === call && pendingWebLogin.password === password) {
+    if (!otp) {
+      setLoginStatus(uiText('login_mfa_enter_code'), 'err');
+      document.getElementById('login-otp')?.focus();
+      return;
+    }
+    extra.otp = otp;
+    if (pendingWebLogin.challenge_id) extra.challenge_id = pendingWebLogin.challenge_id;
+  } else if (pendingWebLogin) {
+    resetLoginMfa();
+  }
   const ok = await performOperatorLogin(call, password, (msg, good=true) => {
     setLoginStatus(msg, good ? 'ok' : 'err');
   }, () => {
     const pass = document.getElementById('login-pass');
     if (pass) pass.value = '';
-  });
+  }, extra);
   if (ok) {
     setTimeout(() => closeLoginModal(), 400);
   }
@@ -2653,6 +2925,7 @@ async function logoutOperator() {
   webCall = '';
   webAccess = {};
   webProfile = {};
+  accountPresetsLoaded = false;
   saveWebSession();
   syncServerWatchSeedFromProfile();
   renderWatchlist();
@@ -3024,6 +3297,10 @@ function renderBandOpenings(bandHourData) {
 // ── Historical trends chart
 let historyData = null;
 let brandingData = null;
+let uiStrings = {};
+function uiText(key) {
+  return Object.prototype.hasOwnProperty.call(uiStrings, key) ? uiStrings[key] : key;
+}
 async function loadHistory() {
   try {
     const r = await fetch('/api/history');
@@ -3039,6 +3316,7 @@ async function loadHistory() {
 async function loadBranding() {
   try {
     brandingData = await fetch(BRAND).then(r => r.json());
+    uiStrings = brandingData.ui_strings || {};
   } catch (e) {
     console.warn('branding load failed', e);
     return;
@@ -3135,8 +3413,11 @@ const ENTITY_ISO = {
   'Greece':'GR','Spain':'ES','Portugal':'PT','Andorra':'AD','Ireland':'IE','Iceland':'IS',
   'Faroe Islands':'FO','Greenland':'GL','Monaco':'MC','San Marino':'SM','Vatican City':'VA',
   'Liechtenstein':'LI','Malta':'MT','Cyprus':'CY','Gibraltar':'GI','Aland Islands':'AX',
-  'Sardinia':'IT','Sicily':'IT','Corsica':'FR','Balearic Islands':'ES','Canary Islands':'ES',
-  'Azores':'PT','Madeira Islands':'PT','Svalbard':'SJ','Kaliningrad':'RU','African Italy':'IT',
+  'Sardinia':'IT','Sicily':'IT','Corsica':'FR','Crete':'GR','Balearic Islands':'ES','Canary Islands':'ES',
+  'Azores':'PT','Madeira Islands':'PT','Svalbard':'SJ','Bear Island':'SJ','Jan Mayen':'SJ',
+  'Kaliningrad':'RU','Franz Josef Land':'RU','African Italy':'IT','Mount Athos':'GR','Dodecanese':'GR',
+  'Ceuta & Melilla':'ES','Shetland Islands':'GB','UK Base Areas on Cyprus':'GB',
+  'ITU HQ':'CH','United Nations HQ':'US','Vienna Intl Ctr':'AT',
   'Japan':'JP','China':'CN','Taiwan':'TW','Republic of Korea':'KR','DPR of Korea':'KP',
   'Hong Kong':'HK','Macao':'MO','Mongolia':'MN','India':'IN','Pakistan':'PK','Bangladesh':'BD',
   'Nepal':'NP','Bhutan':'BT','Sri Lanka':'LK','Maldives':'MV','Myanmar':'MM','Thailand':'TH',
@@ -3146,27 +3427,50 @@ const ENTITY_ISO = {
   'Azerbaijan':'AZ','Armenia':'AM','Georgia':'GE','Israel':'IL','Palestine':'PS','Lebanon':'LB',
   'Syria':'SY','Jordan':'JO','Iraq':'IQ','Iran':'IR','Saudi Arabia':'SA','Yemen':'YE','Oman':'OM',
   'United Arab Emirates':'AE','Qatar':'QA','Bahrain':'BH','Kuwait':'KW','Afghanistan':'AF',
-  'Asiatic Turkey':'TR','European Turkey':'TR',
+  'Asiatic Turkey':'TR','European Turkey':'TR','Pratas Island':'TW','Minami Torishima':'JP',
+  'Ogasawara':'JP','Andaman & Nicobar Is.':'IN','Lakshadweep Islands':'IN',
   'South Africa':'ZA','Namibia':'NA','Botswana':'BW','Zimbabwe':'ZW','Zambia':'ZM','Mozambique':'MZ',
   'Tanzania':'TZ','Kenya':'KE','Uganda':'UG','Rwanda':'RW','Burundi':'BI','Ethiopia':'ET',
   'Somalia':'SO','Sudan':'SD','Republic of South Sudan':'SS','Egypt':'EG','Libya':'LY','Tunisia':'TN',
-  'Algeria':'DZ','Morocco':'MA','Nigeria':'NG','Ghana':'GH',"Cote d'Ivoire":'CI','Cameroon':'CM',
+  'Algeria':'DZ','Morocco':'MA','Western Sahara':'EH','Mauritania':'MR','Nigeria':'NG','Ghana':'GH',"Cote d'Ivoire":'CI','Cameroon':'CM',
   'Senegal':'SN','Guinea':'GN','Guinea-Bissau':'GW','Liberia':'LR','Mali':'ML','Burkina Faso':'BF',
   'Niger':'NE','Chad':'TD','Madagascar':'MG','Angola':'AO','Dem. Rep. of the Congo':'CD',
-  'Republic of the Congo':'CG','Gabon':'GA','Mauritius':'MU','Reunion':'RE','Mayotte':'YT',
+  'Republic of the Congo':'CG','Gabon':'GA','Mauritius':'MU','Reunion':'RE','Reunion Island':'RE','Mayotte':'YT',
   'Djibouti':'DJ','Eritrea':'ER','Sierra Leone':'SL','Togo':'TG','Benin':'BJ','The Gambia':'GM',
   'Cape Verde':'CV','Sao Tome & Principe':'ST','Equatorial Guinea':'GQ','Central African Republic':'CF',
-  'Malawi':'MW','Lesotho':'LS','Swaziland':'SZ','Seychelles':'SC','Comoros':'KM',
+  'Malawi':'MW','Lesotho':'LS','Swaziland':'SZ','Kingdom of Eswatini':'SZ','Seychelles':'SC','Comoros':'KM',
+  'Agalega & St. Brandon':'MU','Rodriguez Island':'MU','Annobon Island':'GQ','Bouvet':'BV',
+  'Pr. Edward & Marion Is.':'ZA','St. Helena':'SH','Ascension Island':'SH','Tristan da Cunha & Gough':'SH',
   'Australia':'AU','New Zealand':'NZ','Papua New Guinea':'PG','Fiji':'FJ','Solomon Islands':'SB',
   'Vanuatu':'VU','Samoa':'WS','Tonga':'TO','Western Kiribati':'KI','Central Kiribati':'KI',
   'Eastern Kiribati':'KI','Nauru':'NR','Tuvalu':'TV','Palau':'PW','Micronesia':'FM','Marshall Islands':'MH',
+  'Conway Reef':'FJ','Rotuma Island':'FJ','North Cook Islands':'CK','South Cook Islands':'CK','Niue':'NU',
+  'New Caledonia':'NC','Chesterfield Islands':'NC','French Polynesia':'PF','Austral Islands':'PF',
+  'Marquesas Islands':'PF','Wallis & Futuna Islands':'WF','Temotu Province':'SB','Banaba Island':'KI',
+  'Heard Island':'HM','Macquarie Island':'AU','Cocos (Keeling) Islands':'CC','Lord Howe Island':'AU',
+  'Mellish Reef':'AU','Norfolk Island':'NF','Willis Island':'AU','Christmas Island':'CX',
+  'Tokelau Islands':'TK','Chatham Islands':'NZ','Kermadec Islands':'NZ','N.Z. Subantarctic Is.':'NZ',
   'Brazil':'BR','Argentina':'AR','Chile':'CL','Bolivia':'BO','Peru':'PE','Ecuador':'EC',
   'Colombia':'CO','Venezuela':'VE','Paraguay':'PY','Uruguay':'UY','Guyana':'GY','Suriname':'SR',
+  'San Felix & San Ambrosio':'CL','Easter Island':'CL','Juan Fernandez Islands':'CL','Galapagos Islands':'EC',
+  'San Andres & Providencia':'CO','Malpelo Island':'CO','Fernando de Noronha':'BR',
+  'St. Peter & St. Paul':'BR','Trindade & Martim Vaz':'BR','Cocos Island':'CR','Revillagigedo':'MX','Aves Island':'VE',
   'Cuba':'CU','Haiti':'HT','Dominican Republic':'DO','Jamaica':'JM','Trinidad & Tobago':'TT',
   'Barbados':'BB','Costa Rica':'CR','Panama':'PA','Guatemala':'GT','Honduras':'HN',
   'El Salvador':'SV','Nicaragua':'NI','Belize':'BZ','Grenada':'GD','St. Lucia':'LC',
   'Dominica':'DM','St. Vincent':'VC','Antigua & Barbuda':'AG','St. Kitts & Nevis':'KN',
-  'Bermuda':'BM','Bahamas':'BS','Cayman Islands':'KY','Aruba':'AW','Curacao':'CW','Bonaire':'BQ',
+  'Bermuda':'BM','Bahamas':'BS','Cayman Islands':'KY','Montserrat':'MS','Aruba':'AW','Curacao':'CW','Bonaire':'BQ',
+  'Guantanamo Bay':'US','Sable Island':'CA','St. Paul Island':'CA','Guadeloupe':'GP','St. Barthelemy':'BL',
+  'Martinique':'MQ','St. Pierre & Miquelon':'PM','St. Martin':'MF','French Guiana':'GF',
+  'Baker & Howland Islands':'UM','Johnston Island':'UM','Midway Island':'UM','Palmyra & Jarvis Islands':'UM',
+  'Swains Island':'AS',
+  'Kure Island':'UM','Wake Island':'UM','Navassa Island':'UM','Desecheo Island':'PR','Market Reef':'FI',
+  'Saba & St. Eustatius':'BQ','Sint Maarten':'SX','Anguilla':'AI','British Virgin Islands':'VG',
+  'Turks & Caicos Islands':'TC','Pitcairn Island':'PN','Ducie Island':'PN','Falkland Islands':'FK',
+  'South Georgia Island':'GS','South Sandwich Islands':'GS','Chagos Islands':'IO',
+  'Clipperton Island':'FR','Glorioso Islands':'TF','Juan de Nova, Europa':'TF','Tromelin Island':'TF',
+  'Crozet Island':'TF','Kerguelen Islands':'TF','Amsterdam & St. Paul Is.':'TF',
+  'Peter 1 Island':'AQ','Antarctica':'AQ','South Shetland Islands':'AQ','South Orkney Islands':'AQ',
 };
 function entityIso(name) {
   const iso = ENTITY_ISO[name];
@@ -3898,10 +4202,49 @@ let watchlist = JSON.parse(localStorage.getItem('watchlist') || '[]').map(item =
 let watchMatches = JSON.parse(localStorage.getItem('watchMatches') || '[]');
 let watchProfiles = JSON.parse(localStorage.getItem('watchProfiles') || '[]');
 let serverWatchSeed = [];
+let accountPresetsLoaded = false;
 
 function saveWatchlist() { localStorage.setItem('watchlist', JSON.stringify(watchlist)); }
 function saveWatchMatches() { localStorage.setItem('watchMatches', JSON.stringify(watchMatches.slice(0,10))); }
-function saveWatchProfiles() { localStorage.setItem('watchProfiles', JSON.stringify(watchProfiles)); }
+async function persistAccountPresets() {
+  localStorage.setItem('watchProfiles', JSON.stringify(watchProfiles));
+  localStorage.setItem('filterPresets', JSON.stringify(filterPresets));
+  if (!(webToken && webCall)) return;
+  try {
+    await webJson(PROFILE_PRESETS, {
+      authOptional:true,
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({watch_profiles: watchProfiles, filter_presets: filterPresets})
+    });
+    accountPresetsLoaded = true;
+  } catch (err) {
+    opSetWarn('Saving presets failed: ' + (err.message || err));
+  }
+}
+function saveWatchProfiles() { persistAccountPresets(); }
+
+async function loadAccountPresets() {
+  if (!(webToken && webCall)) return;
+  try {
+    const data = await webJson(PROFILE_PRESETS, {authOptional:true});
+    const serverWatchProfiles = Array.isArray(data.watch_profiles) ? data.watch_profiles : [];
+    const serverFilterPresets = Array.isArray(data.filter_presets) ? data.filter_presets : [];
+    if (serverWatchProfiles.length || serverFilterPresets.length || accountPresetsLoaded) {
+      watchProfiles = serverWatchProfiles;
+      filterPresets = serverFilterPresets;
+      localStorage.setItem('watchProfiles', JSON.stringify(watchProfiles));
+      localStorage.setItem('filterPresets', JSON.stringify(filterPresets));
+    } else if (watchProfiles.length || filterPresets.length) {
+      await persistAccountPresets();
+    }
+    accountPresetsLoaded = true;
+    renderWatchProfiles();
+    renderFilterPresets();
+  } catch (err) {
+    opSetWarn('Loading presets failed: ' + (err.message || err));
+  }
+}
 
 function ruleKey(rule) {
   return `${String(rule.type || '').toLowerCase()}|${String(rule.value || '').toUpperCase()}`;
@@ -4483,12 +4826,13 @@ document.getElementById('spot-modal-bg').addEventListener('click', e => {
   if (e.target.id==='spot-modal-bg') closeSpotModal();
 });
 document.getElementById('profile-close').addEventListener('click', closeProfileModal);
-document.getElementById('profile-cancel').addEventListener('click', closeProfileModal);
 document.getElementById('profile-save').addEventListener('click', saveProfile);
-document.getElementById('profile-mfa-email').addEventListener('click', () => updateProfileMfa('email'));
-document.getElementById('profile-mfa-authenticator').addEventListener('click', () => updateProfileMfa('authenticator'));
-document.getElementById('profile-mfa-default').addEventListener('click', () => updateProfileMfa('default'));
-document.getElementById('profile-mfa-off').addEventListener('click', () => updateProfileMfa('off'));
+document.getElementById('profile-mfa-authenticator').addEventListener('click', e => updateProfileMfa(e.currentTarget.dataset.action || 'authenticator'));
+document.getElementById('profile-mfa-email').addEventListener('click', () => updateProfileMfa('off'));
+document.getElementById('profile-mfa-test').addEventListener('click', verifyProfileMfa);
+document.getElementById('profile-mfa-code').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('profile-mfa-test')?.click();
+});
 document.getElementById('profile-modal-bg').addEventListener('click', e => {
   if (e.target.id==='profile-modal-bg') closeProfileModal();
 });
@@ -4821,13 +5165,13 @@ function saveFilterPreset(name) {
   const state = { name, ...getCurrentFilterState() };
   if (idx >= 0) filterPresets[idx] = state;
   else filterPresets.push(state);
-  localStorage.setItem('filterPresets', JSON.stringify(filterPresets));
+  persistAccountPresets();
   renderFilterPresets();
 }
 
 function deleteFilterPreset(name) {
   filterPresets = filterPresets.filter(p => p.name !== name);
-  localStorage.setItem('filterPresets', JSON.stringify(filterPresets));
+  persistAccountPresets();
   renderFilterPresets();
 }
 

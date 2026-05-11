@@ -19,16 +19,16 @@ import xml.etree.ElementTree as ET
 
 from . import __version__
 from .auth_logging import log_auth_failure
-from .access_policy import default_access_allowed
+from .access_policy import CLUSTER_NODE_FAMILIES, default_access_allowed
 from .auth import hash_password, is_password_hash, verify_password
 from .config import AppConfig, node_presentation_defaults
 from .ctydat import load_cty, lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
-from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .geomag import canonicalize_wwv_text
-from .maidenhead import coords_to_locator, extract_locator
+from .maidenhead import extract_locator
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
+from .qr_svg import qr_svg
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path
 from .registration import has_valid_email, mark_email_verified, registration_state
@@ -447,6 +447,8 @@ class PublicWebServer:
 
     async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
         base_call = call.split("-", 1)[0]
+        if await self._totp_secret_for_call(call):
+            return True
         override = ""
         for candidate in (call.upper(), base_call.upper()):
             raw = await self.store.get_user_pref(candidate, "mfa_email_otp")
@@ -458,8 +460,6 @@ class PublicWebServer:
             return True
         if override == "off":
             return False
-        if await self._totp_secret_for_call(call):
-            return True
         if not self._mfa.required_for(is_sysop=is_sysop):
             return False
         return has_valid_email(await self._email_for_call(base_call.upper()))
@@ -489,7 +489,7 @@ class PublicWebServer:
         methods = []
         if totp_enabled:
             methods.append("Authenticator")
-        if email_effective:
+        if email_effective and not totp_enabled:
             methods.append("Email OTP")
         return {
             "email_otp": email_override,
@@ -570,7 +570,46 @@ class PublicWebServer:
             "footer_secondary": footer_secondary,
             "home_node": node_call,
             "telnet_ports": telnet_ports,
+            "ui_strings": self._public_ui_strings(),
         }
+
+    def _public_ui_strings(self) -> dict[str, str]:
+        defaults = {
+            "login_mfa_email": "Enter the code sent to your email.",
+            "login_mfa_authenticator": "Enter the code from your authenticator app.",
+            "profile_saving": "Saving...",
+            "profile_updated": "Profile updated.",
+            "profile_update_failed": "Profile update failed.",
+            "profile_mfa_updating": "Updating MFA...",
+            "profile_mfa_scan_qr": "Scan the QR code, then enter the authenticator code to verify setup.",
+            "profile_mfa_qr_unavailable": "Authenticator setup started, but QR setup is unavailable.",
+            "profile_mfa_email_sent": "Email MFA code sent. Check your email, then enter the code.",
+            "profile_mfa_email_switched": "MFA method switched to Email. Use Verify to send and validate an email code.",
+            "profile_mfa_verified": "MFA code verified.",
+            "profile_mfa_disabled": "MFA disabled.",
+            "profile_mfa_updated": "MFA updated.",
+            "profile_mfa_update_failed": "MFA update failed.",
+            "profile_mfa_email_prompt": "Email MFA code sent. Enter the code:",
+            "profile_mfa_email_cancelled": "Email MFA verification cancelled.",
+            "profile_mfa_authenticator_prompt": "Enter your authenticator code:",
+            "profile_mfa_enter_code": "Enter the MFA code first.",
+        }
+        if not self._strings_path:
+            return defaults
+        try:
+            data = tomllib.loads(self._strings_path.read_text(encoding="utf-8"))
+            node = data.get("public_web", {}).get("ui", {})
+        except Exception:
+            LOG.warning("public web ui strings load failed for %s", self._strings_path, exc_info=True)
+            return defaults
+        if not isinstance(node, dict):
+            return defaults
+        out = dict(defaults)
+        for key in defaults:
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                out[key] = value
+        return out
 
     async def start(self) -> None:
         if not self.config.public_web.enabled:
@@ -685,6 +724,10 @@ class PublicWebServer:
         blocked_login = False
         target_row = await self.store.get_user_registry(target)
         target_exists = target_row is not None
+        for candidate in ((target,) if target_exists else (target, base)):
+            node_family = str(await self.store.get_user_pref(candidate, "node_family") or "").strip().lower()
+            if node_family in CLUSTER_NODE_FAMILIES:
+                return "", False
         for candidate in (target, base):
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
@@ -704,7 +747,7 @@ class PublicWebServer:
         return privilege, blocked_login
 
     async def _access_snapshot(self, call: str, channel: str) -> dict[str, bool]:
-        caps = ["login", "spots", "chat", "announce", "wx", "wcy", "wwv"]
+        caps = ["login", "spots", "rbn", "chat", "announce", "wx", "wcy", "wwv"]
         out: dict[str, bool] = {}
         for cap in caps:
             out[cap] = await self._access_allowed(call, channel, cap)
@@ -715,6 +758,10 @@ class PublicWebServer:
         base = target.split("-", 1)[0]
         target_exists = await self.store.get_user_registry(target) is not None
         candidates = (target,) if target_exists else (target, base)
+        for candidate in candidates:
+            node_family = str(await self.store.get_user_pref(candidate, "node_family") or "").strip().lower()
+            if node_family in CLUSTER_NODE_FAMILIES:
+                return True
         for candidate in candidates:
             raw = await self.store.get_user_pref(candidate, self._access_pref_key(channel, capability))
             if raw is None or str(raw).strip() == "":
@@ -979,10 +1026,54 @@ class PublicWebServer:
             "name": str(row.get("display_name") or "").strip(),
             "qth": str(row.get("qth") or "").strip(),
             "qra": str(row.get("qra") or "").strip().upper(),
+            "email": str(row.get("email") or "").strip(),
             "homenode": str(await self.store.get_user_pref(call, "homenode") or "").strip().upper(),
             "mfa": await self._mfa_snapshot(call),
             "watch_seed": await self._watch_seed_for_call(call),
         }
+
+    def _sanitize_named_presets(self, value: object, *, max_items: int = 40) -> list[dict[str, object]]:
+        if not isinstance(value, list):
+            return []
+        out: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()[:40]
+            if not name or name.lower() in seen:
+                continue
+            clean = dict(item)
+            clean["name"] = name
+            out.append(clean)
+            seen.add(name.lower())
+            if len(out) >= max_items:
+                break
+        return out
+
+    async def _public_presets_snapshot(self, call: str) -> dict[str, object]:
+        raw = await self.store.get_user_pref(call, "public.presets")
+        data: object = {}
+        if raw:
+            try:
+                data = json.loads(raw)
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        return {
+            "watch_profiles": self._sanitize_named_presets(data.get("watch_profiles")),
+            "filter_presets": self._sanitize_named_presets(data.get("filter_presets")),
+        }
+
+    async def _save_public_presets(self, call: str, payload: dict[str, object]) -> dict[str, object]:
+        current = await self._public_presets_snapshot(call)
+        if "watch_profiles" in payload:
+            current["watch_profiles"] = self._sanitize_named_presets(payload.get("watch_profiles"))
+        if "filter_presets" in payload:
+            current["filter_presets"] = self._sanitize_named_presets(payload.get("filter_presets"))
+        await self.store.set_user_pref(call, "public.presets", json.dumps(current, separators=(",", ":")), int(time.time()))
+        return current
 
     def _spot_payload_matches_expr(self, spot: dict[str, object], expr: str) -> bool:
         text = str(expr or "").strip()
@@ -1582,12 +1673,6 @@ class PublicWebServer:
                     self._log_auth_failure(writer, headers, "public-web", call, "valid_email_required")
                     await self._write_response(writer, 403, self._json({"error": "valid email required"}))
                     return
-                if self.config.node.verified_email_required_for_web:
-                    state, verified_epoch, _remaining = await registration_state(self.store, call)
-                    if verified_epoch <= 0 or state != "verified":
-                        self._log_auth_failure(writer, headers, "public-web", call, "email_verification_required")
-                        await self._write_response(writer, 403, self._json({"error": "email verification required"}))
-                        return
                 expected = await self.store.get_user_pref(call, "password")
                 if expected is None or not str(expected).strip():
                     self._log_auth_failure(writer, headers, "public-web", call, "password_setup_required")
@@ -1600,12 +1685,23 @@ class PublicWebServer:
                 if not is_password_hash(str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
                 is_sysop = str(reg["privilege"] or "").strip().lower() in {"sysop", "admin"} if reg is not None else False
-                if await self._mfa_required_for_call(call, is_sysop=is_sysop):
+                email_verification_required = False
+                if self.config.node.verified_email_required_for_web:
+                    state, verified_epoch, _remaining = await registration_state(self.store, call)
+                    email_verification_required = verified_epoch <= 0 or state != "verified"
+                mfa_required = await self._mfa_required_for_call(call, is_sysop=is_sysop)
+                if email_verification_required and not mfa_required:
+                    self._log_auth_failure(writer, headers, "public-web", call, "email_verification_required")
+                    await self._write_response(writer, 403, self._json({"error": "email verification required"}))
+                    return
+                email_mfa_verified = False
+                if mfa_required:
                     challenge_id = str(payload.get("challenge_id", "")).strip()
                     otp = str(payload.get("otp", "")).strip()
                     totp_secret = await self._totp_secret_for_call(call)
                     if totp_secret:
                         if not otp:
+                            LOG.info("public web mfa required call=%s method=totp", call)
                             await self._write_response(writer, 202, self._json({"ok": False, "mfa_required": True, "mfa_method": "totp"}))
                             return
                         if not verify_totp(totp_secret, otp):
@@ -1628,6 +1724,7 @@ class PublicWebServer:
                                 LOG.exception("public web mfa delivery failed call=%s", call)
                                 await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
                                 return
+                            LOG.info("public web mfa required call=%s method=email", call)
                             await self._write_response(
                                 writer,
                                 202,
@@ -1639,6 +1736,14 @@ class PublicWebServer:
                             self._log_auth_failure(writer, headers, "public-web", call, "mfa_" + reason.replace(" ", "_"))
                             await self._write_response(writer, 401, self._json({"error": reason}))
                             return
+                        email_mfa_verified = True
+                if email_verification_required:
+                    if email_mfa_verified:
+                        await mark_email_verified(self.store, call, now_epoch=int(time.time()))
+                    else:
+                        self._log_auth_failure(writer, headers, "public-web", call, "email_verification_required")
+                        await self._write_response(writer, 403, self._json({"error": "email verification required"}))
+                        return
                 await self.store.record_login(
                     call,
                     int(time.time()),
@@ -1724,22 +1829,20 @@ class PublicWebServer:
                 name = str(payload.get("name", "")).strip()[:80]
                 qth = str(payload.get("qth", "")).strip()[:80]
                 qra = str(payload.get("qra", "")).strip().upper()[:16]
+                email = str(payload.get("email", "")).strip()[:120]
+                if email and not has_valid_email(email):
+                    await self._write_response(writer, 400, self._json({"error": "valid email required"}))
+                    return
                 homenode = normalize_call(str(payload.get("homenode", "")).strip())[:16]
                 now = int(time.time())
-                if qth:
-                    coords = resolve_location_to_coords(qth)
-                    if coords is not None:
-                        qra = coords_to_locator(*coords)
-                elif qra:
-                    qra = extract_locator(qra)
-                    if qra:
-                        qth = estimate_location_from_locator(qra).strip()[:80]
+                qra = extract_locator(qra)[:16] if qra else ""
                 await self.store.upsert_user_registry(
                     call,
                     now,
                     display_name=name,
                     qth=qth,
                     qra=qra,
+                    email=email,
                 )
                 if homenode:
                     await self.store.set_user_pref(call, "homenode", homenode, now)
@@ -1773,6 +1876,10 @@ class PublicWebServer:
                         await self._write_response(writer, 400, self._json({"error": "valid email required"}))
                         return
                     await self.store.set_user_pref(base_call, "mfa_email_otp", "required", now)
+                    await self.store.delete_user_pref(base_call, "mfa_totp_secret")
+                    await self.store.delete_user_pref(base_call, "mfa_totp_pending_secret")
+                    await self.store.delete_user_pref(base_call, "mfa_totp_verified_epoch")
+                    await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
                     self._audit("user", f"{call} enabled email MFA")
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "mfa": await self._mfa_snapshot(call)}))
                     return
@@ -1784,14 +1891,57 @@ class PublicWebServer:
                 if action in {"off", "reset", "disable"}:
                     await self.store.set_user_pref(base_call, "mfa_email_otp", "off", now)
                     await self.store.delete_user_pref(base_call, "mfa_totp_secret")
+                    await self.store.delete_user_pref(base_call, "mfa_totp_pending_secret")
+                    await self.store.delete_user_pref(base_call, "mfa_totp_verified_epoch")
                     cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
                     self._audit("user", f"{call} disabled MFA challenges={cleared}")
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "challenges_cleared": cleared, "mfa": await self._mfa_snapshot(call)}))
                     return
+                if action in {"verify", "confirm"}:
+                    otp = str(payload.get("otp") or payload.get("code") or "").strip()
+                    pending_secret = str(await self.store.get_user_pref(base_call, "mfa_totp_pending_secret") or "").strip()
+                    if not pending_secret:
+                        email_required = str(await self.store.get_user_pref(base_call, "mfa_email_otp") or "").strip().lower() == "required"
+                        if not email_required:
+                            await self._write_response(writer, 400, self._json({"error": "authenticator setup not pending"}))
+                            return
+                        email = await self._email_for_call(base_call)
+                        if not has_valid_email(email):
+                            await self._write_response(writer, 400, self._json({"error": "valid email required"}))
+                            return
+                        challenge_id = str(payload.get("challenge_id") or "").strip()
+                        if not challenge_id or not otp:
+                            try:
+                                challenge_id, expires_epoch = await self._mfa.issue(call=base_call, email=email, purpose="public-web-mfa-verify")
+                            except Exception:
+                                LOG.exception("public web email mfa verification delivery failed call=%s", call)
+                                await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
+                                return
+                            self._audit("user", f"{call} requested email MFA verification")
+                            await self._write_response(writer, 200, self._json({"ok": True, "call": call, "email_sent": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch, "mfa": await self._mfa_snapshot(call)}))
+                            return
+                        ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=base_call, purpose="public-web-mfa-verify", otp=otp)
+                        if not ok:
+                            await self._write_response(writer, 400, self._json({"error": reason}))
+                            return
+                        await mark_email_verified(self.store, base_call, now_epoch=now)
+                        self._audit("user", f"{call} verified email MFA")
+                        await self._write_response(writer, 200, self._json({"ok": True, "call": call, "verified": True, "mfa": await self._mfa_snapshot(call)}))
+                        return
+                    if not verify_totp(pending_secret, otp):
+                        await self._write_response(writer, 400, self._json({"error": "invalid authenticator code"}))
+                        return
+                    await self.store.set_user_pref(base_call, "mfa_totp_secret", pending_secret, now)
+                    await self.store.set_user_pref(base_call, "mfa_totp_verified_epoch", str(now), now)
+                    await self.store.delete_user_pref(base_call, "mfa_email_otp")
+                    await self.store.delete_user_pref(base_call, "mfa_totp_pending_secret")
+                    cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                    self._audit("user", f"{call} verified authenticator MFA challenges={cleared}")
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "verified": True, "challenges_cleared": cleared, "mfa": await self._mfa_snapshot(call)}))
+                    return
                 if action in {"totp", "authenticator"}:
                     secret = generate_totp_secret()
-                    await self.store.set_user_pref(base_call, "mfa_totp_secret", secret, now)
-                    await self.store.set_user_pref(base_call, "mfa_email_otp", "required", now)
+                    await self.store.set_user_pref(base_call, "mfa_totp_pending_secret", secret, now)
                     cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
                     uri = totp_otpauth_uri(
                         issuer=self.config.mfa.issuer.strip() or self.config.node.node_call,
@@ -1799,6 +1949,10 @@ class PublicWebServer:
                         secret=secret,
                     )
                     self._audit("user", f"{call} enrolled authenticator MFA challenges={cleared}")
+                    try:
+                        qr = qr_svg(uri)
+                    except ValueError:
+                        qr = ""
                     await self._write_response(
                         writer,
                         200,
@@ -1806,8 +1960,8 @@ class PublicWebServer:
                             {
                                 "ok": True,
                                 "call": call,
-                                "secret": secret,
                                 "otpauth_uri": uri,
+                                "qr_svg": qr,
                                 "challenges_cleared": cleared,
                                 "mfa": await self._mfa_snapshot(call),
                             }
@@ -1815,6 +1969,22 @@ class PublicWebServer:
                     )
                     return
                 await self._write_response(writer, 400, self._json({"error": "invalid mfa action"}))
+                return
+            if path == "/api/presets":
+                call = self._web_call_from_headers(headers)
+                if not call:
+                    await self._write_response(writer, 401, self._json({"error": "web login required"}))
+                    return
+                if method == "GET":
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, **await self._public_presets_snapshot(call)}))
+                    return
+                if method == "POST":
+                    payload = self._parse_json_body(body)
+                    presets = await self._save_public_presets(call, payload)
+                    self._audit("user", f"{call} updated public web presets")
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, **presets}))
+                    return
+                await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                 return
             if path == "/api/filters/spots":
                 call = self._web_call_from_headers(headers)

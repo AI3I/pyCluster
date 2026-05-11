@@ -342,6 +342,7 @@ def test_public_web_branding_uses_node_settings(tmp_path) -> None:
             assert data["footer_secondary"].startswith("Western Pennsylvania • FN00FS")
             assert data["software_version"] == f"pyCluster {__version__}"
             assert "Western Pennsylvania" in data["page_title"]
+            assert data["ui_strings"]["profile_mfa_email_sent"] == "Email MFA code sent. Check your email, then enter the code."
         finally:
             await store.close()
 
@@ -398,8 +399,77 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "#toast-wrap { left:12px; right:12px; bottom:calc(env(safe-area-inset-bottom, 0px) + 148px);" in text
     assert ".toast { max-width:none; }" in text
     assert ".footer-controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));" in text
+    assert '<span class="footer-control-label">Popups</span>' in text
+    assert '<span class="footer-control-label">Sidebar</span>' in text
+    assert "Hide Popups" not in text and "Show Popups" not in text
+    assert "Hide Sidebar" not in text and "Show Sidebar" not in text
+    assert "btn.className = sidebarHidden ? 'off' : 'on';" in text
     assert "@media (max-width:420px)" in text
     assert ".profile-modal-actions { display:grid; grid-template-columns:1fr; }" in text
+    assert ".profile-modal-actions { flex-wrap:wrap; }" in text
+    assert "class=\"profile-save-icon\" id=\"profile-save\"" in text
+    assert 'id="profile-cancel"' not in text
+    assert 'id="profile-email"' in text
+    assert "cdn.jsdelivr.net/npm/qrcode" not in text
+    assert 'id="profile-mfa-qr"' in text
+    assert ">Use TOTP</button>" in text
+    assert ">Disable</button>" in text
+    assert "uiText('profile_mfa_email_switched'" in text
+    assert "uiText('profile_mfa_email_sent'" in text
+    assert "MFA method switched to Email. Use Verify to send and validate an email code." not in text
+    assert "Email MFA code sent. Check your email, then enter the code." not in text
+    assert 'id="profile-mfa-authenticator" type="button" data-action="authenticator">Use TOTP</button>' in text
+    assert 'id="profile-mfa-off"' not in text
+    assert "method.textContent = usingTotp ? 'Use Email' : 'Use TOTP';" in text
+    assert "method.dataset.action = usingTotp ? 'email' : 'authenticator';" in text
+    assert "document.getElementById('profile-mfa-email').addEventListener('click', () => updateProfileMfa('off'));" in text
+    assert ">Verify</button>" in text
+    assert "Enable/Setup MFA" not in text
+    assert ">Enable/Setup</button>" not in text
+    assert "MFA Settings" in text
+    assert 'class="primary" type="button">Enable/Setup MFA' not in text
+    assert 'id="profile-mfa-code"' in text
+    assert 'id="profile-mfa-test"' in text
+    assert "async function verifyProfileMfa()" in text
+    assert "updateProfileMfa('verify', {challenge_id: sent.challenge_id, otp: String(otp).trim()})" in text
+    assert 'id="profile-mfa-default"' not in text
+    assert "window.QRCode.toCanvas" not in text
+    assert "body.qr_svg" in text
+    assert "Authenticator setup key:" not in text
+    assert "Capabilities</div>" in text
+    assert "Greyed-out actions are disabled by local node policy" not in text
+    assert "['RBN', rbnAllowed]" in text
+    assert "Capabilities: ${allowed.join(', ')}" not in text
+    assert "Posting tools ready." in text
+    assert "Logged in as ${webCall}${allowed.length" not in text
+    assert ".operate-cap.on" in text and "rgba(34,197,94,.12)" in text
+    assert ".operate-cap {" in text and "rgba(248,81,73,.10)" in text
+    assert "#footer-edit-profile" in text and "rgba(34,197,94,.12)" in text
+    assert "#footer-logout" in text and "rgba(248,81,73,.10)" in text
+    assert "html.light .watch-type option" in text
+    assert "const PROFILE_PRESETS = '/api/presets';" in text
+    assert "async function loadAccountPresets()" in text
+    assert "const authOptional = !!opts.authOptional;" in text
+    assert "res.status === 401 && webToken && !authOptional" in text
+    assert "webJson(PROFILE_PRESETS, {authOptional:true})" in text
+    assert 'id="login-otp-row"' in text
+    assert "pendingWebLogin" in text
+    assert "body && body.mfa_required" in text
+    assert "uiText('login_mfa_authenticator')" in text
+    assert "uiText('login_mfa_email')" in text
+    assert "uiText('login_mfa_enter_code')" in text
+    assert "Enter the code from your authenticator app." not in text
+    assert "Enter the code sent to your email." not in text
+    assert "Email Code" not in text
+    assert "Authenticator Code" not in text
+    assert "watch_profiles: watchProfiles" in text
+    assert "filter_presets: filterPresets" in text
+    assert "'Crete':'GR'" in text
+    assert "'Montserrat':'MS'" in text
+    assert "'Guantanamo Bay':'US'" in text
+    assert "'Reunion Island':'RE'" in text
+    assert "'Swains Island':'AS'" in text
+    assert "'Peter 1 Island':'AQ'" in text
 
 
 def test_public_dxweb_auth_locked_sidebar_tabs_stay_visible() -> None:
@@ -531,6 +601,7 @@ def test_public_web_login_can_use_totp_authenticator(tmp_path) -> None:
             await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
             await store.set_user_pref("AI3I", "password", "secret", now)
             await store.set_user_pref("AI3I", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+            await store.set_user_pref("AI3I", "mfa_email_otp", "required", now)
             await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
 
             code, _, body = await _http_request_ex(
@@ -544,6 +615,7 @@ def test_public_web_login_can_use_totp_authenticator(tmp_path) -> None:
             payload = json.loads(body.decode("utf-8"))
             assert payload["mfa_required"] is True
             assert payload["mfa_method"] == "totp"
+            assert "challenge_id" not in payload
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -570,6 +642,7 @@ def test_public_web_login_honors_per_user_mfa_override(tmp_path) -> None:
         cfg.smtp.from_addr = "cluster@example.test"
         cfg.mfa.enabled = True
         cfg.mfa.require_for_users = False
+        cfg.node.verified_email_required_for_web = True
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
         sent: list[tuple[str, str, str]] = []
@@ -579,7 +652,6 @@ def test_public_web_login_honors_per_user_mfa_override(tmp_path) -> None:
             await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
             await store.set_user_pref("AI3I", "password", "secret", now)
             await store.set_user_pref("AI3I", "mfa_email_otp", "required", now)
-            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -591,7 +663,26 @@ def test_public_web_login_honors_per_user_mfa_override(tmp_path) -> None:
             assert code == 202
             payload = json.loads(body.decode("utf-8"))
             assert payload["mfa_required"] is True
+            assert payload["mfa_method"] == "email"
             assert sent and sent[0][0] == "ai3i@example.test"
+            challenge = next(iter(srv._mfa._challenges.values()))
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps(
+                    {
+                        "call": "AI3I",
+                        "password": "secret",
+                        "challenge_id": payload["challenge_id"],
+                        "otp": challenge.code,
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert code == 200
+            assert await store.get_user_pref("AI3I", "email_verified_epoch") is not None
 
             await store.set_user_pref("AI3I", "mfa_email_otp", "off", now)
             code, _, body = await _http_request_ex(
@@ -874,7 +965,36 @@ def test_public_web_auth_and_posting(tmp_path) -> None:
             me = json.loads(body.decode("utf-8"))
             assert me["call"] == "AI3I"
             assert me["access"]["chat"] is True
+            assert me["profile"]["email"] == "ai3i@example.test"
             assert me["profile"]["mfa"]["enabled"] is False
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile",
+                json.dumps({"name": "John", "qth": "Western Pennsylvania", "qra": "FN00FS", "email": "new@example.test"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            profile = json.loads(body.decode("utf-8"))["profile"]
+            assert profile["email"] == "new@example.test"
+            assert profile["qth"] == "Western Pennsylvania"
+            assert profile["qra"] == "FN00FS"
+            row = await store.get_user_registry("AI3I")
+            assert row is not None
+            assert row["email"] == "new@example.test"
+            assert row["qth"] == "Western Pennsylvania"
+            assert row["qra"] == "FN00FS"
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile",
+                json.dumps({"email": "not-an-email"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 400
+            assert json.loads(body.decode("utf-8"))["error"] == "valid email required"
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -919,6 +1039,69 @@ def test_public_web_auth_and_posting(tmp_path) -> None:
             assert code == 403
             assert "WCY posting is not available from the public web" in body.decode("utf-8")
             assert await store.list_bulletins("wcy", limit=1) == []
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_user_presets_are_stored_per_call(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_user_presets.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, _ = await _http_request_ex(srv, "GET", "/api/presets")
+            assert code == 401
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            token = json.loads(body.decode("utf-8"))["token"]
+
+            payload = {
+                "watch_profiles": [
+                    {"name": "DX Watch", "rules": [{"type": "call", "value": "CY0S", "sound": True, "toast": True}]}
+                ],
+                "filter_presets": [
+                    {"name": "Digital NA", "band": "20m", "mode": "FT8", "commentTagFilter": "ALL"}
+                ],
+            }
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/presets",
+                json.dumps(payload).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["watch_profiles"][0]["name"] == "DX Watch"
+            assert data["filter_presets"][0]["name"] == "Digital NA"
+
+            raw = await store.get_user_pref("AI3I", "public.presets")
+            assert raw is not None
+            assert json.loads(raw)["watch_profiles"][0]["rules"][0]["value"] == "CY0S"
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "GET",
+                "/api/presets",
+                headers={"X-Web-Token": token},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["filter_presets"][0]["mode"] == "FT8"
         finally:
             await store.close()
 
@@ -994,12 +1177,16 @@ def test_public_web_user_can_manage_own_mfa(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_user_mfa_self_service.db")
         cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
         await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
         await store.set_user_pref("AI3I", "password", "secret", now)
         await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+        sent: list[tuple[str, str, str]] = []
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
         try:
             code, _, body = await _http_request_ex(
                 srv,
@@ -1028,15 +1215,67 @@ def test_public_web_user_can_manage_own_mfa(tmp_path) -> None:
                 srv,
                 "POST",
                 "/api/profile/mfa",
+                json.dumps({"action": "verify"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["email_sent"] is True
+            assert data["challenge_id"]
+            assert sent and sent[-1][0] == "ai3i@example.test"
+            challenge = await store.get_mfa_challenge(data["challenge_id"])
+            assert challenge is not None
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
+                json.dumps({"action": "verify", "challenge_id": data["challenge_id"], "otp": str(challenge["code"])}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["verified"] is True
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
                 json.dumps({"action": "authenticator"}).encode("utf-8"),
                 {"Content-Type": "application/json", "X-Web-Token": token},
             )
             assert code == 200
             data = json.loads(body.decode("utf-8"))
-            assert data["secret"]
             assert data["otpauth_uri"].startswith("otpauth://totp/")
+            assert data["qr_svg"].startswith("<svg ")
+            assert data["mfa"]["totp_enabled"] is False
+            pending_secret = await store.get_user_pref("AI3I", "mfa_totp_pending_secret")
+            assert pending_secret
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") is None
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
+                json.dumps({"action": "verify", "otp": "000000"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 400
+            assert json.loads(body.decode("utf-8"))["error"] == "invalid authenticator code"
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
+                json.dumps({"action": "verify", "otp": totp_code(pending_secret)}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["verified"] is True
             assert data["mfa"]["totp_enabled"] is True
-            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == data["secret"]
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == pending_secret
+            assert await store.get_user_pref("AI3I", "mfa_totp_pending_secret") is None
+            assert await store.get_user_pref("AI3I", "mfa_email_otp") is None
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -1198,9 +1437,9 @@ def test_public_web_login_requires_registration_and_valid_email(tmp_path) -> Non
                 {"Content-Type": "application/json"},
             )
             assert code == 403
-            assert json.loads(body.decode("utf-8"))["error"] == "email verification required"
+            assert json.loads(body.decode("utf-8"))["error"] == "password setup required"
 
-            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+            await store.set_user_pref("AI3I", "password", "secret", now)
             code, _, body = await _http_request_ex(
                 srv,
                 "POST",
@@ -1209,9 +1448,9 @@ def test_public_web_login_requires_registration_and_valid_email(tmp_path) -> Non
                 {"Content-Type": "application/json"},
             )
             assert code == 403
-            assert json.loads(body.decode("utf-8"))["error"] == "password setup required"
+            assert json.loads(body.decode("utf-8"))["error"] == "email verification required"
 
-            await store.set_user_pref("AI3I", "password", "secret", now)
+            await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
             code, _, body = await _http_request_ex(
                 srv,
                 "POST",
@@ -1355,6 +1594,26 @@ def test_public_web_explicit_ssid_user_does_not_inherit_base_call_access(tmp_pat
         try:
             assert await srv._access_allowed("AI3I", "web", "spots") is True
             assert await srv._access_allowed("AI3I-1", "web", "spots") is False
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_cluster_peer_access_is_always_allowed(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_cluster_access.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-15", now, privilege="")
+        await store.set_user_pref("AI3I-15", "node_family", "pycluster", now)
+        await store.set_user_pref("AI3I-15", "blocked_login", "on", now)
+        await store.set_user_pref("AI3I-15", "access.web.spots", "off", now)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            assert await srv._access_allowed("AI3I-15", "web", "login") is True
+            assert await srv._access_allowed("AI3I-15", "web", "spots") is True
         finally:
             await store.close()
 

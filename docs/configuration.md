@@ -48,7 +48,7 @@ Telnet listener settings.
 Important fields:
 
 - `host`
-- `port`
+- `port` - commonly `587` for Submission/STARTTLS, `465` for implicit TLS/SMTPS, or `25` for a plain local relay
 - `ports`
 - `feeds`
 - `max_clients`
@@ -100,7 +100,7 @@ Important field:
 
 ### `[smtp]`
 
-Node-wide email delivery settings used for SMTP-backed MFA.
+Node-wide email delivery settings used for SMTP-backed verification and email MFA.
 
 Important fields:
 
@@ -111,12 +111,12 @@ Important fields:
 - `from_addr`
 - `from_name`
 - `starttls`
-- `use_ssl`
+- `use_ssl` - enable this for implicit TLS/SMTPS, typically port `465`
 - `timeout_seconds`
 
 ### `[mfa]`
 
-Node-wide email OTP policy.
+Node-wide MFA policy. Authenticator-app/TOTP challenges use per-user secrets. Email OTP challenges use the `[smtp]` settings and require a valid user email address.
 
 Important fields:
 
@@ -167,7 +167,7 @@ Notes:
 - The public Reverse Beacon Network relays are `telnet.reversebeacon.net:7000` for CW/RTTY spots and `telnet.reversebeacon.net:7001` for FT8 spots.
 - The public RBN relays are high-throughput raw feeds and do not provide cluster-side filtering; use pyCluster filters and user preferences after ingestion.
 - RBN feed spots are stored as normal spots with `source_node` set from this section
-- users still control display with `set/rbn`, `unset/rbn`, `accept/rbn`, `reject/rbn`, and `show/rbn`
+- users and cluster-peer records still control RBN access through the access matrix, `set/rbn`, `unset/rbn`, `accept/rbn`, `reject/rbn`, and `show/rbn`
 - use `config/pycluster.local.toml` for host-specific feed credentials
 
 ## Example Paths

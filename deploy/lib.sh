@@ -313,6 +313,13 @@ ensure_selinux_contexts() {
   fi
 }
 
+remove_legacy_cty_refresh_units() {
+  systemctl disable --now "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+  rm -f \
+    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_LEGACY_CTY_REFRESH_SERVICE_NAME" \
+    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME"
+}
+
 sync_tree() {
   local root
   root="$(repo_root)"
@@ -427,6 +434,7 @@ install_or_refresh_service() {
   install -o root -g root -m 0644 \
     "$root/deploy/systemd/pycluster-upgrade.path" \
     "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_PATH_NAME"
+  remove_legacy_cty_refresh_units
   systemctl daemon-reload
 }
 
@@ -480,7 +488,6 @@ restart_web_service_hard() {
 enable_service() {
   systemctl enable "$PYCLUSTER_SERVICE_NAME" >/dev/null
   systemctl enable "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null
-  systemctl disable --now "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl enable --now "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null

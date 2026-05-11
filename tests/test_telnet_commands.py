@@ -1772,7 +1772,7 @@ def test_publish_spot_applies_accept_and_reject_filters(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_show_dx_applies_spot_filters(tmp_path) -> None:
+def test_show_dx_ignores_spot_filters_and_show_mydx_applies_them(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "spot_filter_show.db")
         cfg = _mk_config(db)
@@ -1787,6 +1787,10 @@ def test_show_dx_applies_spot_filters(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "show/dx 20")
             assert "W1AW" in out
+            assert "K3LR" in out
+
+            _, out = await srv._execute_command("N0CALL", "show/mydx 20")
+            assert "W1AW" in out
             assert "K3LR" not in out
         finally:
             await store.close()
@@ -1794,7 +1798,7 @@ def test_show_dx_applies_spot_filters(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_show_dx_filtering_fills_requested_count_from_deeper_history(tmp_path) -> None:
+def test_show_mydx_filtering_fills_requested_count_from_deeper_history(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "spot_filter_show_limit.db")
         cfg = _mk_config(db)
@@ -1809,7 +1813,7 @@ def test_show_dx_filtering_fills_requested_count_from_deeper_history(tmp_path) -
             await store.add_spot(Spot(14326.8, "W0MES", now - 2, "IA", "WA2MCR", "N2WQ-1", ""))
             await srv._execute_command("N0CALL", "accept/spots 1 on 20m")
 
-            _, out = await srv._execute_command("N0CALL", "show/dx 2")
+            _, out = await srv._execute_command("N0CALL", "show/mydx 2")
             assert "W1AW" in out
             assert "W0MES" in out
             assert "K3L" not in out
@@ -5206,6 +5210,28 @@ def test_explicit_ssid_user_does_not_inherit_base_call_access(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_cluster_peer_access_is_always_allowed(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "cluster_peer_access.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I-15", now, privilege="")
+            await store.set_user_pref("AI3I-15", "node_family", "pycluster", now)
+            await store.set_user_pref("AI3I-15", "blocked_login", "on", now)
+            await store.set_user_pref("AI3I-15", "access.telnet.spots", "off", now)
+
+            assert await srv._access_allowed("AI3I-15", "telnet", "login") is True
+            assert await srv._access_allowed("AI3I-15", "telnet", "spots") is True
+            assert await srv._access_subject("AI3I-15") == ("", False)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_sysop_path_reports_user_and_peer_paths(tmp_path) -> None:
     async def _stats():
         return {
@@ -6236,11 +6262,11 @@ def test_telnet_password_prompt_stays_clean_for_raw_tcp_clients(tmp_path) -> Non
             await w1.drain()
             pw = await asyncio.wait_for(r1.readuntil(b"password: "), timeout=2.0)
             assert b"password:" in pw
-            assert b"\xff" not in pw
+            assert b"\xff\xfb\x01" in pw
             w1.write(b"pw1\r\n")
             await w1.drain()
             hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
-            assert b"\xff" not in hello
+            assert b"pw1" not in hello
             assert b"Welcome" in hello
             w1.close()
             await w1.wait_closed()
@@ -6318,15 +6344,17 @@ def test_telnet_password_echo_negotiation_is_initiated_by_server(tmp_path) -> No
         reader = asyncio.StreamReader()
         writer = _BufWriter()
         try:
-            # No IAC from client yet — server should not send echo negotiation
+            # Initiate echo suppression even before the client advertises
+            # telnet options; several telnet clients do not negotiate early.
             await srv._set_telnet_password_echo(reader, writer, suppress=True)  # type: ignore[arg-type]
-            assert bytes(writer.buf) == b""
+            assert bytes(writer.buf) == b"\xff\xfb\x01\xff\xfb\x03\xff\xfd\x03"
+            writer.buf.clear()
 
             # Client sends IAC DO ECHO — marks connection as telnet
             reader.feed_data(b"\xff\xfd\x01")
             assert await srv._read_telnet_byte(reader, 0) == b""
 
-            # Now echo negotiation is sent
+            # Repeated toggles still produce the explicit suppression/restore sequence.
             await srv._set_telnet_password_echo(reader, writer, suppress=True)  # type: ignore[arg-type]
             await srv._set_telnet_password_echo(reader, writer, suppress=False)  # type: ignore[arg-type]
             assert bytes(writer.buf) == (
@@ -6412,6 +6440,7 @@ def test_telnet_login_can_use_totp_authenticator(tmp_path) -> None:
         await store.upsert_user_registry("N0CALL", now, privilege="user", email="")
         await store.set_user_pref("N0CALL", "password", "pw1", now)
         await store.set_user_pref("N0CALL", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+        await store.set_user_pref("N0CALL", "mfa_email_otp", "required", now)
         try:
             await srv.start()
         except OSError:
