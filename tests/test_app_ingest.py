@@ -472,7 +472,9 @@ def test_ingest_pc11_adds_spot(tmp_path) -> None:
 def test_ingest_pc61_accepts_rbn_skimmer_spotter(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_pc61_rbn_skimmer.db")
-        app = ClusterApp(_mk_config(db))
+        cfg = _mk_config(db)
+        cfg.rbn.enabled = True
+        app = ClusterApp(cfg)
         try:
             msg = Pc61Message.from_fields(
                 ["7007.0", "N9JR", "6-May-2026", "0052Z", "CW 39dB Q:2 Z:4", "KO4BHX-#", "N9JR-2", "127.0.0.1", "H1", "~"]
@@ -484,6 +486,54 @@ def test_ingest_pc61_accepts_rbn_skimmer_spotter(tmp_path) -> None:
             assert rows[0]["dx_call"] == "N9JR"
             assert rows[0]["spotter"] == "KO4BHX-#"
             assert rows[0]["info"] == "CW 39dB Q:2 Z:4"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc61_drops_rbn_spots_when_peer_rbn_access_disabled(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc61_rbn_access.db")
+        cfg = _mk_config(db)
+        cfg.rbn.enabled = True
+        app = ClusterApp(cfg)
+        try:
+            app.node_link._peers["PEER1"] = LinkPeer(name="PEER1", conn=_DummyConn(), inbound=False)
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref("PEER1", "access.telnet.rbn", "off", now)
+            rbn_msg = Pc61Message.from_fields(
+                ["7007.0", "N9JR", "6-May-2026", "0052Z", "CW 39dB Q:2 Z:4", "KO4BHX-#", "N9JR-2", "127.0.0.1", "H1", "~"]
+            )
+            await app._handle_node_link_item("PEER1", WirePcFrame("PC61", rbn_msg.to_fields()), rbn_msg)
+            stats = await app.node_link.stats()
+            assert await app.store.count_spots() == 0
+            assert stats["PEER1"]["policy_reasons"]["ingest_rbn_disabled"] == 1
+
+            await app.store.set_user_pref("PEER1", "access.telnet.rbn", "on", now)
+            await app._handle_node_link_item("PEER1", WirePcFrame("PC61", rbn_msg.to_fields()), rbn_msg)
+            assert await app.store.count_spots() == 1
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc61_drops_rbn_spots_when_global_rbn_disabled(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc61_global_rbn_disabled.db")
+        cfg = _mk_config(db)
+        cfg.rbn.enabled = False
+        app = ClusterApp(cfg)
+        try:
+            app.node_link._peers["PEER1"] = LinkPeer(name="PEER1", conn=_DummyConn(), inbound=False)
+            rbn_msg = Pc61Message.from_fields(
+                ["7007.0", "N9JR", "6-May-2026", "0052Z", "CW 39dB Q:2 Z:4", "KO4BHX-#", "N9JR-2", "127.0.0.1", "H1", "~"]
+            )
+            await app._handle_node_link_item("PEER1", WirePcFrame("PC61", rbn_msg.to_fields()), rbn_msg)
+            stats = await app.node_link.stats()
+            assert await app.store.count_spots() == 0
+            assert stats["PEER1"]["policy_reasons"]["ingest_rbn_disabled"] == 1
         finally:
             await app.store.close()
 

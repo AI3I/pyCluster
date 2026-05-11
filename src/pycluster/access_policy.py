@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 ACCESS_CHANNELS: tuple[str, ...] = ("telnet", "web")
-ACCESS_CAPABILITIES: tuple[str, ...] = ("login", "spots", "chat", "announce", "wx", "wcy", "wwv")
+ACCESS_CAPABILITIES: tuple[str, ...] = ("login", "spots", "rbn", "chat", "announce", "wx", "wcy", "wwv")
+CLUSTER_NODE_FAMILIES: frozenset[str] = frozenset({"pycluster", "dxspider", "dxnet", "arcluster", "clx"})
 
 _NON_AUTH_DEFAULTS: dict[str, bool] = {
     "login": True,
     "spots": False,
+    "rbn": False,
     "chat": True,
     "announce": False,
     "wx": True,

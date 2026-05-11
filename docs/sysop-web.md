@@ -95,16 +95,17 @@ This view controls local node identity and welcome-flow presentation.
 
 Per-user MFA actions:
 
-- `Enroll Authenticator` creates a Google Authenticator-compatible TOTP secret for the selected principal callsign and displays the manual setup key.
-- `Reset MFA` disables the per-user MFA override, clears outstanding email OTP challenges, and removes any authenticator secret.
+- `Enroll Authenticator` creates a Google Authenticator-compatible TOTP secret for the selected principal callsign and displays the setup material.
+- `Reset MFA` disables user-level MFA, clears outstanding email OTP challenges, and removes any authenticator secret.
 
-Users can also manage their own MFA from the public web profile popup or from telnet with `mfa`, `set/mfa`, and `unset/mfa`. Node-wide MFA defaults are applied only after a user has usable MFA material, such as a valid email address or authenticator secret.
+Users can also manage their own MFA from the public web profile popup or from telnet with `mfa`, `set/mfa`, and `unset/mfa`. Node-wide MFA defaults are applied only after a user has usable MFA material, such as a valid email address or authenticator secret. Web login prompts describe the code source as email or authenticator app without exposing internal method names.
 
 ### Mail (SMTP)
 
 - `SMTP Host`
 - `SMTP Port`
-  - `Submission (587)`
+  - `Submission / STARTTLS (587)`
+  - `Implicit TLS / SMTPS (465)`
   - `SMTP (25)`
 - `SMTP Username`
 - `SMTP Password`
@@ -124,71 +125,101 @@ This section controls:
 - node presentation shown to users
 - branding and contact metadata used by the public-facing web experience
 
+### Reverse Beacon Network
+
+- `Enable RBN Feed`
+- `Feed Host`
+- `Default Port`
+- `Feed Ports`
+- `Named Feeds`
+- `Login Callsign`
+- `Feed Password`
+- `Source Node`
+- `Startup Commands`
+- `Reconnect Seconds`
+
+Direct RBN ingestion is disabled by default. When enabled, the node can connect to one or more named RBN feeds, including separate CW/RTTY and FT8 feed endpoints. RBN spots still respect the per-user and peer access matrix.
+
 ## Users
 
-The `Users` view is a single workspace with a browser area above the editor.
+The `Users` view is a browser-first workspace. Click on a user to edit account details. Existing users open in a modal editor, and `New User` opens the same modal for a new account.
 
 Browser tabs:
 
-- `Local Users`
-- `Blocked Users`
+- `Users`
 - `Clusters`
 - `System Operators`
 - `Requests`
 
+The `Users` table is the master matrix for local account state and access. It shows touch-friendly toggles for:
+
+- `Verified`
+- `Locked`
+- `MFA`
+- `Blocked`
+- `Login`
+- `Spots`
+- `RBN`
+- `Chat`
+- `Annc`
+- `WX`
+- `WCY`
+- `WWV`
+
 ### User Details
 
-This is the main user editor.
+This modal is the main user editor.
 
 Fields:
 
 - `Callsign`
-- `Access Level`
+- `User Type`
 - `Name (QRA)`
 - `Location (QTH)`
 - `Grid Square`
+- `Home Node`
 - `Email`
 - `Password`
-- `Home Node`
 - `Notes / Block Reason`
+
+User type values:
+
+- `Standard User`
+- `System Operator`
+- `Cluster > pyCluster`
+- `Cluster > DXSpider`
+- `Cluster > DxNet`
+- `Cluster > AR-Cluster`
+- `Cluster > CLX`
 
 Actions:
 
-- `New User`
 - `Update User`
-- `Block User`
-- `Unblock User`
-- `Set Password`
 - `Remove User`
+- `Set Password`
 - `Send Verification`
 - `Unlock Account`
+- `Enroll Authenticator`
 - `Reset MFA`
+- `Close`
 
 Password behavior:
 
 - normal password text sets or changes the password
 - entering `CLEAR` and then `Set Password` clears it
 
-Access levels:
+Status cards in the modal include:
 
-- `none`
-- `user`
-- `sysop`
-- `blocked`
+- online state
+- last login
+- last path
+- inbox and outbox counts
+- login access
+- posting access by `Telnet` and `Web`
+- MFA state
+- registration state
 
-Default behavior by level:
-
-- `none`: login, chat, WX, WCY, and WWV remain allowed by default; spot and announce posting are off until access is explicitly granted
-- `user`: normal login and posting access
-- `sysop`: sysop login plus full administrative access
-- `blocked`: login denied for the base callsign and matching SSIDs
-
-If `Blocked` is selected:
-
-- login is blocked for the base callsign and matching SSIDs
-- the notes field also serves as the block reason
-
-The `Block User` and `Unblock User` buttons apply the same access-level changes directly from the editor without manually opening the `Access Level` dropdown.
+`Remove User` asks for confirmation before deleting the record. Cluster peer records are treated as verified and unblocked, have MFA off, and have all access enabled because they are manually provisioned node identities rather than self-service human accounts.
 
 When the `Locked` state is checked, `Unlock Account` clears the durable account lock, resets the failed-password counter, and preserves an already verified email address.
 
@@ -205,31 +236,18 @@ Capabilities:
 
 - `Login`
 - `Spots`
+- `RBN`
 - `Chat`
-- `Announce`
+- `Annc`
 - `WX`
 - `WCY`
 - `WWV`
 
-Actions:
-
-- `Add All`
-- `Remove All`
-
 This is the operational source of truth for where a user may log in and what they may post.
 
-Explicit access-matrix overrides take precedence over the default behavior implied by the selected access level.
+The row matrix is editable from the table. The modal status summary shows the same posting permissions as `Yes` and `No` pills for quick review.
 
-This section also carries:
-
-- `Access Level`
-- `Email MFA Override`
-- `Verified`
-- `Locked`
-
-`Verified` and `Locked` are read-only state indicators in the matrix. They are not separate editor buttons.
-
-The `Clusters` browser tab shows any user record with a real cluster-node family such as `pycluster` or `dxspider`.
+The `Clusters` browser tab shows any user record with a real cluster-node family such as `pycluster`, `dxspider`, `dxnet`, `arcluster`, or `clx`.
 
 ## Peers and Links
 
@@ -240,9 +258,9 @@ This view manages node-link peers and shows live link state.
 Main fields:
 
 - `Peer Name`
+- `Peer Password`
 - `Transport Address`
 - `Cluster Family`
-- `Peer Password (Optional)`
 - `Retry Automatically`
 
 Peer password note:
@@ -267,9 +285,13 @@ Meaning:
 
 - `New Peer`
 - `Save Peer`
+- `Delete Peer`
+- `Close`
 - `Refresh`
 - `Connect`
 - `Disconnect`
+
+`New Peer`, peer-row selection, and saved-peer editing use a modal editor. `Delete Peer` asks for confirmation before removing the saved peer. Live `Connect` and `Disconnect` remain on the status page.
 
 `Disconnect` closes the live link but keeps the saved peer target in the table as `disconnected`, so it can be selected and reconnected later. `Connect` can use the saved transport address for the selected peer even when the form transport field is empty.
 
@@ -466,8 +488,8 @@ The user-management tables now surface recorded login path data directly in the 
 Visible columns now include:
 
 - `Last Path` for `System Operators`
-- `Last Path` for `Blocked Users`
-- `Last Path` for `Local Users`
+- `Last Path` for `Users`
+- `Last Path` for `Clusters`
 
 This is intended to expose the recorded interface, source address, listener port, and related path detail without requiring hover-only inspection.
 

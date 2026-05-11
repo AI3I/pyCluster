@@ -95,23 +95,25 @@ Main tasks:
 
 Key ideas:
 
-- `Blocked` is separate from normal users
+- `Blocked` is a matrix state on the `Users` table
 - system operators are shown separately from ordinary local users
 - access matrix controls where users can log in and what they may post
+- cluster-peer user records are manually provisioned identities with access forced on, MFA off, and verified/unblocked state
 
 Common workflow: create or update a user
 
 1. open `Users`
 2. click `New User` or select an existing record
 3. fill in profile details
-4. choose the access level
-5. click `Save User`
+4. choose the `User Type`
+5. adjust the access matrix if needed
+6. click `Update User`
 
 Common workflow: block a user
 
-1. open the user record
-2. change `Access Level` to `Blocked`
-3. add a short note or block reason
+1. open `Users`
+2. toggle the `Blocked` column for the callsign
+3. open the user modal if you need to add a short note or block reason
 4. save the record
 
 That block applies to the base callsign and matching SSID variants.

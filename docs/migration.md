@@ -63,6 +63,8 @@ Typical import on a host where pyCluster is already installed:
 sudo ./deploy/migrate.sh --from-dxspider /spider
 ```
 
+Before a non-dry-run import, `deploy/migrate.sh` writes a timestamped `migration-preflight` archive under `/root/pycluster-backups/` containing the live runtime `config/`, `data/`, and `logs/` directories when present.
+
 If your pyCluster config is in a different location:
 
 ```bash

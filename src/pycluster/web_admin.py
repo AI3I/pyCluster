@@ -13,13 +13,12 @@ import tomllib
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
-from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, default_access_allowed
+from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, CLUSTER_NODE_FAMILIES, default_access_allowed
 from .auth import hash_password, is_password_hash, verify_password
 from .config import AppConfig, RBNFeedConfig, node_presentation_defaults, parse_telnet_ports, save_config
 from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
-from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .geomag import canonicalize_wwv_text
-from .maidenhead import coords_to_locator, extract_locator
+from .maidenhead import extract_locator
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
 from .ctydat import is_loaded as cty_loaded, load_cty, lookup as cty_lookup
@@ -443,7 +442,7 @@ class WebAdminServer:
         password = await self.store.get_user_pref(call, "password")
         homenode_pref = await self.store.get_user_pref(call, "homenode")
         node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
-        if node_family not in {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}:
+        if node_family not in CLUSTER_NODE_FAMILIES:
             node_family = ""
         base_call = call.split("-", 1)[0]
         blocked_login = False
@@ -460,6 +459,10 @@ class WebAdminServer:
         privilege = str(row["privilege"] or "").strip().lower()
         if privilege == "admin":
             privilege = "sysop"
+        if node_family:
+            blocked_login = False
+            blocked_reason = ""
+            privilege = ""
         if blocked_login:
             access_label = "Blocked"
         elif privilege == "sysop":
@@ -529,6 +532,18 @@ class WebAdminServer:
         else:
             mfa_policy = "not required by node policy"
         reg_state, email_verified_epoch, grace_logins_remaining = await registration_state(self.store, base_call)
+        if node_family:
+            blocked_login = False
+            blocked_reason = ""
+            mfa_email_otp = "off"
+            mfa_totp_enabled = False
+            mfa_email_effective = False
+            mfa_enabled = False
+            mfa_methods = []
+            mfa_policy = "cluster peer"
+            reg_state = "verified"
+            email_verified_epoch = int(row["updated_epoch"] or row["registered_epoch"] or time.time())
+            grace_logins_remaining = 0
         return {
             "call": call,
             "principal_call": base_call,
@@ -663,6 +678,8 @@ class WebAdminServer:
 
     async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
         base_call = call.split("-", 1)[0]
+        if await self._totp_secret_for_call(call):
+            return True
         override = ""
         for candidate in (call.upper(), base_call.upper()):
             raw = await self.store.get_user_pref(candidate, "mfa_email_otp")
@@ -674,8 +691,6 @@ class WebAdminServer:
             return True
         if override == "off":
             return False
-        if await self._totp_secret_for_call(call):
-            return True
         if not self._mfa.required_for(is_sysop=is_sysop):
             return False
         return has_valid_email(await self._email_for_call(base_call.upper()))
@@ -774,6 +789,9 @@ class WebAdminServer:
         return call if is_sysop else None
 
     async def _admin_privileged_call(self, call: str) -> bool:
+        node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
+        if node_family in CLUSTER_NODE_FAMILIES:
+            return False
         row = await self.store.get_user_registry(call)
         level = ""
         if row:
@@ -795,6 +813,10 @@ class WebAdminServer:
         target_row = await self.store.get_user_registry(target)
         target_exists = target_row is not None
         privilege = ""
+        for candidate in ((target,) if target_exists else (target, base)):
+            node_family = str(await self.store.get_user_pref(candidate, "node_family") or "").strip().lower()
+            if node_family in CLUSTER_NODE_FAMILIES:
+                return "", False
         for candidate in (target, base):
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
@@ -816,6 +838,10 @@ class WebAdminServer:
         target = call.upper()
         base = target.split("-", 1)[0]
         target_exists = await self.store.get_user_registry(target) is not None
+        for candidate in ((target,) if target_exists else (target, base)):
+            node_family = str(await self.store.get_user_pref(candidate, "node_family") or "").strip().lower()
+            if node_family in CLUSTER_NODE_FAMILIES:
+                return True
         candidates = (target,) if target_exists else (target, base)
         for candidate in candidates:
             raw = await self.store.get_user_pref(candidate, self._access_pref_key(channel, capability))
@@ -842,23 +868,30 @@ class WebAdminServer:
 
     def _access_login_summary(self, access: dict[str, dict[str, bool]]) -> str:
         parts: list[str] = []
-        for channel, short in (("telnet", "T"), ("web", "W")):
-            parts.append(short if (access.get(channel, {}) or {}).get("login") else "-")
-        return " ".join(parts)
+        for channel, label in (("telnet", "Telnet"), ("web", "Web")):
+            allowed = (access.get(channel, {}) or {}).get("login")
+            parts.append(f"{label}: {'allowed' if allowed else 'blocked'}")
+        return "; ".join(parts)
 
     def _access_post_summary(self, access: dict[str, dict[str, bool]]) -> str:
         labels: list[str] = []
-        for capability, short in (
-            ("spots", "DX"),
-            ("chat", "CH"),
-            ("announce", "AN"),
+        for capability, label in (
+            ("spots", "Spots"),
+            ("rbn", "RBN"),
+            ("chat", "Chat"),
+            ("announce", "Announce"),
             ("wx", "WX"),
             ("wcy", "WCY"),
             ("wwv", "WWV"),
         ):
-            if any((access.get(channel, {}) or {}).get(capability) for channel in self._access_channels()):
-                labels.append(short)
-        return " ".join(labels) if labels else "-"
+            channels = [
+                channel.title()
+                for channel in self._access_channels()
+                if (access.get(channel, {}) or {}).get(capability)
+            ]
+            if channels:
+                labels.append(f"{label}: {'/'.join(channels)}")
+        return "; ".join(labels) if labels else "No posting access"
 
     def _read_recent_auth_failures(self, limit: int) -> list[dict[str, str]]:
         path = Path(AUTHFAIL_LOG_PATH)
@@ -945,23 +978,30 @@ class WebAdminServer:
 
     def _access_login_summary(self, access: dict[str, dict[str, bool]]) -> str:
         parts: list[str] = []
-        for channel, short in (("telnet", "T"), ("web", "W")):
-            parts.append(short if (access.get(channel, {}) or {}).get("login") else "-")
-        return " ".join(parts)
+        for channel, label in (("telnet", "Telnet"), ("web", "Web")):
+            allowed = (access.get(channel, {}) or {}).get("login")
+            parts.append(f"{label}: {'allowed' if allowed else 'blocked'}")
+        return "; ".join(parts)
 
     def _access_post_summary(self, access: dict[str, dict[str, bool]]) -> str:
         labels: list[str] = []
-        for capability, short in (
-            ("spots", "DX"),
-            ("chat", "CH"),
-            ("announce", "AN"),
+        for capability, label in (
+            ("spots", "Spots"),
+            ("rbn", "RBN"),
+            ("chat", "Chat"),
+            ("announce", "Announce"),
             ("wx", "WX"),
             ("wcy", "WCY"),
             ("wwv", "WWV"),
         ):
-            if any((access.get(channel, {}) or {}).get(capability) for channel in self._access_channels()):
-                labels.append(short)
-        return " ".join(labels) if labels else "-"
+            channels = [
+                channel.title()
+                for channel in self._access_channels()
+                if (access.get(channel, {}) or {}).get(capability)
+            ]
+            if channels:
+                labels.append(f"{label}: {'/'.join(channels)}")
+        return "; ".join(labels) if labels else "No posting access"
 
     def _parse_json_body(self, body: bytes) -> dict[str, object]:
         if not body:
@@ -1575,6 +1615,9 @@ html.light .panel{ box-shadow:0 10px 24px rgba(17,24,39,.06); }
   grid-template-columns:repeat(2,minmax(0,1fr));
   gap:12px;
 }
+.form-grid.compact-controls{
+  grid-template-columns:repeat(4,minmax(118px,1fr));
+}
 .form-grid.one{grid-template-columns:1fr}
 .field.span2,.field.wide{grid-column:1 / -1}
 .field{
@@ -1585,6 +1628,23 @@ html.light .panel{ box-shadow:0 10px 24px rgba(17,24,39,.06); }
   display:grid;
   grid-template-columns:repeat(2,minmax(0,1fr));
   gap:12px;
+}
+.auth-layout{
+  display:grid;
+  grid-template-columns:minmax(280px,.9fr) minmax(360px,1.1fr);
+  gap:12px;
+}
+.auth-layout .checkgrid{
+  grid-template-columns:1fr;
+}
+.auth-layout .form-grid{
+  margin-top:0;
+}
+.auth-layout .form-grid.compact-controls{
+  grid-template-columns:repeat(2,minmax(0,1fr));
+}
+.maintenance-toggle-row{
+  margin-bottom:12px;
 }
 .checkrow{
   display:flex;
@@ -1680,7 +1740,6 @@ select option{
   color:#111827;
   background:#ffffff;
 }
-#user_privilege,
 #user_node_family{
   height:44px;
   min-height:44px;
@@ -1796,6 +1855,106 @@ button.special{
 .users-statusrow .checkrow{
   min-width:180px;
 }
+.matrix-toggle{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:34px;
+  width:34px;
+  height:34px;
+  padding:0;
+  border-radius:6px;
+  font-size:18px;
+  line-height:1;
+}
+.matrix-toggle.on{
+  background:var(--button-good-bg);
+  border-color:var(--button-good-border);
+  color:var(--button-on-color);
+}
+.matrix-toggle.off{
+  background:var(--button-warn-bg);
+  border-color:var(--button-warn-border);
+  color:var(--button-on-color);
+}
+.matrix-toggle:disabled{
+  opacity:.55;
+  cursor:not-allowed;
+}
+.user-status-detail{
+  margin-bottom:12px;
+  padding:12px;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px 10px;
+  color:var(--text);
+  border:1px solid rgba(88,166,255,.38);
+  border-radius:10px;
+  background:linear-gradient(180deg, rgba(88,166,255,.14), rgba(88,166,255,.06));
+  box-shadow:inset 0 0 0 1px rgba(88,166,255,.08);
+}
+.status-cell{
+  min-width:0;
+}
+.status-cell.wide{
+  grid-column:1 / -1;
+}
+.status-cell label{
+  display:block;
+  margin-bottom:2px;
+  color:var(--header-subtle);
+  font-size:10.5px;
+  font-weight:700;
+  letter-spacing:.05em;
+  text-transform:uppercase;
+}
+.status-cell span{
+  display:block;
+  color:var(--text);
+  font-size:12.5px;
+  font-weight:650;
+  overflow-wrap:anywhere;
+}
+.access-summary-grid{
+  display:grid;
+  grid-template-columns:minmax(56px,.8fr) repeat(7,minmax(42px,1fr));
+  gap:4px;
+  align-items:stretch;
+  font-size:11px;
+}
+.access-summary-grid .access-head,
+.access-summary-grid .access-rowhead,
+.access-summary-grid .access-state{
+  min-width:0;
+  padding:5px 6px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  text-align:center;
+}
+.access-summary-grid .access-head,
+.access-summary-grid .access-rowhead{
+  color:var(--header-subtle);
+  background:var(--panel-soft);
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:.03em;
+}
+.access-summary-grid .access-rowhead{
+  text-align:left;
+}
+.access-summary-grid .access-state{
+  font-weight:900;
+}
+.access-summary-grid .access-state.on{
+  background:rgba(63,185,80,.18);
+  border-color:rgba(63,185,80,.72);
+  color:#3fb950;
+}
+.access-summary-grid .access-state.off{
+  background:rgba(248,81,73,.18);
+  border-color:rgba(248,81,73,.72);
+  color:#ff7b72;
+}
 .themebtn{
   background:var(--theme-bg);
   border-color:var(--theme-border);
@@ -1821,14 +1980,37 @@ button.special{
 .mast-actions .statusline{
   margin-top:0;
   width:100%;
+  padding:8px 12px;
+  border-radius:10px;
+  background:linear-gradient(180deg, rgba(88,166,255,.24), rgba(88,166,255,.14));
+  border:1px solid rgba(88,166,255,.46);
+  color:#d7ecff;
+  font-weight:800;
+  box-shadow:0 0 0 1px rgba(88,166,255,.12), 0 0 16px rgba(88,166,255,.10);
 }
 .light .statusline{
   color:#475569;
+}
+.light .mast-actions .statusline{
+  background:linear-gradient(180deg, rgba(29,111,164,.16), rgba(29,111,164,.08));
+  border-color:rgba(29,111,164,.35);
+  color:#134d74;
 }
 .statusline.error{
   background:#f4ddd5;
   border-color:#e7b8a9;
   color:#7d2e17;
+}
+.statusline.loading{
+  background:linear-gradient(180deg, rgba(251,191,36,.95), rgba(245,158,11,.88));
+  border-color:rgba(251,191,36,.75);
+  color:#2f2100;
+  box-shadow:0 0 0 1px rgba(251,191,36,.22), 0 0 18px rgba(251,191,36,.2);
+}
+.taxonomy-editor textarea{
+  font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size:12.5px;
+  line-height:1.45;
 }
 .split{
   display:grid;
@@ -1885,10 +2067,124 @@ button.special{
   display:grid;
   gap:18px;
 }
+.users-browser-topbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:12px;
+}
+.users-browser-tabs{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  min-width:0;
+}
+.user-modal{
+  position:fixed;
+  inset:0;
+  z-index:80;
+  display:flex;
+  align-items:flex-start;
+  justify-content:center;
+  padding:20px 12px;
+  background:rgba(0,0,0,.68);
+  overflow:auto;
+}
+.peer-toolbar{
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:12px;
+}
+.peer-toolbar .field{
+  flex:1 1 320px;
+  max-width:440px;
+}
+.peer-toolbar .actions{
+  margin-top:0;
+  justify-content:flex-end;
+}
+.peer-modal .form-grid{
+  grid-template-columns:repeat(2,minmax(0,1fr));
+}
+.peer-modal .field.wide{
+  grid-column:1 / -1;
+}
+.user-modal-panel{
+  width:min(760px,100%);
+  max-height:calc(100vh - 40px);
+  overflow:auto;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:10px;
+  box-shadow:0 24px 56px rgba(0,0,0,.45);
+}
+.user-modal-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:10px;
+}
+.user-modal-head .users-action-group{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.user-modal-head h3{
+  margin:0;
+}
 .users-editor-side{
-  display:grid;
-  grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr);
   gap:18px;
+}
+.users-editor-side section{
+  padding:16px;
+  background:var(--panel);
+}
+.user-modal .form-grid{
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px 10px;
+}
+.user-modal .field label{
+  font-size:11px;
+}
+.user-modal input,
+.user-modal select{
+  padding:7px 9px;
+  border-radius:8px;
+}
+.user-modal #user_node_family{
+  height:34px;
+  min-height:34px;
+}
+.user-modal .field.span2,
+.user-modal .field.wide{
+  grid-column:1 / -1;
+}
+.user-modal .checkrow{
+  padding:8px 9px;
+  border-radius:8px;
+}
+.user-modal .users-actionbar{
+  gap:8px;
+}
+.user-modal .users-actionbar .users-action-group{
+  gap:8px;
+  flex-wrap:nowrap;
+}
+.user-modal button{
+  padding:8px 10px;
+}
+.user-modal .iconbtn{
+  width:36px;
+  height:36px;
+  padding:0;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  font-size:16px;
+  line-height:1;
 }
 .users-actionbar{
   display:grid;
@@ -1957,10 +2253,10 @@ button.special{
   max-width:100%;
 }
 .users-browser-stage{
-  min-height:248px;
+  min-height:430px;
 }
 .users-browser-stage .tablewrap{
-  min-height:176px;
+  min-height:356px;
 }
 .users-browser-panel{
   display:none;
@@ -2128,6 +2424,14 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   .users-editor,.users-columns{grid-template-columns:1fr}
 }
 @media (max-width: 900px){
+  .users-browser-topbar{align-items:stretch;flex-direction:column}
+  .peer-toolbar{align-items:stretch;flex-direction:column}
+  .peer-toolbar .field{max-width:none}
+  .peer-toolbar .actions{justify-content:stretch}
+  .users-browser-tabs{width:100%}
+  .users-browser-tabs .subtab{flex:1 1 140px}
+  .user-modal{padding:12px}
+  .user-modal-panel{max-height:calc(100vh - 24px)}
   .shell{padding:12px 12px 24px}
   .mast{
     padding:16px 16px;
@@ -2140,6 +2444,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
     align-items:stretch;
   }
   .sidebar-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .auth-layout{grid-template-columns:1fr}
+  .form-grid.compact-controls{grid-template-columns:repeat(2,minmax(0,1fr))}
   .actions{flex-wrap:wrap}
   .actions button{flex:1 1 160px}
   .tablewrap{
@@ -2155,7 +2461,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   .sidebar-panel header,.sidebar-panel .body,.panel .body{padding-left:12px;padding-right:12px}
   .sidebar-nav a{padding:10px}
   .sidebar-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .metric-grid,.form-grid,.checkgrid,.proto-grid,.protocol-glance{grid-template-columns:1fr}
+  .metric-grid,.form-grid,.form-grid.compact-controls,.checkgrid,.proto-grid,.protocol-glance{grid-template-columns:1fr}
   .actions button{flex:1 1 100%; width:100%}
   input,textarea,select{font-size:16px}
   .tablewrap table{min-width:720px}
@@ -2236,9 +2542,10 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="sidebar-metric wide"><label>Software</label><strong id="navVersion">-</strong><div class="dataset-pills"><span class="dataset-pill warn" id="navCty">CTY.DAT · -</span><span class="dataset-pill warn" id="navWpx">wpxloc.raw · -</span></div></div>
             <div class="sidebar-metric"><label>Uptime</label><strong id="navUptime">-</strong></div>
             <div class="sidebar-metric"><label>Spots</label><strong id="navSpots">-</strong></div>
+            <div class="sidebar-metric"><label>Peers</label><strong id="navPeers">-</strong></div>
+            <div class="sidebar-metric"><label>RBN</label><strong id="navRbn">-</strong></div>
             <div class="sidebar-metric"><label>Telnet</label><strong id="navTelnet">-</strong></div>
             <div class="sidebar-metric"><label>Web</label><strong id="navWeb">-</strong></div>
-            <div class="sidebar-metric"><label>RBN</label><strong id="navRbn">-</strong></div>
           </div>
         </div>
       </section>
@@ -2259,7 +2566,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <button class="node-tab" type="button" data-node-group="smtp">Mail (SMTP)</button>
             <button class="node-tab" type="button" data-node-group="qrz">Lookup (QRZ)</button>
             <button class="node-tab" type="button" data-node-group="satellite">Satellite</button>
-            <button class="node-tab" type="button" data-node-group="rbn">RBN</button>
+            <button class="node-tab" type="button" data-node-group="rbn">Reverse Beacon Network (RBN)</button>
             <button class="node-tab" type="button" data-node-group="maintenance">Maintenance</button>
           </div>
           <div class="node-group active" id="node-group-general">
@@ -2290,49 +2597,51 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </div>
           </div>
           <div class="node-group" id="node-group-auth">
-            <div class="checkgrid">
-              <div class="checkrow attention" title="Telnet-only fallback password policy. This affects older telnet login paths when the stronger registration model is not already requiring a password. Node-classified callsigns skip this path.">
-                <input id="require_password" type="checkbox">
-                <label for="require_password">Require telnet password on fallback paths</label>
+            <div class="auth-layout">
+              <div class="checkgrid">
+                <div class="checkrow attention" title="Telnet-only fallback password policy. This affects older telnet login paths when the stronger registration model is not already requiring a password. Node-classified callsigns skip this path.">
+                  <input id="require_password" type="checkbox">
+                  <label for="require_password">Require telnet password on fallback paths</label>
+                </div>
+                <div class="checkrow attention" title="Ordinary human users must already have a local user record before they can activate an account. Node-classified peers are exempt.">
+                  <input id="registration_required" type="checkbox">
+                  <label for="registration_required">Require registration for users</label>
+                </div>
+                <div class="checkrow attention" title="Ordinary web logins require a verified email address before access is granted.">
+                  <input id="verified_email_required_for_web" type="checkbox">
+                  <label for="verified_email_required_for_web">Require verified email for web</label>
+                </div>
+                <div class="checkrow attention" title="Ordinary telnet logins require a verified email address. Unverified users must complete email verification on telnet before access is granted.">
+                  <input id="verified_email_required_for_telnet" type="checkbox">
+                  <label for="verified_email_required_for_telnet">Require verified email for telnet</label>
+                </div>
+                <div class="checkrow attention" title="When enabled, web and telnet logins can require a one-time code after password verification. Codes are delivered by email.">
+                  <input id="mfa_enabled" type="checkbox">
+                  <label for="mfa_enabled">Enable MFA login challenges</label>
+                </div>
+                <div class="checkrow attention" title="Strongly recommended. Applies to sysop web and sysop telnet logins after password verification.">
+                  <input id="mfa_require_for_sysop" type="checkbox">
+                  <label for="mfa_require_for_sysop">Require MFA challenge for sysop logins</label>
+                </div>
+                <div class="checkrow attention" title="Enable only after confirming user email records and SMTP delivery are reliable. This applies after password verification.">
+                  <input id="mfa_require_for_users" type="checkbox">
+                  <label for="mfa_require_for_users">Require MFA challenge for user logins</label>
+                </div>
               </div>
-              <div class="checkrow attention" title="Ordinary human users must already have a local user record before they can activate an account. Node-classified peers are exempt.">
-                <input id="registration_required" type="checkbox">
-                <label for="registration_required">Require registration for users</label>
+              <div class="form-grid compact-controls">
+                <div class="field"><label for="initial_grace_logins" title="Number of failed or skipped email-verification attempts allowed before a pending account is locked.">Registration Grace Logins</label><input id="initial_grace_logins" type="number" min="0" max="100" value="5" title="When verified email is required, unverified users consume one grace login per failed verification attempt until the account locks."></div>
+                <div class="field"><label for="mfa_issuer" title="Short label shown in OTP email subject lines and body text.">MFA Issuer</label><input id="mfa_issuer" placeholder="pyCluster" title="Brand or node label used in MFA login challenge messages."></div>
+                <div class="field"><label for="mfa_otp_ttl_seconds" title="How long each emailed OTP remains valid.">OTP TTL (seconds)</label><input id="mfa_otp_ttl_seconds" type="number" min="60" max="3600" value="600" title="Validity window for issued one-time codes."></div>
+                <div class="field"><label for="mfa_otp_length" title="Number of digits generated for each OTP.">OTP Length</label><input id="mfa_otp_length" type="number" min="6" max="8" value="6" title="Recommended range is 6 to 8 digits."></div>
+                <div class="field"><label for="mfa_max_attempts" title="How many wrong OTP submissions are allowed before the challenge is invalidated.">OTP Attempts</label><input id="mfa_max_attempts" type="number" min="1" max="10" value="5" title="Maximum verification attempts per OTP challenge."></div>
+                <div class="field"><label for="mfa_resend_cooldown_seconds" title="Minimum delay before a new OTP can be issued for the same login purpose.">OTP Resend Cooldown (seconds)</label><input id="mfa_resend_cooldown_seconds" type="number" min="0" max="600" value="30" title="Prevents repeated password submissions from sending OTP emails too frequently."></div>
               </div>
-              <div class="checkrow attention" title="Ordinary web logins require a verified email address before access is granted.">
-                <input id="verified_email_required_for_web" type="checkbox">
-                <label for="verified_email_required_for_web">Require verified email for web</label>
-              </div>
-              <div class="checkrow attention" title="Ordinary telnet logins require a verified email address. Unverified users must complete email verification on telnet before access is granted.">
-                <input id="verified_email_required_for_telnet" type="checkbox">
-                <label for="verified_email_required_for_telnet">Require verified email for telnet</label>
-              </div>
-              <div class="checkrow attention" title="When enabled, web and telnet logins can require a one-time code after password verification. Codes are delivered by email.">
-                <input id="mfa_enabled" type="checkbox">
-                <label for="mfa_enabled">Enable MFA login challenges</label>
-              </div>
-              <div class="checkrow attention" title="Strongly recommended. Applies to sysop web and sysop telnet logins after password verification.">
-                <input id="mfa_require_for_sysop" type="checkbox">
-                <label for="mfa_require_for_sysop">Require MFA challenge for sysop logins</label>
-              </div>
-              <div class="checkrow attention" title="Enable only after confirming user email records and SMTP delivery are reliable. This applies after password verification.">
-                <input id="mfa_require_for_users" type="checkbox">
-                <label for="mfa_require_for_users">Require MFA challenge for user logins</label>
-              </div>
-            </div>
-            <div class="form-grid" style="margin-top:12px">
-              <div class="field"><label for="initial_grace_logins" title="Number of failed or skipped email-verification attempts allowed before a pending account is locked.">Registration Grace Logins</label><input id="initial_grace_logins" type="number" min="0" max="100" value="5" title="When verified email is required, unverified users consume one grace login per failed verification attempt until the account locks."></div>
-              <div class="field"><label for="mfa_issuer" title="Short label shown in OTP email subject lines and body text.">MFA Issuer</label><input id="mfa_issuer" placeholder="pyCluster" title="Brand or node label used in MFA login challenge messages."></div>
-              <div class="field"><label for="mfa_otp_ttl_seconds" title="How long each emailed OTP remains valid.">OTP TTL (seconds)</label><input id="mfa_otp_ttl_seconds" type="number" min="60" max="3600" value="600" title="Validity window for issued one-time codes."></div>
-              <div class="field"><label for="mfa_otp_length" title="Number of digits generated for each OTP.">OTP Length</label><input id="mfa_otp_length" type="number" min="6" max="8" value="6" title="Recommended range is 6 to 8 digits."></div>
-              <div class="field"><label for="mfa_max_attempts" title="How many wrong OTP submissions are allowed before the challenge is invalidated.">OTP Attempts</label><input id="mfa_max_attempts" type="number" min="1" max="10" value="5" title="Maximum verification attempts per OTP challenge."></div>
-              <div class="field"><label for="mfa_resend_cooldown_seconds" title="Minimum delay before a new OTP can be issued for the same login purpose.">OTP Resend Cooldown (seconds)</label><input id="mfa_resend_cooldown_seconds" type="number" min="0" max="600" value="30" title="Prevents repeated password submissions from sending OTP emails too frequently."></div>
             </div>
           </div>
           <div class="node-group" id="node-group-smtp">
-            <div class="form-grid">
+            <div class="form-grid compact-controls">
               <div class="field"><label for="smtp_host" title="SMTP host used to send MFA email codes.">SMTP Host</label><input id="smtp_host" placeholder="smtp.example.net" title="Node-wide SMTP relay hostname for MFA delivery."></div>
-              <div class="field"><label for="smtp_port" title="SMTP port for the configured relay.">SMTP Port</label><div class="select-shell"><select id="smtp_port" title="Use Submission for authenticated outbound mail or SMTP for a plain relay."><option value="587">Submission (587)</option><option value="25">SMTP (25)</option></select></div></div>
+              <div class="field"><label for="smtp_port" title="SMTP port for the configured relay.">SMTP Port</label><div class="select-shell"><select id="smtp_port" title="Use Submission for authenticated outbound mail, implicit TLS for SMTPS, or SMTP for a plain relay."><option value="587">Submission / STARTTLS (587)</option><option value="465">Implicit TLS / SMTPS (465)</option><option value="25">SMTP (25)</option></select></div></div>
               <div class="field"><label for="smtp_username" title="Optional SMTP username when the relay requires authentication.">SMTP Username</label><input id="smtp_username" placeholder="mailer" title="Leave blank for relays that do not require SMTP AUTH."></div>
               <div class="field"><label for="smtp_password" title="SMTP password or app password for the configured relay.">SMTP Password</label><input id="smtp_password" type="password" placeholder="SMTP password" title="Stored in local config for MFA delivery."></div>
               <div class="field"><label for="smtp_from_addr" title="From address used in MFA email delivery.">From Address</label><input id="smtp_from_addr" placeholder="pycluster@example.net" title="Envelope/display sender for OTP messages."></div>
@@ -2357,7 +2666,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </div>
           </div>
           <div class="node-group" id="node-group-qrz">
-            <div class="form-grid">
+            <div class="form-grid compact-controls">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
               <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.9" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
@@ -2365,7 +2674,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </div>
           </div>
           <div class="node-group" id="node-group-satellite">
-            <div class="form-grid">
+            <div class="form-grid compact-controls">
               <div class="field"><label for="satellite_keps_path" title="Local TLE/keps file used by show/satellite target pass prediction.">Keps Path</label><input id="satellite_keps_path" placeholder="./data/keps.txt" title="Local TLE file read by show/satellite &lt;target&gt;."></div>
               <div class="field"><label for="satellite_prediction_hours" title="How far ahead show/satellite searches for passes.">Prediction Window (hours)</label><input id="satellite_prediction_hours" type="number" min="1" max="168" value="24" title="Search window for upcoming satellite passes."></div>
               <div class="field"><label for="satellite_pass_step_seconds" title="Sampling interval for pass prediction. Smaller values are slower but more precise.">Pass Step (seconds)</label><input id="satellite_pass_step_seconds" type="number" min="15" max="600" value="60" title="Sampling interval for pass prediction."></div>
@@ -2374,9 +2683,12 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
           <div class="node-group" id="node-group-rbn">
             <div class="form-grid">
-              <div class="checkrow attention" title="Enable direct telnet ingestion from an RBN-enabled cluster or feed.">
-                <input id="rbn_enabled" type="checkbox">
-                <label for="rbn_enabled">Enable RBN Feed</label>
+              <div class="field">
+                <label for="rbn_enabled" title="Enable direct telnet ingestion from an RBN-enabled cluster or feed.">Reverse Beacon Network</label>
+                <div class="checkrow attention" title="Enable direct telnet ingestion from an RBN-enabled cluster or feed.">
+                  <input id="rbn_enabled" type="checkbox">
+                  <label for="rbn_enabled">Enable RBN Feed</label>
+                </div>
               </div>
               <div class="field"><label for="rbn_host" title="RBN-enabled telnet feed hostname.">Feed Host</label><input id="rbn_host" placeholder="rbn-enabled-cluster.example" title="Hostname for an RBN-enabled telnet cluster or feed."></div>
               <div class="field"><label for="rbn_port" title="Legacy single RBN-enabled telnet feed port.">Default Port</label><input id="rbn_port" type="number" min="1" max="65535" value="7300" title="Legacy/default feed port used when Feed Ports is blank."></div>
@@ -2387,36 +2699,45 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="field"><label for="rbn_reconnect_seconds" title="Delay before reconnecting after feed disconnect.">Reconnect Seconds</label><input id="rbn_reconnect_seconds" type="number" min="5" max="3600" value="60" title="Delay before retrying a disconnected RBN feed."></div>
               <div class="field wide"><label for="rbn_feeds" title="Optional named feeds, one per line: name,host,port. Named feeds override Feed Host/Ports when set.">Named Feeds</label><textarea id="rbn_feeds" rows="3" placeholder="CW/RTTY,telnet.reversebeacon.net,7000&#10;FT8,telnet.reversebeacon.net,7001" title="Optional named feeds, one per line: name,host,port."></textarea></div>
               <div class="field wide"><label for="rbn_startup_commands" title="Commands sent after login, one per line.">Startup Commands</label><textarea id="rbn_startup_commands" rows="3" placeholder="set/skimmer" title="Commands sent after feed login, one per line."></textarea></div>
-              <div class="field wide"><label title="Current direct RBN feed state.">Feed Status</label><div class="subtle" id="rbnStatus" style="font-weight:700">RBN feed status unavailable.</div></div>
+              <div class="field wide"><label title="Current direct RBN feed state.">Feed Status</label>
+                <div class="user-status-detail" id="rbnStatus">
+                  <div class="status-cell"><label>State</label><span id="rbnStatusState">Unavailable</span></div>
+                  <div class="status-cell"><label>Endpoint</label><span id="rbnStatusEndpoint">-</span></div>
+                  <div class="status-cell"><label>Feeds</label><span id="rbnStatusFeeds">-</span></div>
+                  <div class="status-cell"><label>Connected</label><span id="rbnStatusConnected">-</span></div>
+                  <div class="status-cell"><label>Last Spot</label><span id="rbnStatusLastSpot">-</span></div>
+                  <div class="status-cell"><label>Last Error</label><span id="rbnStatusError">-</span></div>
+                </div>
+              </div>
             </div>
           </div>
           <div class="node-group" id="node-group-maintenance">
-            <div class="form-grid">
-              <div class="field">
+            <div class="checkgrid maintenance-toggle-row">
+              <div class="checkrow attention" title="Enable daily retention cleanup for spots, messages, and bulletins.">
+                <input id="retention_enabled" type="checkbox" checked>
                 <label for="retention_enabled" title="When enabled, pyCluster runs age-based cleanup daily using the day counts below.">Automatic Cleanup</label>
-                <div class="checkrow attention" title="Enable daily retention cleanup for spots, messages, and bulletins.">
-                  <input id="retention_enabled" type="checkbox" checked>
-                  <label for="retention_enabled">Enable age-based cleanup</label>
-                </div>
               </div>
+              <div class="checkrow attention" title="Remove non-sysop, non-blocked local users whose last login or last local update is older than the threshold below.">
+                <input id="retention_stale_users_enabled" type="checkbox">
+                <label for="retention_stale_users_enabled" title="When enabled, cleanup also removes inactive non-sysop, non-blocked local users.">Stale User Cleanup</label>
+              </div>
+            </div>
+            <div class="form-grid compact-controls">
               <div class="field"><label for="retention_spots_days" title="Keep DX spots for this many days before purging old rows.">Keep Spots For (days)</label><input id="retention_spots_days" type="number" min="1" max="3650" value="30" title="Older spots are removed during the daily cleanup run."></div>
               <div class="field"><label for="retention_messages_days" title="Keep private messages for this many days before purging old rows.">Keep Messages For (days)</label><input id="retention_messages_days" type="number" min="1" max="3650" value="90" title="Older messages are removed during the daily cleanup run."></div>
               <div class="field"><label for="retention_bulletins_days" title="Keep bulletins for this many days before purging old rows.">Keep Bulletins For (days)</label><input id="retention_bulletins_days" type="number" min="1" max="3650" value="30" title="Older bulletins are removed during the daily cleanup run."></div>
-              <div class="field">
-                <label for="retention_stale_users_enabled" title="When enabled, cleanup also removes inactive non-sysop, non-blocked local users.">Stale User Cleanup</label>
-                <div class="checkrow attention" title="Remove non-sysop, non-blocked local users whose last login or last local update is older than the threshold below.">
-                  <input id="retention_stale_users_enabled" type="checkbox">
-                  <label for="retention_stale_users_enabled">Enable stale-user pruning</label>
-                </div>
-              </div>
               <div class="field"><label for="retention_stale_users_days" title="Inactive local users older than this threshold are removed during cleanup when stale-user pruning is enabled.">Keep User Records For (days)</label><input id="retention_stale_users_days" type="number" min="1" max="3650" value="365" title="Based on last login when available, otherwise the last local record update."></div>
             </div>
-            <div class="subtle" id="retentionStatus" style="margin-top:8px;font-weight:700">Automatic cleanup is disabled.</div>
-            <div class="subtle" id="upgradeStatus" style="margin-top:12px;font-weight:700">Upgrade status is unavailable.</div>
-            <div class="subtle" id="upgradeMetaTag" style="margin-top:6px">Version check and migration status will appear here.</div>
-            <div class="subtle" id="upgradeMetaPath" style="margin-top:4px"></div>
-            <div class="subtle" id="upgradeMetaLog" style="margin-top:4px"></div>
-            <div class="subtle" id="upgradeMetaRemote" style="margin-top:4px"></div>
+            <div class="user-status-detail" id="maintenanceStatus" style="margin-top:12px">
+              <div class="status-cell"><label>Cleanup Policy</label><span id="retentionStatus">Automatic cleanup is disabled.</span></div>
+              <div class="status-cell"><label>Last Cleanup</label><span id="retentionLastRun">Never</span></div>
+              <div class="status-cell"><label>Last Result</label><span id="retentionLastResult">No cleanup result is available.</span></div>
+              <div class="status-cell wide"><label>Upgrade</label><span id="upgradeStatus">Upgrade status is unavailable.</span></div>
+              <div class="status-cell"><label>Version Tags</label><span id="upgradeMetaTag">Version check and migration status will appear here.</span></div>
+              <div class="status-cell"><label>Upgrade Path</label><span id="upgradeMetaPath">-</span></div>
+              <div class="status-cell"><label>Log</label><span id="upgradeMetaLog">-</span></div>
+              <div class="status-cell wide"><label>Remote Check</label><span id="upgradeMetaRemote">-</span></div>
+            </div>
             <div class="actions" style="margin-top:12px">
             <button class="attention" id="runCleanup" title="Run the current age-based cleanup settings immediately.">Run Cleanup Now</button>
             <button class="attention" id="checkUpgrade" title="Check whether a newer pyCluster version is available from the configured git remote.">Check for Upgrade</button>
@@ -2433,45 +2754,37 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <header>
           <div>
             <h2>Users</h2>
-            <div class="subtle">Review local users and login state first, then edit the selected account details.</div>
+            <div class="subtle">Click on a user to edit account details.</div>
           </div>
         </header>
         <div class="body">
           <div class="users-editor">
             <section>
-              <div class="subtle" id="userSelectionHint" style="margin-bottom:12px">Select a user below to open the editor on the right.</div>
-              <div class="users-browser-tabs" aria-label="User browser panels">
-                <button class="subtab" data-user-browser="local">Local Users</button>
-                <button class="subtab" data-user-browser="blocked">Blocked Users</button>
-                <button class="subtab" data-user-browser="clusters">Clusters</button>
-                <button class="subtab" data-user-browser="sysops">System Operators</button>
-                <button class="subtab" data-user-browser="requests">Requests</button>
+              <div class="users-browser-topbar">
+                <div class="users-browser-tabs" aria-label="User browser panels">
+                  <button class="subtab" data-user-browser="local">Users</button>
+                  <button class="subtab" data-user-browser="clusters">Clusters</button>
+                  <button class="subtab" data-user-browser="sysops">System Operators</button>
+                  <button class="subtab" data-user-browser="requests">Requests</button>
+                </div>
+                <button class="attention" id="newUser">New User</button>
               </div>
               <div class="users-browser-stage">
                 <div class="users-browser-panel" id="user-browser-local">
-                  <h3>Local Users</h3>
+                  <h3>Users</h3>
                   <div class="tablewrap">
                     <table>
-                      <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>MFA</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
-                      <tbody id="userRows"><tr><td colspan="10">Loading local users...</td></tr></tbody>
+                      <thead><tr><th>Callsign</th><th>Verified</th><th>Locked</th><th>MFA</th><th>Blocked</th><th>Login</th><th>Spots</th><th>RBN</th><th>Chat</th><th>Annc</th><th>WX</th><th>WCY</th><th>WWV</th></tr></thead>
+                      <tbody id="userRows"><tr><td colspan="13">Loading users...</td></tr></tbody>
                     </table>
                   </div>
-                </div>
-                <div class="users-browser-panel" id="user-browser-blocked">
-                  <h3>Blocked Users</h3>
-                  <div class="tablewrap compact">
-                  <table>
-                      <thead><tr><th>Callsign</th><th>Home Node</th><th>Block Reason</th><th>Blocked</th><th>Last Path</th></tr></thead>
-                      <tbody id="blockedRows"><tr><td colspan="5">Loading blocked users...</td></tr></tbody>
-                  </table>
-                </div>
                 </div>
                 <div class="users-browser-panel" id="user-browser-clusters">
                   <h3>Clusters</h3>
                   <div class="tablewrap">
                     <table>
-                      <thead><tr><th>Callsign</th><th>Access</th><th>Home Node</th><th>Telnet</th><th>Web</th><th>MFA</th><th>DX / ANNC</th><th>Btns</th><th>Last Login</th><th>Last Path</th></tr></thead>
-                      <tbody id="clusterRows"><tr><td colspan="10">Loading cluster peers...</td></tr></tbody>
+                      <thead><tr><th>Callsign</th><th>Verified</th><th>Locked</th><th>MFA</th><th>Blocked</th><th>Login</th><th>Spots</th><th>RBN</th><th>Chat</th><th>Annc</th><th>WX</th><th>WCY</th><th>WWV</th></tr></thead>
+                      <tbody id="clusterRows"><tr><td colspan="13">Loading cluster peers...</td></tr></tbody>
                     </table>
                   </div>
                 </div>
@@ -2506,81 +2819,41 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 </div>
               </div>
             </section>
-            <div class="users-editor-side">
+            <div class="user-modal hidden" id="userModal" role="dialog" aria-modal="true" aria-labelledby="userEditorTitle">
+            <div class="users-editor-side user-modal-panel">
               <section>
-                <h3 id="userEditorTitle">User Details</h3>
-                <div class="subtle" id="userMailStatus" style="margin-bottom:10px">Mail status for the selected user will appear here.</div>
-                <div class="subtle" id="userMfaStatus" style="margin-bottom:10px">MFA status for the selected user will appear here.</div>
-                <div class="subtle" id="userRegistrationStatus" style="margin-bottom:10px">Registration status for the selected user will appear here.</div>
+                <div class="user-modal-head">
+                  <h3 id="userEditorTitle">User Details</h3>
+                  <div class="users-action-group">
+                    <button class="warn iconbtn" id="deleteUser" disabled title="Remove user" aria-label="Remove user">🗑</button>
+                    <button class="iconbtn" id="saveUser" title="Save user" aria-label="Save user">💾</button>
+                    <button class="secondary" id="closeUserModal" type="button" title="Close the user editor">Close</button>
+                  </div>
+                </div>
+                <div class="user-status-detail" id="userPathStatus"><div class="status-cell wide"><label>Status</label><span>Last login and path for the selected user will appear here.</span></div></div>
                 <div class="form-grid">
                 <div class="field"><label for="user_call" title="Local callsign record to create or edit on this node.">Callsign</label><input id="user_call" placeholder="N0CALL" title="Use the base callsign or an SSID variant for the exact local record you want to manage."></div>
+                <div class="field"><label for="user_node_family" title="Select whether this record is a standard user, System Operator, or a managed cluster peer.">User Type</label><div class="select-shell"><select id="user_node_family" title="System Operator grants console/sysop command access. Cluster records are verified, unblocked, MFA-off, and all access is enabled."><option value="">Standard User</option><option value="sysop">System Operator</option><option value="pycluster">Cluster &gt; pyCluster</option><option value="dxspider">Cluster &gt; DXSpider</option><option value="dxnet">Cluster &gt; DxNet</option><option value="arcluster">Cluster &gt; AR-Cluster</option><option value="clx">Cluster &gt; CLX</option></select></div></div>
                 <div class="field"><label for="user_name" title="Operator name shown in local account details for this callsign.">Name (QRA)</label><input id="user_name" placeholder="Operator name" title="Friendly operator name stored for this local callsign record."></div>
                 <div class="field"><label for="user_qth" title="Operator location for this local callsign record.">Location (QTH)</label><input id="user_qth" placeholder="Location" title="Human-readable location used for local operator details on this node."></div>
                 <div class="field"><label for="user_grid" title="Grid square for this local user record.">Grid Square</label><input id="user_grid" placeholder="FN31PR" title="Maidenhead grid square for this local user record."></div>
-                <div class="field span2"><label for="user_location" title="Optional free-form location detail distinct from QTH and grid square.">Location Detail</label><input id="user_location" placeholder="City neighborhood, county, or other detail" title="Optional free-form location detail stored separately from QTH and grid square."></div>
+                <div class="field"><label for="user_home_node" title="Authoritative home node for this callsign. This maps to set/homenode.">Home Node</label><input id="user_home_node" placeholder="N0CALL-1" title="The home node is the source of truth for this callsign and will be used by future federation features."></div>
                 <div class="field"><label for="user_email" title="Optional contact email for this local callsign record.">Email</label><input id="user_email" placeholder="operator@example.org" title="Optional contact address used for local account details and future federation/contact features."></div>
                 <div class="field"><label for="user_password" title="Change or set the local password for this callsign. Enter CLEAR to remove it.">Password</label><input id="user_password" type="password" placeholder="Change/Set or CLEAR to clear" title="Set or change the local password for this callsign. Enter CLEAR and then Set Password to remove it."></div>
-                <div class="field"><label for="user_home_node" title="Authoritative home node for this callsign. This maps to set/homenode.">Home Node</label><input id="user_home_node" placeholder="N0CALL-1" title="The home node is the source of truth for this callsign and will be used by future federation features."></div>
-                <div class="field"><label for="user_node_family" title="Use this only for node-to-node records. It controls trusted cluster-peer login behavior and password bypass.">Cluster Node Family</label><div class="select-shell"><select id="user_node_family" title="Leave this unset for normal people. Set a cluster node family only for sysop-managed node records such as DXSpider, DxNet, AR-Cluster, CLX, or pyCluster."><option value="">Not a cluster peer</option><option value="pycluster">pyCluster</option><option value="dxspider">DXSpider</option><option value="dxnet">DxNet</option><option value="arcluster">AR-Cluster</option><option value="clx">CLX</option></select></div></div>
-                <div class="field span2"><label for="user_block_reason" title="Short operator notes for this local user. If Access Level is Blocked, this text is also shown as the block reason.">Notes / Block Reason</label><input id="user_block_reason" maxlength="80" placeholder="General notes or a block reason" title="Keep this brief. It can hold general notes for the local user, and if Access Level is Blocked it will also be shown as the block reason."></div>
+                <div class="field"><label for="user_mfa_email_otp" title="Optional per-user override for email OTP MFA. Default follows the node-wide MFA policy.">Email MFA Override</label><div class="select-shell"><select id="user_mfa_email_otp" title="Use Default to follow node policy, Required to always require email OTP for this user, or Off to exempt this user."><option value="default">Default</option><option value="required">Required</option><option value="off">Off</option></select></div></div>
+                <div class="field span2"><label for="user_block_reason" title="Short operator notes for this local user. Blocking is controlled from the Users matrix.">Notes / Block Reason</label><input id="user_block_reason" maxlength="80" placeholder="General notes or a block reason" title="Keep this brief. It can hold general notes for the local user; blocking is controlled from the Users matrix."></div>
                 </div>
                 <div class="users-actionbar">
                   <div class="users-action-group">
-                    <button class="special" id="saveUserPassword">Set Password</button>
-                    <button class="special" id="resetUserMfa">Reset MFA</button>
-                    <button id="saveUser">Save User</button>
-                    <button class="good" id="newUser">New User</button>
-                    <button class="warn" id="deleteUser" disabled>Remove User</button>
-                  </div>
-                  <div class="users-action-group">
-                    <button class="info" id="sendVerification">Send Verification</button>
-                    <button class="info" id="sendMfaTest">Send MFA Test Email</button>
-                    <button class="special" id="enrollTotp">Enroll Authenticator</button>
+                    <button id="saveUserPassword">Set Password</button>
+                    <button id="enrollTotp">Enroll Authenticator</button>
+                    <button id="resetUserMfa">Reset MFA</button>
+                    <button id="sendVerification">Send Verification</button>
+                    <button id="sendMfaTest">Send MFA Test Email</button>
                   </div>
                 </div>
               </section>
-              <section>
-                <h3>Access Matrix</h3>
-                <div class="subtle" style="margin-bottom:8px">Per-user channel and posting policy for the selected local callsign.</div>
-                <div class="form-grid" style="margin-bottom:12px">
-                  <div class="field"><label for="user_privilege" title="Access level on this node. Blocked prevents logins for this callsign and its SSIDs. System Operator grants access to the System Operator console and sysop commands.">Access Level</label><div class="select-shell"><select id="user_privilege" title="Choose Authenticated for ordinary local accounts, Non-Authenticated for local users without password-based authentication, Blocked to prevent logins for this callsign and its SSIDs, or System Operator for privileged operators on this node."><option value="">Non-Authenticated</option><option value="user">Authenticated</option><option value="sysop">System Operator</option><option value="blocked">Blocked</option></select></div></div>
-                  <div class="field"><label for="user_mfa_email_otp" title="Optional per-user override for email OTP MFA. Default follows the node-wide MFA policy.">Email MFA Override</label><div class="select-shell"><select id="user_mfa_email_otp" title="Use Default to follow node policy, Required to always require email OTP for this user, or Off to exempt this user."><option value="default">Default</option><option value="required">Required</option><option value="off">Off</option></select></div></div>
-                  <div class="field span2">
-                    <label title="Current registration state for the selected local user.">Registration State</label>
-                    <div class="users-statusrow">
-                      <div class="checkrow attention" title="Checked when this account email has been verified.">
-                        <input id="user_verified_state" type="checkbox" disabled>
-                        <label for="user_verified_state">Verified</label>
-                      </div>
-                      <div class="checkrow attention" title="Checked when this account is locked and cannot continue registration/login flows until a sysop unlocks it.">
-                        <input id="user_unlocked_state" type="checkbox" disabled>
-                        <label for="user_unlocked_state">Locked</label>
-                      </div>
-                      <button class="attention" id="unlockAccount" disabled title="Clear the selected user's locked account state and failed-password counter.">Unlock Account</button>
-                      <button class="warn" id="blockUser" disabled>Block User</button>
-                      <button class="good" id="unblockUser" disabled>Unblock User</button>
-                    </div>
-                  </div>
-                </div>
-                <div class="tablewrap">
-                  <table>
-                    <thead><tr><th>Capability</th><th>TELNET</th><th>WEB</th></tr></thead>
-                    <tbody>
-                      <tr><td title="Whether this callsign may log in through that interface.">Login</td><td><input id="access_telnet_login" type="checkbox" title="Allow telnet login for this callsign."></td><td><input id="access_web_login" type="checkbox" title="Allow public web login for this callsign."></td></tr>
-                      <tr><td title="Whether this callsign may post DX spots through that interface.">Spots</td><td><input id="access_telnet_spots" type="checkbox" title="Allow DX spot posting over telnet."></td><td><input id="access_web_spots" type="checkbox" title="Allow DX spot posting from the public web UI."></td></tr>
-                      <tr><td title="Whether this callsign may send chat-style traffic through that interface.">Chat</td><td><input id="access_telnet_chat" type="checkbox" title="Allow chat posting over telnet."></td><td><input id="access_web_chat" type="checkbox" title="Allow chat posting from the public web UI."></td></tr>
-                      <tr><td title="Whether this callsign may send announce traffic through that interface.">Announce</td><td><input id="access_telnet_announce" type="checkbox" title="Allow announce posting over telnet."></td><td><input id="access_web_announce" type="checkbox" title="Allow announce posting from the public web UI."></td></tr>
-                      <tr><td title="Whether this callsign may send WX traffic through that interface.">WX</td><td><input id="access_telnet_wx" type="checkbox" title="Allow WX posting over telnet."></td><td><input id="access_web_wx" type="checkbox" title="Allow WX posting from the public web UI."></td></tr>
-                      <tr><td title="Whether this callsign may send WCY traffic through that interface.">WCY</td><td><input id="access_telnet_wcy" type="checkbox" title="Allow WCY posting over telnet."></td><td><input id="access_web_wcy" type="checkbox" title="Allow WCY posting from the public web UI."></td></tr>
-                      <tr><td title="Whether this callsign may send WWV traffic through that interface.">WWV</td><td><input id="access_telnet_wwv" type="checkbox" title="Allow WWV posting over telnet."></td><td><input id="access_web_wwv" type="checkbox" title="Allow WWV posting from the public web UI."></td></tr>
-                    </tbody>
-                  </table>
-                </div>
-                <div class="actions" style="margin-top:12px">
-                  <button class="good" id="accessAll">Add All</button>
-                  <button class="warn" id="accessNone">Remove All</button>
-                </div>
-              </section>
+            </div>
             </div>
           </div>
         </div>
@@ -2594,28 +2867,43 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
         </header>
         <div class="body">
-          <div class="form-grid">
+          <div class="peer-toolbar">
             <div class="field"><label for="peer" title="Optional filter applied to policy-drop and protocol-history views.">Peer Filter</label><input id="peer" placeholder="Peer name" title="Enter part of a peer name to narrow protocol and policy-drop views."></div>
-            <div class="field"><label for="peername" title="Logical name for the peer you want to manage.">Peer Name</label><input id="peername" placeholder="Peer name" title="Used for connect, disconnect, and profile-change actions."></div>
-            <div class="field"><label for="peerdsn" title="Transport address used to open the link to this peer.">Transport Address</label><input id="peerdsn" placeholder="pycluster://host:7300?login=LOCALNODE-1&client=PEERNODE-1" title="This is the connection method, not the cluster family. Use an explicit transport such as pycluster://host:7300?login=LOCALCALL&client=PEERCALL for pyCluster peers, dxspider://host:7300?login=LOCALCALL&client=PEERCALL for DXSpider peers, or tcp://host:7300. Bare host:port values are not accepted. Leave this blank only for an inbound peer."></div>
-            <div class="field"><label for="peerprof" title="Cluster family/profile used once the link is established.">Cluster Family</label><div class="select-shell"><select id="peerprof" title="This is the peer behavior family, not the transport. For example: family pycluster with transport pycluster://host:7300?login=LOCALCALL&client=PEERCALL for pyCluster-to-pyCluster linking, or family dxspider with transport dxspider://host:7300?login=LOCALCALL&client=PEERCALL for DXSpider-style peers."><option value="pycluster">pyCluster</option><option value="dxspider">DXSpider</option><option value="dxnet">DxNet</option><option value="arcluster">AR-Cluster</option><option value="clx">CLX</option></select></div></div>
-            <div class="field"><label for="peerpass" title="Optional. Use this only when the remote peer is configured to require a node password.">Peer Password (Optional)</label><input id="peerpass" name="peer_secret" type="text" placeholder="Only if the peer requires it" title="Optional. If the remote peer is configured to require a node password, set it here. pyCluster stores it separately from the transport address and injects it only when connecting." autocomplete="off" autocapitalize="off" autocorrect="off" data-lpignore="true" data-1p-ignore="true" spellcheck="false"><div class="subtle">Some system operators from peers may require a password; please coordinate with your peer operator.</div></div>
-            <div class="field">
-              <label for="peerretry" title="When enabled, pyCluster will keep trying to re-establish this saved outbound peer.">Retry Automatically</label>
-              <div class="checkrow attention" title="Outbound peers retry with exponential backoff from 5 seconds up to 5 minutes. Inbound peers connect on their own and do not use local retry.">
-                <input id="peerretry" type="checkbox" checked>
-                <label for="peerretry">Reconnect this outbound peer automatically</label>
-              </div>
-              <div class="subtle" id="peerRetryHint" style="margin-top:6px">Outbound peers retry with backoff from 5s to 5m. Inbound peers connect to us and do not require a DSN transport address or use local retry.</div>
+            <div class="actions">
+              <button class="info" id="peerRefresh" title="Reload live peer connection details in the table below.">Refresh</button>
+              <button class="attention" id="newPeer" title="Create a new outbound peer definition.">New Peer</button>
+              <button class="good" id="pconnect" title="Create an outbound node-link connection to the selected peer DSN.">Connect</button>
+              <button class="warn" id="pdisconnect" title="Disconnect the selected live peer session.">Disconnect</button>
             </div>
           </div>
-          <div class="actions" style="margin-top:12px">
-            <button class="info" id="peerRefresh" title="Reload live peer connection details in the table below.">Refresh</button>
-            <button class="good" id="pconnect" title="Create an outbound node-link connection to the selected peer DSN.">Connect</button>
-            <button class="warn" id="pdisconnect" title="Disconnect the selected live peer session.">Disconnect</button>
-            <button class="special" id="peerSave" title="Save this outbound peer target without opening the link immediately.">Save Peer</button>
-            <button class="good" id="newPeer" title="Clear the editor and create a new outbound peer definition.">New Peer</button>
-            <button class="warn" id="peerDelete" title="Delete the saved peer target and disconnect any live session.">Delete Peer</button>
+          <div class="user-modal peer-modal hidden" id="peerModal" role="dialog" aria-modal="true" aria-labelledby="peerModalTitle">
+            <div class="users-editor-side user-modal-panel">
+              <section>
+                <div class="user-modal-head">
+                  <h3 id="peerModalTitle">Peer Details</h3>
+                  <div class="users-action-group">
+                    <button class="warn iconbtn" id="peerDelete" disabled title="Delete peer" aria-label="Delete peer">🗑</button>
+                    <button class="iconbtn" id="peerSave" title="Save peer" aria-label="Save peer">💾</button>
+                    <button class="secondary" id="closePeerModal" type="button" title="Close the peer editor">Close</button>
+                  </div>
+                </div>
+                <div class="user-status-detail" id="peerPathStatus"><div class="status-cell wide"><label>Status</label><span>Select a peer to review link status and traffic details.</span></div></div>
+                <div class="form-grid">
+                  <div class="field"><label for="peername" title="Logical name for the peer you want to manage.">Peer Name</label><input id="peername" placeholder="Peer name" title="Used for connect, disconnect, and profile-change actions."></div>
+                  <div class="field"><label for="peerpass" title="Optional. Use this only when the remote peer is configured to require a node password.">Peer Password (Optional)</label><input id="peerpass" name="peer_secret" type="text" placeholder="Only if the peer requires it" title="Optional. If the remote peer is configured to require a node password, set it here. pyCluster stores it separately from the transport address and injects it only when connecting." autocomplete="off" autocapitalize="off" autocorrect="off" data-lpignore="true" data-1p-ignore="true" spellcheck="false"></div>
+                  <div class="field"><label for="peerprof" title="Cluster family/profile used once the link is established.">Cluster Family</label><div class="select-shell"><select id="peerprof" title="This is the peer behavior family, not the transport. For example: family pycluster with transport pycluster://host:7300?login=LOCALCALL&client=PEERCALL for pyCluster-to-pyCluster linking, or family dxspider with transport dxspider://host:7300?login=LOCALCALL&client=PEERCALL for DXSpider-style peers."><option value="pycluster">pyCluster</option><option value="dxspider">DXSpider</option><option value="dxnet">DxNet</option><option value="arcluster">AR-Cluster</option><option value="clx">CLX</option></select></div></div>
+                  <div class="field wide"><label for="peerdsn" title="Transport address used to open the link to this peer.">Transport Address</label><input id="peerdsn" placeholder="pycluster://host:7300?login=LOCALNODE-1&client=PEERNODE-1" title="This is the connection method, not the cluster family. Use an explicit transport such as pycluster://host:7300?login=LOCALCALL&client=PEERCALL for pyCluster peers, dxspider://host:7300?login=LOCALCALL&client=PEERCALL for DXSpider peers, or tcp://host:7300. Bare host:port values are not accepted. Leave this blank only for an inbound peer."></div>
+                  <div class="field">
+                    <label for="peerretry" title="When enabled, pyCluster will keep trying to re-establish this saved outbound peer.">Retry Automatically</label>
+                    <div class="checkrow attention" title="Outbound peers retry with exponential backoff from 5 seconds up to 5 minutes. Inbound peers connect on their own and do not use local retry.">
+                      <input id="peerretry" type="checkbox" checked>
+                      <label for="peerretry">Reconnect this outbound peer automatically</label>
+                    </div>
+                  </div>
+                  <div class="field wide"><label>Peer Notes</label><div class="subtle" id="peerRetryHint">Outbound peers retry with backoff from 5s to 5m. Inbound peers connect to us and do not require a DSN transport address or use local retry.</div></div>
+                </div>
+              </section>
+            </div>
           </div>
           <div class="tablewrap" style="margin-top:14px">
             <table class="peer-table">
@@ -2634,7 +2922,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
         </header>
         <div class="body">
-          <div class="form-grid">
+          <div class="form-grid compact-controls">
             <div class="field"><label for="pstale" title="Minutes before a peer with known protocol state is considered stale.">Stale Minutes</label><input id="pstale" value="30" title="If no protocol updates arrive within this window, the peer health becomes stale."></div>
             <div class="field"><label for="pflap" title="Threshold at which repeated state changes mark a peer as flapping.">Flap Score</label><input id="pflap" value="3" title="Higher values make flap detection less sensitive."></div>
             <div class="field"><label for="pwindow" title="Time window used when evaluating protocol flap behavior.">Flap Window Seconds</label><input id="pwindow" value="300" title="Protocol state changes inside this window contribute to flap scoring."></div>
@@ -2690,7 +2978,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
         </header>
         <div class="body">
-          <div class="form-grid">
+          <div class="form-grid compact-controls">
             <div class="field"><label for="dx" title="DX callsign for a manually posted spot.">DX Call</label><input id="dx" placeholder="K1ABC" title="Destination or DX station being spotted."></div>
             <div class="field"><label for="freq" title="Frequency in kilohertz for a manual spot.">Frequency kHz</label><input id="freq" placeholder="14074.0" title="Use kilohertz, for example 14074.0 or 18100.0."></div>
             <div class="field"><label for="info" title="Comment, mode, or context for the manual spot. Supported modes include CW, WSPR, RTTY, FT8, FT4, FT2, JS8, JT9, JT65, Q65, MSK144, FSK441, MFSK, OLIVIA, DOMINO, THOR, HELL, ROS, VARA, PACTOR, WINMOR, ARDOP, PSK, FAX, SSTV, ATV, SSB, AM, FM, and DATA. Activity keywords include RARE, EME, SAT, WWFF, POTA, SOTA, IOTA, BOTA, and GMA.">Spot Info</label><input id="info" placeholder="FT8, split up 2, POTA" title="Supported modes include CW, WSPR, RTTY, FT8, FT4, FT2, JS8, JT9, JT65, Q65, MSK144, FSK441, MFSK, OLIVIA, DOMINO, THOR, HELL, ROS, VARA, PACTOR, WINMOR, ARDOP, PSK, FAX, SSTV, ATV, SSB, AM, FM, and DATA. Activity keywords include RARE, EME, SAT, WWFF, POTA, SOTA, IOTA, BOTA, and GMA."></div>
@@ -2801,7 +3089,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
         </header>
         <div class="body">
-          <div class="form-grid one" style="margin-top:12px">
+          <div class="form-grid one taxonomy-editor" style="margin-top:12px">
             <div class="field"><label for="taxonomy_mode_order" title="JSON array controlling mode filter order in the public web UI.">Mode Order (JSON)</label><textarea id="taxonomy_mode_order" placeholder='["CW","FT8","SSB"]' title="JSON array controlling mode filter order in the public web UI."></textarea></div>
             <div class="field"><label for="taxonomy_mode_rules" title="JSON array of mode rules with pattern, value, and optional button.">Mode Rules (JSON)</label><textarea id="taxonomy_mode_rules" placeholder='[{"pattern":"\\\\bFT8\\\\b","value":"FT8","button":"FT8"}]' title="Each object should include pattern and value; button is optional."></textarea></div>
             <div class="field"><label for="taxonomy_activity_rules" title="JSON array of activity rules with pattern, value, and optional button.">Activity Rules (JSON)</label><textarea id="taxonomy_activity_rules" placeholder='[{"pattern":"\\\\bPOTA\\\\b","value":"POTA","button":"POTA"}]' title="Each object should include pattern and value; button is optional."></textarea></div>
@@ -2851,7 +3139,7 @@ let userOffset = 0;
 let currentUserBrowser = 'local';
 let selectedUserCall = '';
 let selectedPeerName = '';
-const USER_PAGE_SIZE = 5;
+const USER_PAGE_SIZE = 10;
 const SYSOP_SESSION_KEY = 'pycluster-sysop-session';
 const API_BASE = window.location.pathname.startsWith('/sysop')
   ? '/sysop'
@@ -2921,17 +3209,12 @@ async function loadUserBrowser(panel = currentUserBrowser) {
   const target = String(panel || currentUserBrowser || 'local').toLowerCase();
   const userSearch = encodeURIComponent(byId('user_search').value.trim());
   if (target === 'local') {
-    const payload = await j('/api/users?exclude_privilege=sysop&exclude_blocked=1&exclude_clusters=1&limit=' + USER_PAGE_SIZE + '&offset=' + encodeURIComponent(userOffset) + (userSearch ? '&search=' + userSearch : ''));
+    const payload = await j('/api/users?exclude_privilege=sysop&exclude_clusters=1&limit=' + USER_PAGE_SIZE + '&offset=' + encodeURIComponent(userOffset) + (userSearch ? '&search=' + userSearch : ''));
     if (normalizeUserPage(payload || {})) {
       await loadUserBrowser(target);
       return;
     }
     setUserRows(payload || {});
-    return;
-  }
-  if (target === 'blocked') {
-    const payload = await j('/api/users?blocked=1&limit=200' + (userSearch ? '&search=' + userSearch : ''));
-    setBlockedRows(payload || {});
     return;
   }
   if (target === 'clusters') {
@@ -3032,9 +3315,30 @@ async function runButtonAction(id, fn) {
 }
 function say(text, ok = true) {
   const el = byId('who');
+  el.classList.remove('loading', 'error');
   el.textContent = text;
-  el.style.background = ok ? 'var(--accent-soft)' : '#f4ddd5';
-  el.style.color = ok ? '#174434' : '#7d2e17';
+  if (ok) {
+    el.style.background = 'linear-gradient(180deg, rgba(38,130,190,.96), rgba(22,96,150,.92))';
+    el.style.borderColor = 'rgba(112,190,255,.8)';
+    el.style.color = '#ffffff';
+    el.style.boxShadow = '0 0 0 1px rgba(112,190,255,.24), 0 0 18px rgba(88,166,255,.22)';
+  } else {
+    el.style.background = '';
+    el.style.borderColor = '';
+    el.style.color = '';
+    el.style.boxShadow = '';
+    el.classList.add('error');
+  }
+}
+function sayLoading(text) {
+  const el = byId('who');
+  el.classList.remove('error');
+  el.classList.add('loading');
+  el.textContent = text;
+  el.style.background = '';
+  el.style.borderColor = '';
+  el.style.color = '';
+  el.style.boxShadow = '';
 }
 function sayLogin(text, ok = true) {
   const el = byId('loginStatus');
@@ -3172,7 +3476,42 @@ function fillPeerForm(peer) {
   byId('peerretry').disabled = !!data.inbound && !data.desired;
   const roleText = data.inbound ? 'Inbound peers connect to us and do not require a DSN transport address or use local retry.' : 'Outbound peers are initiated by this node and can retry automatically.';
   setText('peerRetryHint', roleText + ' Backoff runs from 5s up to 5m.');
+  const direction = data.inbound ? 'Inbound' : 'Outbound';
+  const connection = data.connected === false ? 'Disconnected' : 'Connected';
+  const link = data.link || {};
+  const linkHealth = data.connected === false ? 'disconnected' : (link.health || 'connected');
+  const frames = `${Number(data.parsed_frames || 0)} in / ${Number(data.sent_frames || 0)} out`;
+  const rxTypes = summarizeTypes(data.rx_by_type);
+  const txTypes = summarizeTypes(data.tx_by_type);
+  const proto = data.proto || {};
+  const protoText = data.proto
+    ? `${proto.health || 'unknown'}${proto.age_min >= 0 ? ` • ${proto.age_min}m since inbound PC` : ' • no inbound PC age'} • last ${proto.last_pc_type || 'unknown'}`
+    : 'no protocol data';
+  const transport = String(data.transport || data.profile || '-').trim() || '-';
+  const dsnText = String(auth.dsn || data.path_hint || '').trim() || (data.inbound ? 'inbound peer' : '-');
+  const retryText = data.inbound ? 'no local retry' : (data.reconnect_enabled === false ? 'manual retry' : 'auto retry');
+  const queueText = data.inbound ? 'mail n/a' : `${Number(data.pending_mail || 0)} queued`;
+  const lastError = data.last_error ? String(data.last_error) : 'none';
+  byId('peerPathStatus').innerHTML = `
+    <div class="status-cell"><label>Connection</label><span>${esc(connection)}</span></div>
+    <div class="status-cell"><label>Direction</label><span>${esc(direction)}</span></div>
+    <div class="status-cell"><label>Link Health</label><span>${esc(linkHealth)}</span></div>
+    <div class="status-cell"><label>Family</label><span>${esc(data.profile || '-')}</span></div>
+    <div class="status-cell"><label>Transport</label><span>${esc(transport)}</span></div>
+    <div class="status-cell"><label>Retry</label><span>${esc(retryText)}</span></div>
+    <div class="status-cell"><label>Frames</label><span>${esc(frames)}</span></div>
+    <div class="status-cell"><label>RX Types</label><span>${esc(rxTypes)}</span></div>
+    <div class="status-cell"><label>TX Types</label><span>${esc(txTypes)}</span></div>
+    <div class="status-cell"><label>Mail Queue</label><span>${esc(queueText)}</span></div>
+    <div class="status-cell"><label>Route Issues</label><span>${esc(String(data.route_issues || 0))}</span></div>
+    <div class="status-cell"><label>Last Error</label><span>${esc(lastError)}</span></div>
+    <div class="status-cell wide"><label>Protocol</label><span>${esc(protoText)}</span></div>
+    <div class="status-cell wide"><label>Address</label><span>${esc(dsnText)}</span></div>`;
   setText('peerEditorTitle', selectedPeerName ? `Editing ${selectedPeerName}` : 'Peers and Links');
+  setText('peerModalTitle', selectedPeerName ? `Editing ${selectedPeerName}` : 'Peer Details');
+  byId('peerDelete').disabled = !selectedPeerName;
+  byId('peerSave').title = selectedPeerName ? 'Update peer' : 'Save peer';
+  byId('peerSave').setAttribute('aria-label', selectedPeerName ? 'Update peer' : 'Save peer');
 }
 function clearPeerForm() {
   selectedPeerName = '';
@@ -3186,8 +3525,19 @@ function clearPeerForm() {
   byId('peerprof').disabled = false;
   byId('peerpass').disabled = false;
   byId('peerretry').disabled = false;
+  byId('peerPathStatus').innerHTML = '<div class="status-cell wide"><label>Status</label><span>Select a peer to review link status and traffic details.</span></div>';
   setText('peerRetryHint', 'Outbound peers retry with backoff from 5s to 5m. Inbound peers connect to us and do not require a DSN transport address or use local retry.');
   setText('peerEditorTitle', 'Peers and Links');
+  setText('peerModalTitle', 'Peer Details');
+  byId('peerDelete').disabled = true;
+  byId('peerSave').title = 'Save peer';
+  byId('peerSave').setAttribute('aria-label', 'Save peer');
+}
+function openPeerModal() {
+  byId('peerModal').classList.remove('hidden');
+}
+function closePeerModal() {
+  byId('peerModal').classList.add('hidden');
 }
 function bindSelectablePeerRows(body, rows) {
   body.querySelectorAll('tr[data-peer]').forEach((tr) => {
@@ -3204,6 +3554,7 @@ function bindSelectablePeerRows(body, rows) {
       } else {
         say('Loaded peer ' + tr.dataset.peer + ' for editing.');
       }
+      openPeerModal();
     });
   });
 }
@@ -3426,29 +3777,45 @@ function setPolicyDropRows(rows) {
     </tr>`;
   }).join('');
 }
+function renderPostingAccessMatrix(access, fallback='-') {
+  const caps = [
+    ['spots', 'Spots'],
+    ['rbn', 'RBN'],
+    ['chat', 'Chat'],
+    ['announce', 'Annc'],
+    ['wx', 'WX'],
+    ['wcy', 'WCY'],
+    ['wwv', 'WWV'],
+  ];
+  const channels = [
+    ['telnet', 'Telnet'],
+    ['web', 'Web'],
+  ];
+  if (!access || typeof access !== 'object') return `<span>${esc(fallback || '-')}</span>`;
+  const head = `<div class="access-head">Channel</div>${caps.map(([, label]) => `<div class="access-head">${esc(label)}</div>`).join('')}`;
+  const rows = channels.map(([channel, label]) => {
+    const row = access[channel] || {};
+    return `<div class="access-rowhead">${esc(label)}</div>${caps.map(([cap]) => {
+      const on = !!row[cap];
+      return `<div class="access-state ${on ? 'on' : 'off'}" title="${esc(label)} ${esc(cap.toUpperCase())} ${on ? 'allowed' : 'blocked'}">${on ? 'Yes' : 'No'}</div>`;
+    }).join('')}`;
+  }).join('');
+  return `<div class="access-summary-grid">${head}${rows}</div>`;
+}
 function fillUserForm(row) {
   const data = row || {};
   selectedUserCall = String(data.call || '').toUpperCase();
   byId('user_call').value = data.call || '';
-  byId('user_privilege').value = data.blocked_login ? 'blocked' : String(data.privilege || '').toLowerCase();
+  const nodeFamily = String(data.node_family || '').toLowerCase();
+  byId('user_node_family').value = nodeFamily || (String(data.privilege || '').toLowerCase() === 'sysop' ? 'sysop' : '');
   byId('user_name').value = data.display_name || '';
   byId('user_qth').value = data.qth || '';
   byId('user_email').value = data.email || '';
   byId('user_home_node').value = data.home_node || '';
   byId('user_grid').value = data.qra || '';
-  byId('user_location').value = data.location || '';
   byId('user_block_reason').value = data.user_note || data.blocked_reason || '';
-  byId('user_node_family').value = data.node_family || '';
   byId('user_mfa_email_otp').value = data.mfa_email_otp || 'default';
   byId('user_password').value = '';
-  const access = data.access || {};
-  ['telnet','web'].forEach((channel) => {
-    const rowAccess = access[channel] || {};
-    ['login','spots','chat','announce','wx','wcy','wwv'].forEach((capability) => {
-      const el = byId(`access_${channel}_${capability}`);
-      if (el) el.checked = !!rowAccess[capability];
-    });
-  });
   const inboxStates = Object.entries(data.mail_inbox_states || {}).map(([k, v]) => `${k}=${v}`).join(', ') || 'none';
   const outboxStates = Object.entries(data.mail_outbox_states || {}).map(([k, v]) => `${k}=${v}`).join(', ') || 'none';
   let mailStatus = `Inbox ${Number(data.mail_inbox_total || 0)} total, ${Number(data.mail_inbox_unread || 0)} unread`;
@@ -3457,62 +3824,74 @@ function fillUserForm(row) {
   if (Number(data.mail_outbox_pending || 0) > 0) mailStatus += ` • pending routes: ${Number(data.mail_outbox_pending || 0)}`;
   if (Number(data.mail_outbox_issues || 0) > 0) mailStatus += ` • delivery issues: ${Number(data.mail_outbox_issues || 0)}`;
   if (data.mail_last_error) mailStatus += ` • last error: ${data.mail_last_error}`;
-  setText('userMailStatus', mailStatus);
   const mfaMethods = Array.isArray(data.mfa_methods) && data.mfa_methods.length ? data.mfa_methods.join(', ') : 'none';
   let mfaStatus = `MFA ${data.mfa_enabled ? 'enabled' : 'disabled'} • methods: ${mfaMethods}`;
   mfaStatus += ` • policy: ${data.mfa_policy || 'not required by node policy'}`;
   if (data.mfa_email_otp) mfaStatus += ` • email override: ${data.mfa_email_otp}`;
-  setText('userMfaStatus', mfaStatus);
   let regStatus = `Principal ${data.principal_call || data.call || '-'}`;
   regStatus += ` • state: ${data.registration_state || 'pending'}`;
   regStatus += ` • email verified: ${data.email_verified ? 'yes' : 'no'}`;
   if (data.email_verified_epoch) regStatus += ` • verified: ${fmtEpoch(data.email_verified_epoch)}`;
   regStatus += ` • grace logins remaining: ${Number(data.grace_logins_remaining || 0)}`;
   if (data.registration_locked) regStatus += ' • account locked';
-  setText('userRegistrationStatus', regStatus);
-  setRegistrationActionState(!!data.email_verified, !!data.registration_locked, true);
+  const lastLogin = data.last_login_epoch ? fmtEpoch(data.last_login_epoch) : '-';
+  const lastPath = data.last_login_peer || '-';
+  const inboxSummary = `${Number(data.mail_inbox_unread || 0)}/${Number(data.mail_inbox_total || 0)} unread/total`;
+  const outboxSummary = `${Number(data.mail_outbox_pending || 0)}/${Number(data.mail_outbox_total || 0)} pending/total`;
+  byId('userPathStatus').innerHTML = `
+    <div class="status-cell"><label>Online</label><span>${esc(data.online_status || 'Offline')}</span></div>
+    <div class="status-cell"><label>Last Login</label><span>${esc(lastLogin)}</span></div>
+    <div class="status-cell"><label>Last Path</label><span>${esc(lastPath)}</span></div>
+    <div class="status-cell"><label>Inbox</label><span>${esc(inboxSummary)}</span></div>
+    <div class="status-cell"><label>Outbox</label><span>${esc(outboxSummary)}</span></div>
+    <div class="status-cell"><label>Login Access</label><span>${esc(data.access_login_summary || '-')}</span></div>
+    <div class="status-cell wide"><label>Posting Access</label>${renderPostingAccessMatrix(data.access, data.access_post_summary || '-')}</div>
+    <div class="status-cell wide"><label>MFA</label><span>${esc(mfaStatus)}</span></div>
+    <div class="status-cell wide"><label>Registration</label><span>${esc(regStatus)}</span></div>`;
+  applyClusterEditorRules();
   setText('userEditorTitle', selectedUserCall ? `Editing ${selectedUserCall}` : 'User Details');
-  setText('userSelectionHint', selectedUserCall ? `Selected user: ${selectedUserCall}. Click any row below to load a different editor record.` : 'Select a user below to open the editor.');
-  setText('registrationSelectionHint', selectedUserCall ? `Selected user: ${selectedUserCall}. Pending requests stay here while the editor remains on the right.` : 'Approve requests here, or select an existing user from the other tabs to edit details on the right.');
-  setText('saveUser', selectedUserCall ? 'Update User' : 'Save User');
-  byId('blockUser').disabled = !selectedUserCall || !!data.blocked_login;
-  byId('unblockUser').disabled = !selectedUserCall || !data.blocked_login;
+  setText('registrationSelectionHint', selectedUserCall ? `Selected user: ${selectedUserCall}. Pending requests stay here while the editor remains in the modal.` : 'Approve requests here, or select an existing user from the other tabs to edit details.');
+  const saveLabel = selectedUserCall ? 'Update user' : 'Save user';
+  byId('saveUser').title = saveLabel;
+  byId('saveUser').setAttribute('aria-label', saveLabel);
   byId('deleteUser').disabled = !selectedUserCall;
 }
 function clearUserForm(defaultCall='') {
   selectedUserCall = '';
   byId('user_call').value = defaultCall || '';
-  byId('user_privilege').value = '';
   byId('user_name').value = '';
   byId('user_qth').value = '';
   byId('user_email').value = '';
   byId('user_home_node').value = '';
   byId('user_grid').value = '';
-  byId('user_location').value = '';
   byId('user_block_reason').value = '';
   byId('user_node_family').value = '';
   byId('user_mfa_email_otp').value = 'default';
   byId('user_password').value = '';
-  applyPrivilegeDefaults('');
-  setText('userMailStatus', 'Mail status for the selected user will appear here.');
-  setText('userMfaStatus', 'MFA status for the selected user will appear here.');
-  setText('userRegistrationStatus', 'Registration status for the selected user will appear here.');
-  setText('userSelectionHint', 'Select a user below to open the editor.');
+  byId('userPathStatus').innerHTML = '<div class="status-cell wide"><label>Status</label><span>Last login and path for the selected user will appear here.</span></div>';
   setText('registrationSelectionHint', 'Approve requests here, or select an existing user from the other tabs to edit details on the right.');
-  setRegistrationActionState(false, false, false);
   setText('userEditorTitle', 'User Details');
-  setText('saveUser', 'Save User');
-  byId('blockUser').disabled = true;
-  byId('unblockUser').disabled = true;
+  byId('saveUser').title = 'Save user';
+  byId('saveUser').setAttribute('aria-label', 'Save user');
   byId('deleteUser').disabled = true;
+  applyClusterEditorRules();
 }
-function setRegistrationActionState(verified, locked, enabled) {
-  const verifiedState = byId('user_verified_state');
-  if (verifiedState) verifiedState.checked = !!verified;
-  const unlockedState = byId('user_unlocked_state');
-  if (unlockedState) unlockedState.checked = !!locked;
-  const unlockButton = byId('unlockAccount');
-  if (unlockButton) unlockButton.disabled = !enabled || !locked || !selectedUserCall;
+function applyClusterEditorRules() {
+  const userType = byId('user_node_family').value.trim();
+  const isCluster = !!userType && userType !== 'sysop';
+  byId('user_mfa_email_otp').disabled = isCluster;
+  byId('resetUserMfa').disabled = isCluster;
+  byId('sendMfaTest').disabled = isCluster;
+  byId('enrollTotp').disabled = isCluster;
+  if (isCluster) {
+    byId('user_mfa_email_otp').value = 'off';
+  }
+}
+function openUserModal() {
+  byId('userModal').classList.remove('hidden');
+}
+function closeUserModal() {
+  byId('userModal').classList.add('hidden');
 }
 function bindSelectableRows(body, rows) {
   body.querySelectorAll('tr[data-call]').forEach((tr) => {
@@ -3521,10 +3900,11 @@ function bindSelectableRows(body, rows) {
     tr.addEventListener('click', () => {
       const row = rows.find((item) => item.call === tr.dataset.call);
       fillUserForm(row || {});
+      openUserModal();
       body.querySelectorAll('tr[data-call]').forEach((other) => {
         other.classList.toggle('selected', other.dataset.call === tr.dataset.call);
       });
-      say('Loaded user ' + tr.dataset.call + ' for editing.');
+      say('Opened user ' + tr.dataset.call + ' for editing.');
     });
   });
 }
@@ -3565,6 +3945,9 @@ function dxPostingEnabled(access) {
   const caps = ['spots','announce'];
   return channels.some((channel) => caps.some((cap) => !!(((access || {})[channel] || {})[cap])));
 }
+function rbnAccessEnabled(access) {
+  return ['telnet','web'].some((channel) => !!(((access || {})[channel] || {})['rbn']));
+}
 function bulletinPostingEnabled(access) {
   const channels = ['telnet','web'];
   const caps = ['chat','wx','wcy','wwv'];
@@ -3573,7 +3956,46 @@ function bulletinPostingEnabled(access) {
 function mfaStatusMark(row) {
   const methods = Array.isArray(row.mfa_methods) && row.mfa_methods.length ? row.mfa_methods.join(', ') : 'none';
   const title = `MFA ${row.mfa_enabled ? 'enabled' : 'disabled'}; methods: ${methods}; policy: ${row.mfa_policy || 'not required by node policy'}`;
-  return mark(!!row.mfa_enabled, title, title);
+  const enabled = !!row.mfa_enabled;
+  return `<span class="matrix-toggle ${enabled ? 'on' : 'off'}" title="${esc(title)}">${enabled ? '✓' : '✗'}</span>`;
+}
+function masterAccessEnabled(access, capability) {
+  return !!(((access || {}).telnet || {})[capability]) && !!(((access || {}).web || {})[capability]);
+}
+function matrixToggle(row, kind, enabled, onTitle, offTitle, capability='') {
+  const call = String((row || {}).call || '').toUpperCase();
+  const cls = enabled ? 'on' : 'off';
+  const title = enabled ? onTitle : offTitle;
+  return `<button type="button" class="matrix-toggle ${cls}" data-call="${esc(call)}" data-toggle-kind="${esc(kind)}" data-toggle-value="${enabled ? '1' : '0'}" data-toggle-capability="${esc(capability)}" title="${esc(title)}">${enabled ? '✓' : '✗'}</button>`;
+}
+function matrixStatus(enabled, title) {
+  return `<span class="matrix-toggle ${enabled ? 'on' : 'off'}" title="${esc(title || '')}">${enabled ? '✓' : '✗'}</span>`;
+}
+function bindMatrixToggles(body) {
+  body.querySelectorAll('button.matrix-toggle').forEach((btn) => {
+    btn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const call = btn.dataset.call || '';
+      const kind = btn.dataset.toggleKind || '';
+      const capability = btn.dataset.toggleCapability || '';
+      const current = btn.dataset.toggleValue === '1';
+      if (!call || !kind) return;
+      btn.disabled = true;
+      try {
+        const payload = {call, kind, value: !current};
+        if (capability) payload.capability = capability;
+        const r = await j('/api/users/toggle', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+        if (r && r.user && selectedUserCall === String(r.user.call || '').toUpperCase()) fillUserForm(r.user);
+        say(r && r.ok ? `Updated ${call}.` : `Updating ${call} failed.`, !!(r && r.ok));
+        await loadUserBrowser(currentUserBrowser);
+      } catch (err) {
+        say('Updating user matrix failed: ' + errText(err), false);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
 }
 function setSysopRows(rows) {
   const body = byId('sysopRows');
@@ -3592,52 +4014,8 @@ function setSysopRows(rows) {
   body.innerHTML = rendered.concat(fillerRows(Math.max(0, USER_PAGE_SIZE - rendered.length), 6)).join('');
   bindSelectableRows(body, rows);
 }
-function collectAccessMatrix() {
-  const access = {};
-  ['telnet','web'].forEach((channel) => {
-    access[channel] = {};
-    ['login','spots','chat','announce','wx','wcy','wwv'].forEach((capability) => {
-      const el = byId(`access_${channel}_${capability}`);
-      access[channel][capability] = !!(el && el.checked);
-    });
-  });
-  return access;
-}
-function setAccessMatrixAll(enabled) {
-  ['telnet','web'].forEach((channel) => {
-    ['login','spots','chat','announce','wx','wcy','wwv'].forEach((capability) => {
-      const el = byId(`access_${channel}_${capability}`);
-      if (el) el.checked = !!enabled;
-    });
-  });
-}
-function setAccessCapability(channel, capability, enabled) {
-  const el = byId(`access_${channel}_${capability}`);
-  if (el) el.checked = !!enabled;
-}
-function applyPrivilegeDefaults(privilege) {
-  const level = String(privilege || '').trim().toLowerCase();
-  if (level === 'blocked') {
-    setAccessMatrixAll(false);
-    return;
-  }
-  if (level === '') {
-    setAccessMatrixAll(false);
-    ['telnet','web'].forEach((channel) => {
-      setAccessCapability(channel, 'login', true);
-      setAccessCapability(channel, 'chat', true);
-      setAccessCapability(channel, 'wx', true);
-      setAccessCapability(channel, 'wcy', true);
-      setAccessCapability(channel, 'wwv', true);
-    });
-    return;
-  }
-  if (level === 'user' || level === 'sysop') {
-    setAccessMatrixAll(true);
-  }
-}
 function setUserRows(payload) {
-  setRegistryRows('userRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No local users match this filter.');
+  setRegistryRows('userRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No users match this filter.');
 }
 function normalizeUserPage(payload) {
   const total = Number((payload && payload.total) || 0);
@@ -3653,23 +4031,6 @@ function normalizeUserPage(payload) {
   if (offset < total) return false;
   userOffset = Math.max(0, (Math.ceil(total / limit) - 1) * limit);
   return true;
-}
-function setBlockedRows(payload) {
-  const body = byId('blockedRows');
-  const rows = Array.isArray(payload && payload.rows) ? payload.rows : [];
-  if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="5">No blocked users match this filter.</td></tr>';
-    return;
-  }
-  const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
-    <td><strong>${esc(row.call || '')}</strong></td>
-    <td>${esc(row.home_node || '-')}</td>
-    <td>${esc(row.blocked_reason || 'Blocked by local policy')}</td>
-    <td>${esc(fmtEpoch(row.updated_epoch))}</td>
-    <td>${esc(row.last_login_peer || '-')}</td>
-  </tr>`);
-  body.innerHTML = rendered.concat(fillerRows(Math.max(0, USER_PAGE_SIZE - rendered.length), 5)).join('');
-  bindSelectableRows(body, rows);
 }
 function setClusterRows(payload) {
   setRegistryRows('clusterRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No cluster-peer records match this filter.');
@@ -3730,27 +4091,31 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
   if (prevId && byId(prevId)) byId(prevId).disabled = offset <= 0;
   if (nextId && byId(nextId)) byId(nextId).disabled = offset + limit >= total;
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="10">${esc(emptyText)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="13">${esc(emptyText)}</td></tr>`;
     return;
   }
   const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
     <td><strong>${esc(row.call || '')}</strong></td>
-    <td><span class="tag">${esc(row.access_label || row.privilege || 'None')}</span></td>
-    <td>${esc(row.home_node || '-')}</td>
-    <td title="${esc(row.last_login_peer || 'No recorded telnet login path')}">${mark(!!(((row.access || {}).telnet || {}).login), 'Telnet login allowed', 'Telnet login blocked')}</td>
-    <td title="${esc(row.last_login_peer || 'No recorded web login path')}">${mark(!!(((row.access || {}).web || {}).login), 'Web login allowed', 'Web login blocked')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer records are treated as verified') : matrixToggle(row, 'verified', !!row.email_verified, 'Verified email; tap to mark unverified', 'Email not verified; tap to mark verified')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer records cannot be locked') : matrixToggle(row, 'locked', !row.registration_locked, 'Unlocked; tap to lock account', 'Locked; tap to unlock account')}</td>
     <td>${mfaStatusMark(row)}</td>
-    <td>${mark(dxPostingEnabled(row.access), 'DX spots or announce traffic allowed on one or more channels', 'DX spots and announce traffic blocked on all channels')}</td>
-    <td>${mark(bulletinPostingEnabled(row.access), 'Chat, WX, WCY, or WWV traffic allowed on one or more channels', 'Chat and bulletin-style traffic blocked on all channels')}</td>
-    <td title="${esc(row.last_login_peer || 'No recorded inbound path')}">${esc(fmtEpoch(row.last_login_epoch))}</td>
-    <td>${esc(row.last_login_peer || '-')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer records cannot be blocked') : matrixToggle(row, 'blocked', !row.blocked_login, 'Unblocked; tap to block login', 'Blocked; tap to unblock login')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer login is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'login'), 'Login allowed; tap to disable login', 'Login disabled; tap to enable login', 'login')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer spots are always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'spots'), 'DX spots allowed; tap to disable spots', 'DX spots disabled; tap to enable spots', 'spots')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer RBN is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'rbn'), 'RBN allowed; tap to disable RBN', 'RBN disabled; tap to enable RBN', 'rbn')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer chat is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'chat'), 'Chat allowed; tap to disable chat', 'Chat disabled; tap to enable chat', 'chat')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer announce is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'announce'), 'Announce allowed; tap to disable announce', 'Announce disabled; tap to enable announce', 'announce')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer WX is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'wx'), 'WX allowed; tap to disable WX', 'WX disabled; tap to enable WX', 'wx')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer WCY is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'wcy'), 'WCY allowed; tap to disable WCY', 'WCY disabled; tap to enable WCY', 'wcy')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer WWV is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'wwv'), 'WWV allowed; tap to disable WWV', 'WWV disabled; tap to enable WWV', 'wwv')}</td>
   </tr>`);
   const fillers = [];
   for (let i = rendered.length; i < USER_PAGE_SIZE; i += 1) {
-    fillers.push('<tr class="filler"><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>');
+    fillers.push('<tr class="filler">' + Array.from({length: 13}, () => '<td>&nbsp;</td>').join('') + '</tr>');
   }
   body.innerHTML = rendered.concat(fillers).join('');
   bindSelectableRows(body, rows);
+  bindMatrixToggles(body);
 }
 function fillNodeForm(data) {
   if (!data) return;
@@ -3791,18 +4156,20 @@ function fillNodeForm(data) {
   if (byId('retention_stale_users_enabled').checked) {
     status += ` Stale-user pruning is enabled at ${Number(data.retention_stale_users_days || 365)} days.`;
   }
-  let cleanupTail = '';
+  let cleanupLastRun = 'Never';
+  let cleanupResult = 'No cleanup result is available.';
   if (lastRun > 0) {
-    cleanupTail += `Last run: ${fmtEpoch(lastRun)}.`;
+    cleanupLastRun = fmtEpoch(lastRun);
   }
   if (data.retention_last_result) {
     try {
       const parsed = JSON.parse(data.retention_last_result);
-      const removed = `Removed ${Number(parsed.spots || 0)} spots, ${Number(parsed.messages || 0)} messages, ${Number(parsed.bulletins || 0)} bulletins, and ${Number(parsed.users || 0)} users.`;
-      cleanupTail += cleanupTail ? ` ${removed}` : removed;
+      cleanupResult = `Removed ${Number(parsed.spots || 0)} spots, ${Number(parsed.messages || 0)} messages, ${Number(parsed.bulletins || 0)} bulletins, and ${Number(parsed.users || 0)} users.`;
     } catch {}
   }
-  byId('retentionStatus').innerHTML = cleanupTail ? `${status}<br>${cleanupTail}` : status;
+  setText('retentionStatus', status);
+  setText('retentionLastRun', cleanupLastRun);
+  setText('retentionLastResult', cleanupResult);
   const rbnStatus = data.rbn_status || {};
   const rbnState = String(rbnStatus.state || (data.rbn_enabled ? 'stopped' : 'disabled'));
   let rbnText = `Feed is ${esc(rbnState)}.`;
@@ -3814,7 +4181,12 @@ function fillNodeForm(data) {
   if (rbnStatus.last_connected_at) rbnText += ` Connected: ${esc(rbnStatus.last_connected_at)}.`;
   if (rbnStatus.last_spot_at) rbnText += ` Last spot: ${esc(rbnStatus.last_spot_at)} ${esc(rbnStatus.last_spot || '')}.`;
   if (rbnStatus.last_error) rbnText += ` Last error: ${esc(rbnStatus.last_error)}.`;
-  byId('rbnStatus').innerHTML = rbnText;
+  setText('rbnStatusState', rbnState);
+  setText('rbnStatusEndpoint', rbnHost ? `${rbnHost}:${rbnPorts}` : '-');
+  setText('rbnStatusFeeds', namedFeeds || '-');
+  setText('rbnStatusConnected', rbnStatus.last_connected_at || '-');
+  setText('rbnStatusLastSpot', rbnStatus.last_spot_at ? `${rbnStatus.last_spot_at} ${rbnStatus.last_spot || ''}` : '-');
+  setText('rbnStatusError', rbnStatus.last_error || 'none');
   setText('navRbn', rbnState);
   byId('navRbn').title = rbnText.replace(/<[^>]*>/g, '');
   const datasets = data.datasets || {};
@@ -3857,9 +4229,9 @@ function renderUpgradeStatus(payload) {
   if (availability.latest_remote_tag) tags.push(`Latest remote tag: ${availability.latest_remote_tag}`);
   if (availability.latest_local_tag) tags.push(`Latest local tag: ${availability.latest_local_tag}`);
   setText('upgradeMetaTag', tags.join(' • ') || 'No upgrade metadata is available.');
-  setText('upgradeMetaPath', migrations.length ? `Upgrade path: ${migrations.join(', ')}` : '');
-  setText('upgradeMetaLog', status.log_path ? `Log: ${status.log_path}` : '');
-  setText('upgradeMetaRemote', availability.remote_error ? `Remote check note: ${availability.remote_error}` : '');
+  setText('upgradeMetaPath', migrations.length ? `Upgrade path: ${migrations.join(', ')}` : '-');
+  setText('upgradeMetaLog', status.log_path ? `Log: ${status.log_path}` : '-');
+  setText('upgradeMetaRemote', availability.remote_error ? `Remote check note: ${availability.remote_error}` : '-');
   const runBtn = byId('runUpgrade');
   if (runBtn) runBtn.disabled = status.state === 'running';
 }
@@ -3878,6 +4250,7 @@ function loadTaxonomyEditor(data) {
   setText('taxonomyStatus', data.strings_path ? `Editing taxonomy in ${data.strings_path}` : 'Taxonomy editor is ready.');
 }
 async function load() {
+  sayLoading('Loading dashboard data...');
   const peer = encodeURIComponent(byId('peer').value.trim());
   const lim = parseInt(byId('phlim').value.trim(), 10) || 20;
   const results = await Promise.allSettled([
@@ -3929,6 +4302,12 @@ async function load() {
 
   if (spotsRes.status === 'fulfilled') setSpotRows(spotsRes.value);
   if (peersRes.status === 'fulfilled') setPeerRows(peersRes.value);
+  if (peersRes.status === 'fulfilled') {
+    const peers = Array.isArray(peersRes.value) ? peersRes.value : [];
+    const connected = peers.filter((peer) => peer && peer.connected !== false).length;
+    setText('navPeers', String(peers.length));
+    byId('navPeers').title = `${connected} connected, ${peers.length - connected} disconnected`;
+  }
   if (protoSummaryRes.status === 'fulfilled') setProtoSummary(protoSummaryRes.value);
   if (protoAlertsRes.status === 'fulfilled') setProtoAlertRows(protoAlertsRes.value);
   if (histRes.status === 'fulfilled') setHistRows(histRes.value);
@@ -4175,14 +4554,22 @@ byId('userSearch').onclick = async () => {
 };
 byId('newUser').onclick = async () => {
   clearUserForm('');
+  openUserModal();
   say('Ready to add a new local callsign.');
 };
-byId('user_privilege').onchange = () => {
-  const level = byId('user_privilege').value.trim();
-  applyPrivilegeDefaults(level);
-  if (level === '') say('Non-Authenticated selected. Login, chat, WX, WCY, and WWV remain allowed by default; spots and announcements stay disabled.');
-  else if (level === 'blocked') say('Blocked selected. Cleared telnet and web access in the current form.');
-  else say('Authenticated access defaults applied in the current form.');
+byId('closeUserModal').onclick = () => {
+  closeUserModal();
+};
+byId('userModal').addEventListener('click', (event) => {
+  if (event.target === byId('userModal')) closeUserModal();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !byId('userModal').classList.contains('hidden')) closeUserModal();
+});
+byId('user_node_family').onchange = () => {
+  applyClusterEditorRules();
+  const userType = byId('user_node_family').value.trim();
+  if (userType && userType !== 'sysop') say('Cluster peer selected. Access is forced on, MFA is off, and the record is treated as verified.');
 };
 byId('userPrev').onclick = async () => {
   userOffset = Math.max(0, userOffset - USER_PAGE_SIZE);
@@ -4193,20 +4580,21 @@ byId('userNext').onclick = async () => {
   await loadUserBrowser('local');
 };
 function userEditorPayload() {
+  const userType = byId('user_node_family').value.trim();
+  const clusterFamily = userType === 'sysop' ? '' : userType;
   return {
     original_call: selectedUserCall || '',
     call: byId('user_call').value.trim(),
     display_name: byId('user_name').value.trim(),
     home_node: byId('user_home_node').value.trim(),
-    node_family: byId('user_node_family').value.trim(),
+    node_family: clusterFamily,
     mfa_email_otp: byId('user_mfa_email_otp').value.trim(),
     qth: byId('user_qth').value.trim(),
     qra: byId('user_grid').value.trim().toUpperCase(),
-    location: byId('user_location').value.trim(),
+    location: '',
     email: byId('user_email').value.trim(),
-    privilege: byId('user_privilege').value.trim(),
+    privilege: userType === 'sysop' ? 'sysop' : '',
     blocked_reason: byId('user_block_reason').value.trim().slice(0, 80),
-    access: collectAccessMatrix(),
   };
 }
 async function saveUserEditor(successMessage, failureMessage) {
@@ -4222,26 +4610,6 @@ async function saveUserEditor(successMessage, failureMessage) {
 }
 byId('saveUser').onclick = async () => {
   await saveUserEditor('User record saved.', 'Saving user failed');
-};
-byId('blockUser').onclick = async () => {
-  const call = byId('user_call').value.trim();
-  if (!call) {
-    say('Select a user before blocking access.', false);
-    return;
-  }
-  byId('user_privilege').value = 'blocked';
-  applyPrivilegeDefaults('blocked');
-  await saveUserEditor('User blocked.', 'Blocking user failed');
-};
-byId('unblockUser').onclick = async () => {
-  const call = byId('user_call').value.trim();
-  if (!call) {
-    say('Select a user before unblocking access.', false);
-    return;
-  }
-  byId('user_privilege').value = 'user';
-  applyPrivilegeDefaults('user');
-  await saveUserEditor('User unblocked.', 'Unblocking user failed');
 };
 byId('saveUserPassword').onclick = async () => {
   const call = byId('user_call').value.trim();
@@ -4309,21 +4677,6 @@ byId('sendVerification').onclick = async () => {
     say('Sending verification failed: ' + errText(err), false);
   }
 };
-byId('unlockAccount').onclick = async () => {
-  const call = byId('user_call').value.trim();
-  if (!call) {
-    say('A callsign is required before unlocking an account.', false);
-    return;
-  }
-  try {
-    const r = await j('/api/users/unlock', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
-    if (r && r.ok && r.user) fillUserForm(r.user);
-    say(r && r.ok ? 'Account unlocked for ' + call + '.' : 'Unlocking account failed.', !!(r && r.ok));
-    await load();
-  } catch (err) {
-    say('Unlocking account failed: ' + errText(err), false);
-  }
-};
 byId('resetUserMfa').onclick = async () => {
   const call = byId('user_call').value.trim();
   if (!call) {
@@ -4357,19 +4710,19 @@ byId('enrollTotp').onclick = async () => {
     say('Authenticator MFA enrollment failed: ' + errText(err), false);
   }
 };
-byId('accessAll').onclick = () => {
-  setAccessMatrixAll(true);
-  say('Enabled all channel and posting permissions for the current user form.');
-};
-byId('accessNone').onclick = () => {
-  setAccessMatrixAll(false);
-  say('Cleared all channel and posting permissions for the current user form.');
-};
 byId('deleteUser').onclick = async () => {
   try {
     const call = byId('user_call').value.trim();
+    if (!call) {
+      say('A callsign is required before removing a user.', false);
+      return;
+    }
+    if (!window.confirm('Remove user ' + call + '? This cannot be undone.')) return;
     const r = await j('/api/users/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
-    if (r && r.ok) clearUserForm(webCall || '');
+    if (r && r.ok) {
+      clearUserForm(webCall || '');
+      closeUserModal();
+    }
     say(r && r.ok ? 'User record removed.' : 'Removing user failed.', !!(r && r.ok));
     await load();
   } catch (err) {
@@ -4394,6 +4747,7 @@ byId('peerSave').onclick = async () => {
   const profile = byId('peerprof').value.trim();
   const reconnect = !!byId('peerretry').checked;
   const r = await j('/api/peer/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, password, profile, reconnect})});
+  if (r && r.ok) closePeerModal();
   say(r && r.ok ? 'Saved peer ' + peer + '.' : 'Saving peer failed.', !!(r && r.ok));
   await load();
 };
@@ -4401,8 +4755,10 @@ byId('peerRefresh').onclick = async () => {
   await loadPeerRows();
   say('Peer table refreshed.');
 };
+byId('closePeerModal').onclick = closePeerModal;
 byId('newPeer').onclick = () => {
   clearPeerForm();
+  openPeerModal();
   say('Ready to create a new outbound peer.');
 };
 byId('pdisconnect').onclick = async () => {
@@ -4419,7 +4775,10 @@ byId('peerDelete').onclick = async () => {
   }
   if (!window.confirm('Delete saved peer ' + peer + '? Any live session for this peer will also be disconnected.')) return;
   const r = await j('/api/peer/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer})});
-  if (r && r.ok) clearPeerForm();
+  if (r && r.ok) {
+    clearPeerForm();
+    closePeerModal();
+  }
   say(r && r.ok ? 'Deleted peer ' + peer + '.' : 'Peer delete failed.', !!(r && r.ok));
   await load();
 };
@@ -4601,6 +4960,7 @@ if (restoreWebSession()) {
                     totp_secret = await self._totp_secret_for_call(call)
                     if totp_secret:
                         if not otp:
+                            LOG.info("sysop web mfa required call=%s method=totp", call)
                             await self._write_response(
                                 writer,
                                 202,
@@ -4627,6 +4987,7 @@ if (restoreWebSession()) {
                                 LOG.exception("sysop web mfa delivery failed call=%s", call)
                                 await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
                                 return
+                            LOG.info("sysop web mfa required call=%s method=email", call)
                             await self._write_response(
                                 writer,
                                 202,
@@ -5231,25 +5592,19 @@ if (restoreWebSession()) {
                     if privilege and privilege not in {"", "user", "sysop"}:
                         await self._write_response(writer, 400, self._json({"error": "invalid privilege"}))
                         return
+                    node_family = str(payload.get("node_family", "")).strip().lower()
+                    if node_family and node_family not in CLUSTER_NODE_FAMILIES:
+                        await self._write_response(writer, 400, self._json({"error": "invalid node family"}))
+                        return
+                    if node_family:
+                        privilege = ""
+                        blocked_login = False
                     now = int(time.time())
                     qth = str(payload.get("qth", "")).strip()
                     qra = str(payload.get("qra", "")).strip().upper()
                     location = str(payload.get("location", "")).strip()[:80]
-                    old_qth = str(old_row["qth"] or "").strip() if old_row is not None else ""
-                    old_qra = str(old_row["qra"] or "").strip().upper() if old_row is not None else ""
                     explicit_qra = extract_locator(qra)
-                    qra_changed = bool(explicit_qra and explicit_qra != extract_locator(old_qra))
-                    if qth and not qra_changed:
-                        coords = resolve_location_to_coords(qth)
-                        if coords is not None:
-                            qra = coords_to_locator(*coords)
-                    elif qra:
-                        qra = explicit_qra or extract_locator(qra)
-                        if qra:
-                            if not qth:
-                                qth = estimate_location_from_locator(qra).strip()
-                            elif qth == old_qth and qra_changed:
-                                qth = old_qth
+                    qra = explicit_qra if qra else ""
                     if original_call and original_call != call:
                         try:
                             renamed = await self.store.rename_user_registry(original_call, call, now)
@@ -5288,10 +5643,6 @@ if (restoreWebSession()) {
                         await self.store.set_user_pref(call, "homenode", home_node, now)
                     else:
                         await self.store.delete_user_pref(call, "homenode")
-                    node_family = str(payload.get("node_family", "")).strip().lower()
-                    if node_family and node_family not in {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}:
-                        await self._write_response(writer, 400, self._json({"error": "invalid node family"}))
-                        return
                     if node_family:
                         await self.store.set_user_pref(call, "node_family", node_family, now)
                     else:
@@ -5304,6 +5655,8 @@ if (restoreWebSession()) {
                         await self.store.delete_user_pref(call, "location_source")
                     blocked_reason = str(payload.get("blocked_reason", "")).strip()[:80]
                     mfa_email_otp = str(payload.get("mfa_email_otp", "")).strip().lower()
+                    if node_family:
+                        mfa_email_otp = "off"
                     if mfa_email_otp not in {"", "default", "required", "off"}:
                         await self._write_response(writer, 400, self._json({"error": "invalid mfa_email_otp"}))
                         return
@@ -5328,6 +5681,10 @@ if (restoreWebSession()) {
                                     "on" if bool(value) else "off",
                                     now,
                                 )
+                    if node_family:
+                        for channel in channels:
+                            for capability in capabilities:
+                                await self.store.set_user_pref(call, self._access_pref_key(channel, capability), "on", now)
                     block_targets = {base_call}
                     if call:
                         block_targets.add(call)
@@ -5349,6 +5706,9 @@ if (restoreWebSession()) {
                         else:
                             await self.store.delete_user_pref(target, "blocked_login")
                             await self.store.delete_user_pref(target, "blocked_reason")
+                    if node_family:
+                        await self.store.delete_user_pref(call, "mfa_totp_secret")
+                        await self.store.delete_user_pref(base_call, "mfa_totp_secret")
                     if mfa_email_otp in {"", "default"}:
                         await self.store.delete_user_pref(call, "mfa_email_otp")
                         if original_call and original_call != call:
@@ -5476,6 +5836,102 @@ if (restoreWebSession()) {
                 await self._write_response(writer, 200, self._json({"ok": True, "call": call}))
                 return
 
+            if path == "/api/users/toggle":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                payload = self._parse_json_body(body)
+                call = normalize_call(str(payload.get("call", "")).strip())
+                if not _is_valid_admin_record_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
+                    return
+                kind = str(payload.get("kind", "")).strip().lower()
+                value = bool(payload.get("value"))
+                now = int(time.time())
+                base_call = call.split("-", 1)[0]
+                await self.store.upsert_user_registry(call, now)
+                node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
+                if node_family in CLUSTER_NODE_FAMILIES:
+                    for channel in self._access_channels():
+                        for capability in self._access_capabilities():
+                            await self.store.set_user_pref(call, self._access_pref_key(channel, capability), "on", now)
+                    await self.store.delete_user_pref(call, "blocked_login")
+                    await self.store.delete_user_pref(call, "blocked_reason")
+                    await self.store.set_user_pref(call, "mfa_email_otp", "off", now)
+                    await self.store.delete_user_pref(call, "mfa_totp_secret")
+                    await self.store.delete_user_pref(base_call, "mfa_totp_secret")
+                    row = await self.store.get_user_registry(call)
+                    self._audit("sysop", f"{self._authorized_call(headers)} normalized cluster peer matrix {call}")
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "user": await self._user_registry_json(row) if row else {"call": call}}))
+                    return
+                if kind == "access":
+                    capability = str(payload.get("capability", "")).strip().lower()
+                    if capability not in self._access_capabilities():
+                        await self._write_response(writer, 400, self._json({"error": "invalid capability"}))
+                        return
+                    for channel in self._access_channels():
+                        await self.store.set_user_pref(
+                            call,
+                            self._access_pref_key(channel, capability),
+                            "on" if value else "off",
+                            now,
+                        )
+                    audit_detail = f"access.{capability}={'on' if value else 'off'}"
+                elif kind == "verified":
+                    if value:
+                        await mark_email_verified(self.store, base_call, now_epoch=now)
+                    else:
+                        await mark_email_unverified(
+                            self.store,
+                            base_call,
+                            now_epoch=now,
+                            grace_logins=int(self.config.node.initial_grace_logins),
+                        )
+                    audit_detail = f"verified={'on' if value else 'off'}"
+                elif kind == "locked":
+                    if value:
+                        _state, verified_epoch, _remaining = await registration_state(self.store, base_call)
+                        await self.store.set_user_pref(base_call, "registration_state", "verified" if verified_epoch > 0 else "pending", now)
+                        if verified_epoch <= 0:
+                            await self.store.set_user_pref(base_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
+                        await self.store.delete_user_pref(base_call, "failed_password_count")
+                        await self.store.delete_user_pref(base_call, "failed_password_locked_epoch")
+                        await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                        audit_detail = "locked=off"
+                    else:
+                        await self.store.set_user_pref(base_call, "registration_state", "locked", now)
+                        await self.store.set_user_pref(base_call, "failed_password_locked_epoch", str(now), now)
+                        audit_detail = "locked=on"
+                elif kind == "blocked":
+                    targets = {base_call, call}
+                    if value:
+                        for target in targets:
+                            await self.store.delete_user_pref(target, "blocked_login")
+                            await self.store.delete_user_pref(target, "blocked_reason")
+                        audit_detail = "blocked=off"
+                    else:
+                        reason = str(payload.get("reason", "")).strip()[:80] or "Blocked by local policy"
+                        for target in targets:
+                            await self.store.set_user_pref(target, "blocked_login", "on", now)
+                            await self.store.set_user_pref(target, "blocked_reason", reason, now)
+                        audit_detail = "blocked=on"
+                else:
+                    await self._write_response(writer, 400, self._json({"error": "invalid toggle kind"}))
+                    return
+                row = await self.store.get_user_registry(call)
+                if row is None and call != base_call:
+                    row = await self.store.get_user_registry(base_call)
+                self._audit("sysop", f"{self._authorized_call(headers)} updated user matrix {call} {audit_detail}")
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json({"ok": True, "call": call, "user": await self._user_registry_json(row) if row else {"call": call}}),
+                )
+                return
+
             if path == "/api/users/delete":
                 if method != "POST":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
@@ -5560,6 +6016,20 @@ if (restoreWebSession()) {
                     return
                 now = int(time.time())
                 base_call = call.split("-", 1)[0]
+                node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
+                if node_family in CLUSTER_NODE_FAMILIES:
+                    await self.store.upsert_user_registry(call, now)
+                    await self.store.set_user_pref(call, "mfa_email_otp", "off", now)
+                    await self.store.delete_user_pref(call, "mfa_totp_secret")
+                    cleared = await self.store.delete_mfa_challenges_for_call(call, include_ssids=False)
+                    row = await self.store.get_user_registry(call)
+                    self._audit("sysop", f"{self._authorized_call(headers)} reset cluster peer MFA for {call} challenges={cleared}")
+                    await self._write_response(
+                        writer,
+                        200,
+                        self._json({"ok": True, "call": call, "principal": call, "challenges_cleared": cleared, "user": await self._user_registry_json(row) if row else {"call": call, "mfa_email_otp": "off"}}),
+                    )
+                    return
                 await self.store.upsert_user_registry(base_call, now)
                 _state, verified_epoch, _remaining = await registration_state(self.store, base_call)
                 await self.store.set_user_pref(base_call, "registration_state", "verified" if verified_epoch > 0 else "pending", now)
@@ -6435,6 +6905,10 @@ if (restoreWebSession()) {
                     return
                 now = int(time.time())
                 base_call = call.split("-", 1)[0]
+                node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
+                if node_family in CLUSTER_NODE_FAMILIES:
+                    await self._write_response(writer, 400, self._json({"error": "cluster peer records cannot use MFA"}))
+                    return
                 await self.store.upsert_user_registry(base_call, now)
                 await self.store.set_user_pref(base_call, "mfa_email_otp", "off", now)
                 await self.store.delete_user_pref(base_call, "mfa_totp_secret")

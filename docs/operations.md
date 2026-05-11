@@ -77,6 +77,8 @@ sudo tar -C /home/pycluster -czf /root/pycluster-backups/manual-pre-upgrade_$(da
 
 If a manual backup races with actively written logs, stop `pycluster.service` and `pyclusterweb.service`, repeat the backup, and then run `deploy/upgrade.sh`; the upgrade script restarts both services.
 
+Install, upgrade, and repair runs keep the current `pycluster-data-refresh.*` units and remove the old CTY-only `pycluster-cty-refresh.*` units from earlier deployments. Non-dry-run DXSpider migrations also create a `migration-preflight` backup before writing to the live store.
+
 ## Doctor Output
 
 `deploy/doctor.sh` reports:
@@ -85,7 +87,7 @@ If a manual backup races with actively written logs, stop `pycluster.service` an
 - config path
 - SQLite database path
 - CTY file path
-- CTY timer state
+- data refresh timer state
 - wpxloc.raw path
 - whether the reported `wpxloc.raw` path is explicitly configured or derived from the `cty.dat` sibling path
 - loaded dataset version/date shown in the System Operator Console and telnet `show/configuration`

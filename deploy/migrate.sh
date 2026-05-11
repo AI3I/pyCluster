@@ -57,6 +57,9 @@ done
 require_root
 ensure_base_packages
 ensure_supported_python
+if [ "$DRY_RUN" != "1" ]; then
+  backup_runtime_snapshot migration-preflight
+fi
 
 ROOT="$(repo_root)"
 PROJECT_ROOT="$ROOT"

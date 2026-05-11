@@ -153,6 +153,8 @@ The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh
 
 The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. The source tree is synced into the runtime directory with those paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy.
 
+Current install, upgrade, and repair runs install `pycluster-data-refresh.timer` and remove the older CTY-only `pycluster-cty-refresh.*` units if they exist from an earlier deployment.
+
 `deploy/upgrade.sh`, `deploy/repair.sh`, and `deploy/uninstall.sh` also create timestamped runtime backups under `/root/pycluster-backups/` before making destructive changes to the live tree. On older deployments whose local `deploy/upgrade.sh` predates automatic preflight backups, take a manual backup before pulling or running the upgrade:
 
 ```bash
@@ -199,6 +201,7 @@ See [Migration](migration.md) for details and current scope.
 
 Current migration behavior also includes:
 
+- a timestamped `migration-preflight` backup before a non-dry-run import
 - simple outbound DXSpider peer import from `connect/*`
 - exact `badip.local` IP entries exported to `config/fail2ban-badip.local`
 - reconciliation of imported exact IPs into the active pyCluster fail2ban block set

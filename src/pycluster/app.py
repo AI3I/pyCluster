@@ -12,6 +12,7 @@ import time
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from .config import AppConfig
+from .access_policy import CLUSTER_NODE_FAMILIES
 from .ctydat import is_loaded as cty_loaded, lookup as cty_lookup
 from .wpxloc import is_loaded as wpx_loaded, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
@@ -22,7 +23,7 @@ from .node_link import NodeLinkEngine
 from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, parse_wire_pc_frame
-from .rbn import parse_rbn_dx_line
+from .rbn import is_rbn_spot, parse_rbn_dx_line
 from .store import SpotStore
 from .strings import StringCatalog
 from .telnet_server import TelnetClusterServer
@@ -277,6 +278,19 @@ class ClusterApp:
         if cty_lookup(spotter) is None and wpx_lookup(spotter) is None:
             reasons.append(f"spotter:{spotter}:unrecognized_prefix")
         return reasons
+
+    async def _rbn_ingest_allowed_for_call(self, call: str) -> bool:
+        if not self.config.rbn.enabled:
+            return False
+        target = normalize_call(call)
+        base = target.split("-", 1)[0]
+        candidates = (target, base) if base != target else (target,)
+        for candidate in candidates:
+            raw = await self.store.get_user_pref(candidate, "access.telnet.rbn")
+            if raw is None or str(raw).strip() == "":
+                continue
+            return str(raw).strip().lower() in {"1", "on", "yes", "true"}
+        return True
 
     def _peer_pref_key(self, name: str, field: str) -> str:
         slug = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
@@ -686,6 +700,9 @@ class ClusterApp:
                 self._set_rbn_feed_status(feed_key, last_line_at=self._utc_status_time())
                 spot = parse_rbn_dx_line(line, source_node=cfg.source_node)
                 if spot is None:
+                    continue
+                if not await self._rbn_ingest_allowed_for_call(call):
+                    self._set_rbn_feed_status(feed_key, last_error="RBN ingest disabled for login call", last_error_at=self._utc_status_time())
                     continue
                 inserted = await self.store.add_spot(spot)
                 if inserted:
@@ -1174,6 +1191,9 @@ class ClusterApp:
             if source_node == normalize_call(self.config.node.node_call):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_loop")
                 return
+            if is_rbn_spot(dx_call, spotter, msg.info) and not await self._rbn_ingest_allowed_for_call(peer_name):
+                await self.node_link.mark_policy_drop(peer_name, "ingest_rbn_disabled")
+                return
             review_reasons = self._spot_review_reasons(dx_call, spotter)
             if review_reasons:
                 LOG.info(
@@ -1243,6 +1263,9 @@ class ClusterApp:
             source_node = normalize_call(msg.source_node) if msg.source_node else normalize_call(peer_name)
             if source_node == normalize_call(self.config.node.node_call):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_loop")
+                return
+            if is_rbn_spot(dx_call, spotter, msg.info) and not await self._rbn_ingest_allowed_for_call(peer_name):
+                await self.node_link.mark_policy_drop(peer_name, "ingest_rbn_disabled")
                 return
             review_reasons = self._spot_review_reasons(dx_call, spotter)
             if review_reasons:

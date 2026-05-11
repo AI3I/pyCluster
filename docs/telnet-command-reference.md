@@ -87,7 +87,12 @@ sh/dx on 40m
 sh/dx on 7000/7300
 sh/dx info RTTY
 sh/dx day 2
+sh/mydx 10
 ```
+
+`sh/dx` shows the global recent spot history. `sh/mydx` applies the user's personal spot filters, including spotter-based rules such as `spotter_cont NA`. The RBN display toggle is honored by both views.
+
+Spotter-based filters match the station that posted the spot. They do not match the DX callsign being spotted.
 
 ## User Profile and Session Preferences
 
@@ -106,7 +111,7 @@ sh/dx day 2
 | `set/password <newpass>` | Set or change the local password. |
 | `unset/password` | Clear the stored local password. |
 | `mfa` | Show your MFA status, enabled methods, email override, and effective policy. |
-| `set/mfa [email\|authenticator\|default]` | Enable email OTP MFA, enroll an authenticator app, or return email MFA to the node default. |
+| `set/mfa [email\|authenticator\|default]` | Use email OTP MFA, enroll an authenticator app, or clear the email override back to the node default. |
 | `unset/mfa` | Disable user-level MFA, remove any authenticator secret, and clear outstanding challenges. |
 | `set/passphrase <text>` | Set a passphrase field. |
 | `unset/passphrase` | Clear passphrase field. |
@@ -120,6 +125,8 @@ sh/dx day 2
 | `set/logininfo` / `unset/logininfo` | Control login-info display preference. |
 | `set/maxconnect <n>` | Set the per-callsign connection cap. |
 | `set/startup ...` | Add a startup command for login-time replay. |
+
+When MFA is required during telnet login, pyCluster prompts for `authenticator code:` for authenticator-app accounts and `otp:` for email one-time-code accounts. Password and MFA-code prompts suppress local echo.
 | `unset/startup ...` | Remove a startup command. |
 | `show/startup` | Show configured startup commands. |
 | `show/station [call]` | Show stored station/profile details and USDB fields. |
@@ -321,7 +328,7 @@ sh/dx day 2
 | `show/rcmd` | Show remote-command state. |
 | `show/policy` | Show policy summary. |
 | `show/policydrop` | Show policy-drop counters and reasons. |
-| `show/mydx` | Show personal DX summary. |
+| `show/mydx` | Show DX spots after applying your personal filters. |
 | `show/dxcc` | Show DXCC/entity-style information. |
 | `show/notimpl` | Show explicitly not-implemented compatibility paths. |
 

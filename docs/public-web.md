@@ -26,7 +26,8 @@ Core live spot view.
 Features:
 
 - filter by band, mode, activity, continent, zone, and text
-- filter by spotter continent for logged-in operators; the selected spotter-continent rule is stored as a normal spot filter for the callsign
+- filter by spotter continent for logged-in operators; this is based on the station that posted the spot, not the spotted DX entity
+- saved filter presets for logged-in users
 - count of filtered vs total spots
 - `RARE` badge support for selected entities
 - `All` reset button when a filter is active
@@ -103,20 +104,24 @@ Profile fields:
 - location (QTH)
 - grid square
 - home node
+- email address
 
 MFA controls:
 
 - view current MFA status and effective policy
-- enable email OTP MFA
-- enroll an authenticator app and display the manual setup key
-- return email MFA to the node default
+- switch between email and authenticator-app MFA when both are available
+- enable authenticator-app MFA with a QR code and manual setup key
+- verify the active MFA method with a code
 - disable user-level MFA and clear outstanding challenges
+
+When email MFA is selected, `Verify` sends a code to the profile email address and asks for that code. When authenticator-app MFA is selected, `Verify` asks for the current app code. Login prompts say whether the code came from email or from the authenticator app.
 
 ## Posting Controls
 
 Depending on node policy, a user may be allowed to post:
 
 - DX spots
+- RBN spots
 - chat/talk
 - announce
 - WX

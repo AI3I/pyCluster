@@ -15,7 +15,7 @@ from typing import Callable, Awaitable
 import urllib.request
 
 from . import __version__
-from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, default_access_allowed
+from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, CLUSTER_NODE_FAMILIES, default_access_allowed
 from .auth import hash_password, is_password_hash, verify_password
 from .auth_logging import log_auth_failure
 from .config import AppConfig, node_presentation_defaults, parse_telnet_ports
@@ -29,6 +29,7 @@ from .pathmeta import describe_session_path, normalize_recorded_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
 from .qrz import QRZClient, QRZLookupError
 from .registration import consume_grace_login, has_valid_email, mark_email_unverified, mark_email_verified, registration_state
+from .rbn import is_rbn_spot
 from .shdx import BAND_RANGES, ShDxQuery, parse_sh_dx_args
 from .satellite import find_tle, load_tles, predict_passes
 from .spot_throttle import (
@@ -461,6 +462,10 @@ class TelnetClusterServer:
         blocked_login = False
         target_row = await self.store.get_user_registry(target)
         target_exists = target_row is not None
+        for candidate in ((target,) if target_exists else (target, base)):
+            node_family = str(await self.store.get_user_pref(candidate, "node_family") or "").strip().lower()
+            if node_family in CLUSTER_NODE_FAMILIES:
+                return "", False
         for candidate in (target, base):
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
@@ -484,6 +489,10 @@ class TelnetClusterServer:
         base = target.split("-", 1)[0]
         target_exists = await self.store.get_user_registry(target) is not None
         candidates = (target,) if target_exists else (target, base)
+        for candidate in candidates:
+            node_family = str(await self.store.get_user_pref(candidate, "node_family") or "").strip().lower()
+            if node_family in CLUSTER_NODE_FAMILIES:
+                return True
         for candidate in candidates:
             raw = await self.store.get_user_pref(candidate, self._access_pref_key(channel, capability))
             if raw is None or str(raw).strip() == "":
@@ -1001,21 +1010,15 @@ class TelnetClusterServer:
         return low in hay
 
     def _is_rbn_spot(self, dx_call: str, spotter: str, info: str) -> bool:
-        text = f"{dx_call} {spotter} {info}".upper()
-        if "RBN" in text or "SKIMMER" in text:
-            return True
-        if re.search(r"\b\d{1,3}\s*WPM\b", text):
-            return True
-        if normalize_call(spotter).endswith("-#") and re.search(r"\b\d{1,3}\s*DB\b", text):
-            return True
-        if re.search(r"\b(?:CQ|TEST)\b", text) and re.search(r"\b\d{1,3}\s*DB\b", text):
-            return True
-        return False
+        return is_rbn_spot(dx_call, spotter, info)
+
+    async def _spot_passes_rbn_pref(self, call: str, dx_call: str, spotter: str, info: str) -> bool:
+        prefs = await self._load_prefs_for_call(call.upper())
+        return self._is_on_value(prefs.get("rbn"), default=True) or not self._is_rbn_spot(dx_call, spotter, info)
 
     async def _spot_passes_filters(self, call: str, freq_khz: float, dx_call: str, spotter: str, info: str) -> bool:
         target = call.upper()
-        prefs = await self._load_prefs_for_call(target)
-        if not self._is_on_value(prefs.get("rbn"), default=True) and self._is_rbn_spot(dx_call, spotter, info):
+        if not await self._spot_passes_rbn_pref(target, dx_call, spotter, info):
             return False
         if target not in self._filters:
             await self._load_filters_for_call(target)
@@ -1292,8 +1295,6 @@ class TelnetClusterServer:
             chars.append(bytes((b,)).decode("utf-8", errors="ignore"))
 
     async def _set_telnet_password_echo(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, suppress: bool) -> None:
-        if id(reader) not in self._telnet_option_seen:
-            return
         try:
             writer.write(
                 bytes(
@@ -1316,6 +1317,7 @@ class TelnetClusterServer:
 
     async def _prompt_new_password(self, call: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
         await self._write(writer, self._string("password_setup.required", "A password is required before continuing.") + "\r\n")
+        await self._set_telnet_password_echo(reader, writer, suppress=True)
         await self._write(writer, self._string("password_setup.new_prompt", "new password: "))
         first = await self._read_password(reader, writer)
         if first is None:
@@ -1324,6 +1326,7 @@ class TelnetClusterServer:
         if not first:
             await self._write(writer, self._string("password_setup.failed", "Password setup failed.") + "\r\n")
             return False
+        await self._set_telnet_password_echo(reader, writer, suppress=True)
         await self._write(writer, self._string("password_setup.confirm_prompt", "confirm password: "))
         second = await self._read_password(reader, writer)
         if second is None:
@@ -1573,6 +1576,8 @@ class TelnetClusterServer:
 
     async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
         base_call = call.split("-", 1)[0]
+        if await self._totp_secret_for_call(call):
+            return True
         override = ""
         for candidate in (call.upper(), base_call.upper()):
             raw = await self.store.get_user_pref(candidate, "mfa_email_otp")
@@ -1584,8 +1589,6 @@ class TelnetClusterServer:
             return True
         if override == "off":
             return False
-        if await self._totp_secret_for_call(call):
-            return True
         if not self._mfa.required_for(is_sysop=is_sysop):
             return False
         return has_valid_email(await self._email_for_call(base_call.upper()))
@@ -2177,7 +2180,7 @@ class TelnetClusterServer:
         lines.append("Project: https://github.com/AI3I/pyCluster")
         return "\r\n".join(lines) + "\r\n"
 
-    async def _cmd_show_dx(self, _call: str, arg: str | None) -> str:
+    async def _render_show_dx(self, call: str, arg: str | None, *, apply_user_filters: bool) -> str:
         query = parse_sh_dx_args(arg)
         requested_limit = query.limit
         query.limit = 200
@@ -2187,8 +2190,15 @@ class TelnetClusterServer:
 
         lines: list[str] = []
         for row in rows:
-            if not await self._spot_passes_filters(
-                _call,
+            if not await self._spot_passes_rbn_pref(
+                call,
+                str(row["dx_call"]),
+                str(row["spotter"]),
+                str(row["info"] or ""),
+            ):
+                continue
+            if apply_user_filters and not await self._spot_passes_filters(
+                call,
                 float(row["freq_khz"]),
                 str(row["dx_call"]),
                 str(row["spotter"]),
@@ -2197,7 +2207,7 @@ class TelnetClusterServer:
                 continue
             spot_when = datetime.fromtimestamp(row["epoch"], tz=timezone.utc)
             when = spot_when.strftime("%-d-%b-%Y %H%MZ")
-            sess = self._find_session(_call)
+            sess = self._find_session(call)
             profile = sess.peer_profile if sess else "dxspider"
             line = format_dx_line_for_profile(
                 profile=profile,
@@ -2207,7 +2217,7 @@ class TelnetClusterServer:
                 info=str(row["info"] or ""),
                 spotter=display_call(str(row["spotter"])),
             )
-            line += await self._dx_line_suffix_for_call(_call, str(row["dx_call"]))
+            line += await self._dx_line_suffix_for_call(call, str(row["dx_call"]))
             lines.append(line)
             if len(lines) >= requested_limit:
                 break
@@ -2215,9 +2225,11 @@ class TelnetClusterServer:
             return self._string("show.dx.empty", "No spots available") + "\r\n"
         return "\r\n".join(lines) + "\r\n"
 
+    async def _cmd_show_dx(self, call: str, arg: str | None) -> str:
+        return await self._render_show_dx(call, arg, apply_user_filters=False)
+
     async def _cmd_show_mydx(self, call: str, arg: str | None) -> str:
-        # In this compatibility model, show/dx already applies user filters.
-        return await self._cmd_show_dx(call, arg)
+        return await self._render_show_dx(call, arg, apply_user_filters=True)
 
     def _parse_show_rbn_query(self, call: str, arg: str | None) -> tuple[str, ShDxQuery, int]:
         target = normalize_call(call).split("-", 1)[0]
@@ -2641,7 +2653,7 @@ class TelnetClusterServer:
             "maxconnect": "Show the maximum connection limit.",
             "motd": "Show the message of the day.",
             "msgstatus": "Show personal inbox and outbox message status.",
-            "mydx": "Show DX spots posted by your callsign.",
+            "mydx": "Show DX spots after applying your personal filters.",
             "node": "Show node and home-node information for a callsign.",
             "notimpl": "Show commands that are still not implemented.",
             "obscount": "Show the current obscure-count threshold.",
@@ -4604,7 +4616,9 @@ class TelnetClusterServer:
         header = self._string("show.muf.dxspider_header", "UT LT  MUF Zen  1.8  3.5  7.0 10.1 14.0 18.1 21.0 24.9 28.0 50.0")
         lines.append(header)
         forecast_hours = max(2, min(limit if explicit_limit else 12, 24))
-        now_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        current_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        sample_hour = datetime.fromtimestamp(int(latest[0]["epoch"]), tz=timezone.utc).replace(minute=0, second=0, microsecond=0)
+        now_hour = sample_hour if abs((current_hour - sample_hour).total_seconds()) > 6 * 3600 else current_hour
         for hour_offset in range(forecast_hours):
             ts = now_hour + timedelta(hours=hour_offset)
             ut = ts.hour
@@ -4668,7 +4682,7 @@ class TelnetClusterServer:
         toks = [t.strip() for t in (arg or "").split() if t.strip()]
         if toks:
             peer = toks[0].lower()
-            cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
+            cats = ("spots", "rbn", "chat", "announce", "wcy", "wwv", "wx")
             lines = [self._render_string("show.ingestpeer.title", "Ingest policy for peer {peer}:", peer=peer)]
             key_all = f"ingest.peer.{peer}"
             if key_all in prefs:
@@ -4693,7 +4707,7 @@ class TelnetClusterServer:
     async def _cmd_show_policy(self, call: str, _arg: str | None) -> str:
         prefs = await self._load_prefs_for_call(call)
         relay_cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
-        ingest_cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
+        ingest_cats = ("spots", "rbn", "chat", "announce", "wcy", "wwv", "wx")
         lines = [self._render_string("show.policy.title", "Policy for {call}:", call=call.upper())]
         route_pc19 = prefs.get("routepc19", "off")
         lines.append(self._render_string("show.policy.route_pc19", "  Route PC19: {value}", value=route_pc19))
@@ -6153,16 +6167,16 @@ class TelnetClusterServer:
     async def _cmd_set_ingestpeer(self, call: str, arg: str | None) -> str:
         toks = [t.strip().lower() for t in (arg or "").split() if t.strip()]
         if len(toks) < 2:
-            return self._string("set.ingestpeer_usage", "Usage: set/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
+            return self._string("set.ingestpeer_usage", "Usage: set/ingestpeer <peer> [spots|rbn|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
         peer = toks[0]
-        cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
+        cats = ("spots", "rbn", "chat", "announce", "wcy", "wwv", "wx")
         if toks[-1] not in {"on", "off"}:
-            return self._string("set.ingestpeer_usage", "Usage: set/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
+            return self._string("set.ingestpeer_usage", "Usage: set/ingestpeer <peer> [spots|rbn|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
         val = toks[-1]
         cat = toks[1] if len(toks) >= 3 else "all"
         all_cat = self._is_all_token(cat)
         if not all_cat and cat not in cats:
-            return self._string("set.ingestpeer_usage", "Usage: set/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
+            return self._string("set.ingestpeer_usage", "Usage: set/ingestpeer <peer> [spots|rbn|chat|announce|wcy|wwv|wx|all|a|*] <on|off>") + "\r\n"
         key = f"ingest.peer.{peer}" if all_cat else f"ingest.peer.{peer}.{cat}"
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(call.upper(), key, val, now)
@@ -6210,12 +6224,12 @@ class TelnetClusterServer:
     async def _cmd_unset_ingestpeer(self, call: str, arg: str | None) -> str:
         toks = [t.strip().lower() for t in (arg or "").split() if t.strip()]
         if not toks:
-            return self._string("unset.ingestpeer_usage", "Usage: unset/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]") + "\r\n"
+            return self._string("unset.ingestpeer_usage", "Usage: unset/ingestpeer <peer> [spots|rbn|chat|announce|wcy|wwv|wx|all|a|*]") + "\r\n"
         peer = toks[0]
-        cats = ("spots", "chat", "announce", "wcy", "wwv", "wx")
+        cats = ("spots", "rbn", "chat", "announce", "wcy", "wwv", "wx")
         cat = toks[1] if len(toks) >= 2 else "all"
         if not self._is_all_token(cat) and cat not in cats:
-            return self._string("unset.ingestpeer_usage", "Usage: unset/ingestpeer <peer> [spots|chat|announce|wcy|wwv|wx|all|a|*]") + "\r\n"
+            return self._string("unset.ingestpeer_usage", "Usage: unset/ingestpeer <peer> [spots|rbn|chat|announce|wcy|wwv|wx|all|a|*]") + "\r\n"
         if self._is_all_token(cat):
             removed = await self._clear_pref_prefix(call, f"ingest.peer.{peer}")
             return self._render_string("unset.ingestpeer_all", "Ingest policy for {peer} restored to defaults ({removed} removed).", peer=peer, removed=removed) + "\r\n"

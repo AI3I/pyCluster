@@ -16,6 +16,19 @@ _DX_LINE_RE = re.compile(
 )
 
 
+def is_rbn_spot(dx_call: str, spotter: str, info: str) -> bool:
+    text = f"{dx_call} {spotter} {info}".upper()
+    if re.search(r"\bRBN\b|\bSKIMMER\b|\bWPM\b|\bQ:\d+\b|\bZ:\d+\b", text):
+        return True
+    if re.search(r"\b(?:CW|FT8|FT4|FT2|RTTY|PSK|BEACON)\s+[-+]?\d{1,3}\s*DB\b", text):
+        return True
+    if re.search(r"\b(?:CQ|TEST)\b", text) and re.search(r"\b[-+]?\d{1,3}\s*DB\b", text):
+        return True
+    if normalize_call(spotter).endswith("-#") and re.search(r"\b[-+]?\d{1,3}\s*DB\b", text):
+        return True
+    return False
+
+
 def _spot_epoch_from_hhmm(hhmm: str, now: datetime) -> int:
     base = now.astimezone(timezone.utc)
     hour = int(hhmm[:2])

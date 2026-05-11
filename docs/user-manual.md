@@ -18,6 +18,7 @@ Typical flow:
 - connect to the node
 - enter your callsign
 - enter your password
+- enter an MFA code if your account requires one
 
 For first-time human telnet users:
 
@@ -36,6 +37,8 @@ Welcome to pyCluster on N0CALL-1
 N0CALL-1>
 ```
 
+If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal.
+
 If this is your first telnet login and no password exists yet, pyCluster will stop and require password creation before continuing.
 
 ## 2. Getting and Viewing DX
@@ -46,7 +49,7 @@ The main command is:
 sh/dx
 ```
 
-Use `sh/dx` when you want the traditional cluster view of recent spots.
+Use `sh/dx` when you want the traditional global cluster view of recent spots. Personal accept/reject spot filters do not hide results from this history view; use `sh/mydx` when you want the same style of list after applying your filters. The RBN display toggle is still honored, so `unset/rbn` hides RBN/Skimmer spots from both views.
 
 It is the fastest way to:
 
@@ -64,6 +67,7 @@ sh/dx by WW5L
 sh/dx on 40m
 sh/dx info RTTY
 sh/dx day 2
+sh/mydx 10
 ```
 
 Meaning:
@@ -91,6 +95,8 @@ Related views:
 - `show/hfstats`
 - `show/vhfstats`
 
+Personal spot filters are applied to incoming spot traffic and to `sh/mydx`. Spotter filters match the station that posted the spot, which is usually what matters when deciding whether a local station can realistically hear the same DX.
+
 ## 3. Personal Profile
 
 Users can maintain their own station/profile details.
@@ -104,6 +110,10 @@ set/qra FN31PR
 set/email john@example.net
 set/homenode N0CALL-1
 set/password mynewpass
+mfa
+set/mfa authenticator
+set/mfa email
+unset/mfa
 ```
 
 These profile commands are local to the node unless future federation features say otherwise.
@@ -120,6 +130,12 @@ In practice:
   - stores the node that is considered your home
 - `set/password`
   - changes your local password on this node
+- `set/mfa authenticator`
+  - enrolls an authenticator-app secret for login codes
+- `set/mfa email`
+  - uses email one-time codes when SMTP and a profile email are available
+- `unset/mfa`
+  - disables user-level MFA and clears outstanding challenges
 
 Useful related views:
 
@@ -243,6 +259,7 @@ Filters are useful when:
 - you want special handling for RBN-style spot traffic
 - you want recent Skimmer reports showing which stations are hearing a callsign
 - you want entity-aware spot filtering by CQ zone, ITU zone, or DXCC entity name/prefix
+- you want spotter-based filtering so `sh/mydx` reflects spots posted from places you can reasonably use
 
 When the node operator configures a direct RBN-enabled telnet feed, pyCluster can also ingest those Skimmer reports locally. The public RBN relays are `telnet.reversebeacon.net:7000` for CW/RTTY and `telnet.reversebeacon.net:7001` for FT8; configure both with named feeds such as `CW/RTTY,telnet.reversebeacon.net,7000` and `FT8,telnet.reversebeacon.net,7001` in SysOp, or with `feeds` in config. If no direct feed is configured, RBN spots can still arrive through linked cluster peers that relay them.
 
@@ -280,6 +297,8 @@ The public web UI gives users a browser interface for:
 - watch rules after login
 - posting after login
 - editing their profile
+
+The profile modal lets logged-in users update name, QTH, grid square, home node, and email address. It also exposes MFA settings for switching between email and authenticator-app codes, enabling an app with a QR code, verifying the active method, and disabling user-level MFA.
 
 See:
 
