@@ -26,11 +26,28 @@ Core live spot view.
 Features:
 
 - filter by band, mode, activity, continent, zone, and text
+- time-range filtering for `1h`, `3h`, `6h`, `12h`, `18h`, and `24h`
 - filter by spotter continent for logged-in operators; this is based on the station that posted the spot, not the spotted DX entity
 - saved filter presets for logged-in users
 - count of filtered vs total spots
 - `RARE` badge support for selected entities
 - `All` reset button when a filter is active
+
+### Stats
+
+Activity and leaderboard view for recent cluster traffic.
+
+Shows:
+
+- spot-rate chart
+- daily spot history
+- band-by-hour heat matrix
+- band and continent activity bars
+- top DX entities, spotters, and spotted DX calls
+
+The page supports `1h`, `3h`, `6h`, `12h`, `18h`, and `24h` ranges. Longer
+48-hour and 72-hour counters are intentionally not exposed because the rolling
+spot totals are less useful at that scale in the current UI.
 
 ### Bulletins
 
@@ -62,6 +79,10 @@ Shows:
 - known nodes
 - family and version when explicitly learned
 
+The network summary lists pyCluster nodes by callsign and lists legacy peers by
+callsign with their learned family, rather than only showing aggregate family
+counts.
+
 ### Propagation
 
 Solar and geomagnetic dashboard.
@@ -69,7 +90,8 @@ Solar and geomagnetic dashboard.
 Shows:
 
 - solar flux, sunspots, A index, K index, X-ray class, and solar wind
-- band-condition summaries from the solar feed
+- band-condition summaries from the solar feed, grouped as HF day, HF night, and VHF
+- expanded VHF path labels such as `Sporadic E`, `Tropospheric`, and `Meteor Scatter`
 - seven-day Planetary Kp values served through `/api/kp`
 
 ### Watch
