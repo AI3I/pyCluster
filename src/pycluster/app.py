@@ -1570,14 +1570,18 @@ class ClusterApp:
             if f"[via:{self.config.node.node_call}]" in body:
                 await self.node_link.mark_policy_drop(peer_name, "ingest_pc12_loop")
                 return
-            category = "wx" if (msg.wx_flag or "").strip() == "1" else "announce"
+            sender = msg.from_call or peer_name
+            category, _classified_scope, classified_body = self._classify_pc93_bulletin(sender, body)
+            if category == "chat":
+                category = "wx" if (msg.wx_flag or "").strip() == "1" else "announce"
+                classified_body = body
             scope = "SYSOP" if (msg.sysop_flag or "").strip() == "*" else "FULL"
             await self._ingest_bulletin_from_peer(
                 peer_name,
                 category=category,
                 scope=scope,
-                sender=(msg.from_call or peer_name),
-                body=body,
+                sender=sender,
+                body=classified_body,
                 duplicate_reason="ingest_pc12_duplicate",
             )
 

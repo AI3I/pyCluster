@@ -21,6 +21,7 @@ from .geomag import canonicalize_wwv_text
 from .maidenhead import extract_locator
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
+from .rbn import is_rbn_spot
 from .ctydat import is_loaded as cty_loaded, load_cty, lookup as cty_lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
@@ -2321,6 +2322,22 @@ table{
 .peer-table td:nth-child(6){
   white-space:normal;
 }
+.proto-peer-table{
+  table-layout:fixed;
+}
+.proto-peer-table th,
+.proto-peer-table td{
+  white-space:nowrap;
+}
+.proto-peer-table th:nth-child(1){width:15%}
+.proto-peer-table th:nth-child(2){width:18%}
+.proto-peer-table th:nth-child(3){width:12%}
+.proto-peer-table th:nth-child(4){width:27%}
+.proto-peer-table th:nth-child(5){width:28%}
+.proto-peer-table td:nth-child(4),
+.proto-peer-table td:nth-child(5){
+  white-space:normal;
+}
 th,td{
   padding:10px 11px;
   border-bottom:1px solid var(--table-border);
@@ -2691,8 +2708,14 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 </div>
               </div>
               <div class="field"><label for="rbn_host" title="RBN-enabled telnet feed hostname.">Feed Host</label><input id="rbn_host" placeholder="rbn-enabled-cluster.example" title="Hostname for an RBN-enabled telnet cluster or feed."></div>
-              <div class="field"><label for="rbn_port" title="Legacy single RBN-enabled telnet feed port.">Default Port</label><input id="rbn_port" type="number" min="1" max="65535" value="7300" title="Legacy/default feed port used when Feed Ports is blank."></div>
+              <div class="field"><label for="rbn_port" title="Legacy single RBN-enabled telnet feed port.">Default Port</label><input id="rbn_port" type="number" min="1" max="65535" value="7000" title="Legacy/default feed port used when Feed Ports is blank."></div>
               <div class="field"><label for="rbn_ports" title="Comma-separated RBN feed ports to connect at the same host. Use 7000,7001 for public CW/RTTY plus FT8.">Feed Ports</label><input id="rbn_ports" placeholder="7000,7001" title="Comma-separated feed ports. Public RBN uses 7000 for CW/RTTY and 7001 for FT8."></div>
+              <div class="field"><label title="Predefined public RBN feeds.">Public Feeds</label>
+                <div class="checkgrid">
+                  <div class="checkrow"><input id="rbn_feed_cw" type="checkbox"><label for="rbn_feed_cw">CW/RTTY 7000</label></div>
+                  <div class="checkrow"><input id="rbn_feed_ft8" type="checkbox"><label for="rbn_feed_ft8">FT8 7001</label></div>
+                </div>
+              </div>
               <div class="field"><label for="rbn_callsign" title="Callsign used to log in to the feed.">Login Call</label><input id="rbn_callsign" placeholder="N0CALL" title="Callsign sent at the feed login prompt. Defaults to the node call if blank."></div>
               <div class="field"><label for="rbn_password" title="Optional feed password.">Feed Password</label><input id="rbn_password" type="password" placeholder="Feed password" title="Optional password sent if the feed prompts for one."></div>
               <div class="field"><label for="rbn_source_node" title="Source label stored on locally ingested RBN spots.">Source Node</label><input id="rbn_source_node" placeholder="RBN" title="Source node label stored with locally ingested RBN spots."></div>
@@ -2763,6 +2786,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="users-browser-topbar">
                 <div class="users-browser-tabs" aria-label="User browser panels">
                   <button class="subtab" data-user-browser="local">Users</button>
+                  <button class="subtab" data-user-browser="blocked">Blocked</button>
                   <button class="subtab" data-user-browser="clusters">Clusters</button>
                   <button class="subtab" data-user-browser="sysops">System Operators</button>
                   <button class="subtab" data-user-browser="requests">Requests</button>
@@ -2776,6 +2800,15 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                     <table>
                       <thead><tr><th>Callsign</th><th>Verified</th><th>Locked</th><th>MFA</th><th>Blocked</th><th>Login</th><th>Spots</th><th>RBN</th><th>Chat</th><th>Annc</th><th>WX</th><th>WCY</th><th>WWV</th></tr></thead>
                       <tbody id="userRows"><tr><td colspan="13">Loading users...</td></tr></tbody>
+                    </table>
+                  </div>
+                </div>
+                <div class="users-browser-panel" id="user-browser-blocked">
+                  <h3>Blocked Users</h3>
+                  <div class="tablewrap">
+                    <table>
+                      <thead><tr><th>Callsign</th><th>Verified</th><th>Locked</th><th>MFA</th><th>Blocked</th><th>Login</th><th>Spots</th><th>RBN</th><th>Chat</th><th>Annc</th><th>WX</th><th>WCY</th><th>WWV</th></tr></thead>
+                      <tbody id="blockedRows"><tr><td colspan="13">Loading blocked users...</td></tr></tbody>
                     </table>
                   </div>
                 </div>
@@ -2940,6 +2973,15 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <button class="special" id="phreset" title="Delete stored protocol history for the current peer filter, or for all peers if no filter is set.">Reset Protocol History</button>
             <button class="special" id="reset" title="Clear policy-drop counters, optionally limited by the current peer filter.">Reset Policy Drops</button>
           </div>
+          <section class="protocol-peer-state" style="margin-top:14px">
+            <h3>Peer State</h3>
+            <div class="tablewrap">
+              <table class="proto-peer-table">
+                <thead><tr><th>Peer</th><th>Link</th><th>Health</th><th>Activity</th><th>Protocol Detail</th></tr></thead>
+                <tbody id="protoPeerRows"><tr><td colspan="5">Loading peer state...</td></tr></tbody>
+              </table>
+            </div>
+          </section>
           <div class="split" style="margin-top:14px">
             <section>
               <h3>Protocol Alerts</h3>
@@ -3020,11 +3062,18 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               </div>
             </section>
             <section style="margin-top:14px">
-              <h3>Recent Spots</h3>
+              <div class="users-browser-topbar">
+                <h3>Recent Spots</h3>
+                <div class="users-browser-tabs" aria-label="Recent spot source filter">
+                  <button class="subtab active" data-spot-source="all">All</button>
+                  <button class="subtab" data-spot-source="cluster">Cluster</button>
+                  <button class="subtab" data-spot-source="rbn">RBN</button>
+                </div>
+              </div>
               <div class="tablewrap">
                 <table>
-                  <thead><tr><th>Freq</th><th>DX</th><th>When</th><th>Spotter</th><th>Info</th><th>Node</th></tr></thead>
-                  <tbody id="spotRows"><tr><td colspan="6">Loading spots...</td></tr></tbody>
+                  <thead><tr><th>Type</th><th>Freq</th><th>DX</th><th>When</th><th>Spotter</th><th>Info</th><th>Node</th></tr></thead>
+                  <tbody id="spotRows"><tr><td colspan="7">Loading spots...</td></tr></tbody>
                 </table>
               </div>
             </section>
@@ -3137,6 +3186,7 @@ let webCall = '';
 let webIsSysop = false;
 let userOffset = 0;
 let currentUserBrowser = 'local';
+let spotSourceFilter = 'all';
 let selectedUserCall = '';
 let selectedPeerName = '';
 const USER_PAGE_SIZE = 10;
@@ -3200,7 +3250,7 @@ function setUserBrowserPanel(panel) {
   const pageInfo = byId('userPageInfo');
   const prev = byId('userPrev');
   const next = byId('userNext');
-  const paged = target === 'local';
+  const paged = target === 'local' || target === 'blocked';
   if (pageInfo && !paged) pageInfo.textContent = 'Filtered view';
   if (prev) prev.disabled = !paged;
   if (next) next.disabled = !paged;
@@ -3215,6 +3265,15 @@ async function loadUserBrowser(panel = currentUserBrowser) {
       return;
     }
     setUserRows(payload || {});
+    return;
+  }
+  if (target === 'blocked') {
+    const payload = await j('/api/users?blocked=1&exclude_clusters=1&limit=' + USER_PAGE_SIZE + '&offset=' + encodeURIComponent(userOffset) + (userSearch ? '&search=' + userSearch : ''));
+    if (normalizeUserPage(payload || {})) {
+      await loadUserBrowser(target);
+      return;
+    }
+    setBlockedRows(payload || {});
     return;
   }
   if (target === 'clusters') {
@@ -3241,6 +3300,12 @@ function setText(id, value) {
   const el = byId(id);
   if (!el) return;
   el.textContent = value;
+}
+function syncRbnPresetFeeds() {
+  const feeds = [];
+  if (byId('rbn_feed_cw') && byId('rbn_feed_cw').checked) feeds.push('CW/RTTY,telnet.reversebeacon.net,7000');
+  if (byId('rbn_feed_ft8') && byId('rbn_feed_ft8').checked) feeds.push('FT8,telnet.reversebeacon.net,7001');
+  if (feeds.length) byId('rbn_feeds').value = feeds.join('\\n');
 }
 const hdr = () => {
   return webIsSysop && webTok ? {'X-Web-Token': webTok} : {};
@@ -3620,14 +3685,37 @@ function setPeerRows(peers) {
   }).join('');
   bindSelectablePeerRows(body, peers);
 }
+function setProtoPeerRows(peers) {
+  const body = byId('protoPeerRows');
+  if (!body) return;
+  if (!Array.isArray(peers) || !peers.length) {
+    body.innerHTML = '<tr><td colspan="5">No peer state is available.</td></tr>';
+    return;
+  }
+  body.innerHTML = peers.map((row) => {
+    const proto = row.proto || {};
+    const link = row.link || {};
+    const pc18 = String(proto.pc18_summary || proto.pc18_software || '').trim();
+    const linkText = link.summary || (row.connected ? 'connected' : 'down');
+    const lastPc = row.last_pc_type || proto.last_pc_type || '-';
+    return `<tr>
+      <td><strong>${esc(row.peer || '')}</strong></td>
+      <td>${esc(linkText)}</td>
+      <td><span class="health ${esc(proto.health || 'unknown')}">${esc(proto.health || 'unknown')}</span></td>
+      <td><strong>RX</strong> ${esc(fmtEpoch(row.last_rx_epoch || 0))}<div class="mini"><strong>TX</strong> ${esc(fmtEpoch(row.last_tx_epoch || 0))}</div></td>
+      <td><strong>${esc(lastPc)}</strong><div class="mini">${esc(pc18 || 'No version advertised')}</div></td>
+    </tr>`;
+  }).join('');
+}
 async function loadPeerRows() {
   const peers = await j('/api/peers');
   setPeerRows(peers);
+  setProtoPeerRows(peers);
 }
 function setSpotRows(spots) {
   const body = byId('spotRows');
   if (!Array.isArray(spots) || !spots.length) {
-    body.innerHTML = '<tr><td colspan="6">No spots stored yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="7">No spots match this source filter.</td></tr>';
     return;
   }
   const reviewText = (review) => {
@@ -3636,6 +3724,7 @@ function setSpotRows(spots) {
     return ` <span class="tag warn" title="${esc(reasons)}">Review</span>`;
   };
   body.innerHTML = spots.map((spot) => `<tr>
+    <td><span class="tag ${spot.is_rbn ? 'info' : ''}">${spot.is_rbn ? 'RBN' : 'Cluster'}</span></td>
     <td>${esc(Number(spot.freq_khz || 0).toFixed(1))}</td>
     <td><strong>${esc(spot.dx_call || '')}</strong>${reviewText(spot.dx_review)}</td>
     <td>${esc(fmtEpoch(spot.epoch))}</td>
@@ -4017,6 +4106,9 @@ function setSysopRows(rows) {
 function setUserRows(payload) {
   setRegistryRows('userRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No users match this filter.');
 }
+function setBlockedRows(payload) {
+  setRegistryRows('blockedRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No blocked users match this filter.');
+}
 function normalizeUserPage(payload) {
   const total = Number((payload && payload.total) || 0);
   const offset = Number((payload && payload.offset) || 0);
@@ -4171,11 +4263,15 @@ function fillNodeForm(data) {
   setText('retentionLastRun', cleanupLastRun);
   setText('retentionLastResult', cleanupResult);
   const rbnStatus = data.rbn_status || {};
+  const rbnFeedsText = String(data.rbn_feeds || '');
+  const rbnFeedKeys = rbnFeedsText.split('\\n').map(line => line.split(',').map(part => part.trim().toLowerCase()).join(','));
+  if (byId('rbn_feed_cw')) byId('rbn_feed_cw').checked = rbnFeedKeys.includes('cw/rtty,telnet.reversebeacon.net,7000');
+  if (byId('rbn_feed_ft8')) byId('rbn_feed_ft8').checked = rbnFeedKeys.includes('ft8,telnet.reversebeacon.net,7001');
   const rbnState = String(rbnStatus.state || (data.rbn_enabled ? 'stopped' : 'disabled'));
   let rbnText = `Feed is ${esc(rbnState)}.`;
   const rbnHost = String(rbnStatus.host || data.rbn_host || '').trim();
   const namedFeeds = Array.isArray(rbnStatus.feeds) && rbnStatus.feeds.length ? rbnStatus.feeds.map(f => `${f.name || f.port}:${f.state || 'stopped'}`).join(', ') : '';
-  const rbnPorts = Array.isArray(rbnStatus.ports) && rbnStatus.ports.length ? rbnStatus.ports.join(',') : String(data.rbn_ports || data.rbn_port || 7300);
+  const rbnPorts = Array.isArray(rbnStatus.ports) && rbnStatus.ports.length ? rbnStatus.ports.join(',') : String(data.rbn_ports || data.rbn_port || 7000);
   if (rbnHost) rbnText += ` ${esc(rbnHost)}:${esc(rbnPorts)}.`;
   if (namedFeeds) rbnText += ` Feeds: ${esc(namedFeeds)}.`;
   if (rbnStatus.last_connected_at) rbnText += ` Connected: ${esc(rbnStatus.last_connected_at)}.`;
@@ -4255,7 +4351,7 @@ async function load() {
   const lim = parseInt(byId('phlim').value.trim(), 10) || 20;
   const results = await Promise.allSettled([
     j('/api/stats'),
-    j('/api/spots?limit=20'),
+    j('/api/spots?limit=20&source=' + encodeURIComponent(spotSourceFilter)),
     j('/api/peers'),
     j('/api/proto/summary'),
     j('/api/proto/alerts?include_acked=1' + (peer ? '&peer=' + peer : '')),
@@ -4302,6 +4398,7 @@ async function load() {
 
   if (spotsRes.status === 'fulfilled') setSpotRows(spotsRes.value);
   if (peersRes.status === 'fulfilled') setPeerRows(peersRes.value);
+  if (peersRes.status === 'fulfilled') setProtoPeerRows(peersRes.value);
   if (peersRes.status === 'fulfilled') {
     const peers = Array.isArray(peersRes.value) ? peersRes.value : [];
     const connected = peers.filter((peer) => peer && peer.connected !== false).length;
@@ -4356,6 +4453,18 @@ document.querySelectorAll('.subtab[data-user-browser]').forEach((el) => {
 });
 document.querySelectorAll('.subtab[data-telemetry-panel]').forEach((el) => {
   el.addEventListener('click', () => setTelemetryPanel(el.dataset.telemetryPanel || 'overview'));
+});
+document.querySelectorAll('.subtab[data-spot-source]').forEach((el) => {
+  el.addEventListener('click', async () => {
+    spotSourceFilter = String(el.dataset.spotSource || 'all').toLowerCase();
+    document.querySelectorAll('.subtab[data-spot-source]').forEach((btn) => btn.classList.toggle('active', btn === el));
+    const spots = await j('/api/spots?limit=20&source=' + encodeURIComponent(spotSourceFilter));
+    setSpotRows(spots);
+  });
+});
+['rbn_feed_cw','rbn_feed_ft8'].forEach((id) => {
+  const el = byId(id);
+  if (el) el.addEventListener('change', syncRbnPresetFeeds);
 });
 byId('auditReload').onclick = async () => {
   await reloadAudit();
@@ -4441,6 +4550,7 @@ byId('login').onclick = async () => {
 byId('saveNode').onclick = async () => {
   try {
     await runButtonAction('saveNode', async () => {
+      syncRbnPresetFeeds();
       const payload = {
         branding_name: byId('branding_name').value.trim(),
         node_call: byId('node_call').value.trim(),
@@ -4477,7 +4587,7 @@ byId('saveNode').onclick = async () => {
         satellite_min_elevation_deg: parseFloat(byId('satellite_min_elevation_deg').value.trim()) || 0,
         rbn_enabled: byId('rbn_enabled').checked,
         rbn_host: byId('rbn_host').value.trim(),
-        rbn_port: parseInt(byId('rbn_port').value.trim(), 10) || 7300,
+        rbn_port: parseInt(byId('rbn_port').value.trim(), 10) || 7000,
         rbn_ports: byId('rbn_ports').value.trim(),
         rbn_feeds: byId('rbn_feeds').value,
         rbn_callsign: byId('rbn_callsign').value.trim(),
@@ -5119,7 +5229,7 @@ if (restoreWebSession()) {
                         "satellite_min_elevation_deg": "0",
                         "rbn_enabled": "off",
                         "rbn_host": "",
-                        "rbn_port": "7300",
+                        "rbn_port": "7000",
                         "rbn_ports": "",
                         "rbn_feeds": "",
                         "rbn_callsign": "",
@@ -5249,7 +5359,7 @@ if (restoreWebSession()) {
                                 if key == "rbn_startup_commands":
                                     rbn_updates["startup_commands"] = tuple(cmd.strip() for cmd in str(payload.get(key, "")).splitlines() if cmd.strip())
                                 elif key == "rbn_ports":
-                                    rbn_updates["ports"] = parse_telnet_ports(val, int(self.config.rbn.port or 7300)) if val else ()
+                                    rbn_updates["ports"] = parse_telnet_ports(val, int(self.config.rbn.port or 7000)) if val else ()
                                 elif key == "rbn_feeds":
                                     feeds: list[RBNFeedConfig] = []
                                     for line in str(payload.get(key, "")).splitlines():
@@ -5792,10 +5902,11 @@ if (restoreWebSession()) {
                     email=str(req["email"] or ""),
                     privilege="user",
                 )
+                base_call = call.split("-", 1)[0]
                 if int(req["email_verified"] or 0):
-                    await mark_email_verified(self.store, call, now_epoch=now)
+                    await mark_email_verified(self.store, base_call, now_epoch=now)
                 else:
-                    await mark_email_unverified(self.store, call, now_epoch=now, grace_logins=int(self.config.node.initial_grace_logins))
+                    await mark_email_unverified(self.store, base_call, now_epoch=now, grace_logins=int(self.config.node.initial_grace_logins))
                 await self.store.set_registration_request_status(
                     call,
                     status="approved",
@@ -6065,7 +6176,14 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
                     return
                 limit = self._parse_limit(q, "limit", default=20, low=1, high=200)
-                rows = await self.store.latest_spots(limit=limit)
+                source_filter = str(q.get("source", ["all"])[0] or "all").strip().lower()
+                rows = await self.store.latest_spots(limit=200 if source_filter in {"rbn", "cluster"} else limit)
+                if source_filter in {"rbn", "cluster"}:
+                    rows = [
+                        r
+                        for r in rows
+                        if (is_rbn_spot(str(r["dx_call"] or ""), str(r["spotter"] or ""), str(r["info"] or "")) == (source_filter == "rbn"))
+                    ][:limit]
                 dataset_status = self._dataset_status().get("cty", {})
                 body = [
                     {
@@ -6075,6 +6193,7 @@ if (restoreWebSession()) {
                         "info": r["info"],
                         "spotter": r["spotter"],
                         "source_node": r["source_node"],
+                        "is_rbn": is_rbn_spot(str(r["dx_call"] or ""), str(r["spotter"] or ""), str(r["info"] or "")),
                         "dx_review": _spot_call_review(str(r["dx_call"] or ""), dataset_status),
                         "spotter_review": _spot_call_review(str(r["spotter"] or ""), dataset_status),
                     }

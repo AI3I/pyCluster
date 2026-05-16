@@ -94,7 +94,7 @@ class SatelliteConfig:
 class RBNConfig:
     enabled: bool = False
     host: str = ""
-    port: int = 7300
+    port: int = 7000
     ports: tuple[int, ...] = ()
     callsign: str = ""
     password: str = ""
@@ -108,7 +108,7 @@ class RBNConfig:
 class RBNFeedConfig:
     name: str = ""
     host: str = ""
-    port: int = 7300
+    port: int = 7000
 
 
 @dataclass(slots=True)
@@ -257,7 +257,7 @@ def load_config(path: str | Path) -> AppConfig:
         elif isinstance(raw_commands, (list, tuple)):
             rbn_raw["startup_commands"] = tuple(str(cmd).strip() for cmd in raw_commands if str(cmd).strip())
     if "ports" in rbn_raw:
-        rbn_raw["ports"] = parse_telnet_ports(rbn_raw.get("ports"), int(rbn_raw.get("port", 7300) or 7300))
+        rbn_raw["ports"] = parse_telnet_ports(rbn_raw.get("ports"), int(rbn_raw.get("port", 7000) or 7000))
     if "feeds" in rbn_raw:
         feeds: list[RBNFeedConfig] = []
         raw_feeds = rbn_raw.get("feeds")
@@ -268,9 +268,9 @@ def load_config(path: str | Path) -> AppConfig:
                 name = str(row.get("name", "")).strip()
                 host = str(row.get("host", "")).strip()
                 try:
-                    port = int(row.get("port", 7300))
+                    port = int(row.get("port", 7000))
                 except (TypeError, ValueError):
-                    port = 7300
+                    port = 7000
                 if host and 0 < port <= 65535:
                     feeds.append(RBNFeedConfig(name=name, host=host, port=port))
         rbn_raw["feeds"] = tuple(feeds)

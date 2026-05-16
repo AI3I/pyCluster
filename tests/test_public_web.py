@@ -294,6 +294,10 @@ def test_public_web_nodes_and_network_use_local_state(tmp_path) -> None:
         await store.set_user_pref(cfg.node.node_call, "forward_lon", "-79.9959", now)
         await store.upsert_user_registry("AI3I-16", now, display_name="DXSpider peer")
         await store.set_user_pref("AI3I-16", "node_family", "dxspider", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.ai3i-16.pc18.software", "DXSpider version: 1.57 build: 533", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.ai3i-16.last_epoch", str(now), now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.ai3i-16.last_pc_type", "PC18", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.w3lpl-2.pc18.summary", "pyCluster 1.0.9", now)
 
         async def _stats():
             return {"W3LPL-2": {"rx_ok": 1}}
@@ -309,8 +313,13 @@ def test_public_web_nodes_and_network_use_local_state(tmp_path) -> None:
             assert code == 200
             net = json.loads(body.decode("utf-8"))
             assert net["home"] == "AI3I-15"
-            assert any(node["call"] == "W3LPL-2" for node in net["nodes"])
-            assert any(node["call"] == "AI3I-16" and node["inbound"] is True for node in net["nodes"])
+            assert any(node["call"] == "W3LPL-2" and node["version"] == "pyCluster 1.0.9" for node in net["nodes"])
+            assert any(
+                node["call"] == "AI3I-16"
+                and node["inbound"] is True
+                and node["version"] == "DXSpider version: 1.57 build: 533"
+                for node in net["nodes"]
+            )
         finally:
             await store.close()
 
@@ -464,6 +473,15 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "Authenticator Code" not in text
     assert "watch_profiles: watchProfiles" in text
     assert "filter_presets: filterPresets" in text
+    assert "opSetWarn(uiText('presets_login_required'))" in text
+    assert "uiText('presets_save_failed')" in text
+    assert "uiText('presets_load_failed')" in text
+    assert 'id="spotter-cqz-input"' in text
+    assert "function parseZoneSpec(text, low, high)" in text
+    assert "spotterZones.has(Number(s.spotter_cqz || 0))" in text
+    assert "spotterCqzFilter = preset.spotterCqzFilter || ''" in text
+    assert '<button class="preset-del">✕</button>' in text
+    assert "deleteFilterPreset(p.name)" in text
     assert "'Crete':'GR'" in text
     assert "'Montserrat':'MS'" in text
     assert "'Guantanamo Bay':'US'" in text
@@ -1167,6 +1185,91 @@ def test_public_web_spot_filters_are_persisted_and_applied_to_logged_in_spots(tm
             )
             assert code == 200
             assert not await store.list_filter_rules("AI3I")
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_spot_filter_expressions_accept_zone_ranges(tmp_path, monkeypatch) -> None:
+    def _lookup(call: str):
+        if call.upper().startswith("W6"):
+            return SimpleNamespace(name="United States", continent="NA", cq_zone=3, itu_zone=6, lat=34.0, lon=-118.0)
+        return SimpleNamespace(name="United States", continent="NA", cq_zone=5, itu_zone=8, lat=40.0, lon=-75.0)
+
+    db = str(tmp_path / "public_web_zone_ranges.db")
+    cfg = _mk_config(db)
+    store = SpotStore(db)
+    srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+    srv._cty_loaded = True
+    monkeypatch.setattr(public_web_mod, "lookup", _lookup)
+    try:
+        spot = {
+            "freq": 14074.0,
+            "dx_call": "K1ABC",
+            "spotter": "W6SPT",
+            "comment": "FT8",
+            "dx_cqz": 5,
+            "dx_ituz": 8,
+            "spotter_continent": "NA",
+        }
+        assert srv._spot_payload_matches_expr(spot, "spotter_zone 3-5")
+        assert srv._spot_payload_matches_expr(spot, "call_zone 3-5")
+        assert not srv._spot_payload_matches_expr(spot, "spotter_zone 6-8")
+    finally:
+        asyncio.run(store.close())
+
+
+def test_public_web_spots_hide_rbn_for_anonymous_and_honor_rbn_access(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_rbn_access.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+        await store.set_user_pref("AI3I", "access.web.rbn", "off", now)
+        await store.add_spot(Spot(14074.0, "K1ABC", now, "CQ TEST 18 dB", "SKIMMER1", "AI3I-15", ""))
+        await store.add_spot(Spot(14075.0, "K1XYZ", now - 1, "FT8", "W1AW", "AI3I-15", ""))
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request(srv, "/api/spots?limit=10")
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert [row["dx_call"] for row in rows] == ["K1XYZ"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            token = json.loads(body.decode("utf-8"))["token"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "GET",
+                "/api/spots?limit=10",
+                headers={"X-Web-Token": token},
+            )
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert [row["dx_call"] for row in rows] == ["K1XYZ"]
+
+            await store.set_user_pref("AI3I", "access.web.rbn", "on", now)
+            code, _, body = await _http_request_ex(
+                srv,
+                "GET",
+                "/api/spots?limit=10",
+                headers={"X-Web-Token": token},
+            )
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert [row["dx_call"] for row in rows] == ["K1ABC", "K1XYZ"]
+            assert rows[0]["is_rbn"] is True
         finally:
             await store.close()
 

@@ -1117,10 +1117,12 @@ html.light .watch-type option { background:#ffffff; color:#111827; }
 
 /* ================================================================ band × hour heat matrix */
 .bh-wrap { overflow-x:auto; }
-.bh-table { border-collapse:separate; border-spacing:2px; font-size:0.62rem; }
-.bh-th { padding:1px 3px; color:var(--text-muted); font-weight:600; text-align:center; }
+.bh-table { border-collapse:separate; border-spacing:2px; font-size:0.62rem; table-layout:fixed; width:max-content; }
+.bh-band-col { width:46px; }
+.bh-hour-col { width:20px; }
+.bh-th { width:20px; min-width:20px; max-width:20px; padding:1px 0; color:var(--text-muted); font-weight:600; text-align:center; box-sizing:border-box; }
 .bh-band { text-align:right; padding-right:7px; color:var(--text-secondary); font-size:0.65rem; font-weight:700; }
-.bh-cell { width:20px; height:18px; border-radius:3px; cursor:default; }
+.bh-cell { width:20px; min-width:20px; max-width:20px; height:18px; border-radius:3px; cursor:default; box-sizing:border-box; }
 .bh-cell:hover { outline:1px solid var(--accent); }
 
 /* ================================================================ Kp / SFI 7-day charts */
@@ -1429,6 +1431,15 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
             <span class="cqz-lbl">Zone #</span>
             <input id="cqz-input" class="cqz-input" type="number" placeholder="1–40" min="1" max="40">
             <button class="cqz-clear" id="cqz-clear" title="Clear CQ zone filter">×</button>
+          </div>
+        </div>
+
+        <div class="filter-section">
+          <span class="filter-label">Spotter CQ</span>
+          <div class="cqz-wrap">
+            <span class="cqz-lbl">Zones</span>
+            <input id="spotter-cqz-input" class="cqz-input" type="text" placeholder="3-5, 8">
+            <button class="cqz-clear" id="spotter-cqz-clear" title="Clear spotter CQ zone filter">×</button>
           </div>
         </div>
 
@@ -2163,6 +2174,24 @@ let sortCol     = 'time';
 let sortDir     = 'desc';
 let cqzFilter   = 0;          // 0 = no zone filter
 let ituFilter   = 0;          // 0 = no ITU zone filter
+let spotterCqzFilter = '';
+
+function parseZoneSpec(text, low, high) {
+  const out = new Set();
+  String(text || '').split(/[,\s]+/).forEach(tok => {
+    if (!tok) return;
+    const m = tok.match(/^(\d+)-(\d+)$/);
+    if (m) {
+      let a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      if (a > b) [a, b] = [b, a];
+      for (let z = a; z <= b; z += 1) if (z >= low && z <= high) out.add(z);
+    } else {
+      const z = parseInt(tok, 10);
+      if (z >= low && z <= high) out.add(z);
+    }
+  });
+  return out;
+}
 let gcLayer     = null;       // Leaflet great circle polyline
 let qthMarker   = null;       // QTH position marker
 let nodeData    = null;
@@ -3675,10 +3704,8 @@ function onRowClick(spot, tr) {
     map.setView([spot.dx_lat,spot.dx_lon],Math.max(map.getZoom(),4),{animate:true});
 }
 
-function filteredSpots() {
-  const timeCutoff = Date.now() - timeRangeHrs * 3600000;
-  let spots = allSpots.filter(s => {
-    if (new Date(s.time).getTime() < timeCutoff) return false;
+function spotMatchesCurrentFilters(s, timeCutoff=0) {
+    if (timeCutoff && new Date(s.time).getTime() < timeCutoff) return false;
     if (filters.band    !=='ALL'&&s.band    !==filters.band)    return false;
     if (filters.mode    !=='ALL'&&s.mode    !==filters.mode)    return false;
     if (filters.activity!=='ALL') {
@@ -3690,6 +3717,8 @@ function filteredSpots() {
     }
     if (cqzFilter && s.dx_cqz !== cqzFilter) return false;
     if (ituFilter && s.dx_ituz !== ituFilter) return false;
+    const spotterZones = parseZoneSpec(spotterCqzFilter, 1, 40);
+    if (spotterZones.size && !spotterZones.has(Number(s.spotter_cqz || 0))) return false;
     if (filters.cont !== 'ALL' && s.dx_continent !== filters.cont) return false;
     if (filters.spotterCont !== 'ALL' && s.spotter_continent !== filters.spotterCont) return false;
     if (commentTagFilter !== 'ALL') {
@@ -3703,7 +3732,11 @@ function filteredSpots() {
           !s.comment.toLowerCase().includes(q)) return false;
     }
     return true;
-  });
+}
+
+function filteredSpots() {
+  const timeCutoff = Date.now() - timeRangeHrs * 3600000;
+  let spots = allSpots.filter(s => spotMatchesCurrentFilters(s, timeCutoff));
   spots.sort((a,b)=>{
     let av=a[sortCol], bv=b[sortCol];
     if (sortCol==='time') { av=new Date(av).getTime(); bv=new Date(bv).getTime(); }
@@ -3726,6 +3759,7 @@ function hasActiveSpotFilter() {
     || commentTagFilter !== 'ALL'
     || cqzFilter > 0
     || ituFilter > 0
+    || parseZoneSpec(spotterCqzFilter, 1, 40).size > 0
     || !!searchTerm;
 }
 
@@ -3740,8 +3774,10 @@ function syncSpotFilterUi() {
   });
   document.getElementById('cqz-input').value = cqzFilter || '';
   document.getElementById('itu-input').value = ituFilter || '';
+  document.getElementById('spotter-cqz-input').value = spotterCqzFilter || '';
   document.getElementById('cqz-clear').classList.toggle('visible', cqzFilter > 0);
   document.getElementById('itu-clear').classList.toggle('visible', ituFilter > 0);
+  document.getElementById('spotter-cqz-clear').classList.toggle('visible', parseZoneSpec(spotterCqzFilter, 1, 40).size > 0);
   const searchEl = document.getElementById('search-box');
   if (searchEl) searchEl.value = searchTerm;
   const resetBtn = document.getElementById('spot-reset-btn');
@@ -3759,6 +3795,7 @@ function clearSpotFilters() {
   commentTagFilter = 'ALL';
   cqzFilter = 0;
   ituFilter = 0;
+  spotterCqzFilter = '';
   searchTerm = '';
   saveSpotterContinentFilter('ALL');
   syncSpotFilterUi();
@@ -3830,6 +3867,7 @@ const toastWrap = document.getElementById('toast-wrap');
 let toastTimer;
 function showToast(spot) {
   if (!toastPopupsEnabled) return;
+  if (!spotMatchesCurrentFilters(spot, Date.now() - timeRangeHrs * 3600000)) return;
   if (toastWrap.children.length >= 4) {
     const old = toastWrap.firstElementChild;
     old?.classList.add('texiting');
@@ -4207,9 +4245,12 @@ let accountPresetsLoaded = false;
 function saveWatchlist() { localStorage.setItem('watchlist', JSON.stringify(watchlist)); }
 function saveWatchMatches() { localStorage.setItem('watchMatches', JSON.stringify(watchMatches.slice(0,10))); }
 async function persistAccountPresets() {
+  if (!(webToken && webCall)) {
+    opSetWarn(uiText('presets_login_required'));
+    return false;
+  }
   localStorage.setItem('watchProfiles', JSON.stringify(watchProfiles));
   localStorage.setItem('filterPresets', JSON.stringify(filterPresets));
-  if (!(webToken && webCall)) return;
   try {
     await webJson(PROFILE_PRESETS, {
       authOptional:true,
@@ -4218,9 +4259,11 @@ async function persistAccountPresets() {
       body:JSON.stringify({watch_profiles: watchProfiles, filter_presets: filterPresets})
     });
     accountPresetsLoaded = true;
+    return true;
   } catch (err) {
-    opSetWarn('Saving presets failed: ' + (err.message || err));
+    opSetWarn(`${uiText('presets_save_failed')} ${err.message || err}`);
   }
+  return false;
 }
 function saveWatchProfiles() { persistAccountPresets(); }
 
@@ -4242,7 +4285,7 @@ async function loadAccountPresets() {
     renderWatchProfiles();
     renderFilterPresets();
   } catch (err) {
-    opSetWarn('Loading presets failed: ' + (err.message || err));
+    opSetWarn(`${uiText('presets_load_failed')} ${err.message || err}`);
   }
 }
 
@@ -4594,9 +4637,10 @@ function connectWS() {
     renderSidebar();
     loadStats();
     // Show toast for first spot in batch; check watchlist for all
-    if (batch.length>0) showToast(batch[0]);
+    const firstVisible = batch.find(s => spotMatchesCurrentFilters(s, Date.now() - timeRangeHrs * 3600000));
+    if (firstVisible) showToast(firstVisible);
     batch.forEach(s => checkWatchlist(s));
-    if (batch.length>0) playSpotSound(batch[0]);
+    if (firstVisible) playSpotSound(firstVisible);
   });
   ws.addEventListener('close', () => {
     document.getElementById('live-dot').classList.add('dead');
@@ -4621,7 +4665,7 @@ function renderBandHourMatrix() {
   let globalMax=1;
   active.forEach(b=>Object.values(map2[b]).forEach(v=>{if(v>globalMax)globalMax=v;}));
   const currentHr = new Date().getUTCHours();
-  let html='<table class="bh-table"><thead><tr><th></th>';
+  let html='<table class="bh-table"><colgroup><col class="bh-band-col">' + '<col class="bh-hour-col">'.repeat(24) + '</colgroup><thead><tr><th></th>';
   for (let h=0;h<24;h++) html+=`<th class="bh-th"${h===currentHr?' style="color:var(--accent)"':''}>${String(h).padStart(2,'0')}</th>`;
   html+='</tr></thead><tbody>';
   active.forEach(band=>{
@@ -4875,6 +4919,20 @@ document.getElementById('cqz-clear').addEventListener('click', () => {
   document.getElementById('cqz-input').value = '';
   document.getElementById('cqz-clear').classList.remove('visible');
   cqzFilter = 0;
+  renderTable();
+});
+
+let spotterCqzTimer;
+document.getElementById('spotter-cqz-input').addEventListener('input', e => {
+  clearTimeout(spotterCqzTimer);
+  const val = e.target.value.trim();
+  document.getElementById('spotter-cqz-clear').classList.toggle('visible', parseZoneSpec(val, 1, 40).size > 0);
+  spotterCqzTimer = setTimeout(() => { spotterCqzFilter=val; renderTable(); }, 300);
+});
+document.getElementById('spotter-cqz-clear').addEventListener('click', () => {
+  document.getElementById('spotter-cqz-input').value = '';
+  document.getElementById('spotter-cqz-clear').classList.remove('visible');
+  spotterCqzFilter = '';
   renderTable();
 });
 
@@ -5140,7 +5198,7 @@ function renderClusterPage() {
 let filterPresets = JSON.parse(localStorage.getItem('filterPresets') || '[]');
 
 function getCurrentFilterState() {
-  return { ...filters, commentTagFilter, cqzFilter, ituFilter, timeRangeHrs };
+  return { ...filters, commentTagFilter, cqzFilter, ituFilter, spotterCqzFilter, timeRangeHrs };
 }
 
 function applyPreset(preset) {
@@ -5151,6 +5209,7 @@ function applyPreset(preset) {
   filters.spotterCont = preset.spotterCont || 'ALL';
   cqzFilter        = preset.cqzFilter  || 0;
   ituFilter        = preset.ituFilter  || 0;
+  spotterCqzFilter = preset.spotterCqzFilter || '';
   timeRangeHrs     = preset.timeRangeHrs || 24;
   commentTagFilter = preset.commentTagFilter || 'ALL';
   document.querySelectorAll('.sb-time').forEach(b => {
@@ -5161,6 +5220,10 @@ function applyPreset(preset) {
 }
 
 function saveFilterPreset(name) {
+  if (!(webToken && webCall)) {
+    opSetWarn(uiText('presets_login_required'));
+    return;
+  }
   const idx = filterPresets.findIndex(p => p.name === name);
   const state = { name, ...getCurrentFilterState() };
   if (idx >= 0) filterPresets[idx] = state;

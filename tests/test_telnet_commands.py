@@ -2532,22 +2532,33 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
         try:
             now = int(datetime.now(timezone.utc).timestamp())
             rbn_spot = Spot(14074.0, "K1ABC", now, "CQ TEST 18 dB", "SKIMMER1", "AI3I-16", "")
+            other_rbn_spot = Spot(21074.0, "K9DEF", now - 2, "CQ TEST 22 dB", "SKIMMER2", "AI3I-16", "")
             normal_spot = Spot(14074.0, "K1XYZ", now, "FT8", "W1AW", "AI3I-16", "")
 
             await store.add_spot(rbn_spot)
+            await store.add_spot(other_rbn_spot)
             await store.add_spot(normal_spot)
             _, out = await srv._execute_command("N0CALL", "show/dx 10")
             assert "K1ABC" in out
+            assert "K9DEF" in out
             assert "K1XYZ" in out
 
             _, out = await srv._execute_command("N0CALL", "unset/rbn")
             assert "RBN set to off for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "show/dx 10")
             assert "K1ABC" not in out
+            assert "K9DEF" not in out
             assert "K1XYZ" in out
 
             _, out = await srv._execute_command("N0CALL", "set/rbn")
             assert "RBN set to on for N0CALL." in out
+            _, out = await srv._execute_command("N0CALL", "accept/rbn 1 accept call K1ABC")
+            assert "accept/rbn" in out
+            _, out = await srv._execute_command("N0CALL", "show/mydx 10")
+            assert "K1ABC" in out
+            assert "K9DEF" not in out
+            _, out = await srv._execute_command("N0CALL", "clear/rbn")
+            assert "Cleared" in out and "rbn filter" in out
             _, out = await srv._execute_command("N0CALL", "reject/rbn 2")
             assert "reject/rbn" in out
 
@@ -2564,6 +2575,26 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
             await srv.publish_spot(rbn_spot)
             live = bytes(writer.buffer[before:]).decode("utf-8", "replace")
             assert "K1ABC" in live
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_password_reader_consumes_option_bytes_after_cr(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_password_reader.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        try:
+            reader.feed_data(b"secret\r\xff\xfc\x01\nsecret\r\n")
+            first = await srv._read_password(reader, writer)  # type: ignore[arg-type]
+            second = await srv._read_password(reader, writer)  # type: ignore[arg-type]
+            assert first == "secret"
+            assert second == "secret"
         finally:
             await store.close()
 
@@ -2917,6 +2948,7 @@ def test_muf_path_uses_midpoint_solar_zenith_for_signal_estimates(tmp_path) -> N
         assert srv._signal_report_for_muf(14.0, 26.0, zen_noon)
         assert srv._signal_report_for_muf(14.0, 26.0, zen_midnight) == ""
         assert srv._signal_report_for_muf(1.8, 26.0, zen_noon) == ""
+        assert srv._signal_report_for_muf(3.5, 26.0, zen_noon) == ""
     finally:
         asyncio.run(store.close())
 

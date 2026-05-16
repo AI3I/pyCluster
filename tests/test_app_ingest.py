@@ -1315,6 +1315,28 @@ def test_ingest_pc23_maps_to_wwv_bulletin(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_ingest_pc12_wcy_announcement_maps_to_wcy_bulletin(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc12_wcy.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            msg = Pc12Message.from_fields(
+                ["DK0WCY", "*", "SFI=162 A=16 K=4 ExpK=0 R=121 SA=act GMF=act Aurora=no", " ", "DB0SUE-7", "0", "H30", "~"]
+            )
+            frame = WirePcFrame("PC12", msg.to_fields())
+            await app._handle_node_link_item("PEER2", frame, msg)
+            rows = await app.store.list_bulletins("wcy", limit=5)
+            assert len(rows) == 1
+            assert rows[0]["sender"] == "DK0WCY"
+            assert rows[0]["scope"] == "FULL"
+            assert rows[0]["body"] == "SFI=162 A=16 K=4 ExpK=0 R=121 SA=act GMF=act Aurora=no"
+            assert await app.store.list_bulletins("announce", limit=5) == []
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_ingest_pc73_maps_to_wcy_bulletin(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_pc73_wcy.db")
