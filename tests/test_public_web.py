@@ -482,6 +482,35 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "spotterCqzFilter = preset.spotterCqzFilter || ''" in text
     assert '<button class="preset-del">✕</button>' in text
     assert "deleteFilterPreset(p.name)" in text
+    assert '<button class="stats-rng-btn" data-hrs="3">3h</button>' in text
+    assert '<button class="stats-rng-btn" data-hrs="18">18h</button>' in text
+    assert '<button class="stats-rng-btn" data-hrs="48">48h</button>' not in text
+    assert '<button class="stats-rng-btn" data-hrs="72">72h</button>' not in text
+    assert '<button class="sb-time" data-hrs="3">3h</button>' in text
+    assert '<button class="sb-time" data-hrs="18">18h</button>' in text
+    assert "<h3>Band Conditions</h3>" in text
+    assert "HF Day" in text
+    assert "HF Night" in text
+    assert "VHF Band Conditions" not in text
+    assert "const lbl = `${statsHrs}h`;" in text
+    assert "const legacyPeerList = legacyNodes" in text
+    assert "${esc(n.call || '—')}" in text
+    assert "NA:'North America'" in text
+    assert "SA:'South America'" in text
+    assert 'class="hbar-chart continent-bars" id="st-cont-chart"' in text
+    assert ".hbar-chart.continent-bars .hbar-lbl" in text
+    assert "flex:0 0 124px" in text
+    assert "Sporadic E · North America" in text
+    assert "Sporadic E · South America" in text
+    assert "Tropospheric · North America" in text
+    assert "Meteor Scatter · Northern Hemisphere" in text
+    assert "Meteor Scatter · Southern Hemisphere" in text
+    assert "North Hem." not in text
+    assert "South Hem." not in text
+    assert "E-Skip ·" not in text
+    assert "Tropo ·" not in text
+    assert "N. America" not in text
+    assert "S. America" not in text
     assert "'Crete':'GR'" in text
     assert "'Montserrat':'MS'" in text
     assert "'Guantanamo Bay':'US'" in text

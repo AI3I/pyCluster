@@ -411,6 +411,7 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .hbar-row   { display:flex; align-items:center; gap:8px; font-size:0.73rem; cursor:pointer; padding:2px 0; border-radius:4px; transition:background .1s; }
 .hbar-row:hover { background:var(--row-hover); }
 .hbar-lbl   { min-width:52px; text-align:right; color:var(--text-secondary); font-size:0.69rem; }
+.hbar-chart.continent-bars .hbar-lbl { flex:0 0 124px; min-width:124px; max-width:124px; white-space:nowrap; }
 .hbar-track { flex:1; height:8px; background:var(--border-main); border-radius:4px; overflow:hidden; }
 .hbar-fill  { height:8px; border-radius:4px; transition:width .4s; }
 .hbar-ct    { min-width:42px; text-align:right; color:var(--text-dim); font-size:0.67rem; }
@@ -469,7 +470,7 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .cond-period  { font-size:0.72rem; font-weight:700; color:var(--text-secondary); margin-bottom:8px; letter-spacing:.04em; }
 .cond-grid    { display:flex; flex-direction:column; gap:6px; }
 .cond-row     { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:0.74rem; }
-.cond-band    { color:var(--text-secondary); min-width:80px; }
+.cond-band    { color:var(--text-secondary); flex:0 0 92px; min-width:92px; white-space:nowrap; }
 .cond-pill    { border-radius:20px; padding:2px 12px; font-size:0.68rem; font-weight:700; letter-spacing:.05em; }
 .cond-Excellent { background:rgba(103,232,249,.15); color:#67e8f9; border:1px solid rgba(103,232,249,.3); }
 .cond-Good      { background:rgba(63,185,80,.15);   color:#3fb950; border:1px solid rgba(63,185,80,.3); }
@@ -484,7 +485,7 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 /* VHF conditions */
 .vhf-grid { display:flex; flex-direction:column; gap:6px; }
 .vhf-row  { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:0.74rem; }
-.vhf-name { color:var(--text-secondary); flex:1; }
+.vhf-name { color:var(--text-secondary); flex:0 0 168px; min-width:168px; white-space:nowrap; }
 
 /* prop updated */
 .prop-updated { font-size:0.67rem; color:var(--text-muted); text-align:right; }
@@ -1355,8 +1356,10 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
           <span class="filter-label">Time Range</span>
           <div class="filter-row">
             <button class="sb-time" data-hrs="1">1h</button>
+            <button class="sb-time" data-hrs="3">3h</button>
             <button class="sb-time" data-hrs="6">6h</button>
             <button class="sb-time" data-hrs="12">12h</button>
+            <button class="sb-time" data-hrs="18">18h</button>
             <button class="sb-time active" data-hrs="24">24h</button>
           </div>
         </div>
@@ -1618,8 +1621,10 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
     <div class="stats-range-bar">
       <span class="stats-range-lbl">Range:</span>
       <button class="stats-rng-btn" data-hrs="1">1h</button>
+      <button class="stats-rng-btn" data-hrs="3">3h</button>
       <button class="stats-rng-btn" data-hrs="6">6h</button>
       <button class="stats-rng-btn" data-hrs="12">12h</button>
+      <button class="stats-rng-btn" data-hrs="18">18h</button>
       <button class="stats-rng-btn active" data-hrs="24">24h</button>
     </div>
 
@@ -1651,7 +1656,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         </div>
         <div class="stat-card">
           <h3>By Continent <span class="card-badge stats-rng-badge">24h</span></h3>
-          <div class="hbar-chart" id="st-cont-chart"></div>
+          <div class="hbar-chart continent-bars" id="st-cont-chart"></div>
         </div>
       </div>
     </div>
@@ -1733,19 +1738,19 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 
     <div class="stats-grid-2">
       <div class="stat-card">
-        <h3>HF Band Conditions</h3>
+        <h3>Band Conditions</h3>
         <div class="cond-wrapper">
           <div class="cond-section">
-            <div class="cond-period">Day</div>
+            <div class="cond-period">HF Day</div>
             <div class="cond-grid" id="cond-day"></div>
           </div>
           <div class="cond-section">
-            <div class="cond-period">Night</div>
+            <div class="cond-period">HF Night</div>
             <div class="cond-grid" id="cond-night"></div>
           </div>
         </div>
         <div id="vhf-section" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-main)">
-          <div class="cond-period" style="margin-bottom:6px">VHF Band Conditions</div>
+          <div class="cond-period" style="margin-bottom:6px">VHF</div>
           <div class="vhf-grid" id="vhf-list"></div>
         </div>
       </div>
@@ -2030,7 +2035,7 @@ const BAND_COLORS = {
   '6m':'#94a3b8','4m':'#86efac','2m':'#5eead4','1.25m':'#7dd3fc',
   '70cm':'#fde68a','33cm':'#c4b5fd','23cm':'#fdba74','SHF':'#f9a8d4'
 };
-const CONT_LABELS = { NA:'N. America', SA:'S. America', EU:'Europe', AF:'Africa', AS:'Asia', OC:'Oceania', AN:'Antarctica' };
+const CONT_LABELS = { NA:'North America', SA:'South America', EU:'Europe', AF:'Africa', AS:'Asia', OC:'Oceania', AN:'Antarctica' };
 
 const ICON_MOON = `<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>`;
 const ICON_SUN  = `<circle cx="12" cy="12" r="5"/>
@@ -4012,7 +4017,7 @@ function drawHdrSparkline() {
 function renderStatsPage() {
   if (!leaderboardData) return;
   const d = leaderboardData;
-  const lbl = statsHrs === 1 ? '1h' : statsHrs === 6 ? '6h' : statsHrs === 12 ? '12h' : '24h';
+  const lbl = `${statsHrs}h`;
   document.querySelectorAll('.stats-rng-badge').forEach(el => {
     el.textContent = el.textContent.replace(/^\d+h/, lbl);
   });
@@ -4196,19 +4201,19 @@ function renderPropPage() {
       const isEnhanced = /enhanced|excellent/i.test(v.condition);
       const pillCls    = isEnhanced?'cond-Excellent':isOpen?'cond-Good':isClosed?'cond-Poor':'cond-Fair';
       const VHF_LABELS = {
-        'vhf-aurora|northern_hemi':  'Aurora · N. Hemisphere',
-        'vhf-aurora|southern_hemi':  'Aurora · S. Hemisphere',
-        'E-Skip|europe':             'E-Skip · Europe',
-        'E-Skip|europe_6m':          'E-Skip · Europe 6m',
-        'E-Skip|europe_4m':          'E-Skip · Europe 4m',
-        'E-Skip|north_america':      'E-Skip · N. America',
-        'E-Skip|south_america':      'E-Skip · S. America',
-        'E-Skip|asia':               'E-Skip · Asia',
-        'E-Skip|australia':          'E-Skip · Australia',
-        'Tropo|north_america':       'Tropo · N. America',
-        'Tropo|europe':              'Tropo · Europe',
-        'MS|northern_hemi':          'Meteor Scatter · N. Hem.',
-        'MS|southern_hemi':          'Meteor Scatter · S. Hem.',
+        'vhf-aurora|northern_hemi':  'Aurora · North Hemisphere',
+        'vhf-aurora|southern_hemi':  'Aurora · South Hemisphere',
+        'E-Skip|europe':             'Sporadic E · Europe',
+        'E-Skip|europe_6m':          'Sporadic E · Europe 6m',
+        'E-Skip|europe_4m':          'Sporadic E · Europe 4m',
+        'E-Skip|north_america':      'Sporadic E · North America',
+        'E-Skip|south_america':      'Sporadic E · South America',
+        'E-Skip|asia':               'Sporadic E · Asia',
+        'E-Skip|australia':          'Sporadic E · Australia',
+        'Tropo|north_america':       'Tropospheric · North America',
+        'Tropo|europe':              'Tropospheric · Europe',
+        'MS|northern_hemi':          'Meteor Scatter · Northern Hemisphere',
+        'MS|southern_hemi':          'Meteor Scatter · Southern Hemisphere',
       };
       const label = VHF_LABELS[v.name+'|'+v.location] || (v.name+' · '+v.location.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()));
       const row=document.createElement('div'); row.className='vhf-row';
@@ -5112,14 +5117,12 @@ function renderClusterPage() {
       return fam && fam !== 'pycluster';
     });
     const savedDown = nodes.filter(n => n.desired && !n.connected);
-    const countsByFamily = {};
-    legacyNodes.forEach(n => {
-      const fam = String(n.family || 'unknown');
-      countsByFamily[fam] = (countsByFamily[fam] || 0) + 1;
-    });
+    const legacyPeerList = legacyNodes
+      .map(n => `${esc(n.call || '—')} <span style="color:var(--text-muted)">(${esc(n.family || 'unknown')})</span>`)
+      .join(', ');
     sumTbody.innerHTML = `
       <tr><td>pyCluster</td><td>${pyNodes.length}</td><td>${pyNodes.map(n => esc(n.call)).join(', ') || '—'}</td></tr>
-      <tr><td>Legacy peers</td><td>${legacyNodes.length}</td><td>${Object.entries(countsByFamily).map(([fam, count]) => `${esc(fam)} (${count})`).join(', ') || '—'}</td></tr>
+      <tr><td>Legacy peers</td><td>${legacyNodes.length}</td><td>${legacyPeerList || '—'}</td></tr>
       <tr><td>Saved / down</td><td>${savedDown.length}</td><td>${savedDown.map(n => esc(n.call)).join(', ') || '—'}</td></tr>
     `;
   }
