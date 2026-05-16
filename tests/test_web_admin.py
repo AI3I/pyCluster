@@ -115,16 +115,18 @@ def test_web_admin_static_includes_mobile_breakpoints() -> None:
 def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert 'data-user-browser="local"' in text
-    assert 'data-user-browser="blocked"' not in text
+    assert 'data-user-browser="blocked"' in text
     assert 'data-user-browser="clusters"' in text
     assert 'data-user-browser="sysops"' in text
     assert 'data-user-browser="requests"' in text
     assert 'id="user-browser-local"' in text
-    assert 'id="user-browser-blocked"' not in text
+    assert 'id="user-browser-blocked"' in text
     assert 'id="user-browser-clusters"' in text
     assert 'id="user-browser-sysops"' in text
     assert 'id="user-browser-requests"' in text
     assert "exclude_clusters=1" in text
+    assert "blocked=1&exclude_clusters=1" in text
+    assert "setBlockedRows(payload || {})" in text
     assert 'data-telemetry-panel="overview"' in text
     assert 'data-telemetry-panel="audit"' in text
     assert 'data-telemetry-panel="security"' in text
@@ -137,6 +139,10 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     assert "if (key === 'sysop-web') return 'Operator Console';" in text
     assert "if (key === 'registration_request_required') return 'Registration request required';" in text
     assert "<th>RBN</th>" in text
+    assert 'data-spot-source="cluster"' in text
+    assert 'data-spot-source="rbn"' in text
+    assert "spotSourceFilter" in text
+    assert "source=' + encodeURIComponent(spotSourceFilter)" in text
     assert '<label>Inbox</label><span>${esc(inboxSummary)}</span>' in text
     assert '<label>Outbox</label><span>${esc(outboxSummary)}</span>' in text
     assert "masterAccessEnabled(row.access, 'rbn')" in text
@@ -287,6 +293,9 @@ def test_web_admin_static_exposes_rbn_settings() -> None:
     assert 'id="rbn_host"' in text
     assert 'id="rbn_port"' in text
     assert 'id="rbn_ports"' in text
+    assert 'id="rbn_feed_cw"' in text
+    assert 'id="rbn_feed_ft8"' in text
+    assert "syncRbnPresetFeeds()" in text
     assert 'id="rbn_feeds"' in text
     assert 'id="rbn_callsign"' in text
     assert 'id="rbn_startup_commands"' in text
@@ -302,6 +311,8 @@ def test_web_admin_static_exposes_rbn_settings() -> None:
     assert "rbn_host: byId('rbn_host').value.trim()" in text
     assert "rbn_ports: byId('rbn_ports').value.trim()" in text
     assert "rbn_feeds: byId('rbn_feeds').value" in text
+    assert "CW/RTTY,telnet.reversebeacon.net,7000" in text
+    assert "FT8,telnet.reversebeacon.net,7001" in text
 
 
 def test_web_admin_static_exposes_totp_mfa_controls() -> None:
@@ -401,6 +412,10 @@ def test_public_web_static_supports_sidebar_hide_toggle() -> None:
     assert '<span class="footer-control-label">Sound</span>' in text
     assert '<span class="footer-control-label">Theme</span>' in text
     assert "if (!toastPopupsEnabled) return;" in text
+    assert "function spotMatchesCurrentFilters(s, timeCutoff=0)" in text
+    assert "if (!spotMatchesCurrentFilters(spot, Date.now() - timeRangeHrs * 3600000)) return;" in text
+    assert "const firstVisible = batch.find(s => spotMatchesCurrentFilters(s, Date.now() - timeRangeHrs * 3600000));" in text
+    assert "if (firstVisible) showToast(firstVisible);" in text
     assert "if (toastPopupsEnabled && matched.toast !== false)" in text
 
 
@@ -750,6 +765,39 @@ def test_api_spots_marks_suspicious_calls_for_review(tmp_path) -> None:
             web_admin_mod.cty_loaded = orig_loaded
             web_admin_mod.wpx_lookup = orig_wpx_lookup
             web_admin_mod.wpx_loaded = orig_wpx_loaded
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_api_spots_can_filter_cluster_vs_rbn_sources(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_spot_source_filter.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_spot(Spot(14074.0, "K1ABC", now, "CQ TEST 18 dB", "SKIMMER1", "RBN", ""))
+            await store.add_spot(Spot(14075.0, "K1XYZ", now - 1, "FT8", "W1AW", "PEER1", ""))
+
+            code, _, body = await _http_request(srv, "GET", "/api/spots?limit=10&source=rbn", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert [row["dx_call"] for row in rows] == ["K1ABC"]
+            assert rows[0]["is_rbn"] is True
+
+            code, _, body = await _http_request(srv, "GET", "/api/spots?limit=10&source=cluster", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert [row["dx_call"] for row in rows] == ["K1XYZ"]
+            assert rows[0]["is_rbn"] is False
+        finally:
             await store.close()
 
     asyncio.run(run())
@@ -3302,6 +3350,51 @@ def test_web_admin_registration_queue_can_list_approve_and_deny(tmp_path) -> Non
     asyncio.run(run())
 
 
+def test_web_admin_registration_approval_verifies_base_principal_for_ssid(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_registration_queue_ssid.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            await store.upsert_registration_request(
+                "N1NEW-2",
+                now,
+                display_name="New User",
+                email="new@example.test",
+                source="public-web",
+                email_verified=True,
+                status="pending",
+            )
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/registrations/approve",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "N1NEW-2"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["call"] == "N1NEW-2"
+            assert data["user"]["principal_call"] == "N1NEW"
+            assert data["user"]["registration_state"] == "verified"
+            assert data["user"]["email_verified"] is True
+            assert await store.get_user_pref("N1NEW", "registration_state") == "verified"
+            assert await store.get_user_pref("N1NEW", "email_verified_epoch") is not None
+            assert await store.get_user_pref("N1NEW-2", "email_verified_epoch") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_users_can_rename_existing_callsign(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_users_rename.db")
@@ -3839,8 +3932,13 @@ def test_web_protocol_page_focuses_on_alerts_and_history(tmp_path) -> None:
             assert "Protocol Health" in html
             assert "Protocol Alerts" in html
             assert "Protocol History" in html
+            assert "Peer State" in html
+            assert "Protocol Detail" in html
+            assert "proto-peer-table" in html
             assert 'id="protoPeers"' in html
+            assert 'id="protoPeerRows"' in html
             assert 'id="protoAlertSummary"' in html
+            assert "function setProtoPeerRows(peers)" in html
             assert "Policy Drops" in html
             assert "Loading policy drops..." in html
             assert "j('/api/proto/summary')" in html

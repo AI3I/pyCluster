@@ -29,6 +29,7 @@ from .geomag import canonicalize_wwv_text
 from .maidenhead import extract_locator
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .qr_svg import qr_svg
+from .rbn import is_rbn_spot
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path
 from .registration import has_valid_email, mark_email_verified, registration_state
@@ -393,8 +394,9 @@ class PublicWebServer:
             email=email,
             privilege="",
         )
+        base_call = call.split("-", 1)[0]
         if email_verified:
-            await mark_email_verified(self.store, call, now_epoch=now)
+            await mark_email_verified(self.store, base_call, now_epoch=now)
         await self.store.upsert_registration_request(
             call,
             now,
@@ -593,6 +595,9 @@ class PublicWebServer:
             "profile_mfa_email_cancelled": "Email MFA verification cancelled.",
             "profile_mfa_authenticator_prompt": "Enter your authenticator code:",
             "profile_mfa_enter_code": "Enter the MFA code first.",
+            "presets_login_required": "Log in to save presets.",
+            "presets_save_failed": "Saving presets failed:",
+            "presets_load_failed": "Loading presets failed:",
         }
         if not self._strings_path:
             return defaults
@@ -900,6 +905,7 @@ class PublicWebServer:
         sp_ent = lookup(spotter) if self._cty_loaded else None
         if sp_ent is None and self._wpx_loaded:
             sp_ent = wpx_lookup(spotter)
+        is_rbn = is_rbn_spot(dx_call, spotter, comment)
         return {
             "time": stamp,
             "freq": freq,
@@ -917,8 +923,11 @@ class PublicWebServer:
             "dx_lon": dx_ent.lon if dx_ent else 0.0,
             "spotter_entity": sp_ent.name if sp_ent else "",
             "spotter_continent": sp_ent.continent if sp_ent else "",
+            "spotter_cqz": sp_ent.cq_zone if sp_ent else 0,
+            "spotter_ituz": sp_ent.itu_zone if sp_ent else 0,
             "spotter_lat": sp_ent.lat if sp_ent else 0.0,
             "spotter_lon": sp_ent.lon if sp_ent else 0.0,
+            "is_rbn": is_rbn,
         }
 
     def _serve_static_path(self, path: str) -> tuple[bytes, str] | None:
@@ -1098,10 +1107,10 @@ class PublicWebServer:
             pat = rest.upper()
             return fnmatch.fnmatchcase(dx_call, pat) if any(ch in pat for ch in "*?") else dx_call.startswith(pat)
         if first == "call_zone" and rest:
-            wanted = {int(tok) for tok in re.split(r"[,\s]+", rest) if tok.strip().isdigit()}
+            wanted = self._parse_zone_spec(rest, 1, 40)
             return bool(wanted) and int(spot.get("dx_cqz") or 0) in wanted
         if first == "call_itu" and rest:
-            wanted = {int(tok) for tok in re.split(r"[,\s]+", rest) if tok.strip().isdigit()}
+            wanted = self._parse_zone_spec(rest, 1, 90)
             return bool(wanted) and int(spot.get("dx_ituz") or 0) in wanted
         if first in {"spotter_cont", "by_cont"} and rest:
             wanted = {tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
@@ -1110,14 +1119,18 @@ class PublicWebServer:
             ent = lookup(spotter) if self._cty_loaded else None
             if ent is None and self._wpx_loaded:
                 ent = wpx_lookup(spotter)
-            wanted = {int(tok) for tok in re.split(r"[,\s]+", rest) if tok.strip().isdigit()}
+            wanted = self._parse_zone_spec(rest, 1, 40)
             return bool(ent and wanted) and ent.cq_zone in wanted
         if first in {"spotter_itu", "by_itu"} and rest:
             ent = lookup(spotter) if self._cty_loaded else None
             if ent is None and self._wpx_loaded:
                 ent = wpx_lookup(spotter)
-            wanted = {int(tok) for tok in re.split(r"[,\s]+", rest) if tok.strip().isdigit()}
+            wanted = self._parse_zone_spec(rest, 1, 90)
             return bool(ent and wanted) and ent.itu_zone in wanted
+        if first == "rbn":
+            if not bool(spot.get("is_rbn")):
+                return False
+            return True if not rest else self._spot_payload_matches_expr(spot, rest)
         if first == "info" and rest:
             return rest in comment.lower()
         hay = f"{spot.get('freq') or ''} {dx_call} {spotter} {comment}".lower()
@@ -1147,6 +1160,31 @@ class PublicWebServer:
             return matches[0][1] == "accept"
         return not accept
 
+    @staticmethod
+    def _parse_zone_spec(text: str, low: int, high: int) -> set[int]:
+        zones: set[int] = set()
+        for token in re.split(r"[,\s]+", str(text or "").strip()):
+            if not token:
+                continue
+            m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", token)
+            if m:
+                a, b = int(m.group(1)), int(m.group(2))
+                if a > b:
+                    a, b = b, a
+                zones.update(z for z in range(a, b + 1) if low <= z <= high)
+            elif token.isdigit():
+                z = int(token)
+                if low <= z <= high:
+                    zones.add(z)
+        return zones
+
+    async def _spot_passes_public_policy(self, call: str, spot: dict[str, object]) -> bool:
+        if not bool(spot.get("is_rbn")):
+            return True
+        if not call:
+            return False
+        return await self._access_allowed(call, "web", "rbn")
+
     async def _api_spots(self, q: dict[str, list[str]], call: str = "") -> list[dict[str, object]]:
         limit = self._parse_limit(q, "limit", 200, 1, 500)
         band = str(q.get("band", [""])[0] or "").strip()
@@ -1168,6 +1206,11 @@ class PublicWebServer:
                 or search in str(r["spotter"]).lower()
                 or search in str(r["comment"]).lower()
             ]
+        filtered_policy = []
+        for spot in payload:
+            if await self._spot_passes_public_policy(call, spot):
+                filtered_policy.append(spot)
+        payload = filtered_policy
         if call:
             filtered = []
             for spot in payload:
@@ -1337,6 +1380,13 @@ class PublicWebServer:
         links: list[list[str]] = []
         desired_rows: dict[str, dict[str, object]] = {}
         seen_calls: set[str] = {self.config.node.node_call}
+        def proto_value(peer_name: str, key: str) -> str:
+            ptag = re.sub(r"[^a-z0-9_.-]", "_", peer_name.lower())
+            return str(node_cfg.get(f"proto.peer.{ptag}.{key}", "")).strip()
+
+        def proto_version(peer_name: str) -> str:
+            return proto_value(peer_name, "pc18.summary") or proto_value(peer_name, "pc18.software")
+
         if self.link_desired_peers_fn:
             try:
                 desired = await self.link_desired_peers_fn()
@@ -1364,10 +1414,8 @@ class PublicWebServer:
             try:
                 stats = await self.link_stats_fn()
                 for name in sorted(stats):
-                    ptag = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
-                    pfx = f"proto.peer.{ptag}."
-                    family = str(node_cfg.get(pfx + "pc18.family", "")).strip().lower()
-                    version = str(node_cfg.get(pfx + "pc18.summary", "")).strip()
+                    family = proto_value(name, "pc18.family").lower()
+                    version = proto_version(name) or str(stats[name].get("version", "") or stats[name].get("pc18_summary", "") or "").strip()
                     peer_rows.append(
                         {
                             "call": name,
@@ -1390,11 +1438,10 @@ class PublicWebServer:
         for name, row in desired_rows.items():
             if name in seen_calls:
                 continue
-            ptag = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
-            family = str(node_cfg.get(f"proto.peer.{ptag}.pc18.family", "")).strip().lower()
-            version = str(node_cfg.get(f"proto.peer.{ptag}.pc18.summary", "")).strip()
-            last_pc_type = str(node_cfg.get(f"proto.peer.{ptag}.last_pc_type", "")).strip().upper()
-            last_epoch = str(node_cfg.get(f"proto.peer.{ptag}.last_epoch", "")).strip()
+            family = proto_value(name, "pc18.family").lower()
+            version = proto_version(name) or str(row.get("version", "") or row.get("pc18_summary", "") or "").strip()
+            last_pc_type = proto_value(name, "last_pc_type").upper()
+            last_epoch = proto_value(name, "last_epoch")
             try:
                 connected = int(last_epoch or "0") > 0 and (int(datetime.now(timezone.utc).timestamp()) - int(last_epoch or "0")) <= 600
             except ValueError:
@@ -1428,11 +1475,10 @@ class PublicWebServer:
             family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
             if family not in {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}:
                 continue
-            ptag = re.sub(r"[^a-z0-9_.-]", "_", call.lower())
-            version = str(node_cfg.get(f"proto.peer.{ptag}.pc18.summary", "")).strip()
-            last_pc_type = str(node_cfg.get(f"proto.peer.{ptag}.last_pc_type", "")).strip().upper()
+            version = proto_version(call)
+            last_pc_type = proto_value(call, "last_pc_type").upper()
             try:
-                last_epoch = int(str(node_cfg.get(f"proto.peer.{ptag}.last_epoch", "")).strip() or "0")
+                last_epoch = int(proto_value(call, "last_epoch") or "0")
             except ValueError:
                 last_epoch = 0
             try:

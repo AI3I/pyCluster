@@ -60,7 +60,7 @@ enabled = false
 # and telnet.reversebeacon.net:7001 for FT8. Leave disabled unless this node should
 # ingest a direct feed.
 host = ""
-port = 7300
+port = 7000
 ports = []
 feeds = []
 callsign = ""

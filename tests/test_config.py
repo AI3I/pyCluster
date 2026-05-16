@@ -95,6 +95,7 @@ def test_tracked_default_config_uses_neutral_runtime_data_paths() -> None:
     assert cfg.public_web.wpxloc_raw_path == "./data/wpxloc.raw"
     assert cfg.satellite.keps_path == "./data/keps.txt"
     assert cfg.rbn.enabled is False
+    assert cfg.rbn.port == 7000
     assert cfg.rbn.startup_commands == ()
 
 

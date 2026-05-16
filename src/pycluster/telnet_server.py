@@ -931,22 +931,14 @@ class TelnetClusterServer:
             ent = lookup(dx_call) if self._cty_loaded else None
             if not ent:
                 return False
-            wanted = {
-                int(tok)
-                for tok in re.split(r"[,\s]+", rest)
-                if tok.strip().isdigit()
-            }
+            wanted = self._parse_zone_spec(rest, 1, 40)
             return bool(wanted) and ent.cq_zone in wanted
 
         if first == "call_itu" and rest:
             ent = lookup(dx_call) if self._cty_loaded else None
             if not ent:
                 return False
-            wanted = {
-                int(tok)
-                for tok in re.split(r"[,\s]+", rest)
-                if tok.strip().isdigit()
-            }
+            wanted = self._parse_zone_spec(rest, 1, 90)
             return bool(wanted) and ent.itu_zone in wanted
 
         if first == "call_dxcc" and rest:
@@ -980,11 +972,7 @@ class TelnetClusterServer:
                 ent = wpx_lookup(spotter)
             if not ent:
                 return False
-            wanted = {
-                int(tok)
-                for tok in re.split(r"[,\s]+", rest)
-                if tok.strip().isdigit()
-            }
+            wanted = self._parse_zone_spec(rest, 1, 40)
             return bool(wanted) and ent.cq_zone in wanted
 
         if first in {"spotter_itu", "by_itu"} and rest:
@@ -993,24 +981,40 @@ class TelnetClusterServer:
                 ent = wpx_lookup(spotter)
             if not ent:
                 return False
-            wanted = {
-                int(tok)
-                for tok in re.split(r"[,\s]+", rest)
-                if tok.strip().isdigit()
-            }
+            wanted = self._parse_zone_spec(rest, 1, 90)
             return bool(wanted) and ent.itu_zone in wanted
 
         if first == "info" and rest:
             return rest in (info or "").lower()
 
         if first == "rbn":
-            return self._is_rbn_spot(dx_call, spotter, info)
+            if not self._is_rbn_spot(dx_call, spotter, info):
+                return False
+            return True if not rest else self._spot_matches_expr(freq_khz, dx_call, spotter, info, rest)
 
         hay = f"{freq_khz:.1f} {dx_call} {spotter} {info}".lower()
         return low in hay
 
     def _is_rbn_spot(self, dx_call: str, spotter: str, info: str) -> bool:
         return is_rbn_spot(dx_call, spotter, info)
+
+    @staticmethod
+    def _parse_zone_spec(text: str, low: int, high: int) -> set[int]:
+        zones: set[int] = set()
+        for token in re.split(r"[,\s]+", str(text or "").strip()):
+            if not token:
+                continue
+            m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", token)
+            if m:
+                a, b = int(m.group(1)), int(m.group(2))
+                if a > b:
+                    a, b = b, a
+                zones.update(z for z in range(a, b + 1) if low <= z <= high)
+            elif token.isdigit():
+                z = int(token)
+                if low <= z <= high:
+                    zones.add(z)
+        return zones
 
     async def _spot_passes_rbn_pref(self, call: str, dx_call: str, spotter: str, info: str) -> bool:
         prefs = await self._load_prefs_for_call(call.upper())
@@ -1276,15 +1280,16 @@ class TelnetClusterServer:
                 continue
             b = raw[0]
             if b in (10, 13):
+                if b == 13:
+                    for _ in range(4):
+                        nxt = await self._read_telnet_byte(reader, 0.05, writer)
+                        if nxt == b"":
+                            continue
+                        if nxt not in {None, b"\n"}:
+                            reader.feed_data(nxt)
+                        break
                 await self._set_telnet_password_echo(reader, writer, suppress=False)
                 await self._write(writer, "\r\n")
-                if b == 13:
-                    try:
-                        nxt = await asyncio.wait_for(reader.read(1), timeout=0.05)
-                    except asyncio.TimeoutError:
-                        nxt = b""
-                    if nxt not in {b"", b"\n"}:
-                        reader.feed_data(self._strip_telnet_bytes(nxt))
                 return "".join(chars).strip()
             if b in (8, 127):
                 if chars:
@@ -4120,6 +4125,8 @@ class TelnetClusterServer:
     def _signal_report_for_muf(self, freq_mhz: float, muf_mhz: float, zen: float) -> str:
         effective_muf = self._effective_muf_for_zenith(muf_mhz, zen)
         daylight_strength = max(0.0, math.cos(math.radians(max(0.0, min(90.0, zen)))))
+        if freq_mhz <= 4.0 and daylight_strength > 0.20:
+            return ""
         d_layer_penalty = 0.0
         if daylight_strength > 0.0 and freq_mhz < 10.5:
             d_layer_penalty = ((10.5 - freq_mhz) / 8.7) * daylight_strength * 28.0
@@ -6283,6 +6290,27 @@ class TelnetClusterServer:
         return self._render_string("filters.add_done", "{action} filter for {family} saved for {target} in slot {slot}.", action=action.capitalize(), family=family_label, target=target, slot=slot) + "\r\n"
 
     async def _cmd_filter_alias_expr(self, call: str, arg: str | None, family: str, action: str, expr: str, label: str) -> str:
+        if arg and label == "rbn":
+            parsed_expr = self._parse_filter_target_slot_expr(call, arg)
+            if parsed_expr:
+                target, slot_num, rest_expr = parsed_expr
+                parts = rest_expr.split()
+                if parts and parts[0].lower() in {"accept", "reject"}:
+                    rest_expr = " ".join(parts[1:])
+                stored_expr = f"{expr} {rest_expr}".strip()
+                now = int(datetime.now(timezone.utc).timestamp())
+                await self.store.set_filter_rule(target, family, action, slot_num, stored_expr, now)
+                rules = self._ensure_filter_store(target, family, action)
+                rules[:] = [r for r in rules if r.slot != slot_num]
+                rules.append(FilterRule(slot=slot_num, expr=stored_expr))
+                self._log_event("filter", f"{action}/{label} {target} {slot_num} {stored_expr}")
+                family_label = family.upper() if family in {"wcy", "wwv", "wx"} else family
+                return (
+                    self._render_string("filters.alias_done", "{action} filter for {family} saved for {target} in slot {slot} ({label}).", action=action.capitalize(), family=family_label, target=target, slot=slot_num, label=label)
+                    + "\r\n"
+                    + self._render_string("filters.alias_echo", "{action}/{label} {target} {slot}", action=action, label=label, target=target, slot=slot_num)
+                    + "\r\n"
+                )
         parsed = self._parse_filter_target_and_slot(call, arg)
         if not parsed:
             return self._render_string("filters.alias_usage", "Usage: {action}/{label} [<call>] [input] [<slot>|all]", action=action, label=label) + "\r\n"
@@ -7495,7 +7523,10 @@ class TelnetClusterServer:
             current = fam.setdefault(act, [])
             next_rules: list[FilterRule] = []
             for r in current:
-                if (slot == "all" or r.slot == slot) and r.expr.strip().lower() == expr.strip().lower():
+                rule_expr = r.expr.strip().lower()
+                wanted_expr = expr.strip().lower()
+                expr_matches = rule_expr == wanted_expr or (label == "rbn" and rule_expr.startswith(wanted_expr + " "))
+                if (slot == "all" or r.slot == slot) and expr_matches:
                     removed += 1
                     continue
                 next_rules.append(r)
