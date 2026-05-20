@@ -6,6 +6,22 @@ Default local URL:
 
 - `http://127.0.0.1:8081/`
 
+## Backend State
+
+Logged-in public web controls use the same backend database as telnet and the
+System Operator console:
+
+- spots, stats, leaderboards, bulletins, propagation, and cluster views are read from the shared store or shared runtime state
+- profile fields write to `user_registry` and related `user_prefs`
+- public filter presets, watch profiles, local watch rules, and recent watch matches are stored in the user's `public.presets` preference
+- watch seeds are derived from database-backed buddy entries and positive spot filters
+- spotter-continent filter controls write to the same stored spot-filter table used by telnet `accept/spots` and `reject/spots`
+- RBN visibility is controlled through the same access matrix and stored user preferences used elsewhere
+
+Browser storage is used only as a convenience cache or for anonymous,
+not-yet-authenticated UI state such as display toggles and temporary map/QTH
+inputs.
+
 ## Main Pages
 
 ## Mobile Layout
@@ -107,6 +123,10 @@ Features:
 - hit counts
 - saved watch profiles
 - per-rule toast and sound controls
+
+Logged-in watch rules, watch profiles, and recent watch matches are saved back
+to the node database. Loading the public web from another browser will reload
+those account-backed watch settings after login.
 
 ### Operate
 

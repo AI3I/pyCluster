@@ -1415,6 +1415,15 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         </div>
 
         <div class="filter-section">
+          <span class="filter-label">CQ Zone</span>
+          <div class="cqz-wrap">
+            <span class="cqz-lbl">Zones</span>
+            <input id="cqz-input" class="cqz-input" type="text" placeholder="3-5, 8">
+            <button class="cqz-clear" id="cqz-clear" title="Clear CQ zone filter">×</button>
+          </div>
+        </div>
+
+        <div class="filter-section">
           <span class="filter-label">Spotter Continent</span>
           <div class="filter-row">
             <button class="active" data-ftype="spotterCont" data-fval="ALL">All</button>
@@ -1425,15 +1434,6 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
             <button data-ftype="spotterCont" data-fval="AS">AS</button>
             <button data-ftype="spotterCont" data-fval="OC">OC</button>
             <button data-ftype="spotterCont" data-fval="AN">AN</button>
-          </div>
-        </div>
-
-        <div class="filter-section">
-          <span class="filter-label">CQ Zone</span>
-          <div class="cqz-wrap">
-            <span class="cqz-lbl">Zone #</span>
-            <input id="cqz-input" class="cqz-input" type="number" placeholder="1–40" min="1" max="40">
-            <button class="cqz-clear" id="cqz-clear" title="Clear CQ zone filter">×</button>
           </div>
         </div>
 
@@ -2177,7 +2177,7 @@ let highlightId = null;
 let wsRetryTimer= null;
 let sortCol     = 'time';
 let sortDir     = 'desc';
-let cqzFilter   = 0;          // 0 = no zone filter
+let cqzFilter   = '';         // empty = no DX CQ zone filter
 let ituFilter   = 0;          // 0 = no ITU zone filter
 let spotterCqzFilter = '';
 
@@ -3720,7 +3720,8 @@ function spotMatchesCurrentFilters(s, timeCutoff=0) {
         return false;
       }
     }
-    if (cqzFilter && s.dx_cqz !== cqzFilter) return false;
+    const dxZones = parseZoneSpec(cqzFilter, 1, 40);
+    if (dxZones.size && !dxZones.has(Number(s.dx_cqz || 0))) return false;
     if (ituFilter && s.dx_ituz !== ituFilter) return false;
     const spotterZones = parseZoneSpec(spotterCqzFilter, 1, 40);
     if (spotterZones.size && !spotterZones.has(Number(s.spotter_cqz || 0))) return false;
@@ -3762,7 +3763,7 @@ function hasActiveSpotFilter() {
     || filters.cont !== 'ALL'
     || filters.spotterCont !== 'ALL'
     || commentTagFilter !== 'ALL'
-    || cqzFilter > 0
+    || parseZoneSpec(cqzFilter, 1, 40).size > 0
     || ituFilter > 0
     || parseZoneSpec(spotterCqzFilter, 1, 40).size > 0
     || !!searchTerm;
@@ -3780,7 +3781,7 @@ function syncSpotFilterUi() {
   document.getElementById('cqz-input').value = cqzFilter || '';
   document.getElementById('itu-input').value = ituFilter || '';
   document.getElementById('spotter-cqz-input').value = spotterCqzFilter || '';
-  document.getElementById('cqz-clear').classList.toggle('visible', cqzFilter > 0);
+  document.getElementById('cqz-clear').classList.toggle('visible', parseZoneSpec(cqzFilter, 1, 40).size > 0);
   document.getElementById('itu-clear').classList.toggle('visible', ituFilter > 0);
   document.getElementById('spotter-cqz-clear').classList.toggle('visible', parseZoneSpec(spotterCqzFilter, 1, 40).size > 0);
   const searchEl = document.getElementById('search-box');
@@ -3798,7 +3799,7 @@ function clearSpotFilters() {
   filters.cont = 'ALL';
   filters.spotterCont = 'ALL';
   commentTagFilter = 'ALL';
-  cqzFilter = 0;
+  cqzFilter = '';
   ituFilter = 0;
   spotterCqzFilter = '';
   searchTerm = '';
@@ -4247,8 +4248,14 @@ let watchProfiles = JSON.parse(localStorage.getItem('watchProfiles') || '[]');
 let serverWatchSeed = [];
 let accountPresetsLoaded = false;
 
-function saveWatchlist() { localStorage.setItem('watchlist', JSON.stringify(watchlist)); }
-function saveWatchMatches() { localStorage.setItem('watchMatches', JSON.stringify(watchMatches.slice(0,10))); }
+function saveWatchlist() {
+  localStorage.setItem('watchlist', JSON.stringify(watchlist));
+  if (webToken && webCall) persistAccountPresets();
+}
+function saveWatchMatches() {
+  localStorage.setItem('watchMatches', JSON.stringify(watchMatches.slice(0,10)));
+  if (webToken && webCall) persistAccountPresets();
+}
 async function persistAccountPresets() {
   if (!(webToken && webCall)) {
     opSetWarn(uiText('presets_login_required'));
@@ -4261,7 +4268,12 @@ async function persistAccountPresets() {
       authOptional:true,
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({watch_profiles: watchProfiles, filter_presets: filterPresets})
+      body:JSON.stringify({
+        watch_profiles: watchProfiles,
+        filter_presets: filterPresets,
+        watch_rules: watchlist,
+        watch_matches: watchMatches.slice(0,10)
+      })
     });
     accountPresetsLoaded = true;
     return true;
@@ -4278,15 +4290,23 @@ async function loadAccountPresets() {
     const data = await webJson(PROFILE_PRESETS, {authOptional:true});
     const serverWatchProfiles = Array.isArray(data.watch_profiles) ? data.watch_profiles : [];
     const serverFilterPresets = Array.isArray(data.filter_presets) ? data.filter_presets : [];
-    if (serverWatchProfiles.length || serverFilterPresets.length || accountPresetsLoaded) {
+    const serverWatchRules = Array.isArray(data.watch_rules) ? data.watch_rules : [];
+    const serverWatchMatches = Array.isArray(data.watch_matches) ? data.watch_matches : [];
+    if (serverWatchProfiles.length || serverFilterPresets.length || serverWatchRules.length || serverWatchMatches.length || accountPresetsLoaded) {
       watchProfiles = serverWatchProfiles;
       filterPresets = serverFilterPresets;
+      watchlist = serverWatchRules;
+      watchMatches = serverWatchMatches;
       localStorage.setItem('watchProfiles', JSON.stringify(watchProfiles));
       localStorage.setItem('filterPresets', JSON.stringify(filterPresets));
-    } else if (watchProfiles.length || filterPresets.length) {
+      localStorage.setItem('watchlist', JSON.stringify(watchlist));
+      localStorage.setItem('watchMatches', JSON.stringify(watchMatches.slice(0,10)));
+    } else if (watchProfiles.length || filterPresets.length || watchlist.length || watchMatches.length) {
       await persistAccountPresets();
     }
     accountPresetsLoaded = true;
+    renderWatchlist();
+    renderWatchMatches();
     renderWatchProfiles();
     renderFilterPresets();
   } catch (err) {
@@ -4916,14 +4936,14 @@ if (qthCallEl && qthGridEl) {
 let cqzTimer;
 document.getElementById('cqz-input').addEventListener('input', e => {
   clearTimeout(cqzTimer);
-  const val = parseInt(e.target.value)||0;
-  document.getElementById('cqz-clear').classList.toggle('visible', val > 0);
+  const val = e.target.value.trim();
+  document.getElementById('cqz-clear').classList.toggle('visible', parseZoneSpec(val, 1, 40).size > 0);
   cqzTimer = setTimeout(() => { cqzFilter=val; renderTable(); }, 300);
 });
 document.getElementById('cqz-clear').addEventListener('click', () => {
   document.getElementById('cqz-input').value = '';
   document.getElementById('cqz-clear').classList.remove('visible');
-  cqzFilter = 0;
+  cqzFilter = '';
   renderTable();
 });
 
@@ -5210,7 +5230,7 @@ function applyPreset(preset) {
   filters.activity = preset.activity || 'ALL';
   filters.cont     = preset.cont     || 'ALL';
   filters.spotterCont = preset.spotterCont || 'ALL';
-  cqzFilter        = preset.cqzFilter  || 0;
+  cqzFilter        = preset.cqzFilter  || '';
   ituFilter        = preset.ituFilter  || 0;
   spotterCqzFilter = preset.spotterCqzFilter || '';
   timeRangeHrs     = preset.timeRangeHrs || 24;

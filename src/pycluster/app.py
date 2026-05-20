@@ -24,6 +24,7 @@ from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, parse_wire_pc_frame
 from .rbn import is_rbn_spot, parse_rbn_dx_line
+from .shdx import BAND_RANGES
 from .store import SpotStore
 from .strings import StringCatalog
 from .telnet_server import TelnetClusterServer
@@ -292,6 +293,113 @@ class ClusterApp:
             return str(raw).strip().lower() in {"1", "on", "yes", "true"}
         return True
 
+    @staticmethod
+    def _parse_zone_spec(text: str, low: int, high: int) -> set[int]:
+        zones: set[int] = set()
+        for token in re.split(r"[,\s]+", str(text or "").strip()):
+            if not token:
+                continue
+            m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", token)
+            if m:
+                a, b = int(m.group(1)), int(m.group(2))
+                if a > b:
+                    a, b = b, a
+                zones.update(z for z in range(a, b + 1) if low <= z <= high)
+            elif token.isdigit():
+                z = int(token)
+                if low <= z <= high:
+                    zones.add(z)
+        return zones
+
+    def _spot_matches_filter_expr(self, spot: Spot, expr: str) -> bool:
+        text = str(expr or "").strip()
+        if not text:
+            return False
+        low = text.lower()
+        toks = low.split()
+        if not toks:
+            return False
+        first = toks[0]
+        rest = " ".join(toks[1:]).strip()
+        dx_call = normalize_call(spot.dx_call)
+        spotter = normalize_call(spot.spotter)
+        info = str(spot.info or "")
+
+        if first == "rbn":
+            if not is_rbn_spot(dx_call, spotter, info):
+                return False
+            return True if not rest else self._spot_matches_filter_expr(spot, rest)
+        if first == "on" and rest:
+            rng = BAND_RANGES.get(rest.split()[0].lower())
+            return bool(rng and rng[0] <= float(spot.freq_khz) <= rng[1])
+        if first == "by" and rest:
+            pat = rest.upper()
+            return fnmatch.fnmatchcase(spotter, pat) if any(ch in pat for ch in "*?") else spotter.startswith(pat)
+        if first in {"dx", "call", "callsign"} and rest:
+            pat = rest.upper()
+            return fnmatch.fnmatchcase(dx_call, pat) if any(ch in pat for ch in "*?") else dx_call.startswith(pat)
+        if first == "call_zone" and rest:
+            ent = cty_lookup(dx_call) if cty_loaded() else None
+            wanted = self._parse_zone_spec(rest, 1, 40)
+            return bool(ent and wanted) and ent.cq_zone in wanted
+        if first == "call_itu" and rest:
+            ent = cty_lookup(dx_call) if cty_loaded() else None
+            wanted = self._parse_zone_spec(rest, 1, 90)
+            return bool(ent and wanted) and ent.itu_zone in wanted
+        if first == "call_dxcc" and rest:
+            ent = cty_lookup(dx_call) if cty_loaded() else None
+            if not ent:
+                return False
+            wanted = [tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()]
+            ent_name = re.sub(r"[^A-Z0-9]+", "", ent.name.upper())
+            ent_prefix = str(ent.prefix or "").strip().upper()
+            return any(tok == ent_prefix or tok == ent_name or re.sub(r"[^A-Z0-9]+", "", tok) == ent_name for tok in wanted)
+        if first in {"spotter_cont", "by_cont"} and rest:
+            ent = cty_lookup(spotter) if cty_loaded() else None
+            if ent is None and wpx_loaded():
+                ent = wpx_lookup(spotter)
+            wanted = {tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
+            return bool(ent and wanted) and ent.continent.upper() in wanted
+        if first in {"spotter_zone", "by_zone"} and rest:
+            ent = cty_lookup(spotter) if cty_loaded() else None
+            if ent is None and wpx_loaded():
+                ent = wpx_lookup(spotter)
+            wanted = self._parse_zone_spec(rest, 1, 40)
+            return bool(ent and wanted) and ent.cq_zone in wanted
+        if first in {"spotter_itu", "by_itu"} and rest:
+            ent = cty_lookup(spotter) if cty_loaded() else None
+            if ent is None and wpx_loaded():
+                ent = wpx_lookup(spotter)
+            wanted = self._parse_zone_spec(rest, 1, 90)
+            return bool(ent and wanted) and ent.itu_zone in wanted
+        if first == "info" and rest:
+            return rest in info.lower()
+        return low in f"{spot.freq_khz:.1f} {dx_call} {spotter} {info}".lower()
+
+    async def _spot_passes_ingest_filters(self, call: str, spot: Spot) -> bool:
+        accepts: list[tuple[int, str]] = []
+        rejects: list[tuple[int, str]] = []
+        for row in await self.store.list_filter_rules(normalize_call(call)):
+            if str(row["family"] or "").strip().lower() != "spots":
+                continue
+            action = str(row["action"] or "").strip().lower()
+            item = (int(row["slot"] or 0), str(row["expr"] or ""))
+            if action == "accept":
+                accepts.append(item)
+            elif action == "reject":
+                rejects.append(item)
+        matches: list[tuple[int, str]] = []
+        for slot, expr in accepts:
+            if self._spot_matches_filter_expr(spot, expr):
+                matches.append((slot, "accept"))
+        for slot, expr in rejects:
+            if self._spot_matches_filter_expr(spot, expr):
+                matches.append((slot, "reject"))
+        if matches:
+            matches.sort(key=lambda item: (item[0], 0 if item[1] == "reject" else 1))
+            return matches[0][1] == "accept"
+        return not accepts
+
     def _peer_pref_key(self, name: str, field: str) -> str:
         slug = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
         return f"{_PEER_PREF_PREFIX}{slug}.{field}"
@@ -542,6 +650,20 @@ class ClusterApp:
         initial_lines: list[str] | None = None,
     ) -> bool:
         profile = (await self.store.get_user_pref(call, "node_family") or "dxspider").strip().lower() or "dxspider"
+        for line in initial_lines or []:
+            frame = parse_wire_pc_frame(line)
+            if frame and frame.pc_type == "PC18":
+                msg = Pc18Message.from_fields(frame.payload_fields)
+                family, summary = self._peer_identity_from_pc18(msg.software)
+                await self._record_proto_state(
+                    call,
+                    {
+                        "pc18.software": (msg.software or "").strip(),
+                        "pc18.proto": (msg.proto_version or "").strip(),
+                        "pc18.family": family,
+                        "pc18.summary": summary,
+                    },
+                )
         conn = DxSpiderInboundConnection(call, reader, writer, initial_lines=initial_lines)
         await self.node_link.accept_inbound(call, conn, profile=profile)
         await conn.send_line(dxspider_compat_pc18())
@@ -703,6 +825,9 @@ class ClusterApp:
                     continue
                 if not await self._rbn_ingest_allowed_for_call(call):
                     self._set_rbn_feed_status(feed_key, last_error="RBN ingest disabled for login call", last_error_at=self._utc_status_time())
+                    continue
+                if not await self._spot_passes_ingest_filters(call, spot):
+                    self._set_rbn_feed_status(feed_key, last_error="RBN spot filtered for login call", last_error_at=self._utc_status_time())
                     continue
                 inserted = await self.store.add_spot(spot)
                 if inserted:

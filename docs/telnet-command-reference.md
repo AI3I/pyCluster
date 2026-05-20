@@ -170,6 +170,18 @@ When MFA is required during telnet login, pyCluster prompts for `authenticator c
 | `clear/route` | Clear route filter rules. |
 | `show/filter` | Show current filter state and user filter settings. |
 
+## Registration
+
+| Command | Purpose |
+|---|---|
+| `register` | Submit the current telnet profile to the pending registration queue. |
+
+`register` uses the same database-backed registration request table as the
+public web UI. If required profile fields are missing, it prints a checklist of
+the `set/*` commands needed before submission. If SMTP is configured, pyCluster
+sends sysop notification and user acknowledgement email after the request is
+queued.
+
 ### Global Bad Rules
 
 | Command | Purpose |

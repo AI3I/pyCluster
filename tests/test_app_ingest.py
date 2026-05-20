@@ -182,6 +182,37 @@ def test_accept_inbound_node_login_sends_legacy_banner_and_init(tmp_path) -> Non
     asyncio.run(run())
 
 
+def test_accept_inbound_node_login_records_initial_pc18_version(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "accept_inbound_pc18_version.db")
+        app = ClusterApp(_mk_config(db))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref("W3LPL-2", "node_family", "pycluster", now)
+
+            async def _accept(_name: str, _conn, profile: str = "dxspider") -> None:
+                return
+
+            app.node_link.accept_inbound = _accept  # type: ignore[method-assign]
+
+            writer = _DummyWriter()
+            ok = await app.accept_inbound_node_login(
+                "W3LPL-2",
+                "W3LPL-2",
+                asyncio.StreamReader(),
+                writer,  # type: ignore[arg-type]
+                ["PC18^pyCluster 1.0.9^5457^"],
+            )
+            assert ok is True
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            assert prefs["proto.peer.w3lpl-2.pc18.summary"] == "pyCluster 1.0.9"
+            assert prefs["proto.peer.w3lpl-2.pc18.family"] == "pycluster"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_disconnect_peer_forgets_persisted_target(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "disconnect_peer_target.db")
@@ -2163,6 +2194,77 @@ def test_app_rbn_feed_ingests_dx_style_skimmer_lines(tmp_path, monkeypatch) -> N
             assert status["host"] == "127.0.0.1"
             assert status["last_spot_at"]
             assert "KO4BHX-# 7007.0 N9JR CW  39dB Q:2 Z:4" == status["last_spot"]
+        finally:
+            await app.stop()
+
+    asyncio.run(run())
+
+
+def test_app_rbn_feed_applies_login_call_filters_before_ingest(tmp_path, monkeypatch) -> None:
+    class _FakeRbnReader:
+        def __init__(self) -> None:
+            self.lines = [
+                b"Please enter your call: \r\n",
+                b"N9JR-5 de RBN  6-May-2026 0051Z dxspider >\r\n",
+                b"DX de KO4BHX-#:   7007.0  K1ABC        CW  39dB Q:2 Z:4               0052Z\r\n",
+                b"DX de KO4BHX-#:   7008.0  N9JR         CW  35dB Q:2 Z:4               0053Z\r\n",
+                b"",
+            ]
+
+        async def readline(self) -> bytes:
+            await asyncio.sleep(0)
+            return self.lines.pop(0) if self.lines else b""
+
+    class _FakeRbnWriter:
+        def write(self, _data: bytes) -> None:
+            return
+
+        async def drain(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        async def wait_closed(self) -> None:
+            return
+
+    async def run() -> None:
+        db = str(tmp_path / "app_rbn_feed_filters.db")
+        cfg = _mk_config(db)
+        cfg.rbn.enabled = True
+        cfg.rbn.callsign = "N9JR-4"
+        cfg.rbn.host = "127.0.0.1"
+        cfg.rbn.port = 7300
+        cfg.rbn.source_node = "RBN"
+        app = ClusterApp(cfg)
+
+        async def _open_connection(_host: str, _port: int):
+            return _FakeRbnReader(), _FakeRbnWriter()
+
+        monkeypatch.setattr(asyncio, "open_connection", _open_connection)
+
+        async def _noop() -> None:
+            return
+
+        try:
+            app.telnet.start = _noop  # type: ignore[method-assign]
+            app.telnet.stop = _noop  # type: ignore[method-assign]
+            app.web.start = _noop  # type: ignore[method-assign]
+            app.web.stop = _noop  # type: ignore[method-assign]
+            app.public_web.start = _noop  # type: ignore[method-assign]
+            app.public_web.stop = _noop  # type: ignore[method-assign]
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_filter_rule("N9JR-4", "spots", "accept", 1, "rbn callsign N9JR", now)
+
+            await app.start()
+
+            async def _has_filtered_spot() -> bool:
+                rows = await app.store.latest_spots(limit=10)
+                return len(rows) == 1 and str(rows[0]["dx_call"]) == "N9JR"
+
+            await _wait_until_async(_has_filtered_spot, timeout=2.0)
+            rows = await app.store.latest_spots(limit=10)
+            assert [row["dx_call"] for row in rows] == ["N9JR"]
         finally:
             await app.stop()
 

@@ -733,7 +733,8 @@ class PublicWebServer:
             node_family = str(await self.store.get_user_pref(candidate, "node_family") or "").strip().lower()
             if node_family in CLUSTER_NODE_FAMILIES:
                 return "", False
-        for candidate in (target, base):
+        block_candidates = (target,) if target_exists else (target, base)
+        for candidate in block_candidates:
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
                 blocked_login = True
@@ -964,7 +965,7 @@ class PublicWebServer:
             return {"type": "band", "value": rest.split()[0].upper(), "source": source}
         if first == "by" and rest:
             return {"type": "spotter", "value": rest.upper(), "source": source}
-        if first in {"dx", "call"} and rest:
+        if first in {"dx", "call", "callsign"} and rest:
             return {"type": "call", "value": rest.upper(), "source": source}
         if first == "call_zone" and rest:
             rules: list[dict[str, str]] = []
@@ -1060,6 +1061,55 @@ class PublicWebServer:
                 break
         return out
 
+    def _sanitize_watch_rules(self, value: object, *, max_items: int = 80) -> list[dict[str, object]]:
+        if not isinstance(value, list):
+            return []
+        allowed = {"call", "spotter", "entity", "prefix", "mode", "band", "activity", "cqzone", "ituzone", "comment"}
+        out: list[dict[str, object]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            typ = str(item.get("type") or "call").strip().lower()
+            val = str(item.get("value") or "").strip().upper()
+            if typ not in allowed or not val:
+                continue
+            key = (typ, val)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "type": typ,
+                "value": val[:80],
+                "hits": max(0, int(item.get("hits") or 0)),
+                "last": str(item.get("last") or "").strip()[:80],
+                "sound": bool(item.get("sound", True)),
+                "toast": bool(item.get("toast", True)),
+            })
+            if len(out) >= max_items:
+                break
+        return out
+
+    def _sanitize_watch_matches(self, value: object, *, max_items: int = 10) -> list[dict[str, object]]:
+        if not isinstance(value, list):
+            return []
+        out: list[dict[str, object]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            out.append({
+                "dx_call": str(item.get("dx_call") or "").strip().upper()[:24],
+                "rule_type": str(item.get("rule_type") or "").strip()[:32],
+                "rule_value": str(item.get("rule_value") or "").strip().upper()[:80],
+                "band": str(item.get("band") or "").strip()[:16],
+                "mode": str(item.get("mode") or "").strip()[:16],
+                "time": str(item.get("time") or "").strip()[:80],
+                "spotter": str(item.get("spotter") or "").strip().upper()[:24],
+            })
+            if len(out) >= max_items:
+                break
+        return out
+
     async def _public_presets_snapshot(self, call: str) -> dict[str, object]:
         raw = await self.store.get_user_pref(call, "public.presets")
         data: object = {}
@@ -1073,6 +1123,8 @@ class PublicWebServer:
         return {
             "watch_profiles": self._sanitize_named_presets(data.get("watch_profiles")),
             "filter_presets": self._sanitize_named_presets(data.get("filter_presets")),
+            "watch_rules": self._sanitize_watch_rules(data.get("watch_rules")),
+            "watch_matches": self._sanitize_watch_matches(data.get("watch_matches")),
         }
 
     async def _save_public_presets(self, call: str, payload: dict[str, object]) -> dict[str, object]:
@@ -1081,6 +1133,10 @@ class PublicWebServer:
             current["watch_profiles"] = self._sanitize_named_presets(payload.get("watch_profiles"))
         if "filter_presets" in payload:
             current["filter_presets"] = self._sanitize_named_presets(payload.get("filter_presets"))
+        if "watch_rules" in payload:
+            current["watch_rules"] = self._sanitize_watch_rules(payload.get("watch_rules"))
+        if "watch_matches" in payload:
+            current["watch_matches"] = self._sanitize_watch_matches(payload.get("watch_matches"))
         await self.store.set_user_pref(call, "public.presets", json.dumps(current, separators=(",", ":")), int(time.time()))
         return current
 

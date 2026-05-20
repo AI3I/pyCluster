@@ -466,7 +466,8 @@ class TelnetClusterServer:
             node_family = str(await self.store.get_user_pref(candidate, "node_family") or "").strip().lower()
             if node_family in CLUSTER_NODE_FAMILIES:
                 return "", False
-        for candidate in (target, base):
+        block_candidates = (target,) if target_exists else (target, base)
+        for candidate in block_candidates:
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
                 blocked_login = True
@@ -754,7 +755,7 @@ class TelnetClusterServer:
         idx = 0
 
         # sysop-ish syntax: <call> [input] [slot] <expr>
-        if toks and self._is_callsign_token(toks[0]) and not toks[0].isdigit() and not self._is_all_token(toks[0]) and toks[0].lower() != "input":
+        if toks and self._is_callsign_token(toks[0]) and not toks[0].isdigit() and not self._is_all_token(toks[0]) and toks[0].lower() not in {"input", "accept", "reject"}:
             target = toks[0].upper()
             idx += 1
 
@@ -920,7 +921,7 @@ class TelnetClusterServer:
                 return fnmatch.fnmatchcase(s, pat)
             return s.startswith(pat)
 
-        if first in {"dx", "call"} and rest:
+        if first in {"dx", "call", "callsign"} and rest:
             pat = rest.upper()
             d = dx_call.upper()
             if "*" in pat or "?" in pat:
@@ -1261,7 +1262,7 @@ class TelnetClusterServer:
                         nxt = await (asyncio.wait_for(reader.read(1), timeout=0.05) if timeout > 0 else reader.read(1))
                     except asyncio.TimeoutError:
                         nxt = b""
-                    if nxt not in {b"", b"\n"}:
+                    if nxt not in {b"", b"\n", b"\0"}:
                         reader.feed_data(self._strip_telnet_bytes(nxt))
                 return raw.decode("utf-8", errors="replace").strip()
             raw.extend(b)
@@ -1285,7 +1286,7 @@ class TelnetClusterServer:
                         nxt = await self._read_telnet_byte(reader, 0.05, writer)
                         if nxt == b"":
                             continue
-                        if nxt not in {None, b"\n"}:
+                        if nxt not in {None, b"\n", b"\0"}:
                             reader.feed_data(nxt)
                         break
                 await self._set_telnet_password_echo(reader, writer, suppress=False)
@@ -1534,6 +1535,18 @@ class TelnetClusterServer:
         email_verified: bool,
     ) -> None:
         now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.upsert_user_registry(
+            call,
+            now,
+            display_name=display_name,
+            home_node=home_node,
+            qth=qth,
+            qra=qra,
+            email=email,
+            privilege="",
+        )
+        if email_verified:
+            await mark_email_verified(self.store, call.split("-", 1)[0], now_epoch=now)
         await self.store.upsert_registration_request(
             call,
             now,
@@ -1854,6 +1867,25 @@ class TelnetClusterServer:
             f"{divider}\r\n"
         )
 
+    async def _registration_notice_block(self, call: str, *, node_family: str) -> str:
+        if node_family:
+            return ""
+        if (await self._privilege_level_for(call)) >= 2:
+            return ""
+        req = await self.store.get_registration_request(call)
+        status = str(req["status"] or "").strip().lower() if req is not None else ""
+        if status == "approved":
+            return ""
+        if status == "pending":
+            return self._string(
+                "registration.motd_pending",
+                "Registration request pending. A system operator still needs to approve your account.",
+            )
+        return self._string(
+            "registration.motd_unregistered",
+            "This callsign is not fully registered. Complete your profile and run REGISTER to submit a request.",
+        )
+
     async def _welcome_block(self, call: str) -> str:
         ui = await self._node_presentation()
         branding = str(ui.get("branding_name", "")).strip() or "pyCluster"
@@ -1889,6 +1921,9 @@ class TelnetClusterServer:
                 lines.append(self._render_string("welcome.contact", "Contact: {support}", support=support))
         lines.append("")
         lines.append((await self._motd_block()).rstrip("\r\n"))
+        registration_notice = await self._registration_notice_block(call, node_family=await self._node_family_for_login(call))
+        if registration_notice:
+            lines.append(registration_notice)
         if self._is_on_value(str(ui.get("show_status_after_login", "on") or "on"), default=True):
             linked_nodes = await self._linked_peer_count()
             lines.append(
@@ -4122,10 +4157,11 @@ class TelnetClusterServer:
         distance_km = 6371.0 * c
         return bearing, reverse, distance_km
 
-    def _signal_report_for_muf(self, freq_mhz: float, muf_mhz: float, zen: float) -> str:
+    def _signal_report_for_muf(self, freq_mhz: float, muf_mhz: float, zen: float, zen_samples: tuple[float, ...] | None = None) -> str:
         effective_muf = self._effective_muf_for_zenith(muf_mhz, zen)
-        daylight_strength = max(0.0, math.cos(math.radians(max(0.0, min(90.0, zen)))))
-        if freq_mhz <= 4.0 and daylight_strength > 0.20:
+        samples = zen_samples or (zen,)
+        daylight_strength = max(max(0.0, math.cos(math.radians(max(0.0, min(90.0, item))))) for item in samples)
+        if freq_mhz <= 4.0 and daylight_strength > 0.05:
             return ""
         d_layer_penalty = 0.0
         if daylight_strength > 0.0 and freq_mhz < 10.5:
@@ -4150,6 +4186,15 @@ class TelnetClusterServer:
             return 0.0
         daylight_factor = max(0.0, math.cos(math.radians(max(0.0, zen))))
         return muf_mhz * (0.45 + 0.55 * daylight_factor)
+
+    def _format_hours_minutes(self, hours: float) -> str:
+        total_minutes = int(round(max(0.0, float(hours)) * 60.0))
+        h, m = divmod(total_minutes, 60)
+        if h and m:
+            return f"{h}h {m:02d}m"
+        if h:
+            return f"{h}h"
+        return f"{m}m"
 
     def _dataset_summary(self, status: dict[str, object]) -> str:
         state = str(status.get("status", "") or "unknown")
@@ -4416,7 +4461,11 @@ class TelnetClusterServer:
         sunrise, sunset = self._solar_events_utc(now, lat, lon)
         to_sunrise = (6.0 - sh) % 24.0
         to_sunset = (18.0 - sh) % 24.0
-        next_event = f"sunrise in {to_sunrise:.2f}h" if to_sunrise <= to_sunset else f"sunset in {to_sunset:.2f}h"
+        next_event = (
+            f"sunrise in {self._format_hours_minutes(to_sunrise)}"
+            if to_sunrise <= to_sunset
+            else f"sunset in {self._format_hours_minutes(to_sunset)}"
+        )
         lines = [
             self._string("show.sun.title", "Sun status:"),
             self._render_string("show.sun.reference", "  Reference: {source}", source=source),
@@ -4441,9 +4490,9 @@ class TelnetClusterServer:
         to_sunrise = (6.0 - sh) % 24.0
         to_sunset = (18.0 - sh) % 24.0
         if to_sunrise <= to_sunset:
-            nxt = f"sunrise in {to_sunrise:.2f}h"
+            nxt = f"sunrise in {self._format_hours_minutes(to_sunrise)}"
         else:
-            nxt = f"sunset in {to_sunset:.2f}h"
+            nxt = f"sunset in {self._format_hours_minutes(to_sunset)}"
         lines = [
             self._string("show.grayline.title", "Grayline status:"),
             self._render_string("show.grayline.reference", "  Reference: {source}", source=source),
@@ -4632,11 +4681,16 @@ class TelnetClusterServer:
             local = int((ut + round(path_mid_lon / 15.0)) % 24)
             muf = latest_muf
             zen = self._solar_zenith_angle(ts, path_mid_lat, path_mid_lon)
+            path_zen_samples = (
+                zen,
+                self._solar_zenith_angle(ts, lat1, lon1),
+                self._solar_zenith_angle(ts, lat2, lon2),
+            )
             displayed_muf = self._effective_muf_for_zenith(muf, zen)
             row = f"{ut:2d} {local:2d} {displayed_muf:4.1f} {zen:4.0f}"
             if not long_form:
                 for freq in freq_cols:
-                    sig = self._signal_report_for_muf(freq, muf, zen)
+                    sig = self._signal_report_for_muf(freq, muf, zen, path_zen_samples)
                     row += f" {sig:>4}" if sig else "     "
             lines.append(row.rstrip())
         return "\r\n".join(lines) + "\r\n"
@@ -5934,6 +5988,50 @@ class TelnetClusterServer:
                 line = f"{line[:61]:<61} {self._fmt_epoch_short(int(r['last_login_epoch'] or 0))}"
             lines.append(line[:80])
         return "\r\n".join(lines) + "\r\n"
+
+    async def _cmd_register(self, call: str, arg: str | None) -> str:
+        if await self._node_family_for_login(call):
+            return self._string("registration.cluster_not_applicable", "Cluster peer accounts do not use user self-registration.") + "\r\n"
+        now = int(datetime.now(timezone.utc).timestamp())
+        reg = await self.store.get_user_registry(call)
+        if reg is None:
+            await self.store.upsert_user_registry(call, now)
+            reg = await self.store.get_user_registry(call)
+        req = await self.store.get_registration_request(call)
+        status = str(req["status"] or "").strip().lower() if req is not None else ""
+        if status == "approved":
+            return self._render_string("registration.already_approved", "{call} is already registered and approved.", call=call) + "\r\n"
+        if status == "pending" and str(arg or "").strip().lower() not in {"resubmit", "submit", "again"}:
+            return self._render_string("registration.already_pending", "Registration request for {call} is already pending sysop review.", call=call) + "\r\n"
+
+        password_set = bool(str(await self.store.get_user_pref(call, "password") or "").strip())
+        checklist = await self._registration_checklist_block(call, password_set=password_set, node_family="")
+        if checklist:
+            return (
+                checklist
+                + self._string("registration.command_after_checklist", "When those items are complete, run REGISTER again to submit the request.")
+                + "\r\n"
+            )
+        if reg is None:
+            return self._render_string("registration.no_profile", "No registration profile exists for {call}.", call=call) + "\r\n"
+        email = str(reg["email"] or "").strip()
+        email_verified = bool(str(await self.store.get_user_pref(call.split("-", 1)[0], "email_verified_epoch") or "").strip())
+        await self._submit_registration_request(
+            call=call,
+            display_name=str(reg["display_name"] or "").strip()[:80],
+            home_node=str(reg["home_node"] or await self.store.get_user_pref(call, "homenode") or "").strip().upper()[:16],
+            qth=str(reg["qth"] or "").strip()[:80],
+            qra=str(reg["qra"] or "").strip().upper()[:16],
+            email=email,
+            note=str(arg or "").strip()[:160],
+            source="telnet",
+            email_verified=email_verified,
+        )
+        self._log_event("user", f"{call} register request email_verified={int(email_verified)}")
+        submitted = self._render_string("registration.command_submitted", "Registration request submitted for {call}. Watch your email for updates.", call=call)
+        if self._smtp.enabled():
+            return submitted + "\r\n"
+        return submitted + "\r\n" + self._string("registration.command_no_email", "Email delivery is not configured, so a sysop must review it locally.") + "\r\n"
 
     async def _sysop_access_matrix_lines(self, target: str) -> list[str]:
         channels = self._access_channels()
@@ -9391,6 +9489,7 @@ class TelnetClusterServer:
             "apropos": "show/apropos",
             "mail": "show/messages",
             "outbox": "show/outbox",
+            "register": "register",
         }
 
     def _top_level_canonical_tokens(self) -> list[str]:
@@ -9456,6 +9555,7 @@ class TelnetClusterServer:
             "read",
             "reply",
             "ping",
+            "register",
             "version",
             "users",
             "node",
@@ -9659,6 +9759,8 @@ class TelnetClusterServer:
                 return True, await self._cmd_read(call, rest)
             if first == "reply":
                 return True, await self._cmd_reply(call, rest)
+            if first == "register":
+                return True, await self._cmd_register(call, rest)
 
             # normalize grouped command forms:
             # show/dx ..., sh/dx ...
@@ -10120,7 +10222,8 @@ class TelnetClusterServer:
                     return
                 base_call = call.split("-", 1)[0]
                 blocked = False
-                for candidate in (call, base_call):
+                call_exists = await self.store.get_user_registry(call) is not None
+                for candidate in ((call,) if call_exists else (call, base_call)):
                     raw_block = await self.store.get_user_pref(candidate, "blocked_login")
                     if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
                         blocked = True

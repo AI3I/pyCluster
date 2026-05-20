@@ -41,6 +41,18 @@ If MFA is required, telnet prompts for `authenticator code:` when your account u
 
 If this is your first telnet login and no password exists yet, pyCluster will stop and require password creation before continuing.
 
+If your node requires or encourages registration, telnet shows a registration
+notice after the MOTD until your account has an approved registration request.
+Use the normal profile commands to fill in missing fields, then run:
+
+```text
+register
+```
+
+`register` submits the current profile to the same pending registration queue
+used by the public web UI. If SMTP is configured, pyCluster notifies the sysop
+and sends an acknowledgement to your profile email address.
+
 ## 2. Getting and Viewing DX
 
 The main command is:

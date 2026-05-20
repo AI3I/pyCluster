@@ -390,6 +390,9 @@ def test_public_dxweb_static_includes_spotter_continent_filter_controls() -> Non
     text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
     assert "Spotter Continent" in text
     assert 'data-ftype="spotterCont"' in text
+    assert text.index('<span class="filter-label">CQ Zone</span>') < text.index('<span class="filter-label">Spotter Continent</span>')
+    assert 'id="cqz-input" class="cqz-input" type="text"' in text
+    assert "dxZones.has(Number(s.dx_cqz || 0))" in text
     assert "const FILTER_SPOTS = '/api/filters/spots';" in text
     assert "spotter_cont " in text
     assert "await webJson(API+'?limit=500')" in text
@@ -473,6 +476,11 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "Authenticator Code" not in text
     assert "watch_profiles: watchProfiles" in text
     assert "filter_presets: filterPresets" in text
+    assert "watch_rules: watchlist" in text
+    assert "watch_matches: watchMatches.slice(0,10)" in text
+    assert "const serverWatchRules = Array.isArray(data.watch_rules)" in text
+    assert "const serverWatchMatches = Array.isArray(data.watch_matches)" in text
+    assert "if (webToken && webCall) persistAccountPresets();" in text
     assert "opSetWarn(uiText('presets_login_required'))" in text
     assert "uiText('presets_save_failed')" in text
     assert "uiText('presets_load_failed')" in text
@@ -1123,6 +1131,12 @@ def test_public_web_user_presets_are_stored_per_call(tmp_path) -> None:
                 "filter_presets": [
                     {"name": "Digital NA", "band": "20m", "mode": "FT8", "commentTagFilter": "ALL"}
                 ],
+                "watch_rules": [
+                    {"type": "call", "value": "cy0s", "hits": 2, "last": "2026-05-19T00:00:00Z", "sound": True, "toast": False}
+                ],
+                "watch_matches": [
+                    {"dx_call": "cy0s", "rule_type": "call", "rule_value": "cy0s", "band": "20m", "mode": "CW", "time": "2026-05-19T00:00:00Z", "spotter": "k1abc"}
+                ],
             }
             code, _, body = await _http_request_ex(
                 srv,
@@ -1135,10 +1149,15 @@ def test_public_web_user_presets_are_stored_per_call(tmp_path) -> None:
             data = json.loads(body.decode("utf-8"))
             assert data["watch_profiles"][0]["name"] == "DX Watch"
             assert data["filter_presets"][0]["name"] == "Digital NA"
+            assert data["watch_rules"][0]["value"] == "CY0S"
+            assert data["watch_matches"][0]["spotter"] == "K1ABC"
 
             raw = await store.get_user_pref("AI3I", "public.presets")
             assert raw is not None
-            assert json.loads(raw)["watch_profiles"][0]["rules"][0]["value"] == "CY0S"
+            saved = json.loads(raw)
+            assert saved["watch_profiles"][0]["rules"][0]["value"] == "CY0S"
+            assert saved["watch_rules"][0]["value"] == "CY0S"
+            assert saved["watch_matches"][0]["dx_call"] == "CY0S"
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -1149,6 +1168,8 @@ def test_public_web_user_presets_are_stored_per_call(tmp_path) -> None:
             assert code == 200
             data = json.loads(body.decode("utf-8"))
             assert data["filter_presets"][0]["mode"] == "FT8"
+            assert data["watch_rules"][0]["hits"] == 2
+            assert data["watch_matches"][0]["rule_value"] == "CY0S"
         finally:
             await store.close()
 
