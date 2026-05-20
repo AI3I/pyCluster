@@ -3684,6 +3684,47 @@ def test_web_users_cluster_peer_records_are_managed_defaults(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_blocking_explicit_ssid_does_not_block_base_or_siblings(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_ssid_block_scope.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N9JR", now, privilege="sysop")
+            await store.upsert_user_registry("N9JR-10", now, privilege="user")
+            await store.upsert_user_registry("N9JR-13", now, privilege="user")
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "N9JR-13", "kind": "blocked", "value": False}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["call"] == "N9JR-13"
+            assert data["user"]["blocked_login"] is True
+
+            assert await store.get_user_pref("N9JR-13", "blocked_login") == "on"
+            assert await store.get_user_pref("N9JR", "blocked_login") is None
+            assert await store.get_user_pref("N9JR-10", "blocked_login") is None
+            assert await srv._access_allowed("N9JR", "web", "login") is True
+            assert await srv._access_allowed("N9JR-10", "web", "login") is True
+            assert await srv._access_allowed("N9JR-13", "web", "login") is False
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_users_home_node_maps_to_homenode_pref(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_users_homenode.db")

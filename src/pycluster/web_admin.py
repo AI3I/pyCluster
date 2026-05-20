@@ -818,7 +818,8 @@ class WebAdminServer:
             node_family = str(await self.store.get_user_pref(candidate, "node_family") or "").strip().lower()
             if node_family in CLUSTER_NODE_FAMILIES:
                 return "", False
-        for candidate in (target, base):
+        block_candidates = (target,) if target_exists else (target, base)
+        for candidate in block_candidates:
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
             if str(raw_block or "").strip().lower() in {"1", "on", "yes", "true"}:
                 blocked_login = True
@@ -6017,7 +6018,7 @@ if (restoreWebSession()) {
                         await self.store.set_user_pref(base_call, "failed_password_locked_epoch", str(now), now)
                         audit_detail = "locked=on"
                 elif kind == "blocked":
-                    targets = {base_call, call}
+                    targets = {call}
                     if value:
                         for target in targets:
                             await self.store.delete_user_pref(target, "blocked_login")

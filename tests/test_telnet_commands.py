@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import pytest
 
 from pycluster import __version__
@@ -2554,6 +2555,12 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
             assert "RBN set to on for N0CALL." in out
             _, out = await srv._execute_command("N0CALL", "accept/rbn 1 accept call K1ABC")
             assert "accept/rbn" in out
+            rules = await store.list_filter_rules("N0CALL")
+            assert any(str(row["expr"]) == "rbn call K1ABC" for row in rules)
+            _, out = await srv._execute_command("N0CALL", "accept/rbn accept callsign K1ABC")
+            assert "accept/rbn" in out
+            rules = await store.list_filter_rules("N0CALL")
+            assert any(str(row["expr"]) == "rbn callsign K1ABC" for row in rules)
             _, out = await srv._execute_command("N0CALL", "show/mydx 10")
             assert "K1ABC" in out
             assert "K9DEF" not in out
@@ -2595,6 +2602,98 @@ def test_telnet_password_reader_consumes_option_bytes_after_cr(tmp_path) -> None
             second = await srv._read_password(reader, writer)  # type: ignore[arg-type]
             assert first == "secret"
             assert second == "secret"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_password_reader_handles_cr_nul_line_endings(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_password_reader_crnul.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        try:
+            reader.feed_data(b"secret\r\0secret\r\0")
+            first = await srv._read_password(reader, writer)  # type: ignore[arg-type]
+            second = await srv._read_password(reader, writer)  # type: ignore[arg-type]
+            assert first == "secret"
+            assert second == "secret"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_register_command_queues_request_and_sends_notifications(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_register_command.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        sent: list[tuple[str, str, str]] = []
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.upsert_user_registry("AI3I", now, privilege="sysop", email="sysop@example.test")
+            await store.upsert_user_registry(
+                "N1NEW",
+                now,
+                display_name="New User",
+                home_node="W1AW",
+                qth="Hartford",
+                qra="FN31",
+                email="new@example.test",
+            )
+            await store.set_user_pref("N1NEW", "password", "hash", now)
+            await store.set_user_pref("N1NEW", "email_verified_epoch", str(now), now)
+            await store.set_user_pref("N1NEW", "forward_lat", "41.7", now)
+            await store.set_user_pref("N1NEW", "forward_lon", "-72.7", now)
+            await store.set_user_pref("N1NEW", "mfa_email_otp", "off", now)
+            keep, out = await srv._execute_command("N1NEW", "register")
+            assert keep is True
+            assert "Registration request submitted for N1NEW" in out
+            req = await store.get_registration_request("N1NEW")
+            assert req is not None
+            assert str(req["status"]) == "pending"
+            assert str(req["source"]) == "telnet"
+            assert int(req["email_verified"]) == 1
+            assert any(rcpt == "sysop@example.test" for rcpt, _subject, _body in sent)
+            assert any(rcpt == "new@example.test" for rcpt, _subject, _body in sent)
+
+            _keep, out = await srv._execute_command("N1NEW", "register")
+            assert "already pending" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_welcome_registration_notice_is_suppressed_after_approval(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_registration_notice.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.upsert_user_registry("N1NEW", now, email="new@example.test")
+            text = await srv._welcome_block("N1NEW")
+            assert "run REGISTER" in text
+            await store.upsert_registration_request(
+                "N1NEW",
+                now,
+                email="new@example.test",
+                source="telnet",
+                status="approved",
+            )
+            text = await srv._welcome_block("N1NEW")
+            assert "run REGISTER" not in text
         finally:
             await store.close()
 
@@ -2949,6 +3048,7 @@ def test_muf_path_uses_midpoint_solar_zenith_for_signal_estimates(tmp_path) -> N
         assert srv._signal_report_for_muf(14.0, 26.0, zen_midnight) == ""
         assert srv._signal_report_for_muf(1.8, 26.0, zen_noon) == ""
         assert srv._signal_report_for_muf(3.5, 26.0, zen_noon) == ""
+        assert srv._signal_report_for_muf(1.8, 26.0, zen_midnight, (zen_midnight, zen_noon)) == ""
     finally:
         asyncio.run(store.close())
 
@@ -5242,6 +5342,28 @@ def test_explicit_ssid_user_does_not_inherit_base_call_access(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_explicit_ssid_user_does_not_inherit_base_call_block(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ssid_block_inheritance.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N9JR", now, privilege="sysop")
+            await store.upsert_user_registry("N9JR-10", now, privilege="user")
+            await store.upsert_user_registry("N9JR-13", now, privilege="user")
+            await store.set_user_pref("N9JR-13", "blocked_login", "on", now)
+
+            assert await srv._access_allowed("N9JR", "telnet", "login") is True
+            assert await srv._access_allowed("N9JR-10", "telnet", "login") is True
+            assert await srv._access_allowed("N9JR-13", "telnet", "login") is False
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_cluster_peer_access_is_always_allowed(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "cluster_peer_access.db")
@@ -6727,6 +6849,8 @@ def test_show_sun_reports_sunrise_and_sunset(tmp_path) -> None:
             assert "Sunrise:" in out
             assert "Sunset:" in out
             assert "Next Event:" in out
+            assert ".00h" not in out
+            assert re.search(r"Next Event: sunrise in \d+h( \d{2}m)?|Next Event: sunset in \d+h( \d{2}m)?|Next Event: (sunrise|sunset) in \d+m", out)
         finally:
             await store.close()
 
