@@ -1140,6 +1140,7 @@ new_prompt = "new password: "
 failed = "Password setup failed."
 confirm_prompt = "confirm password: "
 mismatch = "Passwords did not match."
+mismatch_retry = "Passwords did not match. Try again."
 set = "Password set for {call}."
 
 [mfa]

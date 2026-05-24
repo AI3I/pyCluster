@@ -265,6 +265,7 @@ class TelnetClusterServer:
         self.started_at = started_at
         self._server: asyncio.AbstractServer | None = None
         self._servers: list[asyncio.AbstractServer] = []
+        self._keps_refresh_task: asyncio.Task[None] | None = None
         self._sessions: dict[int, Session] = {}
         self._session_seq = 0
         self._semaphore = asyncio.Semaphore(self.config.telnet.max_clients)
@@ -850,8 +851,16 @@ class TelnetClusterServer:
 
     async def start(self) -> None:
         await self._bind_ports(await self._effective_ports())
+        self._keps_refresh_task = asyncio.create_task(self._keps_refresh_loop(), name="pycluster-keps-refresh")
 
     async def stop(self) -> None:
+        if self._keps_refresh_task:
+            self._keps_refresh_task.cancel()
+            try:
+                await self._keps_refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._keps_refresh_task = None
         for srv in self._servers:
             srv.close()
         for srv in self._servers:
@@ -1282,11 +1291,13 @@ class TelnetClusterServer:
             b = raw[0]
             if b in (10, 13):
                 if b == 13:
-                    for _ in range(4):
+                    for _ in range(8):
                         nxt = await self._read_telnet_byte(reader, 0.05, writer)
                         if nxt == b"":
                             continue
-                        if nxt not in {None, b"\n", b"\0"}:
+                        if nxt in {b"\n", b"\0"}:
+                            break
+                        if nxt is not None:
                             reader.feed_data(nxt)
                         break
                 await self._set_telnet_password_echo(reader, writer, suppress=False)
@@ -1323,21 +1334,28 @@ class TelnetClusterServer:
 
     async def _prompt_new_password(self, call: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
         await self._write(writer, self._string("password_setup.required", "A password is required before continuing.") + "\r\n")
-        await self._set_telnet_password_echo(reader, writer, suppress=True)
-        await self._write(writer, self._string("password_setup.new_prompt", "new password: "))
-        first = await self._read_password(reader, writer)
-        if first is None:
-            return False
-        first = first.strip()
-        if not first:
-            await self._write(writer, self._string("password_setup.failed", "Password setup failed.") + "\r\n")
-            return False
-        await self._set_telnet_password_echo(reader, writer, suppress=True)
-        await self._write(writer, self._string("password_setup.confirm_prompt", "confirm password: "))
-        second = await self._read_password(reader, writer)
-        if second is None:
-            return False
-        if first != second.strip():
+        max_attempts = 3
+        first = ""
+        for attempt in range(max_attempts):
+            await self._set_telnet_password_echo(reader, writer, suppress=True)
+            await self._write(writer, self._string("password_setup.new_prompt", "new password: "))
+            first_raw = await self._read_password(reader, writer)
+            if first_raw is None:
+                return False
+            first = first_raw.strip()
+            if not first:
+                await self._write(writer, self._string("password_setup.failed", "Password setup failed.") + "\r\n")
+                return False
+            await self._set_telnet_password_echo(reader, writer, suppress=True)
+            await self._write(writer, self._string("password_setup.confirm_prompt", "confirm password: "))
+            second = await self._read_password(reader, writer)
+            if second is None:
+                return False
+            if first == second.strip():
+                break
+            if attempt < max_attempts - 1:
+                await self._write(writer, self._string("password_setup.mismatch_retry", "Passwords did not match. Try again.") + "\r\n")
+        else:
             await self._write(writer, self._string("password_setup.mismatch", "Passwords did not match.") + "\r\n")
             return False
         now = int(datetime.now(timezone.utc).timestamp())
@@ -8062,14 +8080,23 @@ class TelnetClusterServer:
             return self._render_string("stat.protoacks", "Protocol acknowledgement status: {total} total, {suppressed} suppressed, and {expired} expired.", total=total, suppressed=suppressed, expired=expired) + "\r\n"
         return self._render_string("stat.named_unknown", "There is no summary yet for stat/{name}. Try the related show command for more detail.", name=name) + "\r\n"
 
-    async def _cmd_get_keps(self, call: str, _arg: str | None) -> str:
-        now = int(datetime.now(timezone.utc).timestamp())
+    def _keps_target_path(self) -> Path | None:
         keps_path = str(getattr(self.config.satellite, "keps_path", "./data/keps.txt") or "").strip()
         if not keps_path:
-            return self._string("compat.keps_not_configured", "Keplerian elements update failed: satellite.keps_path is not configured.") + "\r\n"
+            return None
         target = Path(keps_path).expanduser()
         if not target.is_absolute():
             target = Path.cwd() / target
+        return target
+
+    def _keps_file_stale(self, target: Path, *, max_age_seconds: int = 7 * 24 * 60 * 60) -> bool:
+        try:
+            stat = target.stat()
+        except OSError:
+            return True
+        return int(time.time()) - int(stat.st_mtime) >= max_age_seconds
+
+    async def _download_keps_to_path(self, call: str, target: Path) -> tuple[int, Path]:
         try:
             text = _download_text_url(_DEFAULT_KEPS_URL)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -8079,6 +8106,44 @@ class TelnetClusterServer:
             if count <= 0:
                 raise RuntimeError("no TLE records were found in the downloaded keps file")
             tmp.replace(target)
+        except Exception:
+            raise
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.set_user_pref(call.upper(), "keps_last_request_epoch", str(now), now)
+        await self.store.set_user_pref(call.upper(), "keps_last_update_epoch", str(now), now)
+        await self.store.set_user_pref(call.upper(), "keps_last_status", "ok", now)
+        await self.store.delete_user_pref(call.upper(), "keps_last_error")
+        return count, target
+
+    async def _refresh_keps_if_stale(self) -> None:
+        target = self._keps_target_path()
+        if target is None or not self._keps_file_stale(target):
+            return
+        call = normalize_call(self.config.node.node_call) or "NODE"
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.set_user_pref(call, "keps_last_auto_epoch", str(now), now)
+        try:
+            count, path = await self._download_keps_to_path(call, target)
+        except Exception as exc:
+            await self.store.set_user_pref(call, "keps_last_status", "failed", now)
+            await self.store.set_user_pref(call, "keps_last_error", str(exc), now)
+            self._log_event("keps", f"automatic keps update failed: {exc}")
+            LOG.warning("automatic keps update failed target=%s: %s", target, exc)
+            return
+        self._log_event("keps", f"automatic keps update loaded {count} TLE record(s) into {path}")
+        LOG.info("automatic keps update loaded %s TLE record(s) into %s", count, path)
+
+    async def _keps_refresh_loop(self) -> None:
+        while True:
+            await self._refresh_keps_if_stale()
+            await asyncio.sleep(6 * 60 * 60)
+
+    async def _cmd_get_keps(self, call: str, _arg: str | None) -> str:
+        target = self._keps_target_path()
+        if target is None:
+            return self._string("compat.keps_not_configured", "Keplerian elements update failed: satellite.keps_path is not configured.") + "\r\n"
+        try:
+            count, target = await self._download_keps_to_path(call, target)
         except Exception as exc:
             self._log_event("keps", f"{call} get/keps failed: {exc}")
             return self._render_string(
@@ -8086,8 +8151,6 @@ class TelnetClusterServer:
                 "Keplerian elements update failed: {error}",
                 error=str(exc),
             ) + "\r\n"
-        await self.store.set_user_pref(call.upper(), "keps_last_request_epoch", str(now), now)
-        await self.store.set_user_pref(call.upper(), "keps_last_update_epoch", str(now), now)
         self._log_event("keps", f"{call} get/keps")
         return self._render_string(
             "compat.keps_ok",
