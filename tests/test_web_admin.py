@@ -3103,6 +3103,76 @@ def test_web_users_can_reset_mfa(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_users_mfa_and_registration_state_are_exact_ssid(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_users_ssid_state.db")
+        cfg = _mk_config(db, admin_token="adm")
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        try:
+            for call in ("N9JR", "N9JR-10", "N9JR-13"):
+                await store.upsert_user_registry(call, now, privilege="user", email=f"{call.lower()}@example.test")
+            await store.set_user_pref("N9JR", "mfa_totp_secret", "BASESECRET", now)
+            await store.set_user_pref("N9JR-10", "mfa_totp_secret", "TENSECRET", now)
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "N9JR-13", "kind": "verified", "value": True}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["call"] == "N9JR-13"
+            assert data["user"]["principal_call"] == "N9JR-13"
+            assert await store.get_user_pref("N9JR-13", "email_verified_epoch") is not None
+            assert await store.get_user_pref("N9JR-10", "email_verified_epoch") is None
+            assert await store.get_user_pref("N9JR", "email_verified_epoch") is None
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/mfa/totp/enroll",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "N9JR-13"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["principal"] == "N9JR-13"
+            assert await store.get_user_pref("N9JR-13", "mfa_totp_secret") == data["secret"]
+            assert await store.get_user_pref("N9JR-10", "mfa_totp_secret") == "TENSECRET"
+            assert await store.get_user_pref("N9JR", "mfa_totp_secret") == "BASESECRET"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "N9JR-13", "kind": "blocked", "value": False}).encode("utf-8"),
+            )
+            assert code == 200
+            assert await store.get_user_pref("N9JR-13", "blocked_login") == "on"
+            assert await store.get_user_pref("N9JR-10", "blocked_login") is None
+            assert await store.get_user_pref("N9JR", "blocked_login") is None
+
+            row10 = await store.get_user_registry("N9JR-10")
+            row13 = await store.get_user_registry("N9JR-13")
+            assert row10 is not None and row13 is not None
+            assert (await srv._user_registry_json(row10))["mfa_totp_enabled"] is True
+            assert (await srv._user_registry_json(row13))["blocked_login"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_users_can_enroll_totp_mfa(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_users_totp_enroll.db")
@@ -3128,12 +3198,13 @@ def test_web_users_can_enroll_totp_mfa(tmp_path) -> None:
             assert code == 200
             data = json.loads(body.decode("utf-8"))
             assert data["ok"] is True
-            assert data["principal"] == "AI3I"
+            assert data["principal"] == "AI3I-7"
             assert data["secret"]
             assert data["otpauth_uri"].startswith("otpauth://totp/")
             assert "AI3I%20Cluster" in data["otpauth_uri"]
-            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == data["secret"]
-            assert await store.get_user_pref("AI3I", "mfa_email_otp") == "required"
+            assert await store.get_user_pref("AI3I-7", "mfa_totp_secret") == data["secret"]
+            assert await store.get_user_pref("AI3I-7", "mfa_email_otp") == "required"
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") is None
             assert data["user"]["mfa_totp_enabled"] is True
         finally:
             await store.close()
@@ -3350,7 +3421,7 @@ def test_web_admin_registration_queue_can_list_approve_and_deny(tmp_path) -> Non
     asyncio.run(run())
 
 
-def test_web_admin_registration_approval_verifies_base_principal_for_ssid(tmp_path) -> None:
+def test_web_admin_registration_approval_verifies_exact_ssid(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_registration_queue_ssid.db")
         cfg = _mk_config(db, admin_token="adm")
@@ -3383,12 +3454,12 @@ def test_web_admin_registration_approval_verifies_base_principal_for_ssid(tmp_pa
             assert code == 200
             data = json.loads(body.decode("utf-8"))
             assert data["user"]["call"] == "N1NEW-2"
-            assert data["user"]["principal_call"] == "N1NEW"
+            assert data["user"]["principal_call"] == "N1NEW-2"
             assert data["user"]["registration_state"] == "verified"
             assert data["user"]["email_verified"] is True
-            assert await store.get_user_pref("N1NEW", "registration_state") == "verified"
-            assert await store.get_user_pref("N1NEW", "email_verified_epoch") is not None
-            assert await store.get_user_pref("N1NEW-2", "email_verified_epoch") is None
+            assert await store.get_user_pref("N1NEW-2", "registration_state") == "verified"
+            assert await store.get_user_pref("N1NEW-2", "email_verified_epoch") is not None
+            assert await store.get_user_pref("N1NEW", "email_verified_epoch") is None
         finally:
             await store.close()
 

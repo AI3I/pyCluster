@@ -649,14 +649,20 @@ class ClusterApp:
         writer: asyncio.StreamWriter,
         initial_lines: list[str] | None = None,
     ) -> bool:
-        profile = (await self.store.get_user_pref(call, "node_family") or "dxspider").strip().lower() or "dxspider"
+        peer_key = normalize_call(peer_name) or normalize_call(call) or call.upper()
+        login_key = normalize_call(call) or call.upper()
+        profile = (
+            await self.store.get_user_pref(peer_key, "node_family")
+            or await self.store.get_user_pref(login_key, "node_family")
+            or "dxspider"
+        ).strip().lower() or "dxspider"
         for line in initial_lines or []:
             frame = parse_wire_pc_frame(line)
             if frame and frame.pc_type == "PC18":
                 msg = Pc18Message.from_fields(frame.payload_fields)
                 family, summary = self._peer_identity_from_pc18(msg.software)
                 await self._record_proto_state(
-                    call,
+                    peer_key,
                     {
                         "pc18.software": (msg.software or "").strip(),
                         "pc18.proto": (msg.proto_version or "").strip(),
@@ -664,21 +670,21 @@ class ClusterApp:
                         "pc18.summary": summary,
                     },
                 )
-        conn = DxSpiderInboundConnection(call, reader, writer, initial_lines=initial_lines)
-        await self.node_link.accept_inbound(call, conn, profile=profile)
+        conn = DxSpiderInboundConnection(peer_key, reader, writer, initial_lines=initial_lines)
+        await self.node_link.accept_inbound(peer_key, conn, profile=profile)
         await conn.send_line(dxspider_compat_pc18())
         await conn.send_line("PC20^")
         if profile == "dxspider":
-            self._legacy_dxspider_peers.add(call)
+            self._legacy_dxspider_peers.add(peer_key)
             try:
-                await self._send_legacy_init_config(call)
+                await self._send_legacy_init_config(peer_key)
             except KeyError:
-                self._legacy_dxspider_peers.discard(call)
-                LOG.info("legacy inbound init skipped for disconnected peer=%s", call)
+                self._legacy_dxspider_peers.discard(peer_key)
+                LOG.info("legacy inbound init skipped for disconnected peer=%s", peer_key)
                 return False
-        await self._reset_mail_transport_state(call, "peer session refreshed")
-        await self._flush_pending_messages_for_peer(call)
-        LOG.info("accepted inbound node login call=%s peer=%s", call, peer_name)
+        await self._reset_mail_transport_state(peer_key, "peer session refreshed")
+        await self._flush_pending_messages_for_peer(peer_key)
+        LOG.info("accepted inbound node login call=%s peer=%s key=%s", call, peer_name, peer_key)
         return True
 
     async def start(self, *, with_public_web: bool = True) -> None:

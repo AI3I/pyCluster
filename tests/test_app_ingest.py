@@ -172,8 +172,8 @@ def test_accept_inbound_node_login_sends_legacy_banner_and_init(tmp_path) -> Non
 
             text = writer.buffer.decode("utf-8", errors="replace")
             assert ok is True
-            assert accepted == [("AI3I-16", "dxspider")]
-            assert legacy_init == ["AI3I-16"]
+            assert accepted == [("AI3I-15", "dxspider")]
+            assert legacy_init == ["AI3I-15"]
             assert f"PC18^pyCluster {__version__}^" in text
             assert "PC20^" in text
         finally:
@@ -207,6 +207,42 @@ def test_accept_inbound_node_login_records_initial_pc18_version(tmp_path) -> Non
             prefs = await app.store.list_user_prefs(app.config.node.node_call)
             assert prefs["proto.peer.w3lpl-2.pc18.summary"] == "pyCluster 1.0.9"
             assert prefs["proto.peer.w3lpl-2.pc18.family"] == "pycluster"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_accept_inbound_node_login_records_protocol_under_peer_name(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "accept_inbound_peer_name.db")
+        app = ClusterApp(_mk_config(db))
+        accepted: list[tuple[str, str]] = []
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref("LOGIN-1", "node_family", "dxspider", now)
+
+            async def _accept(name: str, _conn, profile: str = "dxspider") -> None:
+                accepted.append((name, profile))
+
+            async def _legacy(_peer: str) -> None:
+                return
+
+            app.node_link.accept_inbound = _accept  # type: ignore[method-assign]
+            app._send_legacy_init_config = _legacy  # type: ignore[method-assign]
+
+            ok = await app.accept_inbound_node_login(
+                "LOGIN-1",
+                "W3LPL-2",
+                asyncio.StreamReader(),
+                _DummyWriter(),  # type: ignore[arg-type]
+                ["PC18^pyCluster 1.0.9^5457^"],
+            )
+            assert ok is True
+            assert accepted == [("W3LPL-2", "dxspider")]
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            assert prefs["proto.peer.w3lpl-2.pc18.summary"] == "pyCluster 1.0.9"
+            assert "proto.peer.login-1.pc18.summary" not in prefs
         finally:
             await app.store.close()
 

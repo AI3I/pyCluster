@@ -446,10 +446,11 @@ class WebAdminServer:
         if node_family not in CLUSTER_NODE_FAMILIES:
             node_family = ""
         base_call = call.split("-", 1)[0]
+        state_call = call
         blocked_login = False
         blocked_reason = ""
         user_note = ""
-        for candidate in (call, base_call):
+        for candidate in (call,):
             if not user_note:
                 user_note = str(await self.store.get_user_pref(candidate, "note") or "").strip()
             raw_block = await self.store.get_user_pref(candidate, "blocked_login")
@@ -511,7 +512,7 @@ class WebAdminServer:
         mfa_email_otp = str(await self.store.get_user_pref(call, "mfa_email_otp") or "").strip().lower()
         if mfa_email_otp not in {"required", "off"}:
             mfa_email_otp = "default"
-        mfa_totp_enabled = bool(str(await self.store.get_user_pref(base_call, "mfa_totp_secret") or "").strip())
+        mfa_totp_enabled = bool(str(await self.store.get_user_pref(state_call, "mfa_totp_secret") or "").strip())
         if mfa_email_otp == "required":
             mfa_email_effective = True
         elif mfa_email_otp == "off":
@@ -532,7 +533,7 @@ class WebAdminServer:
             mfa_policy = "node policy"
         else:
             mfa_policy = "not required by node policy"
-        reg_state, email_verified_epoch, grace_logins_remaining = await registration_state(self.store, base_call)
+        reg_state, email_verified_epoch, grace_logins_remaining = await registration_state(self.store, state_call)
         if node_family:
             blocked_login = False
             blocked_reason = ""
@@ -547,7 +548,7 @@ class WebAdminServer:
             grace_logins_remaining = 0
         return {
             "call": call,
-            "principal_call": base_call,
+            "principal_call": state_call,
             "display_name": str(row["display_name"] or ""),
             "home_node": str(homenode_pref or row["home_node"] or ""),
             "node_family": node_family,
@@ -5819,7 +5820,6 @@ if (restoreWebSession()) {
                             await self.store.delete_user_pref(target, "blocked_reason")
                     if node_family:
                         await self.store.delete_user_pref(call, "mfa_totp_secret")
-                        await self.store.delete_user_pref(base_call, "mfa_totp_secret")
                     if mfa_email_otp in {"", "default"}:
                         await self.store.delete_user_pref(call, "mfa_email_otp")
                         if original_call and original_call != call:
@@ -5903,11 +5903,10 @@ if (restoreWebSession()) {
                     email=str(req["email"] or ""),
                     privilege="user",
                 )
-                base_call = call.split("-", 1)[0]
                 if int(req["email_verified"] or 0):
-                    await mark_email_verified(self.store, base_call, now_epoch=now)
+                    await mark_email_verified(self.store, call, now_epoch=now)
                 else:
-                    await mark_email_unverified(self.store, base_call, now_epoch=now, grace_logins=int(self.config.node.initial_grace_logins))
+                    await mark_email_unverified(self.store, call, now_epoch=now, grace_logins=int(self.config.node.initial_grace_logins))
                 await self.store.set_registration_request_status(
                     call,
                     status="approved",
@@ -5964,6 +5963,7 @@ if (restoreWebSession()) {
                 value = bool(payload.get("value"))
                 now = int(time.time())
                 base_call = call.split("-", 1)[0]
+                state_call = call
                 await self.store.upsert_user_registry(call, now)
                 node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
                 if node_family in CLUSTER_NODE_FAMILIES:
@@ -5974,7 +5974,6 @@ if (restoreWebSession()) {
                     await self.store.delete_user_pref(call, "blocked_reason")
                     await self.store.set_user_pref(call, "mfa_email_otp", "off", now)
                     await self.store.delete_user_pref(call, "mfa_totp_secret")
-                    await self.store.delete_user_pref(base_call, "mfa_totp_secret")
                     row = await self.store.get_user_registry(call)
                     self._audit("sysop", f"{self._authorized_call(headers)} normalized cluster peer matrix {call}")
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "user": await self._user_registry_json(row) if row else {"call": call}}))
@@ -5994,28 +5993,28 @@ if (restoreWebSession()) {
                     audit_detail = f"access.{capability}={'on' if value else 'off'}"
                 elif kind == "verified":
                     if value:
-                        await mark_email_verified(self.store, base_call, now_epoch=now)
+                        await mark_email_verified(self.store, state_call, now_epoch=now)
                     else:
                         await mark_email_unverified(
                             self.store,
-                            base_call,
+                            state_call,
                             now_epoch=now,
                             grace_logins=int(self.config.node.initial_grace_logins),
                         )
                     audit_detail = f"verified={'on' if value else 'off'}"
                 elif kind == "locked":
                     if value:
-                        _state, verified_epoch, _remaining = await registration_state(self.store, base_call)
-                        await self.store.set_user_pref(base_call, "registration_state", "verified" if verified_epoch > 0 else "pending", now)
+                        _state, verified_epoch, _remaining = await registration_state(self.store, state_call)
+                        await self.store.set_user_pref(state_call, "registration_state", "verified" if verified_epoch > 0 else "pending", now)
                         if verified_epoch <= 0:
-                            await self.store.set_user_pref(base_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
-                        await self.store.delete_user_pref(base_call, "failed_password_count")
-                        await self.store.delete_user_pref(base_call, "failed_password_locked_epoch")
-                        await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                            await self.store.set_user_pref(state_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
+                        await self.store.delete_user_pref(state_call, "failed_password_count")
+                        await self.store.delete_user_pref(state_call, "failed_password_locked_epoch")
+                        await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
                         audit_detail = "locked=off"
                     else:
-                        await self.store.set_user_pref(base_call, "registration_state", "locked", now)
-                        await self.store.set_user_pref(base_call, "failed_password_locked_epoch", str(now), now)
+                        await self.store.set_user_pref(state_call, "registration_state", "locked", now)
+                        await self.store.set_user_pref(state_call, "failed_password_locked_epoch", str(now), now)
                         audit_detail = "locked=on"
                 elif kind == "blocked":
                     targets = {call}
@@ -6127,7 +6126,6 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 now = int(time.time())
-                base_call = call.split("-", 1)[0]
                 node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
                 if node_family in CLUSTER_NODE_FAMILIES:
                     await self.store.upsert_user_registry(call, now)
@@ -6142,18 +6140,17 @@ if (restoreWebSession()) {
                         self._json({"ok": True, "call": call, "principal": call, "challenges_cleared": cleared, "user": await self._user_registry_json(row) if row else {"call": call, "mfa_email_otp": "off"}}),
                     )
                     return
-                await self.store.upsert_user_registry(base_call, now)
-                _state, verified_epoch, _remaining = await registration_state(self.store, base_call)
-                await self.store.set_user_pref(base_call, "registration_state", "verified" if verified_epoch > 0 else "pending", now)
+                state_call = call
+                await self.store.upsert_user_registry(state_call, now)
+                _state, verified_epoch, _remaining = await registration_state(self.store, state_call)
+                await self.store.set_user_pref(state_call, "registration_state", "verified" if verified_epoch > 0 else "pending", now)
                 if verified_epoch <= 0:
-                    await self.store.set_user_pref(base_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
-                await self.store.delete_user_pref(base_call, "failed_password_count")
-                await self.store.delete_user_pref(base_call, "failed_password_locked_epoch")
-                cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                    await self.store.set_user_pref(state_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
+                await self.store.delete_user_pref(state_call, "failed_password_count")
+                await self.store.delete_user_pref(state_call, "failed_password_locked_epoch")
+                cleared = await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
                 row = await self.store.get_user_registry(call)
-                if row is None and call != base_call:
-                    row = await self.store.get_user_registry(base_call)
-                self._audit("sysop", f"{self._authorized_call(headers)} unlocked account {base_call} challenges={cleared}")
+                self._audit("sysop", f"{self._authorized_call(headers)} unlocked account {state_call} challenges={cleared}")
                 await self._write_response(
                     writer,
                     200,
@@ -6161,9 +6158,9 @@ if (restoreWebSession()) {
                         {
                             "ok": True,
                             "call": call,
-                            "principal": base_call,
+                            "principal": state_call,
                             "challenges_cleared": cleared,
-                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": base_call},
+                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": state_call},
                         }
                     ),
                 )
@@ -7024,21 +7021,18 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 now = int(time.time())
-                base_call = call.split("-", 1)[0]
+                state_call = call
                 node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
                 if node_family in CLUSTER_NODE_FAMILIES:
                     await self._write_response(writer, 400, self._json({"error": "cluster peer records cannot use MFA"}))
                     return
-                await self.store.upsert_user_registry(base_call, now)
-                await self.store.set_user_pref(base_call, "mfa_email_otp", "off", now)
-                await self.store.delete_user_pref(base_call, "mfa_totp_secret")
-                if call != base_call:
-                    await self.store.delete_user_pref(call, "mfa_email_otp")
-                    await self.store.delete_user_pref(call, "mfa_totp_secret")
-                cleared = await self.store.delete_mfa_challenges_for_call(call, include_ssids=True)
+                await self.store.upsert_user_registry(state_call, now)
+                await self.store.set_user_pref(state_call, "mfa_email_otp", "off", now)
+                await self.store.delete_user_pref(state_call, "mfa_totp_secret")
+                await self.store.delete_user_pref(state_call, "mfa_totp_pending_secret")
+                await self.store.delete_user_pref(state_call, "mfa_totp_verified_epoch")
+                cleared = await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
                 row = await self.store.get_user_registry(call)
-                if row is None and call != base_call:
-                    row = await self.store.get_user_registry(base_call)
                 self._audit("sysop", f"{self._authorized_call(headers)} reset MFA for {call} challenges={cleared}")
                 await self._write_response(
                     writer,
@@ -7047,7 +7041,7 @@ if (restoreWebSession()) {
                         {
                             "ok": True,
                             "call": call,
-                            "principal": base_call,
+                            "principal": state_call,
                             "challenges_cleared": cleared,
                             "user": await self._user_registry_json(row) if row else {"call": call, "mfa_email_otp": "off"},
                         }
@@ -7068,19 +7062,25 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 now = int(time.time())
-                base_call = call.split("-", 1)[0]
-                await self.store.upsert_user_registry(base_call, now)
+                state_call = call
+                node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
+                if node_family in CLUSTER_NODE_FAMILIES:
+                    await self._write_response(writer, 400, self._json({"error": "cluster peer records cannot use MFA"}))
+                    return
+                await self.store.upsert_user_registry(state_call, now)
                 secret = generate_totp_secret()
-                await self.store.set_user_pref(base_call, "mfa_totp_secret", secret, now)
-                await self.store.set_user_pref(base_call, "mfa_email_otp", "required", now)
-                cleared = await self.store.delete_mfa_challenges_for_call(call, include_ssids=True)
+                await self.store.set_user_pref(state_call, "mfa_totp_secret", secret, now)
+                await self.store.set_user_pref(state_call, "mfa_email_otp", "required", now)
+                await self.store.delete_user_pref(state_call, "mfa_totp_pending_secret")
+                await self.store.set_user_pref(state_call, "mfa_totp_verified_epoch", str(now), now)
+                cleared = await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
                 uri = totp_otpauth_uri(
                     issuer=self.config.mfa.issuer.strip() or self.config.node.node_call,
-                    account=base_call,
+                    account=state_call,
                     secret=secret,
                 )
-                row = await self.store.get_user_registry(base_call)
-                self._audit("sysop", f"{self._authorized_call(headers)} enrolled TOTP for {base_call} challenges={cleared}")
+                row = await self.store.get_user_registry(state_call)
+                self._audit("sysop", f"{self._authorized_call(headers)} enrolled TOTP for {state_call} challenges={cleared}")
                 await self._write_response(
                     writer,
                     200,
@@ -7088,11 +7088,11 @@ if (restoreWebSession()) {
                         {
                             "ok": True,
                             "call": call,
-                            "principal": base_call,
+                            "principal": state_call,
                             "secret": secret,
                             "otpauth_uri": uri,
                             "challenges_cleared": cleared,
-                            "user": await self._user_registry_json(row) if row else {"call": base_call, "mfa_totp_enabled": True},
+                            "user": await self._user_registry_json(row) if row else {"call": state_call, "mfa_totp_enabled": True},
                         }
                     ),
                 )
@@ -7110,10 +7110,8 @@ if (restoreWebSession()) {
                 if not _is_valid_admin_record_call(call):
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
-                base_call = call.split("-", 1)[0]
+                state_call = call
                 row = await self.store.get_user_registry(call)
-                if row is None and call != base_call:
-                    row = await self.store.get_user_registry(base_call)
                 email = str((row["email"] if row is not None else "") or "").strip()
                 if not has_valid_email(email):
                     await self._write_response(writer, 400, self._json({"error": "valid email required"}))
@@ -7122,15 +7120,13 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 503, self._json({"error": "verification delivery not configured"}))
                     return
                 try:
-                    challenge_id, expires_epoch = await self._mfa.issue(call=base_call, email=email, purpose="sysop-verify")
+                    challenge_id, expires_epoch = await self._mfa.issue(call=state_call, email=email, purpose="sysop-verify")
                 except Exception:
-                    LOG.exception("sysop verification delivery failed call=%s", base_call)
+                    LOG.exception("sysop verification delivery failed call=%s", state_call)
                     await self._write_response(writer, 503, self._json({"error": "verification delivery failed"}))
                     return
                 row = await self.store.get_user_registry(call)
-                if row is None and call != base_call:
-                    row = await self.store.get_user_registry(base_call)
-                self._audit("sysop", f"{self._authorized_call(headers)} sent verification email for {base_call}")
+                self._audit("sysop", f"{self._authorized_call(headers)} sent verification email for {state_call}")
                 await self._write_response(
                     writer,
                     200,
@@ -7138,10 +7134,10 @@ if (restoreWebSession()) {
                         {
                             "ok": True,
                             "call": call,
-                            "principal": base_call,
+                            "principal": state_call,
                             "challenge_id": challenge_id,
                             "expires_epoch": expires_epoch,
-                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": base_call},
+                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": state_call},
                         }
                     ),
                 )
@@ -7160,14 +7156,12 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 now = int(time.time())
-                base_call = call.split("-", 1)[0]
-                await self.store.upsert_user_registry(base_call, now)
-                await mark_email_verified(self.store, base_call, now_epoch=now)
-                cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                state_call = call
+                await self.store.upsert_user_registry(state_call, now)
+                await mark_email_verified(self.store, state_call, now_epoch=now)
+                cleared = await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
                 row = await self.store.get_user_registry(call)
-                if row is None and call != base_call:
-                    row = await self.store.get_user_registry(base_call)
-                self._audit("sysop", f"{self._authorized_call(headers)} marked verified {base_call} challenges={cleared}")
+                self._audit("sysop", f"{self._authorized_call(headers)} marked verified {state_call} challenges={cleared}")
                 await self._write_response(
                     writer,
                     200,
@@ -7175,9 +7169,9 @@ if (restoreWebSession()) {
                         {
                             "ok": True,
                             "call": call,
-                            "principal": base_call,
+                            "principal": state_call,
                             "challenges_cleared": cleared,
-                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": base_call},
+                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": state_call},
                         }
                     ),
                 )
@@ -7196,16 +7190,14 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 now = int(time.time())
-                base_call = call.split("-", 1)[0]
-                await self.store.upsert_user_registry(base_call, now)
-                await self.store.delete_user_pref(base_call, "email_verified_epoch")
-                await self.store.set_user_pref(base_call, "registration_state", "pending", now)
-                await self.store.set_user_pref(base_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
-                cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                state_call = call
+                await self.store.upsert_user_registry(state_call, now)
+                await self.store.delete_user_pref(state_call, "email_verified_epoch")
+                await self.store.set_user_pref(state_call, "registration_state", "pending", now)
+                await self.store.set_user_pref(state_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
+                cleared = await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
                 row = await self.store.get_user_registry(call)
-                if row is None and call != base_call:
-                    row = await self.store.get_user_registry(base_call)
-                self._audit("sysop", f"{self._authorized_call(headers)} unlocked registration for {base_call} challenges={cleared}")
+                self._audit("sysop", f"{self._authorized_call(headers)} unlocked registration for {state_call} challenges={cleared}")
                 await self._write_response(
                     writer,
                     200,
@@ -7213,9 +7205,9 @@ if (restoreWebSession()) {
                         {
                             "ok": True,
                             "call": call,
-                            "principal": base_call,
+                            "principal": state_call,
                             "challenges_cleared": cleared,
-                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": base_call},
+                            "user": await self._user_registry_json(row) if row else {"call": call, "principal_call": state_call},
                         }
                     ),
                 )

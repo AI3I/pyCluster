@@ -3718,6 +3718,52 @@ def test_top_level_compat_batch_commands(tmp_path, monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_automatic_keps_refresh_updates_missing_or_stale_file(tmp_path, monkeypatch) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "auto_keps.db")
+        cfg = _mk_config(db)
+        cfg.node.node_call = "AI3I-16"
+        cfg.satellite.keps_path = str(tmp_path / "auto-keps.txt")
+        monkeypatch.setattr(telnet_server_mod, "_download_text_url", lambda _url: _SAMPLE_TLE)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            await srv._refresh_keps_if_stale()
+            target = tmp_path / "auto-keps.txt"
+            assert target.exists()
+            assert "ISS (ZARYA)" in target.read_text(encoding="utf-8")
+            assert await store.get_user_pref("AI3I-16", "keps_last_auto_epoch") is not None
+            assert await store.get_user_pref("AI3I-16", "keps_last_update_epoch") is not None
+            assert await store.get_user_pref("AI3I-16", "keps_last_status") == "ok"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_automatic_keps_refresh_skips_fresh_file(tmp_path, monkeypatch) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "auto_keps_fresh.db")
+        cfg = _mk_config(db)
+        cfg.satellite.keps_path = str(tmp_path / "fresh-keps.txt")
+        target = tmp_path / "fresh-keps.txt"
+        target.write_text(_SAMPLE_TLE, encoding="utf-8")
+
+        def _unexpected_download(_url: str) -> str:
+            raise AssertionError("fresh keps file should not be downloaded")
+
+        monkeypatch.setattr(telnet_server_mod, "_download_text_url", _unexpected_download)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            await srv._refresh_keps_if_stale()
+            assert await store.get_user_pref(cfg.node.node_call.upper(), "keps_last_auto_epoch") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_db_compat_commands(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "dbcompat.db")
@@ -6238,6 +6284,30 @@ def test_telnet_registration_required_can_queue_registration_request(tmp_path) -
             await w1.wait_closed()
         finally:
             await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_first_login_password_mismatch_reprompts(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "first_login_password_retry.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        try:
+            reader.feed_data(b"one\r\ntwo\r\nthree\r\nthree\r\n")
+            ok = await srv._prompt_new_password("N0CALL", reader, writer)  # type: ignore[arg-type]
+            text = writer.buffer.decode("utf-8", errors="replace")
+            assert ok is True
+            assert "Passwords did not match. Try again." in text
+            assert text.count("new password: ") == 2
+            saved = await store.get_user_pref("N0CALL", "password")
+            assert is_password_hash(saved)
+            assert verify_password("three", saved)
+        finally:
             await store.close()
 
     asyncio.run(run())
