@@ -84,6 +84,77 @@ def test_public_web_kp_endpoint_normalizes_seven_day_values(tmp_path, monkeypatc
     asyncio.run(run())
 
 
+def test_public_web_solar_endpoint_prefers_recent_wwv_for_core_indices(tmp_path, monkeypatch) -> None:
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return (
+                b"<solar><solardata>"
+                b"<solarflux>101</solarflux><sunspots>11</sunspots><aindex>3</aindex><kindex>1</kindex>"
+                b"<xray>B1.2</xray><solarwind>410.2</solarwind><aurora>1</aurora><updated>HamQSL</updated>"
+                b"<calculatedconditions><band name=\"30m-20m\" time=\"day\">Good</band></calculatedconditions>"
+                b"<calculatedvhfconditions><phenomenon name=\"E-Skip\" location=\"north_america\">Closed</phenomenon></calculatedvhfconditions>"
+                b"</solardata></solar>"
+            )
+
+    async def run() -> None:
+        db = str(tmp_path / "public_web_solar_wwv.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.add_bulletin("wwv", "WWV", "LOCAL", now, "SFI=150 A=6 K=2 No Storms")
+        monkeypatch.setattr(public_web_mod.urllib.request, "urlopen", lambda *_args, **_kwargs: _Resp())
+        try:
+            code, _, body = await _http_request(srv, "/api/solar")
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["sfi"] == "150"
+            assert data["a"] == "6"
+            assert data["k"] == "2"
+            assert data["muf3000"] == "26.0"
+            assert data["source"] == "wwv:WWV"
+            assert data["hamqsl_source"] is True
+            assert data["wwv_source"] is True
+            assert data["xray"] == "B1.2"
+            assert data["conditions"]["30m-20m_day"] == "Good"
+            assert data["vhf"][0]["condition"] == "Closed"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_solar_endpoint_falls_back_to_wwv_when_hamqsl_fails(tmp_path, monkeypatch) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_solar_wwv_fallback.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.add_bulletin("wwv", "VE7CC", "LOCAL", now, "SFI=120 A=4 K=1 Quiet")
+        monkeypatch.setattr(public_web_mod.urllib.request, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+        try:
+            code, _, body = await _http_request(srv, "/api/solar")
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["sfi"] == "120"
+            assert data["a"] == "4"
+            assert data["k"] == "1"
+            assert data["source"] == "wwv:VE7CC"
+            assert data["hamqsl_source"] is False
+            assert data["wwv_source"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 async def _http_request(
     srv: PublicWebServer,
     target: str,
@@ -497,6 +568,9 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert '<button class="sb-time" data-hrs="3">3h</button>' in text
     assert '<button class="sb-time" data-hrs="18">18h</button>' in text
     assert "<h3>Band Conditions</h3>" in text
+    assert 'id="prop-muf"' in text
+    assert 'id="prop-source"' in text
+    assert "d.wwv_source ? (d.hamqsl_source ? 'WWV + HamQSL' : 'WWV') : 'hamqsl.com'" in text
     assert "HF Day" in text
     assert "HF Night" in text
     assert "VHF Band Conditions" not in text
