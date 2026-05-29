@@ -379,7 +379,12 @@ class ClusterApp:
     async def _spot_passes_ingest_filters(self, call: str, spot: Spot) -> bool:
         accepts: list[tuple[int, str]] = []
         rejects: list[tuple[int, str]] = []
-        for row in await self.store.list_filter_rules(normalize_call(call)):
+        exact_call = normalize_call(call)
+        base_call = exact_call.split("-", 1)[0]
+        rows = await self.store.list_filter_rules(exact_call)
+        if not rows and base_call != exact_call:
+            rows = await self.store.list_filter_rules(base_call)
+        for row in rows:
             if str(row["family"] or "").strip().lower() != "spots":
                 continue
             action = str(row["action"] or "").strip().lower()

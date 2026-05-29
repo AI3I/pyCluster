@@ -2243,6 +2243,7 @@ def test_app_rbn_feed_applies_login_call_filters_before_ingest(tmp_path, monkeyp
                 b"Please enter your call: \r\n",
                 b"N9JR-5 de RBN  6-May-2026 0051Z dxspider >\r\n",
                 b"DX de KO4BHX-#:   7007.0  K1ABC        CW  39dB Q:2 Z:4               0052Z\r\n",
+                b"DX de KO4BHX-#:   7007.5  N9JR         CW  _POTA_ Q:2 Z:4             0052Z\r\n",
                 b"DX de KO4BHX-#:   7008.0  N9JR         CW  35dB Q:2 Z:4               0053Z\r\n",
                 b"",
             ]
@@ -2290,7 +2291,8 @@ def test_app_rbn_feed_applies_login_call_filters_before_ingest(tmp_path, monkeyp
             app.public_web.start = _noop  # type: ignore[method-assign]
             app.public_web.stop = _noop  # type: ignore[method-assign]
             now = int(datetime.now(timezone.utc).timestamp())
-            await app.store.set_filter_rule("N9JR-4", "spots", "accept", 1, "rbn callsign N9JR", now)
+            await app.store.set_filter_rule("N9JR", "spots", "reject", 0, "info _POTA_", now)
+            await app.store.set_filter_rule("N9JR", "spots", "accept", 1, "rbn callsign N9JR", now)
 
             await app.start()
 

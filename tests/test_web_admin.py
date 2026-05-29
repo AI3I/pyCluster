@@ -295,7 +295,12 @@ def test_web_admin_static_exposes_rbn_settings() -> None:
     assert 'id="rbn_ports"' in text
     assert 'id="rbn_feed_cw"' in text
     assert 'id="rbn_feed_ft8"' in text
+    assert 'id="rbnAdvanced"' in text
+    assert 'id="rbnAdvancedModal"' in text
+    assert "RBN Advanced Options" in text
     assert "syncRbnPresetFeeds()" in text
+    assert "RBN_PRESET_FEEDS" in text
+    assert "applyRbnEnableDefaults()" in text
     assert 'id="rbn_feeds"' in text
     assert 'id="rbn_callsign"' in text
     assert 'id="rbn_startup_commands"' in text
@@ -313,6 +318,7 @@ def test_web_admin_static_exposes_rbn_settings() -> None:
     assert "rbn_feeds: byId('rbn_feeds').value" in text
     assert "CW/RTTY,telnet.reversebeacon.net,7000" in text
     assert "FT8,telnet.reversebeacon.net,7001" in text
+    assert "Add future public feeds such as FT4 or FT2 here when available." in text
 
 
 def test_web_admin_static_exposes_totp_mfa_controls() -> None:
