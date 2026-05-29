@@ -1816,7 +1816,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <thead><tr id="node-thead">
           <th data-sort="call"   class="sortable">Callsign <span class="si"></span></th>
           <th data-sort="type"   class="sortable">Role <span class="si"></span></th>
-          <th>Family</th>
+          <th data-sort="cluster" class="sortable">Family <span class="si"></span></th>
           <th>Version</th>
           <th>Status</th>
           <th data-sort="links"  class="sortable">Links <span class="si"></span></th>
@@ -2204,8 +2204,8 @@ function parseZoneSpec(text, low, high) {
 let gcLayer     = null;       // Leaflet great circle polyline
 let qthMarker   = null;       // QTH position marker
 let nodeData    = null;
-let nodeTableSortCol = 'links';
-let nodeTableSortDir = 'desc';
+let nodeTableSortCol = 'cluster';
+let nodeTableSortDir = 'asc';
 let qthCall     = localStorage.getItem('qthCall') || '';
 let qthGrid     = localStorage.getItem('qthGrid') || '';
 let qthLat      = null;
@@ -5181,19 +5181,27 @@ function renderClusterPage() {
       });
     });
     // Set initial indicator
-    thead.querySelector(`[data-sort="${nodeTableSortCol}"]`)?.classList.add('sort-desc');
+    thead.querySelector(`[data-sort="${nodeTableSortCol}"]`)?.classList.add(nodeTableSortDir === 'asc' ? 'sort-asc' : 'sort-desc');
   }
 
   // Sort nodes
   const typeOrder = c => c === home ? 0 : directPeers.has(c) ? 1 : 2;
+  const familyOrder = n => {
+    const fam = String(n.family || '').toLowerCase();
+    if (n.call === home) return 0;
+    if (fam === 'pycluster') return 1;
+    if (fam === 'dxspider' || fam === 'dxnet' || fam === 'arcluster' || fam === 'clx') return 2;
+    return 3;
+  };
   const sorted = [...nodes].sort((a, b) => {
     let av, bv;
-    if (nodeTableSortCol === 'call')   { av = a.call;   bv = b.call; }
+    if (nodeTableSortCol === 'cluster') { av = familyOrder(a); bv = familyOrder(b); }
+    else if (nodeTableSortCol === 'call')   { av = a.call;   bv = b.call; }
     else if (nodeTableSortCol === 'type')   { av = typeOrder(a.call); bv = typeOrder(b.call); }
     else if (nodeTableSortCol === 'links')  { av = adj[a.call]?.size||0; bv = adj[b.call]?.size||0; }
     if (av < bv) return nodeTableSortDir === 'asc' ? -1 : 1;
     if (av > bv) return nodeTableSortDir === 'asc' ? 1 : -1;
-    return 0;
+    return String(a.call || '').localeCompare(String(b.call || ''));
   });
 
   tbody.innerHTML = '';

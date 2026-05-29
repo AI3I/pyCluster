@@ -384,10 +384,18 @@ def test_public_web_nodes_and_network_use_local_state(tmp_path) -> None:
             assert code == 200
             net = json.loads(body.decode("utf-8"))
             assert net["home"] == "AI3I-15"
-            assert any(node["call"] == "W3LPL-2" and node["version"] == "pyCluster 1.0.9" for node in net["nodes"])
+            calls = [node["call"] for node in net["nodes"]]
+            assert calls.index("AI3I-15") < calls.index("W3LPL-2") < calls.index("AI3I-16")
+            assert any(
+                node["call"] == "W3LPL-2"
+                and node["family"] == "pycluster"
+                and node["version"] == "pyCluster 1.0.9"
+                for node in net["nodes"]
+            )
             assert any(
                 node["call"] == "AI3I-16"
                 and node["inbound"] is True
+                and node["family"] == "dxspider"
                 and node["version"] == "DXSpider version: 1.57 build: 533"
                 for node in net["nodes"]
             )
@@ -530,6 +538,10 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "#footer-edit-profile" in text and "rgba(34,197,94,.12)" in text
     assert "#footer-logout" in text and "rgba(248,81,73,.10)" in text
     assert "html.light .watch-type option" in text
+    assert 'let nodeTableSortCol = \'cluster\';' in text
+    assert '<th data-sort="cluster" class="sortable">Family <span class="si"></span></th>' in text
+    assert "const familyOrder = n =>" in text
+    assert "fam === 'pycluster'" in text
     assert "const PROFILE_PRESETS = '/api/presets';" in text
     assert "async function loadAccountPresets()" in text
     assert "const authOptional = !!opts.authOptional;" in text

@@ -2114,6 +2114,12 @@ button.special{
 .peer-modal .field.wide{
   grid-column:1 / -1;
 }
+.rbn-modal .form-grid{
+  grid-template-columns:repeat(2,minmax(0,1fr));
+}
+.rbn-modal .field.wide{
+  grid-column:1 / -1;
+}
 .user-modal-panel{
   width:min(760px,100%);
   max-height:calc(100vh - 40px);
@@ -2709,21 +2715,18 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   <label for="rbn_enabled">Enable RBN Feed</label>
                 </div>
               </div>
-              <div class="field"><label for="rbn_host" title="RBN-enabled telnet feed hostname.">Feed Host</label><input id="rbn_host" placeholder="rbn-enabled-cluster.example" title="Hostname for an RBN-enabled telnet cluster or feed."></div>
-              <div class="field"><label for="rbn_port" title="Legacy single RBN-enabled telnet feed port.">Default Port</label><input id="rbn_port" type="number" min="1" max="65535" value="7000" title="Legacy/default feed port used when Feed Ports is blank."></div>
-              <div class="field"><label for="rbn_ports" title="Comma-separated RBN feed ports to connect at the same host. Use 7000,7001 for public CW/RTTY plus FT8.">Feed Ports</label><input id="rbn_ports" placeholder="7000,7001" title="Comma-separated feed ports. Public RBN uses 7000 for CW/RTTY and 7001 for FT8."></div>
               <div class="field"><label title="Predefined public RBN feeds.">Public Feeds</label>
                 <div class="checkgrid">
                   <div class="checkrow"><input id="rbn_feed_cw" type="checkbox"><label for="rbn_feed_cw">CW/RTTY 7000</label></div>
                   <div class="checkrow"><input id="rbn_feed_ft8" type="checkbox"><label for="rbn_feed_ft8">FT8 7001</label></div>
                 </div>
               </div>
-              <div class="field"><label for="rbn_callsign" title="Callsign used to log in to the feed.">Login Call</label><input id="rbn_callsign" placeholder="N0CALL" title="Callsign sent at the feed login prompt. Defaults to the node call if blank."></div>
-              <div class="field"><label for="rbn_password" title="Optional feed password.">Feed Password</label><input id="rbn_password" type="password" placeholder="Feed password" title="Optional password sent if the feed prompts for one."></div>
-              <div class="field"><label for="rbn_source_node" title="Source label stored on locally ingested RBN spots.">Source Node</label><input id="rbn_source_node" placeholder="RBN" title="Source node label stored with locally ingested RBN spots."></div>
-              <div class="field"><label for="rbn_reconnect_seconds" title="Delay before reconnecting after feed disconnect.">Reconnect Seconds</label><input id="rbn_reconnect_seconds" type="number" min="5" max="3600" value="60" title="Delay before retrying a disconnected RBN feed."></div>
-              <div class="field wide"><label for="rbn_feeds" title="Optional named feeds, one per line: name,host,port. Named feeds override Feed Host/Ports when set.">Named Feeds</label><textarea id="rbn_feeds" rows="3" placeholder="CW/RTTY,telnet.reversebeacon.net,7000&#10;FT8,telnet.reversebeacon.net,7001" title="Optional named feeds, one per line: name,host,port."></textarea></div>
-              <div class="field wide"><label for="rbn_startup_commands" title="Commands sent after login, one per line.">Startup Commands</label><textarea id="rbn_startup_commands" rows="3" placeholder="set/skimmer" title="Commands sent after feed login, one per line."></textarea></div>
+              <div class="field">
+                <label>Advanced Configuration</label>
+                <div class="actions" style="margin-top:0">
+                  <button class="secondary" id="rbnAdvanced" type="button" title="Edit RBN host, port, password, named-feed, and startup-command settings.">Advanced Options</button>
+                </div>
+              </div>
               <div class="field wide"><label title="Current direct RBN feed state.">Feed Status</label>
                 <div class="user-status-detail" id="rbnStatus">
                   <div class="status-cell"><label>State</label><span id="rbnStatusState">Unavailable</span></div>
@@ -2733,6 +2736,29 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   <div class="status-cell"><label>Last Spot</label><span id="rbnStatusLastSpot">-</span></div>
                   <div class="status-cell"><label>Last Error</label><span id="rbnStatusError">-</span></div>
                 </div>
+              </div>
+            </div>
+            <div class="user-modal rbn-modal hidden" id="rbnAdvancedModal" role="dialog" aria-modal="true" aria-labelledby="rbnAdvancedTitle">
+              <div class="users-editor-side user-modal-panel">
+                <section>
+                  <div class="user-modal-head">
+                    <h3 id="rbnAdvancedTitle">RBN Advanced Options</h3>
+                    <div class="users-action-group">
+                      <button class="secondary" id="closeRbnAdvanced" type="button" title="Close RBN advanced options">Close</button>
+                    </div>
+                  </div>
+                  <div class="form-grid">
+                    <div class="field"><label for="rbn_host" title="RBN-enabled telnet feed hostname.">Feed Host</label><input id="rbn_host" placeholder="rbn-enabled-cluster.example" title="Hostname for an RBN-enabled telnet cluster or feed."></div>
+                    <div class="field"><label for="rbn_port" title="Legacy single RBN-enabled telnet feed port.">Default Port</label><input id="rbn_port" type="number" min="1" max="65535" value="7000" title="Legacy/default feed port used when Feed Ports is blank."></div>
+                    <div class="field"><label for="rbn_ports" title="Comma-separated RBN feed ports to connect at the same host. Use 7000,7001 for public CW/RTTY plus FT8.">Feed Ports</label><input id="rbn_ports" placeholder="7000,7001" title="Comma-separated feed ports. Public RBN uses 7000 for CW/RTTY and 7001 for FT8."></div>
+                    <div class="field"><label for="rbn_callsign" title="Callsign used to log in to the feed.">Login Call</label><input id="rbn_callsign" placeholder="N0CALL" title="Callsign sent at the feed login prompt. Defaults to the node call if blank."></div>
+                    <div class="field"><label for="rbn_password" title="Optional feed password.">Feed Password</label><input id="rbn_password" type="password" placeholder="Feed password" title="Optional password sent if the feed prompts for one."></div>
+                    <div class="field"><label for="rbn_source_node" title="Source label stored on locally ingested RBN spots.">Source Node</label><input id="rbn_source_node" placeholder="RBN" title="Source node label stored with locally ingested RBN spots."></div>
+                    <div class="field"><label for="rbn_reconnect_seconds" title="Delay before reconnecting after feed disconnect.">Reconnect Seconds</label><input id="rbn_reconnect_seconds" type="number" min="5" max="3600" value="60" title="Delay before retrying a disconnected RBN feed."></div>
+                    <div class="field wide"><label for="rbn_feeds" title="Optional named feeds, one per line: name,host,port. Named feeds override Feed Host/Ports when set.">Named Feeds</label><textarea id="rbn_feeds" rows="4" placeholder="CW/RTTY,telnet.reversebeacon.net,7000&#10;FT8,telnet.reversebeacon.net,7001" title="Optional named feeds, one per line: name,host,port. Add future public feeds such as FT4 or FT2 here when available."></textarea></div>
+                    <div class="field wide"><label for="rbn_startup_commands" title="Commands sent after login, one per line.">Startup Commands</label><textarea id="rbn_startup_commands" rows="3" placeholder="set/skimmer" title="Commands sent after feed login, one per line."></textarea></div>
+                  </div>
+                </section>
               </div>
             </div>
           </div>
@@ -3303,11 +3329,46 @@ function setText(id, value) {
   if (!el) return;
   el.textContent = value;
 }
+const RBN_PRESET_FEEDS = [
+  {id: 'rbn_feed_cw', key: 'cw/rtty,telnet.reversebeacon.net,7000', line: 'CW/RTTY,telnet.reversebeacon.net,7000'},
+  {id: 'rbn_feed_ft8', key: 'ft8,telnet.reversebeacon.net,7001', line: 'FT8,telnet.reversebeacon.net,7001'},
+];
+let lastRbnEnabled = false;
+function rbnFeedKey(line) {
+  return String(line || '').split(',').map(part => part.trim().toLowerCase()).join(',');
+}
+function rbnFeedLines() {
+  const field = byId('rbn_feeds');
+  return field ? String(field.value || '').split('\\n').map(line => line.trim()).filter(Boolean) : [];
+}
 function syncRbnPresetFeeds() {
+  const presetKeys = new Set(RBN_PRESET_FEEDS.map(feed => feed.key));
+  const customFeeds = rbnFeedLines().filter(line => !presetKeys.has(rbnFeedKey(line)));
   const feeds = [];
-  if (byId('rbn_feed_cw') && byId('rbn_feed_cw').checked) feeds.push('CW/RTTY,telnet.reversebeacon.net,7000');
-  if (byId('rbn_feed_ft8') && byId('rbn_feed_ft8').checked) feeds.push('FT8,telnet.reversebeacon.net,7001');
-  if (feeds.length) byId('rbn_feeds').value = feeds.join('\\n');
+  RBN_PRESET_FEEDS.forEach((feed) => {
+    const el = byId(feed.id);
+    if (el && el.checked) feeds.push(feed.line);
+  });
+  feeds.push(...customFeeds);
+  if (byId('rbn_feeds')) byId('rbn_feeds').value = feeds.join('\\n');
+}
+function syncRbnPresetTogglesFromFeeds(feedText) {
+  const feedKeys = String(feedText || '').split('\\n').map(rbnFeedKey);
+  RBN_PRESET_FEEDS.forEach((feed) => {
+    const el = byId(feed.id);
+    if (el) el.checked = feedKeys.includes(feed.key);
+  });
+}
+function applyRbnEnableDefaults() {
+  const enabled = !!(byId('rbn_enabled') && byId('rbn_enabled').checked);
+  if (enabled && !lastRbnEnabled) {
+    const cw = byId('rbn_feed_cw');
+    const ft8 = byId('rbn_feed_ft8');
+    if (cw) cw.checked = true;
+    if (ft8) ft8.checked = false;
+    syncRbnPresetFeeds();
+  }
+  lastRbnEnabled = enabled;
 }
 const hdr = () => {
   return webIsSysop && webTok ? {'X-Web-Token': webTok} : {};
@@ -4266,9 +4327,8 @@ function fillNodeForm(data) {
   setText('retentionLastResult', cleanupResult);
   const rbnStatus = data.rbn_status || {};
   const rbnFeedsText = String(data.rbn_feeds || '');
-  const rbnFeedKeys = rbnFeedsText.split('\\n').map(line => line.split(',').map(part => part.trim().toLowerCase()).join(','));
-  if (byId('rbn_feed_cw')) byId('rbn_feed_cw').checked = rbnFeedKeys.includes('cw/rtty,telnet.reversebeacon.net,7000');
-  if (byId('rbn_feed_ft8')) byId('rbn_feed_ft8').checked = rbnFeedKeys.includes('ft8,telnet.reversebeacon.net,7001');
+  syncRbnPresetTogglesFromFeeds(rbnFeedsText);
+  lastRbnEnabled = !!data.rbn_enabled;
   const rbnState = String(rbnStatus.state || (data.rbn_enabled ? 'stopped' : 'disabled'));
   let rbnText = `Feed is ${esc(rbnState)}.`;
   const rbnHost = String(rbnStatus.host || data.rbn_host || '').trim();
@@ -4467,6 +4527,16 @@ document.querySelectorAll('.subtab[data-spot-source]').forEach((el) => {
 ['rbn_feed_cw','rbn_feed_ft8'].forEach((id) => {
   const el = byId(id);
   if (el) el.addEventListener('change', syncRbnPresetFeeds);
+});
+if (byId('rbn_enabled')) byId('rbn_enabled').addEventListener('change', applyRbnEnableDefaults);
+if (byId('rbnAdvanced')) byId('rbnAdvanced').onclick = () => {
+  byId('rbnAdvancedModal').classList.remove('hidden');
+};
+if (byId('closeRbnAdvanced')) byId('closeRbnAdvanced').onclick = () => {
+  byId('rbnAdvancedModal').classList.add('hidden');
+};
+if (byId('rbnAdvancedModal')) byId('rbnAdvancedModal').addEventListener('click', (event) => {
+  if (event.target === byId('rbnAdvancedModal')) byId('rbnAdvancedModal').classList.add('hidden');
 });
 byId('auditReload').onclick = async () => {
   await reloadAudit();
@@ -4677,6 +4747,7 @@ byId('userModal').addEventListener('click', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !byId('userModal').classList.contains('hidden')) closeUserModal();
+  if (event.key === 'Escape' && byId('rbnAdvancedModal') && !byId('rbnAdvancedModal').classList.contains('hidden')) byId('rbnAdvancedModal').classList.add('hidden');
 });
 byId('user_node_family').onchange = () => {
   applyClusterEditorRules();

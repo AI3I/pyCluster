@@ -6313,6 +6313,87 @@ def test_telnet_first_login_password_mismatch_reprompts(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_first_login_password_mismatch_socket_stays_open(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "first_login_password_retry_socket.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16", require_password=True, registration_required=False, verified_email_required_for_telnet=False),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("G0AA", now, display_name="Test User")
+        await store.record_login("G0AA", now, "test-setup")
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+            reader, writer = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(reader.readuntil(b"login: "), timeout=2.0)
+            writer.write(b"g0aa\r\n")
+            await writer.drain()
+            await asyncio.wait_for(reader.readuntil(b"new password: "), timeout=2.0)
+            writer.write(b"one\r\n")
+            await writer.drain()
+            await asyncio.wait_for(reader.readuntil(b"confirm password: "), timeout=2.0)
+            writer.write(b"two\r\n")
+            await writer.drain()
+            retry = await asyncio.wait_for(reader.readuntil(b"new password: "), timeout=2.0)
+            assert b"Passwords did not match. Try again." in retry
+            writer.write(b"three\r\n")
+            await writer.drain()
+            await asyncio.wait_for(reader.readuntil(b"confirm password: "), timeout=2.0)
+            writer.write(b"three\r\n")
+            await writer.drain()
+            hello = await asyncio.wait_for(reader.readuntil(b"AI3I-16> "), timeout=2.0)
+            assert b"Password set for G0AA." in hello
+            assert b"Welcome" in hello
+            saved = await store.get_user_pref("G0AA", "password")
+            assert is_password_hash(saved)
+            assert verify_password("three", saved)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_idle_timeout_sends_keepalive_after_login(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_idle_keepalive.db")
+        cfg = _mk_config(db)
+        cfg.telnet.idle_timeout_seconds = 0.01
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+
+        async def _feed_later() -> None:
+            await asyncio.sleep(0.04)
+            reader.feed_data(b"show/version\r\n")
+
+        try:
+            task = asyncio.create_task(_feed_later())
+            line = await asyncio.wait_for(srv._readline(reader, writer, idle_keepalive=True), timeout=1.0)  # type: ignore[arg-type]
+            await task
+            assert line == "show/version"
+            assert bytes((srv._TELNET_IAC, srv._TELNET_NOP)) in bytes(writer.buffer)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "first_login_registration_interview.db")

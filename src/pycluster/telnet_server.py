@@ -1256,12 +1256,26 @@ class TelnetClusterServer:
         t.async_line_open = True
         return 1
 
-    async def _readline(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter | None = None) -> str | None:
+    async def _readline(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter | None = None,
+        *,
+        idle_keepalive: bool = False,
+    ) -> str | None:
         timeout = float(self.config.telnet.idle_timeout_seconds or 0)
         raw = bytearray()
         while True:
             b = await self._read_telnet_byte(reader, timeout, writer)
             if b is None:
+                if idle_keepalive and timeout > 0 and not raw:
+                    if writer is not None:
+                        try:
+                            writer.write(bytes((self._TELNET_IAC, self._TELNET_NOP)))
+                            await writer.drain()
+                        except Exception:
+                            return None
+                    continue
                 return None if not raw else raw.decode("utf-8", errors="replace").strip()
             if b == b"":
                 continue
@@ -10458,7 +10472,7 @@ class TelnetClusterServer:
                     await self._write(writer, await self._prompt(call))
 
                 while True:
-                    line = await self._readline(reader, writer)
+                    line = await self._readline(reader, writer, idle_keepalive=True)
                     if line is None:
                         break
                     keep_going, output = await self._execute_command(call, line)

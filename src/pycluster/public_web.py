@@ -1443,6 +1443,36 @@ class PublicWebServer:
         def proto_version(peer_name: str) -> str:
             return proto_value(peer_name, "pc18.summary") or proto_value(peer_name, "pc18.software")
 
+        def inferred_family(raw_family: str, raw_version: str) -> str:
+            family = str(raw_family or "").strip().lower()
+            if family:
+                return family
+            version = str(raw_version or "").strip().lower()
+            if "pycluster" in version:
+                return "pycluster"
+            if "dxspider" in version or "spider" in version:
+                return "dxspider"
+            if "dxnet" in version:
+                return "dxnet"
+            if "ar-cluster" in version or "arcluster" in version:
+                return "arcluster"
+            if re.search(r"\bclx\b", version):
+                return "clx"
+            return "unknown"
+
+        def node_sort_key(row: dict[str, object]) -> tuple[int, str]:
+            call = str(row.get("call") or "")
+            family = str(row.get("family") or "").strip().lower()
+            if call == self.config.node.node_call:
+                rank = 0
+            elif family == "pycluster":
+                rank = 1
+            elif family in {"dxspider", "dxnet", "arcluster", "clx"}:
+                rank = 2
+            else:
+                rank = 3
+            return rank, call.upper()
+
         if self.link_desired_peers_fn:
             try:
                 desired = await self.link_desired_peers_fn()
@@ -1470,15 +1500,15 @@ class PublicWebServer:
             try:
                 stats = await self.link_stats_fn()
                 for name in sorted(stats):
-                    family = proto_value(name, "pc18.family").lower()
                     version = proto_version(name) or str(stats[name].get("version", "") or stats[name].get("pc18_summary", "") or "").strip()
+                    family = inferred_family(proto_value(name, "pc18.family"), version or str(stats[name].get("profile", "") or ""))
                     peer_rows.append(
                         {
                             "call": name,
                             "entity": "",
                             "lat": 0.0,
                             "lon": 0.0,
-                            "family": family or str(stats[name].get("profile", "")).strip().lower() or "unknown",
+                            "family": family,
                             "version": version,
                             "connected": True,
                             "desired": name in desired_rows,
@@ -1494,8 +1524,8 @@ class PublicWebServer:
         for name, row in desired_rows.items():
             if name in seen_calls:
                 continue
-            family = proto_value(name, "pc18.family").lower()
             version = proto_version(name) or str(row.get("version", "") or row.get("pc18_summary", "") or "").strip()
+            family = inferred_family(proto_value(name, "pc18.family") or str(row.get("profile", "") or ""), version)
             last_pc_type = proto_value(name, "last_pc_type").upper()
             last_epoch = proto_value(name, "last_epoch")
             try:
@@ -1508,7 +1538,7 @@ class PublicWebServer:
                     "entity": "",
                     "lat": 0.0,
                     "lon": 0.0,
-                    "family": family or str(row.get("profile", "")).strip().lower() or "unknown",
+                    "family": family,
                     "version": version,
                     "connected": connected,
                     "desired": True,
@@ -1532,6 +1562,7 @@ class PublicWebServer:
             if family not in {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}:
                 continue
             version = proto_version(call)
+            family = inferred_family(family, version)
             last_pc_type = proto_value(call, "last_pc_type").upper()
             try:
                 last_epoch = int(proto_value(call, "last_epoch") or "0")
@@ -1561,7 +1592,7 @@ class PublicWebServer:
             if connected:
                 links.append([self.config.node.node_call, call])
             seen_calls.add(call)
-        return {"nodes": nodes + peer_rows, "links": links, "home": self.config.node.node_call}
+        return {"nodes": sorted(nodes + peer_rows, key=node_sort_key), "links": links, "home": self.config.node.node_call}
 
     async def _api_solar(self) -> tuple[dict[str, object], int]:
         wwv_snapshot = None
