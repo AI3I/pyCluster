@@ -1694,7 +1694,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 
     <div class="stat-card">
       <h3>Solar Conditions
-        <span class="card-badge">hamqsl.com</span>
+        <span class="card-badge" id="prop-source">solar data</span>
         <span class="prop-updated" id="prop-updated" style="margin-left:auto;font-weight:400"></span>
       </h3>
       <div class="solar-cards">
@@ -1721,6 +1721,10 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <div class="solar-card">
           <div class="sv" id="prop-wind" style="color:#67e8f9; font-size:1.3rem">—</div>
           <div class="sl">Solar Wind</div><div class="ss">km/s</div>
+        </div>
+        <div class="solar-card">
+          <div class="sv" id="prop-muf" style="color:#34d399">—</div>
+          <div class="sl">MUF3000</div><div class="ss">MHz</div>
         </div>
       </div>
     </div>
@@ -4168,6 +4172,11 @@ function renderPropPage() {
   document.getElementById('prop-k-lbl').textContent = kLabel(d.k);
   document.getElementById('prop-xray').textContent  = d.xray||'—';
   document.getElementById('prop-wind').textContent  = d.solarwind || '—';
+  document.getElementById('prop-muf').textContent   = d.muf3000 || '—';
+  const sourceEl = document.getElementById('prop-source');
+  if (sourceEl) {
+    sourceEl.textContent = d.wwv_source ? (d.hamqsl_source ? 'WWV + HamQSL' : 'WWV') : 'hamqsl.com';
+  }
   document.getElementById('prop-updated').textContent = d.updated ? 'Updated: '+d.updated : '';
 
   // Band conditions

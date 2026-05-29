@@ -15,7 +15,6 @@ import time
 import tomllib
 from urllib.parse import parse_qs, unquote, urlparse
 import urllib.request
-import xml.etree.ElementTree as ET
 
 from . import __version__
 from .auth_logging import log_auth_failure
@@ -32,6 +31,7 @@ from .qr_svg import qr_svg
 from .rbn import is_rbn_spot
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path
+from .propagation import latest_wwv_snapshot, merge_solar_snapshots, parse_hamqsl_solar_xml, snapshot_payload
 from .registration import has_valid_email, mark_email_verified, registration_state
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
@@ -1564,6 +1564,13 @@ class PublicWebServer:
         return {"nodes": nodes + peer_rows, "links": links, "home": self.config.node.node_call}
 
     async def _api_solar(self) -> tuple[dict[str, object], int]:
+        wwv_snapshot = None
+        try:
+            wwv_snapshot = latest_wwv_snapshot(await self.store.list_bulletins("wwv", limit=24))
+        except Exception:
+            LOG.exception("public solar WWV snapshot load failed")
+            wwv_snapshot = None
+        hamqsl_snapshot = None
         try:
             req = urllib.request.Request(
                 "https://www.hamqsl.com/solarxml.php",
@@ -1571,41 +1578,18 @@ class PublicWebServer:
             )
             with urllib.request.urlopen(req, timeout=10) as r:
                 xml_bytes = r.read()
-            root = ET.fromstring(xml_bytes)
-            sd = root.find("solardata")
-
-            def g(tag: str) -> str:
-                el = sd.find(tag) if sd is not None else None
-                return el.text.strip() if (el is not None and el.text) else ""
-
-            cond: dict[str, str] = {}
-            if sd is not None:
-                for b in sd.findall("calculatedconditions/band"):
-                    cond[f"{b.get('name', '')}_{b.get('time', '')}"] = b.text.strip() if b.text else ""
-            vhf: list[dict[str, str]] = []
-            if sd is not None:
-                for ph in sd.findall("calculatedvhfconditions/phenomenon"):
-                    vhf.append(
-                        {
-                            "name": ph.get("name", ""),
-                            "location": ph.get("location", ""),
-                            "condition": ph.text.strip() if ph.text else "",
-                        }
-                    )
-            return ({
-                "sfi": g("solarflux"),
-                "sn": g("sunspots"),
-                "a": g("aindex"),
-                "k": g("kindex"),
-                "xray": g("xray"),
-                "solarwind": g("solarwind"),
-                "aurora": g("aurora"),
-                "updated": g("updated"),
-                "conditions": cond,
-                "vhf": vhf,
-            }, 200)
+            hamqsl_snapshot = parse_hamqsl_solar_xml(xml_bytes)
         except Exception as exc:
-            return ({"error": str(exc)}, 503)
+            if wwv_snapshot is None:
+                return ({"error": str(exc)}, 503)
+            LOG.warning("public solar HamQSL fetch failed; serving WWV snapshot only: %s", exc)
+        snapshot = merge_solar_snapshots(wwv_snapshot, hamqsl_snapshot)
+        if snapshot is None:
+            return ({"error": "solar data unavailable"}, 503)
+        payload = snapshot_payload(snapshot)
+        payload["hamqsl_source"] = bool(hamqsl_snapshot is not None)
+        payload["wwv_source"] = bool(wwv_snapshot is not None)
+        return (payload, 200)
 
     async def _api_kp(self) -> tuple[dict[str, object], int]:
         try:

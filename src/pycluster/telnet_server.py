@@ -27,6 +27,7 @@ from .geomag import canonicalize_wcy_text, canonicalize_wwv_text, derive_wcy_fro
 from .models import Spot, display_call, is_valid_call, normalize_call
 from .pathmeta import describe_session_path, normalize_recorded_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
+from .propagation import effective_muf_for_zenith, estimate_muf3000, estimate_sunspots_from_sfi, signal_report_for_muf
 from .qrz import QRZClient, QRZLookupError
 from .registration import consume_grace_login, has_valid_email, mark_email_unverified, mark_email_verified, registration_state
 from .rbn import is_rbn_spot
@@ -4176,34 +4177,10 @@ class TelnetClusterServer:
         return bearing, reverse, distance_km
 
     def _signal_report_for_muf(self, freq_mhz: float, muf_mhz: float, zen: float, zen_samples: tuple[float, ...] | None = None) -> str:
-        effective_muf = self._effective_muf_for_zenith(muf_mhz, zen)
-        samples = zen_samples or (zen,)
-        daylight_strength = max(max(0.0, math.cos(math.radians(max(0.0, min(90.0, item))))) for item in samples)
-        if freq_mhz <= 4.0 and daylight_strength > 0.05:
-            return ""
-        d_layer_penalty = 0.0
-        if daylight_strength > 0.0 and freq_mhz < 10.5:
-            d_layer_penalty = ((10.5 - freq_mhz) / 8.7) * daylight_strength * 28.0
-        score = (effective_muf - freq_mhz) - d_layer_penalty
-        if score < -1.0:
-            return ""
-        if score < 0.5:
-            return "sS0"
-        if score < 2.0:
-            return "mS1"
-        if score < 4.0:
-            return "S1+"
-        if score < 6.0:
-            return "S2"
-        if score < 8.0:
-            return "S2+"
-        return "S6"
+        return signal_report_for_muf(freq_mhz, muf_mhz, zen, zen_samples)
 
     def _effective_muf_for_zenith(self, muf_mhz: float, zen: float) -> float:
-        if zen >= 90.0:
-            return 0.0
-        daylight_factor = max(0.0, math.cos(math.radians(max(0.0, zen))))
-        return muf_mhz * (0.45 + 0.55 * daylight_factor)
+        return effective_muf_for_zenith(muf_mhz, zen)
 
     def _format_hours_minutes(self, hours: float) -> str:
         total_minutes = int(round(max(0.0, float(hours)) * 60.0))
@@ -4597,7 +4574,7 @@ class TelnetClusterServer:
         if not samples:
             return self._string("show.muf.empty", "MUF estimate unavailable: no recent WWV SFI data has been received.") + "\r\n"
         latest = samples[0]
-        latest_muf = 8.0 + 0.12 * latest[1]
+        latest_muf = estimate_muf3000(latest[1]) or 0.0
         if not target and toks:
             lines = [
                 self._string(
@@ -4612,7 +4589,7 @@ class TelnetClusterServer:
                 if not await self._text_family_passes_filters(call, "wwv", sender, body):
                     continue
                 ts = datetime.fromtimestamp(int(r["epoch"]), tz=timezone.utc)
-                muf = 8.0 + 0.12 * sfi
+                muf = estimate_muf3000(sfi) or 0.0
                 if long_form:
                     reading = parse_wwv_text(body)
                     forecast = (reading.forecast if reading is not None else body)[:39]
@@ -4658,7 +4635,7 @@ class TelnetClusterServer:
         from_name = source.split(" ", 1)[1] if source.startswith("node grid square ") else (
             self.config.node.qth if using_node_coords or source.startswith("QRA ") or source.startswith("location ") else source
         )
-        sunspots = max(0, int(round((latest[1] - 85) * 2)))
+        sunspots = estimate_sunspots_from_sfi(latest[1]) or 0
         lines: list[str] = []
         if using_node_coords or source.startswith("node grid square "):
             lines.append(self._render_string("show.muf.using_node", "Using {node_call} Coords, consider doing a set/location or set/qra", node_call=self.config.node.node_call))
