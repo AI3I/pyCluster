@@ -159,8 +159,8 @@ When MFA is required during telnet login, pyCluster prompts for `authenticator c
 | `accept/spots <expr>` | Add an accept rule for spots. Supports expressions such as `on 20m`, `by K1*`, `call_zone 5`, `call_itu 9`, and `call_dxcc canada`. |
 | `reject/spots <expr>` | Add a reject rule for spots. |
 | `clear/spots` | Clear spot filter rules. |
-| `accept/rbn <expr>` | Add an RBN-focused accept rule for spot traffic. |
-| `reject/rbn <expr>` | Add an RBN-focused reject rule for spot traffic. |
+| `accept/rbn [slot] <expr>` | Add an accept rule for RBN/Skimmer spot traffic, for example `accept/rbn 1 call N9JR`. |
+| `reject/rbn [slot] [expr]` | Add a reject rule for RBN/Skimmer spot traffic. With only a slot, for example `reject/rbn 2`, it rejects all RBN spots in that slot. |
 | `clear/rbn` | Clear RBN-focused filter rules. |
 | `accept/announce <expr>` | Add an accept rule for announce traffic. |
 | `reject/announce <expr>` | Add a reject rule for announce traffic. |
@@ -170,7 +170,11 @@ When MFA is required during telnet login, pyCluster prompts for `authenticator c
 | `clear/route` | Clear route filter rules. |
 | `show/filter` | Show current filter state and user filter settings. |
 
+`show/filter test rbn <freq_khz> <dx_call> <spotter> [info]` previews RBN filter decisions without posting a real spot.
+
 ## Registration
+
+`REGISTER` is interactive on a live telnet session. It prompts only for missing required profile fields and password setup, then submits the completed request. After sysop approval, an unverified user receives an email code; running `REGISTER` again opens the verification-code prompt. Approved and verified users do not receive the registration reminder on later logins.
 
 | Command | Purpose |
 |---|---|

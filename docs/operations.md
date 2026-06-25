@@ -9,7 +9,7 @@ Typical production services:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-data-refresh.timer`
-  - runs shortly after boot and then checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
+  - runs shortly after boot and then checks for updated `CTY.DAT`, `wpxloc.raw`, and satellite Keps every 6 hours
 - `pycluster-retention.timer`
 
 Validated operational environments so far:
@@ -66,7 +66,7 @@ Supported operational scripts:
 - `deploy/uninstall.sh`
 - `deploy/doctor.sh`
 
-The System Operator console upgrade button queues a request under the live runtime tree, then the `pycluster-upgrade.path` unit runs the worker from `/usr/src/pyCluster`. The worker advances that source checkout before running `deploy/upgrade.sh`, which syncs the updated tree into `/home/pycluster/pyCluster`.
+The System Operator console upgrade button queues a request under the live runtime tree, then the `pycluster-upgrade.path` unit runs the worker from `/usr/src/pyCluster`. The worker advances that source checkout before running `deploy/upgrade.sh`, which syncs the updated tree into `/home/pycluster/pyCluster`. The console shows the target release separately from migration hooks; hooks such as `run_upgrade_1_0_6` are data migrations, not the maximum available release.
 
 Upgrade, repair, and uninstall operations preserve the runtime `config/`, `data/`, and `logs/` directories and create timestamped archives under `/root/pycluster-backups/` before making destructive changes. If an older installed checkout does not yet include automatic preflight backups, create one manually first:
 
@@ -136,7 +136,7 @@ Operational observations from validation:
 - Fedora and EL-family hosts with SELinux enforcing also work, but 1 GB RPM-based hosts may need temporary swap during package installation
 - the deploy scripts now handle that temporary swap automatically on low-memory EL-family systems
 
-## CTY Refresh
+## Runtime Data Refresh
 
 Manual:
 
@@ -144,12 +144,12 @@ Manual:
 python3 ./scripts/update_cty.py --config ./config/pycluster.toml
 ```
 
-This refreshes both `CTY.DAT` and `wpxloc.raw` unless you pass `--cty-only`.
+This refreshes `CTY.DAT`, `wpxloc.raw`, and satellite Keps unless you pass `--country-only` or `--cty-only`. Every download is validated before atomic replacement, and existing files remain in place when validation or download fails.
 
 Automatic:
 
 - `pycluster-data-refresh.timer`
-  - runs shortly after boot and then checks for updated `CTY.DAT` and `wpxloc.raw` every 6 hours
+  - runs shortly after boot and then checks for updated country and satellite data every 6 hours
 
 ## Security Operations
 

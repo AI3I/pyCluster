@@ -10,6 +10,39 @@ from pycluster.node_link import LinkPeer, NodeLinkEngine
 from pycluster.protocol import WirePcFrame, parse_wire_pc_frame, serialize_wire_pc_frame
 
 
+class _ClosedInboundConnection:
+    name = "REMOTE-1"
+    transport = "tcp"
+    path_hint = "test"
+
+    async def readline(self) -> str | None:
+        return None
+
+    async def send_line(self, _line: str) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
+class _CaptureConnection:
+    name = "capture"
+    transport = "tcp"
+    path_hint = "test"
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    async def readline(self) -> str | None:
+        return None
+
+    async def send_line(self, line: str) -> None:
+        self.lines.append(line)
+
+    async def close(self) -> None:
+        return None
+
+
 def _mk_config(db_path: str) -> AppConfig:
     return AppConfig(
         node=NodeConfig(),
@@ -27,6 +60,20 @@ def test_wire_frame_parse_serialize() -> None:
     assert frame.pc_type == "PC92"
     assert frame.payload_fields[0] == "UF3K-1"
     assert serialize_wire_pc_frame(frame) == raw
+
+
+def test_node_link_sanitizes_outbound_pc92_private_ips() -> None:
+    async def run() -> None:
+        engine = NodeLinkEngine(public_ip_address="44.2.3.4")
+        conn = _CaptureConnection()
+        await engine.accept_inbound("N9JR-2", conn, profile="dxspider")
+        await engine.send(
+            "N9JR-2",
+            WirePcFrame("PC92", ["N9JR-2", "1", "A", "", "7N9JR-4:192.168.222.19", "5N9JR-3:fd00::4", "H96", ""]),
+        )
+        assert conn.lines == ["PC92^N9JR-2^1^A^^7N9JR-4:44.2.3.4^5N9JR-3:44.2.3.4^H96^"]
+
+    asyncio.run(run())
 
 
 def test_node_link_loopback() -> None:
@@ -131,6 +178,19 @@ def test_node_link_remote_disconnect_cleans_up_inbound_peer() -> None:
         finally:
             await remote.stop()
             await listener.stop()
+
+    asyncio.run(run())
+
+
+def test_accepted_inbound_connection_is_removed_on_eof() -> None:
+    async def run() -> None:
+        engine = NodeLinkEngine()
+        await engine.accept_inbound("REMOTE-1", _ClosedInboundConnection(), profile="dxspider")
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while asyncio.get_running_loop().time() < deadline and await engine.peer_names():
+            await asyncio.sleep(0.01)
+        assert await engine.peer_names() == []
+        await engine.stop()
 
     asyncio.run(run())
 

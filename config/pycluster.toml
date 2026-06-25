@@ -17,6 +17,7 @@ verified_email_required_for_telnet = false
 initial_grace_logins = 5
 support_contact = "sysop@example.org"
 website_url = "https://github.com/AI3I/pyCluster"
+public_ip_address = ""
 prompt_template = "[{timestamp}] {node}{suffix}"
 
 [telnet]
@@ -24,6 +25,7 @@ host = "0.0.0.0"
 port = 7300
 max_clients = 150
 idle_timeout_seconds = 0
+keepalive_interval_seconds = 300
 max_line_length = 512
 
 [web]

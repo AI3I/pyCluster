@@ -9,7 +9,7 @@ from typing import Awaitable, Callable
 
 from .pathmeta import describe_transport_dsn
 from .peer_profiles import allowed_types_for_profile, normalize_profile, profile_allows_pc
-from .protocol import WirePcFrame, decode_typed, parse_wire_pc_frame, serialize_wire_pc_frame
+from .protocol import WirePcFrame, decode_typed, parse_wire_pc_frame, sanitize_pc92_private_ips, serialize_wire_pc_frame
 from .transports import LinkConnection, LinkListener, connect_from_dsn, listen_from_dsn
 
 
@@ -43,13 +43,17 @@ class NodeLinkEngine:
     Wire format is line-delimited `PCxx^field^field...` frames.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, public_ip_address: str = "") -> None:
         self._listener: LinkListener | None = None
         self._peers: dict[str, LinkPeer] = {}
         self._lock = asyncio.Lock()
         self._frame_queue: asyncio.Queue[tuple[str, WirePcFrame, object | None]] = asyncio.Queue(maxsize=10000)
         self._trace_hook: Callable[[str, str, str], Awaitable[None]] | None = None
         self._reader_tasks: set[asyncio.Task[None]] = set()
+        self.public_ip_address = str(public_ip_address or "").strip()
+
+    def set_public_ip_address(self, public_ip_address: str) -> None:
+        self.public_ip_address = str(public_ip_address or "").strip()
 
     def set_trace_hook(self, hook: Callable[[str, str, str], Awaitable[None]] | None) -> None:
         self._trace_hook = hook
@@ -163,6 +167,8 @@ class NodeLinkEngine:
             peer = self._peers.get(peer_name)
         if peer is None:
             raise KeyError(f"unknown peer: {peer_name}")
+
+        frame = sanitize_pc92_private_ips(frame, self.public_ip_address)
 
         if not profile_allows_pc(peer.profile, frame.pc_type):
             peer.policy_dropped += 1
@@ -318,8 +324,9 @@ class NodeLinkEngine:
         except Exception:
             LOG.exception("node-link peer reader failed: %s", peer.name)
         finally:
-            if not peer.inbound:
-                async with self._lock:
+            async with self._lock:
+                current = self._peers.get(peer.name)
+                if current is peer:
                     self._peers.pop(peer.name, None)
             try:
                 await asyncio.wait_for(peer.conn.close(), timeout=1.0)

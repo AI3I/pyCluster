@@ -1807,11 +1807,37 @@ class PublicWebServer:
                     state, verified_epoch, _remaining = await registration_state(self.store, call)
                     email_verification_required = verified_epoch <= 0 or state != "verified"
                 mfa_required = await self._mfa_required_for_call(call, is_sysop=is_sysop)
-                if email_verification_required and not mfa_required:
-                    self._log_auth_failure(writer, headers, "public-web", call, "email_verification_required")
-                    await self._write_response(writer, 403, self._json({"error": "email verification required"}))
-                    return
                 email_mfa_verified = False
+                if email_verification_required and not mfa_required:
+                    challenge_id = str(payload.get("challenge_id", "")).strip()
+                    otp = str(payload.get("otp", "")).strip()
+                    email = await self._email_for_call(call)
+                    if not email:
+                        self._log_auth_failure(writer, headers, "public-web", call, "mfa_email_missing")
+                        await self._write_response(writer, 401, self._json({"error": "verification email not configured"}))
+                        return
+                    if not self._smtp.enabled():
+                        await self._write_response(writer, 503, self._json({"error": "verification delivery not configured"}))
+                        return
+                    if not challenge_id or not otp:
+                        try:
+                            challenge_id, expires_epoch = await self._mfa.issue(call=call, email=email, purpose="public-web-verify")
+                        except Exception:
+                            LOG.exception("public web email verification delivery failed call=%s", call)
+                            await self._write_response(writer, 503, self._json({"error": "verification delivery failed"}))
+                            return
+                        await self._write_response(
+                            writer,
+                            202,
+                            self._json({"ok": False, "mfa_required": True, "mfa_method": "email", "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
+                        )
+                        return
+                    ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="public-web-verify", otp=otp)
+                    if not ok:
+                        self._log_auth_failure(writer, headers, "public-web", call, "mfa_" + reason.replace(" ", "_"))
+                        await self._write_response(writer, 401, self._json({"error": reason}))
+                        return
+                    email_mfa_verified = True
                 if mfa_required:
                     challenge_id = str(payload.get("challenge_id", "")).strip()
                     otp = str(payload.get("otp", "")).strip()
@@ -2275,6 +2301,13 @@ class PublicWebServer:
                     raw=raw,
                 )
                 inserted = await self.store.add_spot(spot)
+                if not inserted:
+                    await self._write_response(
+                        writer,
+                        409,
+                        self._json({"ok": False, "error": "spot rejected by duplicate or deny policy"}),
+                    )
+                    return
                 if inserted and self.publish_spot_fn:
                     await self.publish_spot_fn(spot)
                 if inserted and self.relay_spot_fn:

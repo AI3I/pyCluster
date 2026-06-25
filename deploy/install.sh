@@ -23,7 +23,7 @@ ensure_fail2ban_packages
 install_or_refresh_fail2ban
 install_or_refresh_logrotate
 enable_service
-refresh_cty_best_effort
+refresh_runtime_data_best_effort
 bootstrap_sysop_account
 show_sysop_bootstrap_note
 restart_service_hard

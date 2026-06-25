@@ -1,5 +1,5 @@
 [Unit]
-Description=pyCluster runtime data refresh
+Description=pyCluster country and satellite runtime data refresh
 After=network-online.target
 Wants=network-online.target
 

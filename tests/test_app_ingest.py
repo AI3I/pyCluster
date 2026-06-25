@@ -148,7 +148,7 @@ def test_connect_peer_sends_legacy_dxspider_init_frames(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_accept_inbound_node_login_sends_legacy_banner_and_init(tmp_path) -> None:
+def test_accept_inbound_node_login_uses_authenticated_login_as_peer_identity(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "accept_inbound.db")
         app = ClusterApp(_mk_config(db))
@@ -172,8 +172,8 @@ def test_accept_inbound_node_login_sends_legacy_banner_and_init(tmp_path) -> Non
 
             text = writer.buffer.decode("utf-8", errors="replace")
             assert ok is True
-            assert accepted == [("AI3I-15", "dxspider")]
-            assert legacy_init == ["AI3I-15"]
+            assert accepted == [("AI3I-16", "dxspider")]
+            assert legacy_init == ["AI3I-16"]
             assert f"PC18^pyCluster {__version__}^" in text
             assert "PC20^" in text
         finally:
@@ -213,7 +213,7 @@ def test_accept_inbound_node_login_records_initial_pc18_version(tmp_path) -> Non
     asyncio.run(run())
 
 
-def test_accept_inbound_node_login_records_protocol_under_peer_name(tmp_path) -> None:
+def test_accept_inbound_node_login_records_protocol_under_login_identity(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "accept_inbound_peer_name.db")
         app = ClusterApp(_mk_config(db))
@@ -239,10 +239,10 @@ def test_accept_inbound_node_login_records_protocol_under_peer_name(tmp_path) ->
                 ["PC18^pyCluster 1.0.9^5457^"],
             )
             assert ok is True
-            assert accepted == [("W3LPL-2", "dxspider")]
+            assert accepted == [("LOGIN-1", "dxspider")]
             prefs = await app.store.list_user_prefs(app.config.node.node_call)
-            assert prefs["proto.peer.w3lpl-2.pc18.summary"] == "pyCluster 1.0.9"
-            assert "proto.peer.login-1.pc18.summary" not in prefs
+            assert prefs["proto.peer.login-1.pc18.summary"] == "pyCluster 1.0.9"
+            assert "proto.peer.w3lpl-2.pc18.summary" not in prefs
         finally:
             await app.store.close()
 
@@ -1458,6 +1458,49 @@ def test_outbound_relay_defaults_on_for_local_session_and_can_be_disabled(tmp_pa
     asyncio.run(run())
 
 
+def test_dx_spot_relay_is_not_controlled_by_routepc19(tmp_path) -> None:
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "spot_relay.db")))
+        captured: list[WirePcFrame] = []
+
+        async def _peer_names():
+            return ["PEER1"]
+
+        async def _send(_peer, frame):
+            captured.append(frame)
+
+        app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+        app.node_link.send = _send  # type: ignore[method-assign]
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref("N0CALL", "routepc19", "off", now)
+            await app._relay_spot_to_links(Spot(50314.6, "PV8DX", now, "6m", "N0CALL", app.config.node.node_call, ""))
+            assert len(captured) == 1
+            assert captured[0].pc_type == "PC61"
+            assert captured[0].payload_fields[1] == "PV8DX"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_direct_rbn_ingest_honors_legacy_scoped_rbn_rules(tmp_path) -> None:
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "legacy_rbn_ingest.db")))
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await app.store.set_filter_rule("N9JR", "spots", "accept", 1, "rbn call N9JR", now)
+            await app.store.set_filter_rule("N9JR", "spots", "accept", 4, "by W", now)
+            wanted = Spot(14024.6, "N9JR", now, "CW 8 dB 22 WPM CQ", "WZ7I", "RBN", "")
+            unwanted = Spot(14024.6, "W0KO", now, "CW 8 dB 22 WPM CQ", "WZ7I", "RBN", "")
+            assert await app._spot_passes_ingest_filters("N9JR", wanted) is True
+            assert await app._spot_passes_ingest_filters("N9JR", unwanted) is False
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_outbound_bulletin_relay_with_category_prefix(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "relay_bulletin.db")
@@ -1843,9 +1886,10 @@ def test_outbound_spot_relay_respects_policy(tmp_path) -> None:
             await app.telnet._execute_command("N0CALL", "unset/routepc19")
             before = len(captured)
             await app.telnet._execute_command("N0CALL", "dx 14074.0 K1ABC test2")
-            assert len(captured) == before
+            assert len(captured) > before
 
             await app.telnet._execute_command("N0CALL", "set/routepc19")
+            before = len(captured)
             await app.telnet._execute_command("N0CALL", "dx 14074.0 K1ABC test2b")
             assert len(captured) > before
 
@@ -2291,8 +2335,8 @@ def test_app_rbn_feed_applies_login_call_filters_before_ingest(tmp_path, monkeyp
             app.public_web.start = _noop  # type: ignore[method-assign]
             app.public_web.stop = _noop  # type: ignore[method-assign]
             now = int(datetime.now(timezone.utc).timestamp())
-            await app.store.set_filter_rule("N9JR", "spots", "reject", 0, "info _POTA_", now)
-            await app.store.set_filter_rule("N9JR", "spots", "accept", 1, "rbn callsign N9JR", now)
+            await app.store.set_filter_rule("N9JR", "rbn", "reject", 0, "info _POTA_", now)
+            await app.store.set_filter_rule("N9JR", "rbn", "accept", 1, "callsign N9JR", now)
 
             await app.start()
 

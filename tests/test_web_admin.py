@@ -14,7 +14,9 @@ from pycluster.auth import is_password_hash, verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.mfa import SMTPMailer, totp_code
 from pycluster.models import Spot
+from pycluster.registration import registration_state
 from pycluster.store import SpotStore
+from pycluster.telnet_server import TelnetClusterServer
 from pycluster.web_admin import WebAdminServer
 
 
@@ -134,6 +136,9 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     assert 'id="telemetry-panel-audit"' in text
     assert 'id="telemetry-panel-security"' in text
     assert '<h3>Recent Authentication Failures</h3>' in text
+    assert '<h3>Recent Logins</h3>' in text
+    assert "function setLoginRows(rows)" in text
+    assert "setLoginRows((securityRes.value || {}).logins || [])" in text
     assert "function setUserBrowserPanel(panel)" in text
     assert "function setTelemetryPanel(panel)" in text
     assert "if (key === 'sysop-web') return 'Operator Console';" in text
@@ -146,6 +151,9 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     assert '<label>Inbox</label><span>${esc(inboxSummary)}</span>' in text
     assert '<label>Outbox</label><span>${esc(outboxSummary)}</span>' in text
     assert "masterAccessEnabled(row.access, 'rbn')" in text
+    assert 'id="public_ip_address"' in text
+    assert "Upgrade Target" in text
+    assert "Migration hooks:" in text
     assert "data-toggle-capability" in text
 
 
@@ -643,6 +651,16 @@ def test_web_login_and_spot_post(tmp_path) -> None:
             assert await store.count_spots() == 1
             assert len(published) == 1
             assert len(relayed) == 1
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/spot",
+                headers={"Content-Type": "application/json", "X-Web-Token": tok},
+                body=json.dumps({"freq_khz": 14074.0, "dx_call": "K1ABC", "info": "FT8"}).encode("utf-8"),
+            )
+            assert code == 409
+            assert json.loads(body.decode("utf-8"))["ok"] is False
         finally:
             await store.close()
 
@@ -1973,10 +1991,15 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
         )
         store = SpotStore(db)
         rbn_reconfigured = 0
+        runtime_updates = 0
 
         async def _rbn_reconfigure() -> None:
             nonlocal rbn_reconfigured
             rbn_reconfigured += 1
+
+        def _runtime_update() -> None:
+            nonlocal runtime_updates
+            runtime_updates += 1
 
         srv = WebAdminServer(
             config=cfg,
@@ -1985,6 +2008,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             session_count_fn=lambda: 0,
             rbn_status_fn=lambda: {"state": "connected", "host": "rbn.example.test", "port": 7550},
             rbn_reconfigure_fn=_rbn_reconfigure,
+            config_updated_fn=_runtime_update,
             config_path=str(cfg_path),
         )
         try:
@@ -2000,6 +2024,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["welcome_title"] == "Welcome"
             assert data["motd"] == "Default MOTD"
             assert data["software_version"] == f"pyCluster {__version__}"
+            assert data["public_ip_address"] == ""
             assert data["rbn_status"]["state"] == "connected"
             assert data["retention_stale_users_enabled"] is False
             assert data["retention_stale_users_days"] == 365
@@ -2060,6 +2085,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
                 "retention_stale_users_days": 180,
                 "support_contact": "dxcluster@ai3i.net",
                 "website_url": "https://github.com/AI3I/pyCluster",
+                "public_ip_address": "44.1.2.3",
                 "motd": "Warm MOTD",
                 "prompt_template": "[{timestamp}] {node}{suffix}",
             }
@@ -2120,8 +2146,10 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["mfa_resend_cooldown_seconds"] == 45
             assert data["retention_stale_users_enabled"] is True
             assert data["retention_stale_users_days"] == 180
+            assert data["public_ip_address"] == "44.1.2.3"
             assert data["motd"] == "Warm MOTD"
             assert data["prompt_template"] == "[{timestamp}] {node}{suffix}"
+            assert runtime_updates == 1
 
             assert await store.get_user_pref("AI3I-15", "node_call") is None
             assert await store.get_user_pref("AI3I-15", "node_locator") is None
@@ -2138,6 +2166,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert saved["node"]["verified_email_required_for_web"] is True
             assert saved["node"]["verified_email_required_for_telnet"] is True
             assert saved["node"]["initial_grace_logins"] == 5
+            assert saved["node"]["public_ip_address"] == "44.1.2.3"
             assert saved["node"]["prompt_template"] == "[{timestamp}] {node}{suffix}"
             assert saved["telnet"]["ports"] == [7300, 7373, 8000]
             assert saved["smtp"]["host"] == "smtp.example.test"
@@ -2424,6 +2453,9 @@ def test_web_admin_security_endpoint_reads_authfail_log(tmp_path, monkeypatch) -
             session_count_fn=lambda: 0,
         )
         try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("AI3I", now - 60, display_name="John", privilege="sysop")
+            await store.record_login("AI3I", now, "sysop-web proxied ipv4 203.0.113.10")
             auth_log.write_text(
                 "2026-03-14 13:08:29,406 WARNING AUTHFAIL channel=sysop-web ip=198.51.100.24 call=AI3I reason=bad_password\n"
                 "2026-03-14 13:08:29,517 WARNING AUTHFAIL channel=public-web ip=203.0.113.77 call=AI3I reason=invalid_credentials\n",
@@ -2440,6 +2472,9 @@ def test_web_admin_security_endpoint_reads_authfail_log(tmp_path, monkeypatch) -
             assert data["auth_failures"][0]["channel"] == "public-web"
             assert data["auth_failures"][0]["ip"] == "203.0.113.77"
             assert data["auth_failures"][1]["channel"] == "sysop-web"
+            assert data["logins"][0]["call"] == "AI3I"
+            assert data["logins"][0]["name"] == "John"
+            assert data["logins"][0]["path"] == "sysop-web proxied ipv4 203.0.113.10"
             assert isinstance(data["bans"], list)
         finally:
             await store.close()
@@ -3161,7 +3196,7 @@ def test_web_users_mfa_and_registration_state_are_exact_ssid(tmp_path) -> None:
                 "POST",
                 "/api/users/toggle",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
-                body=json.dumps({"call": "N9JR-13", "kind": "blocked", "value": False}).encode("utf-8"),
+                body=json.dumps({"call": "N9JR-13", "kind": "blocked", "value": True}).encode("utf-8"),
             )
             assert code == 200
             assert await store.get_user_pref("N9JR-13", "blocked_login") == "on"
@@ -3472,6 +3507,56 @@ def test_web_admin_registration_approval_verifies_exact_ssid(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_approval_sends_code_and_telnet_register_verifies(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_registration_approval_verify.db")
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = WebAdminServer(config=cfg, store=store, started_at=datetime.now(timezone.utc), session_count_fn=lambda: 0)
+        sent: list[tuple[str, str, str]] = []
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        srv._mfa._sender = srv._smtp.send_code
+        try:
+            await store.upsert_registration_request(
+                "N1NEW",
+                now,
+                display_name="New User",
+                email="new@example.test",
+                source="telnet",
+                email_verified=False,
+                status="pending",
+            )
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/registrations/approve",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "N1NEW"}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["verification_sent"] is True
+            assert data["user"]["registration_state"] == "pending"
+            assert sent and sent[-1][0] == "new@example.test"
+
+            challenge_id = str(await store.get_user_pref("N1NEW", "registration_verify_challenge_id") or "")
+            challenge = await store.get_mfa_challenge(challenge_id)
+            assert challenge is not None
+            telnet = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+            _, output = await telnet._execute_command("N1NEW", f"register {challenge['code']}")
+            assert "Email address verified for N1NEW" in output
+            state, verified_epoch, _remaining = await registration_state(store, "N1NEW")
+            assert state == "verified"
+            assert verified_epoch > 0
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_users_can_rename_existing_callsign(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_users_rename.db")
@@ -3634,7 +3719,7 @@ def test_web_users_matrix_toggle_endpoint_updates_status_and_access(tmp_path) ->
                 "POST",
                 "/api/users/toggle",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
-                body=json.dumps({"call": "ZZ2AA", "kind": "locked", "value": False}).encode("utf-8"),
+                body=json.dumps({"call": "ZZ2AA", "kind": "locked", "value": True}).encode("utf-8"),
             )
             assert code == 200
             data = json.loads(body.decode("utf-8"))
@@ -3645,7 +3730,7 @@ def test_web_users_matrix_toggle_endpoint_updates_status_and_access(tmp_path) ->
                 "POST",
                 "/api/users/toggle",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
-                body=json.dumps({"call": "ZZ2AA", "kind": "locked", "value": True}).encode("utf-8"),
+                body=json.dumps({"call": "ZZ2AA", "kind": "locked", "value": False}).encode("utf-8"),
             )
             assert code == 200
             data = json.loads(body.decode("utf-8"))
@@ -3656,7 +3741,7 @@ def test_web_users_matrix_toggle_endpoint_updates_status_and_access(tmp_path) ->
                 "POST",
                 "/api/users/toggle",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
-                body=json.dumps({"call": "ZZ2AA", "kind": "blocked", "value": False}).encode("utf-8"),
+                body=json.dumps({"call": "ZZ2AA", "kind": "blocked", "value": True}).encode("utf-8"),
             )
             assert code == 200
             data = json.loads(body.decode("utf-8"))
@@ -3668,7 +3753,7 @@ def test_web_users_matrix_toggle_endpoint_updates_status_and_access(tmp_path) ->
                 "POST",
                 "/api/users/toggle",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
-                body=json.dumps({"call": "ZZ2AA", "kind": "blocked", "value": True}).encode("utf-8"),
+                body=json.dumps({"call": "ZZ2AA", "kind": "blocked", "value": False}).encode("utf-8"),
             )
             assert code == 200
             data = json.loads(body.decode("utf-8"))
@@ -3783,7 +3868,7 @@ def test_web_admin_blocking_explicit_ssid_does_not_block_base_or_siblings(tmp_pa
                 "POST",
                 "/api/users/toggle",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
-                body=json.dumps({"call": "N9JR-13", "kind": "blocked", "value": False}).encode("utf-8"),
+                body=json.dumps({"call": "N9JR-13", "kind": "blocked", "value": True}).encode("utf-8"),
             )
             assert code == 200
             data = json.loads(body.decode("utf-8"))

@@ -13,6 +13,7 @@ class TelnetConfig:
     ports: tuple[int, ...] = ()
     max_clients: int = 100
     idle_timeout_seconds: int = 0
+    keepalive_interval_seconds: int = 300
     max_line_length: int = 512
 
 
@@ -53,6 +54,7 @@ class NodeConfig:
     initial_grace_logins: int = 5
     support_contact: str = ""
     website_url: str = ""
+    public_ip_address: str = ""
     prompt_template: str = "[{timestamp}] {node}{suffix}"
 
 
@@ -156,6 +158,7 @@ def node_presentation_defaults(node: NodeConfig) -> dict[str, str]:
         "initial_grace_logins": str(int(node.initial_grace_logins)),
         "support_contact": node.support_contact,
         "website_url": node.website_url,
+        "public_ip_address": node.public_ip_address,
         "prompt_template": node.prompt_template,
         "motd": node.motd,
     }

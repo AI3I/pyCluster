@@ -26,6 +26,7 @@ Important fields:
 - `motd`
 - `support_contact`
 - `website_url`
+- `public_ip_address`
 - `require_password`
 - `registration_required`
 - `verified_email_required_for_web`
@@ -36,10 +37,11 @@ Auth policy notes:
 
 - `registration_required` is now the primary ordinary-user gate.
 - When `registration_required = true`, ordinary human users must have a local record before account activation.
-- When `verified_email_required_for_web = true`, ordinary web login requires a verified email address.
-- When `verified_email_required_for_telnet = true`, ordinary telnet login requires a verified email address and unverified users are driven through telnet email verification.
+- When `verified_email_required_for_web = true`, ordinary web login requires a verified email address. If SMTP is configured, unverified users receive an email code challenge instead of a hard denial.
+- When `verified_email_required_for_telnet = true`, ordinary telnet login requires a verified email address. New telnet users can complete first-login profile/password setup before the verification gate is enforced, and unverified users are driven through telnet email verification before normal commands continue.
 - `initial_grace_logins` controls how many failed or skipped telnet verification attempts are allowed before the pending account is locked.
 - `require_password` is now a narrower legacy telnet-password toggle. For ordinary human users, the stronger registration policy effectively implies passworded access.
+- `public_ip_address` is optional. When set to a valid public IPv4 or IPv6 address, outbound PC92 path data replaces private, loopback, link-local, or otherwise non-public IP literals with this value before advertising them to peers.
 
 ### `[telnet]`
 
@@ -53,7 +55,10 @@ Important fields:
 - `feeds`
 - `max_clients`
 - `idle_timeout_seconds`
+- `keepalive_interval_seconds`
 - `max_line_length`
+
+`idle_timeout_seconds` controls authentication/input timeout behavior. `keepalive_interval_seconds` independently controls post-login application keepalives; it defaults to 300 seconds and emits a visible prompt while continuing to wait for input. Telnet sockets also enable operating-system TCP keepalive.
 
 ### `[web]`
 
@@ -168,6 +173,7 @@ Notes:
 - The public RBN relays are high-throughput raw feeds and do not provide cluster-side filtering; use pyCluster filters and user preferences after ingestion.
 - RBN feed spots are stored as normal spots with `source_node` set from this section
 - users and cluster-peer records still control RBN access through the access matrix, `set/rbn`, `unset/rbn`, `accept/rbn`, `reject/rbn`, and `show/rbn`
+- `accept/rbn` and `reject/rbn` are first-class RBN filter-family commands. `accept/rbn 1 call N9JR` allows only matching RBN/Skimmer spots, while ordinary spot filters remain in the `spots` family.
 - use `config/pycluster.local.toml` for host-specific feed credentials
 
 ## Example Paths
@@ -190,6 +196,7 @@ Default deployed layout:
 - do not hand-edit the live CTY file unless you need an emergency local override
 - keep SMTP credentials in `config/pycluster.local.toml`, not the tracked base config
 - keep local satellite keps data under `data/` and point `[satellite].keps_path` at that file
+- the installed `pycluster-data-refresh.timer` validates and refreshes CTY, WPXLOC, and Keps every six hours; `deploy/doctor.sh` reports the configured Keps path and file age
 - CTY data is used for enrichment and review cues such as suspicious spot-prefix flags in the sysop web UI; it is not treated as a complete worldwide legal callsign authority
 - ordinary user access should be managed through the registration and verified-email policy, not by relying only on the older `require_password` toggle
 

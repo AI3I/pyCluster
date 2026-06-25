@@ -34,6 +34,7 @@ def test_update_cty_main_refreshes_cty_and_wpxloc(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(mod, "_download", fake_download)
     monkeypatch.setattr(mod, "_validate_cty", lambda path: (1234, 56))
     monkeypatch.setattr(mod, "_validate_wpxloc", lambda path: (2345, 67))
+    monkeypatch.setattr(mod, "_validate_keps", lambda path: (345, 1770000000))
     monkeypatch.setattr("sys.argv", ["update_cty.py", "--config", str(config)])
 
     rc = mod.main()
@@ -41,9 +42,11 @@ def test_update_cty_main_refreshes_cty_and_wpxloc(tmp_path, monkeypatch, capsys)
     out = capsys.readouterr().out
     assert "CTY.DAT updated" in out
     assert "WPXLOC.RAW updated" in out
-    assert calls == ["CTY.DAT", "WPXLOC.RAW"]
+    assert "KEPS updated" in out
+    assert calls == ["CTY.DAT", "WPXLOC.RAW", "KEPS"]
     assert (tmp_path / "data" / "cty.dat").exists()
     assert (tmp_path / "data" / "wpxloc.raw").exists()
+    assert (tmp_path / "data" / "keps.txt").exists()
 
 
 def test_update_cty_defaults_to_neutral_data_path(tmp_path, monkeypatch, capsys) -> None:

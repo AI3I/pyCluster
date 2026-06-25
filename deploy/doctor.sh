@@ -52,6 +52,7 @@ db_path=""
 cty_path=""
 wpx_path=""
 wpx_note=""
+keps_path=""
 if [ -f "$PYCLUSTER_CONFIG_DEST" ]; then
   readarray -t cfg_values < <("${PYCLUSTER_PYTHON_LINK:-/usr/bin/python3}" - <<PY
 import tomllib
@@ -61,11 +62,13 @@ cfg = tomllib.loads(p.read_text(encoding="utf-8"))
 print(cfg.get("store", {}).get("sqlite_path", ""))
 print(cfg.get("public_web", {}).get("cty_dat_path", ""))
 print(cfg.get("public_web", {}).get("wpxloc_raw_path", ""))
+print(cfg.get("satellite", {}).get("keps_path", ""))
 PY
 )
   db_path="${cfg_values[0]:-}"
   cty_path="${cfg_values[1]:-}"
   wpx_path="${cfg_values[2]:-}"
+  keps_path="${cfg_values[3]:-}"
 fi
 
 if [ -n "$db_path" ] && [ "${db_path#/}" = "$db_path" ]; then
@@ -85,6 +88,10 @@ if [ -n "$wpx_path" ] && [ "${wpx_path#/}" = "$wpx_path" ]; then
   wpx_path="$PYCLUSTER_APP_DIR/${wpx_path#./}"
 fi
 
+if [ -n "$keps_path" ] && [ "${keps_path#/}" = "$keps_path" ]; then
+  keps_path="$PYCLUSTER_APP_DIR/${keps_path#./}"
+fi
+
 db_ok="no"
 [ -n "$db_path" ] && [ -f "$db_path" ] && db_ok="yes"
 
@@ -93,6 +100,13 @@ cty_ok="no"
 
 wpx_ok="no"
 [ -n "$wpx_path" ] && [ -f "$wpx_path" ] && wpx_ok="yes"
+
+keps_ok="no"
+keps_age="unknown"
+if [ -n "$keps_path" ] && [ -f "$keps_path" ]; then
+  keps_ok="yes"
+  keps_age="$(( ($(date +%s) - $(stat -c %Y "$keps_path")) / 86400 ))d old"
+fi
 
 sysop_bootstrap="no"
 [ -f "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE" ] && sysop_bootstrap="yes"
@@ -113,6 +127,7 @@ status "config" "$PYCLUSTER_CONFIG_DEST ($config_ok)"
 status "database" "${db_path:-unset} ($db_ok)"
 status "cty.dat" "${cty_path:-unset} ($cty_ok)"
 status "wpxloc.raw" "${wpx_path:-unset} ($wpx_ok)${wpx_note:+ [$wpx_note]}"
+status "keps" "${keps_path:-unset} ($keps_ok, $keps_age)"
 status "core service" "$PYCLUSTER_SERVICE_NAME ($service_state)"
 status "web service" "$PYCLUSTER_WEB_SERVICE_NAME ($web_service_state)"
 status "data refresh timer" "$PYCLUSTER_DATA_REFRESH_TIMER_NAME ($data_timer_state)"

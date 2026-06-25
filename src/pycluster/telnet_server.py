@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import re
+import socket
 import time
 import textwrap
 from pathlib import Path
@@ -40,6 +41,7 @@ from .spot_throttle import (
     check_spot_throttle,
     load_spot_throttle_policy,
 )
+from .spot_filters import SpotFilterEntry, evaluate_spot_entries
 from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
@@ -757,7 +759,28 @@ class TelnetClusterServer:
         idx = 0
 
         # sysop-ish syntax: <call> [input] [slot] <expr>
-        if toks and self._is_callsign_token(toks[0]) and not toks[0].isdigit() and not self._is_all_token(toks[0]) and toks[0].lower() not in {"input", "accept", "reject"}:
+        filter_expr_heads = {
+            "input",
+            "accept",
+            "reject",
+            "on",
+            "by",
+            "dx",
+            "call",
+            "callsign",
+            "call_zone",
+            "call_itu",
+            "call_dxcc",
+            "spotter_cont",
+            "by_cont",
+            "spotter_zone",
+            "by_zone",
+            "spotter_itu",
+            "by_itu",
+            "info",
+            "rbn",
+        }
+        if toks and self._is_callsign_token(toks[0]) and not toks[0].isdigit() and not self._is_all_token(toks[0]) and toks[0].lower() not in filter_expr_heads:
             target = toks[0].upper()
             idx += 1
 
@@ -918,6 +941,9 @@ class TelnetClusterServer:
         first = toks[0]
         rest = " ".join(toks[1:]).strip()
 
+        if first in {"all", "*"}:
+            return True
+
         if first == "on" and rest:
             band = rest.split()[0]
             rng = BAND_RANGES.get(band)
@@ -1033,14 +1059,21 @@ class TelnetClusterServer:
 
     async def _spot_passes_filters(self, call: str, freq_khz: float, dx_call: str, spotter: str, info: str) -> bool:
         target = call.upper()
+        is_rbn = self._is_rbn_spot(dx_call, spotter, info)
         if not await self._spot_passes_rbn_pref(target, dx_call, spotter, info):
             return False
         if target not in self._filters:
             await self._load_filters_for_call(target)
-        fam = self._filters.get(target, {}).get("spots", {})
-        return self._eval_filter_family(
-            fam,
+        entries: list[SpotFilterEntry] = []
+        for family, actions in self._filters.get(target, {}).items():
+            if family not in {"spots", "rbn"}:
+                continue
+            for action, rules in actions.items():
+                entries.extend(SpotFilterEntry(family, action, rule.slot, rule.expr) for rule in rules)
+        return evaluate_spot_entries(
+            entries,
             lambda expr: self._spot_matches_expr(freq_khz, dx_call, spotter, info, expr),
+            is_rbn=is_rbn,
         )
 
     async def _dx_line_suffix_for_call(self, call: str, dx_call: str) -> str:
@@ -1262,17 +1295,28 @@ class TelnetClusterServer:
         writer: asyncio.StreamWriter | None = None,
         *,
         idle_keepalive: bool = False,
+        idle_keepalive_text: str = "",
     ) -> str | None:
-        timeout = float(self.config.telnet.idle_timeout_seconds or 0)
+        timeout_value = (
+            self.config.telnet.keepalive_interval_seconds
+            if idle_keepalive
+            else self.config.telnet.idle_timeout_seconds
+        )
+        timeout = float(timeout_value or 0)
         raw = bytearray()
         while True:
             b = await self._read_telnet_byte(reader, timeout, writer)
             if b is None:
+                if reader.at_eof():
+                    return None if not raw else raw.decode("utf-8", errors="replace").strip()
                 if idle_keepalive and timeout > 0 and not raw:
                     if writer is not None:
                         try:
-                            writer.write(bytes((self._TELNET_IAC, self._TELNET_NOP)))
-                            await writer.drain()
+                            if idle_keepalive_text:
+                                await self._write(writer, idle_keepalive_text)
+                            else:
+                                writer.write(bytes((self._TELNET_IAC, self._TELNET_NOP)))
+                                await writer.drain()
                         except Exception:
                             return None
                     continue
@@ -1907,7 +1951,8 @@ class TelnetClusterServer:
             return ""
         req = await self.store.get_registration_request(call)
         status = str(req["status"] or "").strip().lower() if req is not None else ""
-        if status == "approved":
+        state, verified_epoch, _remaining = await registration_state(self.store, call)
+        if status == "approved" or (state == "verified" and verified_epoch > 0):
             return ""
         if status == "pending":
             return self._string(
@@ -1954,9 +1999,6 @@ class TelnetClusterServer:
                 lines.append(self._render_string("welcome.contact", "Contact: {support}", support=support))
         lines.append("")
         lines.append((await self._motd_block()).rstrip("\r\n"))
-        registration_notice = await self._registration_notice_block(call, node_family=await self._node_family_for_login(call))
-        if registration_notice:
-            lines.append(registration_notice)
         if self._is_on_value(str(ui.get("show_status_after_login", "on") or "on"), default=True):
             linked_nodes = await self._linked_peer_count()
             lines.append(
@@ -1999,17 +2041,10 @@ class TelnetClusterServer:
             missing.append(self._string("registration.qth", "  QTH: set/qth <city, state or region>"))
         if not str(reg["qra"] or "").strip():
             missing.append(self._string("registration.qra", "  Grid Square: set/qra <maidenhead grid>"))
-        if not (str(prefs.get("forward_lat", "")).strip() and str(prefs.get("forward_lon", "")).strip()):
-            missing.append(self._string("registration.latlong", "  Coordinates: forward/latlong <latitude> <longitude>"))
         if not str(reg["email"] or "").strip():
             missing.append(self._string("registration.email", "  Email: set/email <address>"))
         if not password_set:
             missing.append(self._string("registration.password", "  Password: set/password"))
-        elif self._smtp.enabled() and str(reg["email"] or "").strip():
-            raw_mfa = await self.store.get_user_pref(call, "mfa_email_otp")
-            txt = str(raw_mfa or "").strip().lower()
-            if txt not in {"required", "off"}:
-                missing.append(self._string("registration.mfa", "  MFA: sign in on the web and enable Email MFA after your email is set."))
         if not missing:
             return ""
         lines = [
@@ -2019,6 +2054,135 @@ class TelnetClusterServer:
             "",
         ]
         return "\r\n".join(lines)
+
+    async def _run_registration_profile_interview(
+        self,
+        call: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> bool:
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.upsert_user_registry(call, now)
+        row = await self.store.get_user_registry(call)
+        if row is None:
+            return False
+        values = dict(row)
+        prefs = await self._load_prefs_for_call(call)
+        await self._write(
+            writer,
+            self._render_string("registration.interview_title", "Let's finish your registration profile for {call}.", call=call) + "\r\n",
+        )
+
+        if not str(values.get("display_name") or "").strip():
+            entered = await self._prompt_optional_value(reader, writer, "registration.interview_name", "Name: ", call=call)
+            if entered is None:
+                return False
+            if entered:
+                await self.store.upsert_user_registry(call, now, display_name=entered[:80])
+
+        home_node = str(prefs.get("homenode") or values.get("home_node") or "").strip().upper()
+        if not home_node:
+            entered = await self._prompt_optional_value(reader, writer, "registration.interview_home_node", "Home node: ", call=call)
+            if entered is None:
+                return False
+            normalized = normalize_call(entered)
+            if normalized and is_valid_call(normalized):
+                await self.store.set_user_pref(call, "homenode", normalized, now)
+                await self.store.upsert_user_registry(call, now, home_node=normalized)
+
+        if not str(values.get("qth") or "").strip():
+            entered = await self._prompt_optional_value(reader, writer, "registration.interview_qth", "QTH / location: ", call=call)
+            if entered is None:
+                return False
+            if entered:
+                await self.store.upsert_user_registry(call, now, qth=entered[:80])
+
+        if not str(values.get("qra") or "").strip():
+            entered = await self._prompt_optional_value(reader, writer, "registration.interview_qra", "Grid square: ", call=call)
+            if entered is None:
+                return False
+            locator = extract_locator(entered)
+            if locator:
+                await self.store.upsert_user_registry(call, now, qra=locator)
+                await self._sync_locator_defaults(call, locator, overwrite_coords=False)
+
+        if not has_valid_email(str(values.get("email") or "").strip()):
+            entered = await self._prompt_optional_value(reader, writer, "registration.interview_email", "Email address: ", call=call)
+            if entered is None:
+                return False
+            if has_valid_email(entered):
+                await self.store.upsert_user_registry(call, now, email=entered.strip())
+                await mark_email_unverified(
+                    self.store,
+                    call,
+                    now_epoch=now,
+                    grace_logins=int(self.config.node.initial_grace_logins),
+                )
+
+        password_set = bool(str(await self.store.get_user_pref(call, "password") or "").strip())
+        if not password_set and not await self._prompt_new_password(call, reader, writer):
+            return False
+        return True
+
+    async def _ensure_registration_verification_challenge(self, call: str) -> tuple[str, bool]:
+        challenge_id = str(await self.store.get_user_pref(call, "registration_verify_challenge_id") or "").strip()
+        if challenge_id:
+            row = await self.store.get_mfa_challenge(challenge_id)
+            if row is not None and int(row["expires_epoch"] or 0) >= int(time.time()):
+                return challenge_id, False
+        email = await self._email_for_call(call)
+        if not has_valid_email(email):
+            raise RuntimeError("valid email required")
+        if not self._smtp.enabled():
+            raise RuntimeError("email verification delivery is not configured")
+        challenge_id, _expires = await self._mfa.issue(call=call, email=email, purpose="registration-approval")
+        now = int(time.time())
+        await self.store.set_user_pref(call, "registration_verify_challenge_id", challenge_id, now)
+        return challenge_id, True
+
+    async def _verify_approved_registration(self, call: str, code: str) -> str:
+        challenge_id = str(await self.store.get_user_pref(call, "registration_verify_challenge_id") or "").strip()
+        if not challenge_id:
+            return self._string("registration.verify_missing", "No active registration verification code exists. Run REGISTER to request another code.") + "\r\n"
+        ok, reason = await self._mfa.verify(
+            challenge_id=challenge_id,
+            call=call,
+            purpose="registration-approval",
+            otp=code,
+        )
+        if not ok:
+            return self._render_string("registration.verify_failed", "Verification failed ({reason}).", reason=reason) + "\r\n"
+        now = int(time.time())
+        await mark_email_verified(self.store, call, now_epoch=now)
+        await self.store.delete_user_pref(call, "registration_verify_challenge_id")
+        return self._render_string("registration.verify_success", "Email address verified for {call}.", call=call) + "\r\n"
+
+    async def _run_register_interactive(
+        self,
+        call: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> str:
+        req = await self.store.get_registration_request(call)
+        status = str(req["status"] or "").strip().lower() if req is not None else ""
+        state, verified_epoch, _remaining = await registration_state(self.store, call)
+        if status == "approved" and not (state == "verified" and verified_epoch > 0):
+            try:
+                _challenge_id, sent = await self._ensure_registration_verification_challenge(call)
+            except Exception as exc:
+                return self._render_string("registration.verify_delivery_error", "Email verification could not start: {error}", error=str(exc)) + "\r\n"
+            if sent:
+                await self._write(writer, self._string("registration.verify_sent", "A verification code has been sent to your registered email address.") + "\r\n")
+            await self._write(writer, self._string("registration.verify_prompt", "verification code: "))
+            code = await self._read_password(reader, writer)
+            if code is None:
+                return ""
+            return await self._verify_approved_registration(call, code)
+
+        if status != "approved":
+            if not await self._run_registration_profile_interview(call, reader, writer):
+                return self._string("registration.interview_incomplete", "Registration interview was not completed.") + "\r\n"
+        return await self._cmd_register(call, None)
 
     async def _run_first_login_interview(
         self,
@@ -3195,7 +3359,7 @@ class TelnetClusterServer:
 
     async def _cmd_show_filter_test(self, target: str, toks: list[str]) -> str:
         if not toks:
-            return self._string("filters.test_usage", "Usage: show/filter [<call>] test <spots [--verbose] <freq_khz> <dx_call> <spotter> [info] | route [--verbose] <peer> | announce [--verbose] <sender> <text>>") + "\r\n"
+            return self._string("filters.test_usage", "Usage: show/filter [<call>] test <spots|rbn [--verbose] <freq_khz> <dx_call> <spotter> [info] | route [--verbose] <peer> | announce [--verbose] <sender> <text>>") + "\r\n"
         fam = toks[0].lower()
         args = toks[1:]
         verbose = False
@@ -3203,25 +3367,28 @@ class TelnetClusterServer:
             verbose = True
             args = args[1:]
         call = target.upper()
-        if fam == "spots":
+        if fam in {"spots", "rbn"}:
             if len(args) < 3:
-                return self._string("filters.test_spots_usage", "Usage: show/filter test spots <freq_khz> <dx_call> <spotter> [info]") + "\r\n"
+                return self._string("filters.test_spots_usage", "Usage: show/filter test <spots|rbn> <freq_khz> <dx_call> <spotter> [info]") + "\r\n"
             try:
                 freq = float(args[0])
             except ValueError:
-                return self._string("filters.test_spots_usage", "Usage: show/filter test spots <freq_khz> <dx_call> <spotter> [info]") + "\r\n"
+                return self._string("filters.test_spots_usage", "Usage: show/filter test <spots|rbn> <freq_khz> <dx_call> <spotter> [info]") + "\r\n"
             dx_call = args[1].upper()
             spotter = args[2].upper()
             info = " ".join(args[3:]) if len(args) > 3 else ""
             if call not in self._filters:
                 await self._load_filters_for_call(call)
-            f = self._filters.get(call, {}).get("spots", {})
+            f = self._filters.get(call, {}).get(fam, {})
             ok, detail = self._eval_filter_family_detail(
                 f,
-                lambda expr: self._spot_matches_expr(freq, dx_call, spotter, info, expr),
+                lambda expr: (
+                    self._spot_matches_expr(freq, dx_call, spotter, info, expr)
+                    and (fam != "rbn" or self._is_rbn_spot(dx_call, spotter, info))
+                ),
             )
             lines = [
-                self._render_string("filters.test_spots_title", "Filter test for {call} (spots):", call=call),
+                self._render_string("filters.test_spots_title", "Filter test for {call} ({family}):", call=call, family=fam),
                 self._render_string("filters.decision", "  Decision: {decision}", decision="allow" if ok else "deny"),
                 self._render_string("filters.frequency", "  Frequency: {freq:.1f} kHz", freq=freq),
                 self._render_string("filters.dx_call", "  DX Call: {dx_call}", dx_call=dx_call),
@@ -3265,7 +3432,7 @@ class TelnetClusterServer:
             if verbose and detail:
                 lines.append(self._render_string("filters.winning_rule", "  Winning Rule: {detail}", detail=detail))
             return await self._format_console_lines(target, lines)
-        return self._string("filters.test_generic_usage", "Usage: show/filter test <spots|route|announce> ...") + "\r\n"
+        return self._string("filters.test_generic_usage", "Usage: show/filter test <spots|rbn|route|announce> ...") + "\r\n"
 
     async def _cmd_show_configuration(self, _call: str, _arg: str | None) -> str:
         ports = ",".join(str(p) for p in self._configured_ports())
@@ -5730,7 +5897,7 @@ class TelnetClusterServer:
             page = await self._page_size_for(_call)
             if page > 0:
                 limit = min(limit, page)
-        return await self._event_report(_call, "wwv", limit)
+        return "\r\n" + await self._event_report(_call, "wwv", limit)
 
     async def _cmd_show_wx(self, _call: str, arg: str | None) -> str:
         explicit = bool(arg and arg.split()[0].isdigit())
@@ -6009,7 +6176,19 @@ class TelnetClusterServer:
         req = await self.store.get_registration_request(call)
         status = str(req["status"] or "").strip().lower() if req is not None else ""
         if status == "approved":
-            return self._render_string("registration.already_approved", "{call} is already registered and approved.", call=call) + "\r\n"
+            state, verified_epoch, _remaining = await registration_state(self.store, call)
+            if state == "verified" and verified_epoch > 0:
+                return self._render_string("registration.already_approved", "{call} is already registered and approved.", call=call) + "\r\n"
+            code_arg = str(arg or "").strip()
+            if code_arg.lower().startswith("verify "):
+                code_arg = code_arg.split(None, 1)[1].strip()
+            if code_arg:
+                return await self._verify_approved_registration(call, code_arg)
+            return self._render_string(
+                "registration.approved_verification_pending",
+                "{call} is approved but email verification is still pending. Run REGISTER to enter the code sent to your email.",
+                call=call,
+            ) + "\r\n"
         if status == "pending" and str(arg or "").strip().lower() not in {"resubmit", "submit", "again"}:
             return self._render_string("registration.already_pending", "Registration request for {call} is already pending sysop review.", call=call) + "\r\n"
 
@@ -6024,7 +6203,8 @@ class TelnetClusterServer:
         if reg is None:
             return self._render_string("registration.no_profile", "No registration profile exists for {call}.", call=call) + "\r\n"
         email = str(reg["email"] or "").strip()
-        email_verified = bool(str(await self.store.get_user_pref(call.split("-", 1)[0], "email_verified_epoch") or "").strip())
+        _state, verified_epoch, _remaining = await registration_state(self.store, call)
+        email_verified = verified_epoch > 0
         await self._submit_registration_request(
             call=call,
             display_name=str(reg["display_name"] or "").strip()[:80],
@@ -6395,6 +6575,24 @@ class TelnetClusterServer:
         self._log_event("filter", f"{action}/{family} {target} {slot} {expr}")
         family_label = family.upper() if family in {"wcy", "wwv", "wx"} else family
         return self._render_string("filters.add_done", "{action} filter for {family} saved for {target} in slot {slot}.", action=action.capitalize(), family=family_label, target=target, slot=slot) + "\r\n"
+
+    async def _cmd_rbn_filter_add(self, call: str, arg: str | None, action: str) -> str:
+        parsed = self._parse_filter_target_slot_expr(call, arg)
+        if not parsed:
+            target_slot = self._parse_filter_target_and_slot(call, arg)
+            if not target_slot:
+                return self._render_string("filters.add_usage", "Usage: {action}/rbn [<call>] [input] [0-9] <pattern>", action=action) + "\r\n"
+            target, slot = target_slot
+            slot_num = 1 if slot == "all" else int(slot)
+            parsed = (target, slot_num, "all")
+        target, slot, expr = parsed
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.set_filter_rule(target, "rbn", action, slot, expr, now)
+        rules = self._ensure_filter_store(target, "rbn", action)
+        rules[:] = [r for r in rules if r.slot != slot]
+        rules.append(FilterRule(slot=slot, expr=expr))
+        self._log_event("filter", f"{action}/rbn {target} {slot} {expr}")
+        return self._render_string("filters.add_done", "{action} filter for {family} saved for {target} in slot {slot}.", action=action.capitalize(), family="rbn", target=target, slot=slot) + "\r\n"
 
     async def _cmd_filter_alias_expr(self, call: str, arg: str | None, family: str, action: str, expr: str, label: str) -> str:
         if arg and label == "rbn":
@@ -9046,9 +9244,16 @@ class TelnetClusterServer:
             raw=raw,
         )
         inserted = await self.store.add_spot(spot)
-        if inserted:
-            await self.publish_spot(spot)
-        if self._on_spot_fn and inserted:
+        if not inserted:
+            self._log_event("spot", f"{call} dx rejected {freq_khz:.1f} {dx_call} {info}")
+            return self._render_string(
+                "dx.rejected",
+                "Spot was not accepted because it matched duplicate or deny policy: {freq_khz:.1f} kHz {dx_call}.",
+                freq_khz=freq_khz,
+                dx_call=dx_call,
+            ) + "\r\n"
+        await self.publish_spot(spot)
+        if self._on_spot_fn:
             await self._on_spot_fn(spot)
         self._log_event("spot", f"{call} dx {freq_khz:.1f} {dx_call} {info}")
         return self._render_string("dx.posted", "Spot posted on {freq_khz:.1f} kHz for {dx_call}.", freq_khz=freq_khz, dx_call=dx_call) + "\r\n"
@@ -10073,16 +10278,16 @@ class TelnetClusterServer:
             "unset/control": self._cmd_unset_control,
             # accept/* and reject/*
             "accept/spots": lambda c, a: self._cmd_filter_add(c, a, "spots", "accept"),
-            "accept/rbn": lambda c, a: self._cmd_filter_alias_expr(c, a, "spots", "accept", "rbn", "rbn"),
+            "accept/rbn": lambda c, a: self._cmd_rbn_filter_add(c, a, "accept"),
             "accept/announce": lambda c, a: self._cmd_filter_add(c, a, "announce", "accept"),
             "accept/route": lambda c, a: self._cmd_filter_add(c, a, "route", "accept"),
             "reject/spots": lambda c, a: self._cmd_filter_add(c, a, "spots", "reject"),
-            "reject/rbn": lambda c, a: self._cmd_filter_alias_expr(c, a, "spots", "reject", "rbn", "rbn"),
+            "reject/rbn": lambda c, a: self._cmd_rbn_filter_add(c, a, "reject"),
             "reject/announce": lambda c, a: self._cmd_filter_add(c, a, "announce", "reject"),
             "reject/route": lambda c, a: self._cmd_filter_add(c, a, "route", "reject"),
             # clear/*
             "clear/spots": lambda c, a: self._cmd_filter_clear(c, a, "spots"),
-            "clear/rbn": lambda c, a: self._cmd_filter_clear_expr(c, a, "spots", "rbn", "rbn"),
+            "clear/rbn": lambda c, a: self._cmd_filter_clear(c, a, "rbn"),
             "clear/announce": lambda c, a: self._cmd_filter_clear(c, a, "announce"),
             "clear/route": lambda c, a: self._cmd_filter_clear(c, a, "route"),
             "clear/dupefile": self._cmd_clear_dupefile,
@@ -10255,6 +10460,18 @@ class TelnetClusterServer:
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         async with self._semaphore:
             peer = writer.get_extra_info("peername")
+            sock = writer.get_extra_info("socket")
+            if sock is not None:
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                    if hasattr(socket, "TCP_KEEPIDLE"):
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 120)
+                    if hasattr(socket, "TCP_KEEPINTVL"):
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30)
+                    if hasattr(socket, "TCP_KEEPCNT"):
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                except OSError:
+                    LOG.debug("unable to configure TCP keepalive peer=%s", peer)
             self._session_seq += 1
             session_id = self._session_seq
             handoff = False
@@ -10356,12 +10573,6 @@ class TelnetClusterServer:
                     or await self._node_flag("require_password")
                     or password_set
                 ) and not node_family
-                if self.config.node.verified_email_required_for_telnet and not node_family and not password_set:
-                    if not await self._require_verified_email_for_login(call, reader, writer):
-                        self._log_auth_failure("telnet", peer, call, "email_verification_required")
-                        writer.close()
-                        await writer.wait_closed()
-                        return
                 if require_password and not password_set and not node_family:
                     ok = await self._prompt_new_password(call, reader, writer)
                     if not ok:
@@ -10390,7 +10601,7 @@ class TelnetClusterServer:
                         if not is_password_hash(str(expected_password)):
                             await self.store.set_user_pref(call, "password", hash_password(supplied_password), int(datetime.now(timezone.utc).timestamp()))
                         await self._clear_telnet_password_failures(call)
-                if self.config.node.verified_email_required_for_telnet and not node_family and password_set:
+                if self.config.node.verified_email_required_for_telnet and not node_family and not first_login:
                     if not await self._require_verified_email_for_login(call, reader, writer):
                         self._log_auth_failure("telnet", peer, call, "email_verification_required")
                         writer.close()
@@ -10461,9 +10672,18 @@ class TelnetClusterServer:
                     checklist = await self._registration_checklist_block(call, password_set=password_set, node_family=node_family)
                     if checklist:
                         await self._write(writer, checklist)
+                    if self.config.node.verified_email_required_for_telnet and not node_family:
+                        if not await self._require_verified_email_for_login(call, reader, writer):
+                            self._log_auth_failure("telnet", peer, call, "email_verification_required")
+                            writer.close()
+                            await writer.wait_closed()
+                            return
                 startup_outputs = await self._run_startup_commands(call)
                 for out in startup_outputs:
                     await self._write(writer, out)
+                registration_notice = await self._registration_notice_block(call, node_family=node_family)
+                if registration_notice:
+                    await self._write(writer, registration_notice + "\r\n")
 
                 sess = self._sessions.get(session_id)
                 if sess:
@@ -10472,10 +10692,18 @@ class TelnetClusterServer:
                     await self._write(writer, await self._prompt(call))
 
                 while True:
-                    line = await self._readline(reader, writer, idle_keepalive=True)
+                    line = await self._readline(
+                        reader,
+                        writer,
+                        idle_keepalive=True,
+                        idle_keepalive_text="\r\n" + await self._prompt(call),
+                    )
                     if line is None:
                         break
-                    keep_going, output = await self._execute_command(call, line)
+                    if line.strip().lower() == "register":
+                        keep_going, output = True, await self._run_register_interactive(call, reader, writer)
+                    else:
+                        keep_going, output = await self._execute_command(call, line)
                     if output:
                         await self._write(writer, output)
                     if not keep_going:

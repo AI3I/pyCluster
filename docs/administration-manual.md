@@ -67,6 +67,7 @@ Use the `Node Settings` section of the sysop web console to manage:
 - MOTD
 - support contact
 - website URL
+- public IP address substitution for outbound cluster path messages
 - telnet login behavior such as post-MOTD status display
 
 Typical uses of this section:
@@ -290,7 +291,7 @@ The `Telemetry` section groups:
 - runtime stats
 - recent spots
 - recent audit
-- security events
+- security events, including authentication failures and recent successful logins
 
 Useful telnet commands:
 
@@ -330,7 +331,7 @@ Healthy baseline:
 - core service active
 - public web service active
 - nginx active when the host is publishing web UI on `80/443`
-- CTY/WPX data refresh timer active
+- country/Keps data refresh timer active
 - wpxloc.raw configured and current if you use DXSpider-style WPX/location data
 - database present
 - security logging and `fail2ban` functioning

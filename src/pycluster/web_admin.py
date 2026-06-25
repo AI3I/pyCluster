@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import ipaddress
 import json
 import logging
 from pathlib import Path
@@ -56,6 +57,7 @@ _CONFIG_AUTH_NODE_FIELDS = {
     "initial_grace_logins",
     "support_contact",
     "website_url",
+    "public_ip_address",
     "motd",
     "prompt_template",
     "telnet_ports",
@@ -120,6 +122,7 @@ class WebAdminServer:
         audit_rows_fn=None,
         rbn_status_fn=None,
         rbn_reconfigure_fn=None,
+        config_updated_fn=None,
         config_path: str | None = None,
     ) -> None:
         self.config = config
@@ -146,6 +149,7 @@ class WebAdminServer:
         self.audit_rows_fn = audit_rows_fn
         self.rbn_status_fn = rbn_status_fn
         self.rbn_reconfigure_fn = rbn_reconfigure_fn
+        self.config_updated_fn = config_updated_fn
         self.config_path = str(config_path).strip() if config_path else ""
         self.repo_root = repo_root_from_config(self.config_path)
         self.upgrade_source_root = source_repo_root(self.repo_root)
@@ -386,6 +390,7 @@ class WebAdminServer:
             "initial_grace_logins": max(0, min(100, _to_int(data.get("initial_grace_logins", "5"), 5))),
             "support_contact": str(data.get("support_contact", "")).strip(),
             "website_url": str(data.get("website_url", "")).strip(),
+            "public_ip_address": str(data.get("public_ip_address", "")).strip(),
             "motd": str(data.get("motd", "")).rstrip(),
             "prompt_template": str(data.get("prompt_template", "")).strip(),
             "telnet_ports": (
@@ -921,6 +926,21 @@ class WebAdminServer:
             if len(rows) >= limit:
                 break
         return rows
+
+    async def _recent_login_rows(self, limit: int) -> list[dict[str, object]]:
+        rows = await self.store.recent_logins(limit)
+        out: list[dict[str, object]] = []
+        for row in rows:
+            out.append(
+                {
+                    "call": str(row["call"] or ""),
+                    "name": str(row["display_name"] or ""),
+                    "privilege": str(row["privilege"] or ""),
+                    "when_epoch": int(row["last_login_epoch"] or 0),
+                    "path": str(row["last_login_peer"] or ""),
+                }
+            )
+        return out
 
     def _fail2ban_ban_rows(self) -> list[dict[str, str]]:
         client = Path("/usr/bin/fail2ban-client")
@@ -2606,6 +2626,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="field"><label for="welcome_title" title="First line shown to a telnet user after successful login.">Welcome Title</label><input id="welcome_title" placeholder="Short welcome line" title="Keep this short and warm; it is prepended to the connecting callsign."></div>
               <div class="field"><label for="website_url" title="Optional URL shown in the telnet welcome block and useful for directing operators to documentation or a public site.">Website URL</label><input id="website_url" placeholder="https://example.org" title="Shown as a reference URL in the login welcome text if set."></div>
               <div class="field"><label for="support_contact" title="Contact string displayed to operators who need help with the node.">Support Contact</label><input id="support_contact" placeholder="support@example.org" title="Email address or other support contact shown in the telnet welcome block."></div>
+              <div class="field"><label for="public_ip_address" title="Public address substituted into outbound cluster path messages when a local private address would otherwise be advertised.">Public IP Address</label><input id="public_ip_address" placeholder="203.0.113.10 or 2001:db8::10" title="Used only to replace private, loopback, link-local, or otherwise non-public IP literals in outbound PC92 path data."></div>
               <div class="field"><label for="prompt_template" title="Prompt format shown to telnet operators. Available tokens: {timestamp}, {node}, {callsign}, {suffix}.">Prompt Template</label><input id="prompt_template" placeholder="[{timestamp}] {node}{suffix}" title="Use {timestamp}, {node}, {callsign}, and {suffix}. Example: [{timestamp}] {node}{suffix}"></div>
               <div class="field">
                 <label title="Optional telnet presentation behavior for the node welcome flow.">Options</label>
@@ -2785,7 +2806,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="status-cell"><label>Last Result</label><span id="retentionLastResult">No cleanup result is available.</span></div>
               <div class="status-cell wide"><label>Upgrade</label><span id="upgradeStatus">Upgrade status is unavailable.</span></div>
               <div class="status-cell"><label>Version Tags</label><span id="upgradeMetaTag">Version check and migration status will appear here.</span></div>
-              <div class="status-cell"><label>Upgrade Path</label><span id="upgradeMetaPath">-</span></div>
+              <div class="status-cell"><label>Upgrade Target</label><span id="upgradeMetaPath">-</span></div>
               <div class="status-cell"><label>Log</label><span id="upgradeMetaLog">-</span></div>
               <div class="status-cell wide"><label>Remote Check</label><span id="upgradeMetaRemote">-</span></div>
             </div>
@@ -3150,6 +3171,15 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   <table>
                     <thead><tr><th>When</th><th>Channel</th><th>IP</th><th>Call</th><th>Reason</th></tr></thead>
                     <tbody id="authFailRows"><tr><td colspan="5">Loading auth failures...</td></tr></tbody>
+                  </table>
+                </div>
+              </section>
+              <section style="margin-top:14px">
+                <h3>Recent Logins</h3>
+                <div class="tablewrap">
+                  <table>
+                    <thead><tr><th>When</th><th>Call</th><th>Name</th><th>Role</th><th>Path</th></tr></thead>
+                    <tbody id="loginRows"><tr><td colspan="5">Loading logins...</td></tr></tbody>
                   </table>
                 </div>
               </section>
@@ -3841,6 +3871,20 @@ function setAuthFailRows(rows) {
     <td>${esc(prettyAuthReason(row.reason || '-'))}</td>
   </tr>`).join('');
 }
+function setLoginRows(rows) {
+  const body = byId('loginRows');
+  if (!Array.isArray(rows) || !rows.length) {
+    body.innerHTML = '<tr><td colspan="5">No recent logins recorded.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map((row) => `<tr>
+    <td>${esc(fmtEpoch(row.when_epoch || 0))}</td>
+    <td><strong>${esc(row.call || '-')}</strong></td>
+    <td>${esc(row.name || '-')}</td>
+    <td><span class="tag">${esc(row.privilege || 'standard')}</span></td>
+    <td>${esc(row.path || '-')}</td>
+  </tr>`).join('');
+}
 function setBanRows(rows) {
   const body = byId('banRows');
   if (!Array.isArray(rows) || !rows.length) {
@@ -4213,8 +4257,10 @@ function setRegistrationRows(payload) {
     btn.addEventListener('click', async () => {
       const call = btn.dataset.call || '';
       try {
-        await j('/api/registrations/approve', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
-        say('Registration approved for ' + call + '.');
+        const result = await j('/api/registrations/approve', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({call})});
+        say(result && result.verification_sent
+          ? `Registration approved for ${call}; an email verification code was sent.`
+          : `Registration approved for ${call}.`);
         await load();
       } catch (err) {
         say('Approving registration failed: ' + errText(err), false);
@@ -4252,9 +4298,9 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
   const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
     <td><strong>${esc(row.call || '')}</strong></td>
     <td>${row.node_family ? matrixStatus(true, 'Cluster peer records are treated as verified') : matrixToggle(row, 'verified', !!row.email_verified, 'Verified email; tap to mark unverified', 'Email not verified; tap to mark verified')}</td>
-    <td>${row.node_family ? matrixStatus(true, 'Cluster peer records cannot be locked') : matrixToggle(row, 'locked', !row.registration_locked, 'Unlocked; tap to lock account', 'Locked; tap to unlock account')}</td>
+    <td>${row.node_family ? matrixStatus(false, 'Cluster peer records cannot be locked') : matrixToggle(row, 'locked', !!row.registration_locked, 'Locked; tap to unlock account', 'Unlocked; tap to lock account')}</td>
     <td>${mfaStatusMark(row)}</td>
-    <td>${row.node_family ? matrixStatus(true, 'Cluster peer records cannot be blocked') : matrixToggle(row, 'blocked', !row.blocked_login, 'Unblocked; tap to block login', 'Blocked; tap to unblock login')}</td>
+    <td>${row.node_family ? matrixStatus(false, 'Cluster peer records cannot be blocked') : matrixToggle(row, 'blocked', !!row.blocked_login, 'Blocked; tap to unblock login', 'Unblocked; tap to block login')}</td>
     <td>${row.node_family ? matrixStatus(true, 'Cluster peer login is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'login'), 'Login allowed; tap to disable login', 'Login disabled; tap to enable login', 'login')}</td>
     <td>${row.node_family ? matrixStatus(true, 'Cluster peer spots are always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'spots'), 'DX spots allowed; tap to disable spots', 'DX spots disabled; tap to enable spots', 'spots')}</td>
     <td>${row.node_family ? matrixStatus(true, 'Cluster peer RBN is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'rbn'), 'RBN allowed; tap to disable RBN', 'RBN disabled; tap to enable RBN', 'rbn')}</td>
@@ -4274,7 +4320,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
 }
 function fillNodeForm(data) {
   if (!data) return;
-  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','motd','prompt_template','smtp_host','smtp_username','smtp_password','smtp_from_addr','smtp_from_name','qrz_username','qrz_password','qrz_agent','qrz_api_url','satellite_keps_path','rbn_host','rbn_ports','rbn_feeds','rbn_callsign','rbn_password','rbn_source_node','rbn_startup_commands','mfa_issuer'].forEach((key) => {
+  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','public_ip_address','motd','prompt_template','smtp_host','smtp_username','smtp_password','smtp_from_addr','smtp_from_name','qrz_username','qrz_password','qrz_agent','qrz_api_url','satellite_keps_path','rbn_host','rbn_ports','rbn_feeds','rbn_callsign','rbn_password','rbn_source_node','rbn_startup_commands','mfa_issuer'].forEach((key) => {
     if (byId(key) && data[key] !== undefined) byId(key).value = data[key];
   });
   byId('show_status_after_login').checked = !!data.show_status_after_login;
@@ -4387,7 +4433,11 @@ function renderUpgradeStatus(payload) {
   if (availability.latest_remote_tag) tags.push(`Latest remote tag: ${availability.latest_remote_tag}`);
   if (availability.latest_local_tag) tags.push(`Latest local tag: ${availability.latest_local_tag}`);
   setText('upgradeMetaTag', tags.join(' • ') || 'No upgrade metadata is available.');
-  setText('upgradeMetaPath', migrations.length ? `Upgrade path: ${migrations.join(', ')}` : '-');
+  const target = availability.available
+    ? `${availability.current_version || '-'} → ${availability.available_version || '-'}`
+    : `${availability.current_version || '-'} current`;
+  const hookText = migrations.length ? `Migration hooks: ${migrations.join(', ')}` : 'Migration hooks: none required';
+  setText('upgradeMetaPath', `${target}; ${hookText}`);
   setText('upgradeMetaLog', status.log_path ? `Log: ${status.log_path}` : '-');
   setText('upgradeMetaRemote', availability.remote_error ? `Remote check note: ${availability.remote_error}` : '-');
   const runBtn = byId('runUpgrade');
@@ -4484,6 +4534,7 @@ async function load() {
   if (auditRes.status === 'fulfilled') setAuditRows(auditRes.value);
   if (securityRes.status === 'fulfilled') {
     setAuthFailRows((securityRes.value || {}).auth_failures || []);
+    setLoginRows((securityRes.value || {}).logins || []);
     setBanRows((securityRes.value || {}).bans || []);
   }
   await loadUserBrowser(currentUserBrowser);
@@ -4545,6 +4596,7 @@ byId('auditReload').onclick = async () => {
 byId('securityReload').onclick = async () => {
   const payload = await j('/api/security?limit=20');
   setAuthFailRows((payload || {}).auth_failures || []);
+  setLoginRows((payload || {}).logins || []);
   setBanRows((payload || {}).bans || []);
   say('Security data refreshed.');
 };
@@ -4683,6 +4735,7 @@ byId('saveNode').onclick = async () => {
         retention_stale_users_days: parseInt(byId('retention_stale_users_days').value.trim(), 10) || 365,
         support_contact: byId('support_contact').value.trim(),
         website_url: byId('website_url').value.trim(),
+        public_ip_address: byId('public_ip_address').value.trim(),
         motd: byId('motd').value,
         prompt_template: byId('prompt_template').value.trim()
       };
@@ -5252,8 +5305,9 @@ if (restoreWebSession()) {
                     return
                 limit = self._parse_limit(q, "limit", default=20, low=1, high=200)
                 auth_rows = self._read_recent_auth_failures(limit)
+                login_rows = await self._recent_login_rows(limit)
                 ban_rows = self._fail2ban_ban_rows()
-                await self._write_response(writer, 200, self._json({"auth_failures": auth_rows, "bans": ban_rows}))
+                await self._write_response(writer, 200, self._json({"auth_failures": auth_rows, "logins": login_rows, "bans": ban_rows}))
                 return
 
             if path == "/api/node/presentation":
@@ -5326,6 +5380,7 @@ if (restoreWebSession()) {
                         "retention_stale_users_days": "365",
                         "support_contact": "",
                         "website_url": "",
+                        "public_ip_address": "",
                         "motd": "",
                         "prompt_template": "",
                     }
@@ -5417,6 +5472,12 @@ if (restoreWebSession()) {
                             val = str(payload.get(key, "")).strip()
                             if key in {"node_call", "node_alias", "node_locator"}:
                                 val = val.upper()
+                            if key == "public_ip_address" and val:
+                                try:
+                                    ipaddress.ip_address(val)
+                                except ValueError:
+                                    await self._write_response(writer, 400, self._json({"error": "invalid public_ip_address"}))
+                                    return
                             if key == "prompt_template" and len(val) > 256:
                                 await self._write_response(writer, 400, self._json({"error": "prompt_template too long"}))
                                 return
@@ -5496,6 +5557,11 @@ if (restoreWebSession()) {
                     for key, value in mfa_updates.items():
                         if hasattr(self.config.mfa, key):
                             setattr(self.config.mfa, key, value)
+                    if config_changed and self.config_updated_fn:
+                        try:
+                            self.config_updated_fn()
+                        except Exception:
+                            LOG.exception("runtime config update callback failed")
                     if smtp_updates or mfa_updates:
                         self._smtp = SMTPMailer(self.config.smtp)
                         self._mfa = EmailOtpManager(self.config.mfa, self._smtp.send_code, self.store)
@@ -5976,8 +6042,22 @@ if (restoreWebSession()) {
                 )
                 if int(req["email_verified"] or 0):
                     await mark_email_verified(self.store, call, now_epoch=now)
+                    verification_sent = False
                 else:
                     await mark_email_unverified(self.store, call, now_epoch=now, grace_logins=int(self.config.node.initial_grace_logins))
+                    verification_sent = False
+                    email = str(req["email"] or "").strip()
+                    if self._smtp.enabled() and has_valid_email(email):
+                        try:
+                            challenge_id, _expires = await self._mfa.issue(
+                                call=call,
+                                email=email,
+                                purpose="registration-approval",
+                            )
+                            await self.store.set_user_pref(call, "registration_verify_challenge_id", challenge_id, now)
+                            verification_sent = True
+                        except Exception:
+                            LOG.exception("registration approval verification delivery failed call=%s", call)
                 await self.store.set_registration_request_status(
                     call,
                     status="approved",
@@ -5987,7 +6067,18 @@ if (restoreWebSession()) {
                 )
                 row = await self.store.get_user_registry(call)
                 self._audit("sysop", f"{self._authorized_call(headers)} approved registration request for {call}")
-                await self._write_response(writer, 200, self._json({"ok": True, "call": call, "user": await self._user_registry_json(row) if row else {"call": call}}))
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json(
+                        {
+                            "ok": True,
+                            "call": call,
+                            "verification_sent": verification_sent,
+                            "user": await self._user_registry_json(row) if row else {"call": call},
+                        }
+                    ),
+                )
                 return
 
             if path == "/api/registrations/deny":
@@ -6075,6 +6166,10 @@ if (restoreWebSession()) {
                     audit_detail = f"verified={'on' if value else 'off'}"
                 elif kind == "locked":
                     if value:
+                        await self.store.set_user_pref(state_call, "registration_state", "locked", now)
+                        await self.store.set_user_pref(state_call, "failed_password_locked_epoch", str(now), now)
+                        audit_detail = "locked=on"
+                    else:
                         _state, verified_epoch, _remaining = await registration_state(self.store, state_call)
                         await self.store.set_user_pref(state_call, "registration_state", "verified" if verified_epoch > 0 else "pending", now)
                         if verified_epoch <= 0:
@@ -6083,23 +6178,19 @@ if (restoreWebSession()) {
                         await self.store.delete_user_pref(state_call, "failed_password_locked_epoch")
                         await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
                         audit_detail = "locked=off"
-                    else:
-                        await self.store.set_user_pref(state_call, "registration_state", "locked", now)
-                        await self.store.set_user_pref(state_call, "failed_password_locked_epoch", str(now), now)
-                        audit_detail = "locked=on"
                 elif kind == "blocked":
                     targets = {call}
                     if value:
-                        for target in targets:
-                            await self.store.delete_user_pref(target, "blocked_login")
-                            await self.store.delete_user_pref(target, "blocked_reason")
-                        audit_detail = "blocked=off"
-                    else:
                         reason = str(payload.get("reason", "")).strip()[:80] or "Blocked by local policy"
                         for target in targets:
                             await self.store.set_user_pref(target, "blocked_login", "on", now)
                             await self.store.set_user_pref(target, "blocked_reason", reason, now)
                         audit_detail = "blocked=on"
+                    else:
+                        for target in targets:
+                            await self.store.delete_user_pref(target, "blocked_login")
+                            await self.store.delete_user_pref(target, "blocked_reason")
+                        audit_detail = "blocked=off"
                 else:
                     await self._write_response(writer, 400, self._json({"error": "invalid toggle kind"}))
                     return
@@ -6999,6 +7090,13 @@ if (restoreWebSession()) {
                     raw=raw,
                 )
                 inserted = await self.store.add_spot(spot)
+                if not inserted:
+                    await self._write_response(
+                        writer,
+                        409,
+                        self._json({"ok": False, "error": "spot rejected by duplicate or deny policy"}),
+                    )
+                    return
                 if inserted and self.publish_spot_fn:
                     await self.publish_spot_fn(spot)
                 if inserted and self.relay_spot_fn:

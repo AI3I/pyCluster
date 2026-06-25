@@ -1640,9 +1640,13 @@ def test_public_web_login_requires_registration_and_valid_email(tmp_path) -> Non
         db = str(tmp_path / "public_auth_registration_required.db")
         cfg = _mk_config(db)
         cfg.node.verified_email_required_for_web = True
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
+        sent: list[tuple[str, str, str]] = []
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
         try:
             await store.set_user_pref("AI3I", "password", "secret", now)
             code, _, body = await _http_request_ex(
@@ -1686,8 +1690,30 @@ def test_public_web_login_requires_registration_and_valid_email(tmp_path) -> Non
                 json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
                 {"Content-Type": "application/json"},
             )
-            assert code == 403
-            assert json.loads(body.decode("utf-8"))["error"] == "email verification required"
+            assert code == 202
+            verify = json.loads(body.decode("utf-8"))
+            assert verify["mfa_required"] is True
+            assert verify["mfa_method"] == "email"
+            assert sent and sent[0][0] == "ai3i@example.test"
+            challenge = next(iter(srv._mfa._challenges.values()))
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps(
+                    {
+                        "call": "AI3I",
+                        "password": "secret",
+                        "challenge_id": verify["challenge_id"],
+                        "otp": challenge.code,
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
+            assert await store.get_user_pref("AI3I", "email_verified_epoch") is not None
 
             await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
             code, _, body = await _http_request_ex(

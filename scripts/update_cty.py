@@ -13,6 +13,7 @@ from pathlib import Path
 
 DEFAULT_CTY_URL = "https://www.country-files.com/cty/cty.dat"
 DEFAULT_WPXLOC_URL = "https://www.country-files.com/cty/wpxloc.raw"
+DEFAULT_KEPS_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle"
 
 
 def _repo_root() -> Path:
@@ -24,6 +25,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from pycluster import ctydat  # noqa: E402
 from pycluster import wpxloc  # noqa: E402
+from pycluster.satellite import load_tles  # noqa: E402
 
 
 def _sha256(data: bytes) -> str:
@@ -66,6 +68,14 @@ def _validate_wpxloc(path: Path) -> tuple[int, int]:
     return prefix_count, exact_count
 
 
+def _validate_keps(path: Path) -> tuple[int, int]:
+    records = load_tles(path)
+    if len(records) < 10:
+        raise RuntimeError(f"keps validation failed: only {len(records)} TLE records loaded")
+    newest_epoch = max(int(record.epoch.timestamp()) for record in records)
+    return len(records), newest_epoch
+
+
 def _download(url: str, label: str, min_size: int = 65536) -> bytes:
     req = urllib.request.Request(
         url,
@@ -101,12 +111,22 @@ def _write_atomic(target: Path, data: bytes, *, prefix: str, suffix: str, valida
             tmp_path.unlink()
 
 
-def _refresh_file(*, label: str, target: Path, url: str, validator, prefix: str, suffix: str) -> tuple[str, str]:
+def _refresh_file(
+    *,
+    label: str,
+    target: Path,
+    url: str,
+    validator,
+    prefix: str,
+    suffix: str,
+    min_size: int = 65536,
+) -> tuple[str, str]:
     old_bytes = target.read_bytes() if target.exists() else b""
-    new_bytes = _download(url, label)
+    new_bytes = _download(url, label, min_size=min_size)
     digest = _sha256(new_bytes)[:12]
     if old_bytes and _sha256(old_bytes) == _sha256(new_bytes):
         left, right = validator(target)
+        os.utime(target, None)
         return (
             "unchanged",
             f"{label} unchanged at {target} ({left=}, {right=}, sha256={digest})",
@@ -119,11 +139,13 @@ def _refresh_file(*, label: str, target: Path, url: str, validator, prefix: str,
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Refresh pyCluster CTY.DAT and WPXLOC.RAW from Country Files.")
+    parser = argparse.ArgumentParser(description="Refresh pyCluster country and satellite runtime data.")
     parser.add_argument("--config", default="config/pycluster.toml", help="Path to pyCluster config file.")
     parser.add_argument("--cty-url", default=DEFAULT_CTY_URL, help="CTY.DAT source URL.")
     parser.add_argument("--wpxloc-url", default=DEFAULT_WPXLOC_URL, help="WPXLOC.RAW source URL.")
+    parser.add_argument("--keps-url", default=DEFAULT_KEPS_URL, help="Amateur satellite TLE source URL.")
     parser.add_argument("--cty-only", action="store_true", help="Refresh only CTY.DAT.")
+    parser.add_argument("--country-only", action="store_true", help="Refresh CTY.DAT and WPXLOC.RAW but not Keps.")
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
@@ -131,6 +153,8 @@ def main() -> int:
     public_web = cfg.get("public_web", {})
     cty_target = _resolve_data_path(config_path, str(public_web.get("cty_dat_path", "")), "data/cty.dat")
     wpx_target = _resolve_data_path(config_path, str(public_web.get("wpxloc_raw_path", "")), str(cty_target.with_name("wpxloc.raw")))
+    satellite = cfg.get("satellite", {})
+    keps_target = _resolve_data_path(config_path, str(satellite.get("keps_path", "")), "data/keps.txt")
 
     results: list[str] = []
     _state, message = _refresh_file(
@@ -151,6 +175,18 @@ def main() -> int:
             validator=_validate_wpxloc,
             prefix=".wpxloc.",
             suffix=".raw",
+        )
+        results.append(message)
+
+    if not args.cty_only and not args.country_only:
+        _state, message = _refresh_file(
+            label="KEPS",
+            target=keps_target,
+            url=args.keps_url,
+            validator=_validate_keps,
+            prefix=".keps.",
+            suffix=".txt",
+            min_size=1024,
         )
         results.append(message)
 

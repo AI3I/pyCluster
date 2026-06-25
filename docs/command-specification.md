@@ -17,6 +17,27 @@ pyCluster should keep commands operators and users actually need:
 
 pyCluster should not mirror legacy command families just because they existed elsewhere. A command that only stores a value, prints a placeholder, or has no meaningful local behavior is not a supported product feature.
 
+## Database Ownership Model
+
+The database should be the source of truth for any state that can be changed from more than one surface. Telnet commands, the public web UI, the System Operator web UI, and node-link ingestion should all read and write the same store records instead of keeping separate preference models.
+
+State ownership by command family:
+
+| State | Database owner | Telnet surface | Web surface | Notes |
+| --- | --- | --- | --- | --- |
+| User profile | `user_registry`, `user_prefs` | `set/name`, `set/qth`, `set/qra`, `set/email`, `set/homenode`, `register` | Edit Profile, SysOp Users | Grid square, home node, email, and registration state must not be recalculated differently by web and telnet. |
+| Authentication | `user_prefs`, registration state | login flow, `set/password`, `set/mfa`, `unset/mfa` | login flow, Edit Profile MFA, SysOp MFA reset | Passwords are hashed before storage; MFA prompts should describe the required code without exposing implementation details. |
+| Access matrix | access records and user prefs | `sysop/access`, `sysop/setaccess` | SysOp Users matrix | Web and telnet capability decisions must call the same access checks. |
+| Spots and RBN spots | spot tables plus ingest metadata | `dx`, `show/dx`, `show/mydx`, `show/rbn` | public Spots and Watch views | RBN is not a peer family. It is a feed and spot source controlled by global/node settings plus per-user preferences and filters. |
+| Filters | `filter_rules` | `accept/spots`, `reject/spots`, `accept/rbn`, `reject/rbn`, `clear/*`, `show/filter` | public filter controls | Web filtering work should target this table directly. `spots` rules apply to normal spots; `rbn` rules apply first to RBN spots, with `spots` as fallback compatibility. |
+| Messaging | message tables | `send`, `msg`, `read`, `reply`, `show/messages`, `show/outbox` | mail/message views | Message counters and read state should stay shared between surfaces. |
+| Bulletins | bulletin tables | `show/announce`, `show/chat`, `show/wcy`, `show/wwv`, `show/wx` | public/sysop views | Web posting policy is intentionally narrower than telnet/node ingestion. |
+| Peers and links | saved peer records, user records for peer accounts, runtime link state | `sysop/peer*`, `show/links`, protocol commands | SysOp Peers/Links | Saved peer config and peer-login accounts are related but separate records. |
+| Protocol health | protocol event/ack/history tables | `show/proto*`, `stat/proto*`, `clear/protohistory` | SysOp Protocol Health | Runtime metrics may be live, but event history should be queryable from the store. |
+| Data files | configured paths plus refresh metadata | `load/*`, future `sysop/data *` | Node Settings / Doctor | CTY and WPXLOC should be refreshed as managed data, not packaged as stale source-tree fixtures. |
+
+Commands that only write a `user_prefs` key are not automatically stable. They are stable only when another subsystem reads that key and changes behavior, or when the key is a documented profile/preference field surfaced consistently in web and telnet.
+
 ## Command Classes
 
 ### Stable
@@ -166,7 +187,10 @@ These are stable only if they are backed by stored local data and visible behavi
 - `show/usdb [call]`
 - `accept/spots <expr>`
 - `reject/spots <expr>`
+- `accept/rbn <expr>`
+- `reject/rbn <expr>`
 - `clear/spots`
+- `clear/rbn`
 - `show/filter`
 
 ## Stable Sysop Commands
@@ -329,9 +353,45 @@ These commands are acceptable aliases because they map directly to stable behavi
 - `stat/*` commands that report real database/runtime summaries
 - `show/protoack`, `show/prack`, `set/prack`, and `unset/prack` as aliases for protocol acknowledgements
 
+## Current Audit Snapshot
+
+The active telnet registry currently exposes 368 grouped commands:
+
+| Family | Count | Review status |
+| --- | ---: | --- |
+| `show/*` | 141 | Mixed: many are stable reads; several are compatibility aliases or local preference displays. |
+| `set/*` | 84 | Needs the most cleanup; many entries are generic preference writers. |
+| `unset/*` | 62 | Same cleanup profile as `set/*`. |
+| `stat/*` | 23 | Mostly stable if backed by real DB/runtime summaries. |
+| `sysop/*` | 22 | Stable directionally; should remain the primary telnet admin namespace. |
+| `load/*` | 14 | Mostly status/reload compatibility; should be replaced over time by explicit `sysop/data *` commands. |
+| `accept/*`, `reject/*`, `clear/*` | 16 | Stable where backed by `filter_rules`; RBN is now first-class. |
+| `create/*`, `delete/*`, `forward/*`, `get/*` | 6 | Mixed user-data and utility commands; keep only where state is persisted and documented. |
+
+Direct aliases are intentionally small: `version`, `dx`, `users`, `node`, `cluster`, `motd`, `date`, `time`, `ap`, `apropos`, `mail`, `outbox`, and `register`.
+
+Database-backed commands already in good shape:
+
+- profile and registration: `register`, `set/name`, `set/qth`, `set/qra`, `set/email`, `set/password`, `set/mfa`, `show/registered`, `show/station`
+- filters: `accept/spots`, `reject/spots`, `accept/rbn`, `reject/rbn`, `clear/spots`, `clear/rbn`, `show/filter`
+- access and account administration: `sysop/users`, `sysop/showuser`, `sysop/access`, `sysop/setaccess`, `sysop/password`, `sysop/clearpassword`, `sysop/clearmfa`, `sysop/blocklogin`
+- messaging and bulletins: `send`, `msg`, `read`, `reply`, `show/messages`, `show/outbox`, `show/announce`, `show/chat`, `show/wcy`, `show/wwv`, `show/wx`
+- peers and protocol health: `sysop/peer*`, `show/links`, `show/proto*`, `stat/proto*`, `clear/protohistory`
+
+Commands that need review before they are promoted as stable:
+
+- legacy protocol toggles: `set/wantpc16`, `set/wantpc9x`, `set/sendpc16`, `set/senddbg`
+- partially real route toggle: `set/routepc19`, which is read by routing code and should either be documented as stable or moved under a clearer sysop policy command
+- legacy preference-only flags: `set/agwengine`, `set/agwmonitor`, `set/bbs`, `set/believe`, `set/hops`, `set/obscount`, `set/passphrase`, `set/pinginterval`
+- duplicate controls: `set/dupann`, `set/dupeph`, `set/dupspots`, `set/dupwcy`, `set/dupwwv`, `clear/dupefile`
+- external lookup/show commands: `show/db0sdx`, `show/ik3qar`, `show/wm7d`, `show/dxqsl`, which should be classified as optional integrations with clear unavailable output
+- `load/*` commands, which currently report loaded state but are not all true reload operations
+
+The `show/ai3i`, `show/n9jr`, and `show/spout` commands are intentional easter eggs and are excluded from cleanup scoring.
+
 ## Compatibility Commands to Hide or Deprecate
 
-The current registry recognizes hundreds of commands. A local scan of `telnet_server.py` shows 372 grouped commands, including 83 `set/*`, 61 `unset/*`, and 141 `show/*` entries. At least 46 `set/*` commands and 35 `unset/*` commands are generic named-variable wrappers rather than clearly designed pyCluster features.
+The current registry recognizes hundreds of commands. A local scan of `telnet_server.py` shows 368 grouped commands, including 84 `set/*`, 62 `unset/*`, and 141 `show/*` entries. Many `set/*` and `unset/*` commands are generic named-variable wrappers rather than clearly designed pyCluster features.
 
 These should not be promoted in normal help. Each should either graduate to stable behavior with tests and documentation, or move to deprecated/removed.
 
