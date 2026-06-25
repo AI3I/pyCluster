@@ -66,6 +66,7 @@ This view controls local node identity and welcome-flow presentation.
 - `Welcome Title`
 - `Website URL`
 - `Support Contact`
+- `Public IP Address`
 
 ### Long-Text Fields
 
@@ -128,17 +129,11 @@ This section controls:
 ### Reverse Beacon Network
 
 - `Enable RBN Feed`
-- `Feed Host`
-- `Default Port`
-- `Feed Ports`
-- `Named Feeds`
-- `Login Callsign`
-- `Feed Password`
-- `Source Node`
-- `Startup Commands`
-- `Reconnect Seconds`
+- public feed toggles for `CW/RTTY` and `FT8`
+- feed status
+- `Advanced Options`
 
-Direct RBN ingestion is disabled by default. When enabled, the node can connect to one or more named RBN feeds, including separate CW/RTTY and FT8 feed endpoints. RBN spots still respect the per-user and peer access matrix.
+Direct RBN ingestion is disabled by default. When enabled from the disabled state, `CW/RTTY` is selected by default and `FT8` is left disabled unless the sysop enables it. Changes made while RBN is enabled are honored. `Advanced Options` contains host, default port, feed ports, named feeds, login callsign, feed password, source node, startup commands, and reconnect seconds. RBN spots still respect the per-user and peer access matrix.
 
 ## Users
 
@@ -465,6 +460,7 @@ Includes:
 
 - `Reload Security`
 - `Recent Authentication Failures`
+- `Recent Logins`
 
 Recent auth failures show:
 
@@ -473,6 +469,14 @@ Recent auth failures show:
 - IP
 - callsign
 - reason
+
+Recent logins show:
+
+- when
+- callsign
+- display name
+- role
+- recorded path
 
 Current bans show:
 

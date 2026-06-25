@@ -25,6 +25,7 @@ from .peer_profiles import normalize_profile
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, parse_wire_pc_frame
 from .rbn import is_rbn_spot, parse_rbn_dx_line
 from .shdx import BAND_RANGES
+from .spot_filters import SpotFilterEntry, evaluate_spot_entries
 from .store import SpotStore
 from .strings import StringCatalog
 from .telnet_server import TelnetClusterServer
@@ -87,7 +88,7 @@ class ClusterApp:
         self.store = SpotStore(config.store.sqlite_path)
         strings_path = str(Path(config_path).with_name("strings.toml")) if config_path else None
         self._strings = StringCatalog(strings_path)
-        self.node_link = NodeLinkEngine()
+        self.node_link = NodeLinkEngine(public_ip_address=config.node.public_ip_address)
         self.node_link.set_trace_hook(self._trace_protocol_line)
         self._legacy_dxspider_peers: set[str] = set()
         self._mail_stream_seq = 0
@@ -143,6 +144,7 @@ class ClusterApp:
             audit_rows_fn=self.telnet.audit_rows,
             rbn_status_fn=self.rbn_feed_status,
             rbn_reconfigure_fn=self.reconfigure_rbn_feed,
+            config_updated_fn=self._apply_runtime_config,
             config_path=config_path,
         )
         self.public_web = PublicWebServer(
@@ -177,6 +179,9 @@ class ClusterApp:
         self._node_ingest_stop = asyncio.Event()
         self._proto_trace_lock = asyncio.Lock()
         self._public_web_started = False
+
+    def _apply_runtime_config(self) -> None:
+        self.node_link.set_public_ip_address(self.config.node.public_ip_address)
 
     def _string(self, key: str, default: str) -> str:
         return self._strings.get(key, default)
@@ -325,6 +330,8 @@ class ClusterApp:
         spotter = normalize_call(spot.spotter)
         info = str(spot.info or "")
 
+        if first in {"all", "*"}:
+            return True
         if first == "rbn":
             if not is_rbn_spot(dx_call, spotter, info):
                 return False
@@ -377,33 +384,26 @@ class ClusterApp:
         return low in f"{spot.freq_khz:.1f} {dx_call} {spotter} {info}".lower()
 
     async def _spot_passes_ingest_filters(self, call: str, spot: Spot) -> bool:
-        accepts: list[tuple[int, str]] = []
-        rejects: list[tuple[int, str]] = []
         exact_call = normalize_call(call)
         base_call = exact_call.split("-", 1)[0]
         rows = await self.store.list_filter_rules(exact_call)
         if not rows and base_call != exact_call:
             rows = await self.store.list_filter_rules(base_call)
-        for row in rows:
-            if str(row["family"] or "").strip().lower() != "spots":
-                continue
-            action = str(row["action"] or "").strip().lower()
-            item = (int(row["slot"] or 0), str(row["expr"] or ""))
-            if action == "accept":
-                accepts.append(item)
-            elif action == "reject":
-                rejects.append(item)
-        matches: list[tuple[int, str]] = []
-        for slot, expr in accepts:
-            if self._spot_matches_filter_expr(spot, expr):
-                matches.append((slot, "accept"))
-        for slot, expr in rejects:
-            if self._spot_matches_filter_expr(spot, expr):
-                matches.append((slot, "reject"))
-        if matches:
-            matches.sort(key=lambda item: (item[0], 0 if item[1] == "reject" else 1))
-            return matches[0][1] == "accept"
-        return not accepts
+
+        entries = [
+            SpotFilterEntry(
+                family=str(row["family"] or "").strip().lower(),
+                action=str(row["action"] or "").strip().lower(),
+                slot=int(row["slot"] or 0),
+                expr=str(row["expr"] or ""),
+            )
+            for row in rows
+        ]
+        return evaluate_spot_entries(
+            entries,
+            lambda expr: self._spot_matches_filter_expr(spot, expr),
+            is_rbn=is_rbn_spot(spot.dx_call, spot.spotter, spot.info),
+        )
 
     def _peer_pref_key(self, name: str, field: str) -> str:
         slug = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
@@ -654,8 +654,10 @@ class ClusterApp:
         writer: asyncio.StreamWriter,
         initial_lines: list[str] | None = None,
     ) -> bool:
-        peer_key = normalize_call(peer_name) or normalize_call(call) or call.upper()
         login_key = normalize_call(call) or call.upper()
+        # The authenticated login is the remote peer. In DXSpider-style
+        # handshakes, `client X telnet` names the node being connected to.
+        peer_key = login_key
         profile = (
             await self.store.get_user_pref(peer_key, "node_family")
             or await self.store.get_user_pref(login_key, "node_family")
@@ -2230,8 +2232,6 @@ class ClusterApp:
 
     async def _relay_spot_to_links(self, spot: Spot, exclude_peer: str | None = None) -> None:
         sender = normalize_call(spot.spotter)
-        if not await self._routepc19_enabled(sender):
-            return
         if not await self._relay_category_enabled(sender, "spots"):
             return
         dt = datetime.fromtimestamp(spot.epoch, tz=timezone.utc)

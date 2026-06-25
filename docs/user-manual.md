@@ -251,8 +251,8 @@ accept/spots call_zone 5
 accept/spots call_itu 9
 accept/spots call_dxcc canada
 clear/spots
-accept/rbn CQ
-reject/rbn TEST
+accept/rbn 1 call N9JR
+reject/rbn 2 info TEST
 clear/rbn
 show/rbn
 show/rbn N9JR 20
@@ -272,6 +272,10 @@ Filters are useful when:
 - you want recent Skimmer reports showing which stations are hearing a callsign
 - you want entity-aware spot filtering by CQ zone, ITU zone, or DXCC entity name/prefix
 - you want spotter-based filtering so `sh/mydx` reflects spots posted from places you can reasonably use
+
+`accept/rbn` and `reject/rbn` are separate RBN filter-family commands. For example, `accept/rbn 1 call N9JR` allows only RBN/Skimmer spots whose spotted DX call matches `N9JR`; it does not affect ordinary human-posted spots. `reject/rbn 2` remains a shorthand for rejecting all RBN spots in slot 2.
+
+Legacy rules such as `accept/spots 1 rbn call N9JR` are interpreted as RBN-scoped rules. When any RBN-scoped rule exists, ordinary `accept/spots ... by ...` rules do not open the full automated RBN stream; general reject rules still apply to both sources.
 
 When the node operator configures a direct RBN-enabled telnet feed, pyCluster can also ingest those Skimmer reports locally. The public RBN relays are `telnet.reversebeacon.net:7000` for CW/RTTY and `telnet.reversebeacon.net:7001` for FT8; configure both with named feeds such as `CW/RTTY,telnet.reversebeacon.net,7000` and `FT8,telnet.reversebeacon.net,7001` in SysOp, or with `feeds` in config. If no direct feed is configured, RBN spots can still arrive through linked cluster peers that relay them.
 

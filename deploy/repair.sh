@@ -27,7 +27,7 @@ install_or_refresh_logrotate
 enable_service
 run_upgrade_1_0_1
 run_upgrade_1_0_6
-refresh_cty_best_effort
+refresh_runtime_data_best_effort
 bootstrap_sysop_account
 show_sysop_bootstrap_note
 restart_service_hard

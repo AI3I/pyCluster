@@ -15,6 +15,7 @@ from pycluster.ctydat import load_cty, lookup
 from pycluster.wpxloc import load_wpxloc, lookup as wpx_lookup
 from pycluster.models import Spot
 from pycluster.mfa import totp_code
+from pycluster.registration import mark_email_verified
 from pycluster.telnet_server import Session, TelnetClusterServer
 from pycluster.store import SpotStore
 
@@ -195,7 +196,7 @@ def test_show_wcy_and_wwv_use_template_catalog(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/wcy")
             assert out.startswith("WCY TABLE\r\n")
             _, out = await srv._execute_command("N0CALL", "show/wwv")
-            assert out.startswith("WWV TABLE\r\n")
+            assert out.startswith("\r\nWWV TABLE\r\n")
         finally:
             await store.close()
 
@@ -1727,7 +1728,7 @@ def test_show_filter_sorted_and_preview_test_modes(tmp_path) -> None:
             assert "Winning Rule: Reject rule matched in slot 1: peer west*" in out
 
             _, out = await srv._execute_command("N0CALL", "show/filter test wx --verbose N0ABC local weather")
-            assert "show/filter test <spots|route|announce>" in out
+            assert "show/filter test <spots|rbn|route|announce>" in out
         finally:
             await store.close()
 
@@ -2553,21 +2554,23 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "set/rbn")
             assert "RBN set to on for N0CALL." in out
-            _, out = await srv._execute_command("N0CALL", "accept/rbn 1 accept call K1ABC")
-            assert "accept/rbn" in out
+            _, out = await srv._execute_command("N0CALL", "accept/rbn 1 call K1ABC")
+            assert "filter for rbn saved" in out
             rules = await store.list_filter_rules("N0CALL")
-            assert any(str(row["expr"]) == "rbn call K1ABC" for row in rules)
-            _, out = await srv._execute_command("N0CALL", "accept/rbn accept callsign K1ABC")
-            assert "accept/rbn" in out
+            assert any(str(row["family"]) == "rbn" and str(row["expr"]) == "call K1ABC" for row in rules)
+            _, out = await srv._execute_command("N0CALL", "accept/rbn callsign K1ABC")
+            assert "filter for rbn saved" in out
             rules = await store.list_filter_rules("N0CALL")
-            assert any(str(row["expr"]) == "rbn callsign K1ABC" for row in rules)
+            assert any(str(row["family"]) == "rbn" and str(row["expr"]) == "callsign K1ABC" for row in rules)
+            _, out = await srv._execute_command("N0CALL", "show/filter test rbn --verbose 14074 K1ABC SKIMMER1 'CQ TEST 18 dB'")
+            assert "Decision: allow" in out
             _, out = await srv._execute_command("N0CALL", "show/mydx 10")
             assert "K1ABC" in out
             assert "K9DEF" not in out
             _, out = await srv._execute_command("N0CALL", "clear/rbn")
-            assert "Cleared" in out and "rbn filter" in out
+            assert "Cleared" in out and "rbn filters" in out
             _, out = await srv._execute_command("N0CALL", "reject/rbn 2")
-            assert "reject/rbn" in out
+            assert "filter for rbn saved" in out
 
             before = len(writer.buffer)
             await srv.publish_spot(rbn_spot)
@@ -2577,11 +2580,33 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
             assert "K1XYZ" in live
 
             _, out = await srv._execute_command("N0CALL", "clear/rbn")
-            assert "Cleared" in out and "rbn filter" in out
+            assert "Cleared" in out and "rbn filters" in out
             before = len(writer.buffer)
             await srv.publish_spot(rbn_spot)
             live = bytes(writer.buffer[before:]).decode("utf-8", "replace")
             assert "K1ABC" in live
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_legacy_rbn_scoped_spot_rules_do_not_open_full_rbn_stream(tmp_path) -> None:
+    async def run() -> None:
+        store = SpotStore(str(tmp_path / "legacy_rbn_scope.db"))
+        srv = TelnetClusterServer(_mk_config(str(tmp_path / "legacy_rbn_scope.db")), store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.set_filter_rule("N9JR", "spots", "reject", 1, "info _pota_", now)
+            await store.set_filter_rule("N9JR", "spots", "accept", 1, "rbn call N9JR", now)
+            await store.set_filter_rule("N9JR", "spots", "accept", 4, "by A", now)
+            await store.set_filter_rule("N9JR", "spots", "accept", 5, "by V", now)
+            await store.set_filter_rule("N9JR", "spots", "accept", 6, "by W", now)
+
+            assert await srv._spot_passes_filters("N9JR", 14024.6, "N9JR", "WZ7I", "CW 8 dB 22 WPM CQ") is True
+            assert await srv._spot_passes_filters("N9JR", 14024.6, "W0KO", "WZ7I", "CW 8 dB 22 WPM CQ") is False
+            assert await srv._spot_passes_filters("N9JR", 14024.6, "N9JR", "WZ7I", "CW 8 dB _POTA_") is False
+            assert await srv._spot_passes_filters("N9JR", 14200.0, "K1ABC", "W1AW", "SSB") is True
         finally:
             await store.close()
 
@@ -2674,7 +2699,37 @@ def test_telnet_register_command_queues_request_and_sends_notifications(tmp_path
     asyncio.run(run())
 
 
-def test_welcome_registration_notice_is_suppressed_after_approval(tmp_path) -> None:
+def test_telnet_register_interactively_collects_required_profile(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_register_interactive.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        reader.feed_data(
+            b"Joe Operator\r\nN0NODE-1\r\nMilwaukee, WI\r\nEN63AA\r\njoe@example.test\r\nsecret-pass\r\nsecret-pass\r\n"
+        )
+        writer = _DummyWriter()
+        try:
+            output = await srv._run_register_interactive("N1NEW", reader, writer)  # type: ignore[arg-type]
+            assert "Registration request submitted for N1NEW" in output
+            row = await store.get_user_registry("N1NEW")
+            assert row is not None
+            assert str(row["display_name"]) == "Joe Operator"
+            assert str(row["home_node"]) == "N0NODE-1"
+            assert str(row["qth"]) == "Milwaukee, WI"
+            assert str(row["qra"]) == "EN63AA"
+            assert str(row["email"]) == "joe@example.test"
+            assert verify_password("secret-pass", str(await store.get_user_pref("N1NEW", "password") or ""))
+            req = await store.get_registration_request("N1NEW")
+            assert req is not None and str(req["status"]) == "pending"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_registration_notice_is_suppressed_after_approval_or_verification(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "telnet_registration_notice.db")
         cfg = _mk_config(db)
@@ -2683,7 +2738,7 @@ def test_welcome_registration_notice_is_suppressed_after_approval(tmp_path) -> N
         now = int(datetime.now(timezone.utc).timestamp())
         try:
             await store.upsert_user_registry("N1NEW", now, email="new@example.test")
-            text = await srv._welcome_block("N1NEW")
+            text = await srv._registration_notice_block("N1NEW", node_family="")
             assert "run REGISTER" in text
             await store.upsert_registration_request(
                 "N1NEW",
@@ -2692,8 +2747,13 @@ def test_welcome_registration_notice_is_suppressed_after_approval(tmp_path) -> N
                 source="telnet",
                 status="approved",
             )
-            text = await srv._welcome_block("N1NEW")
+            text = await srv._registration_notice_block("N1NEW", node_family="")
             assert "run REGISTER" not in text
+
+            await store.upsert_user_registry("N1VER", now, email="verified@example.test")
+            await mark_email_verified(store, "N1VER", now_epoch=now)
+            text = await srv._registration_notice_block("N1VER", node_family="")
+            assert text == ""
         finally:
             await store.close()
 
@@ -3555,6 +3615,7 @@ def test_dxspider_wcy_and_wwv_command_syntax_is_canonicalized(tmp_path) -> None:
             assert "Date        Hour   SFI   A   K Exp.K   R SA    GMF   Aurora   Logger" in out
             assert "105 qui" in out
             _, out = await srv._execute_command("N0CALL", "show/wwv 1")
+            assert out.startswith("\r\nDate")
             assert "Date        Hour   SFI   A   K Forecast" in out
             assert "Moderate w/G2 -> Minor w/G1" in out
         finally:
@@ -4266,6 +4327,9 @@ def test_dx_command_posts_and_show_shorthand_still_works(tmp_path) -> None:
             assert "K1ABC" in out
             _, out = await srv._execute_command("N0CALL", "dx K1")
             assert "K1ABC" in out
+            _, out = await srv._execute_command("N0CALL", "dx 14074.0 K1ABC FT8 test")
+            assert "Spot was not accepted" in out
+            assert await store.count_spots() == 1
         finally:
             await store.close()
 
@@ -5755,12 +5819,16 @@ def test_login_startup_dx_and_wwv_output_precedes_prompt(tmp_path) -> None:
             await srv._write(writer, await srv._welcome_block("N0CALL"))
             for out in await srv._run_startup_commands("N0CALL"):
                 await srv._write(writer, out)
+            notice = await srv._registration_notice_block("N0CALL", node_family="")
+            if notice:
+                await srv._write(writer, notice + "\r\n")
             await srv._write_prompt_for_session(srv._sessions[1])
 
             rendered = writer.buffer.decode("utf-8", errors="replace")
             prompt = await srv._prompt("N0CALL")
             assert rendered.index(" 14236.0  VP2ETE") < rendered.index("Date        Hour   SFI   A   K Forecast")
             assert rendered.index("Date        Hour   SFI   A   K Forecast") < rendered.index(prompt)
+            assert rendered.index("Date        Hour   SFI   A   K Forecast") < rendered.index("run REGISTER")
             assert f"{prompt}Date        Hour" not in rendered
             assert f"{prompt} 14236.0" not in rendered
         finally:
@@ -6372,7 +6440,7 @@ def test_telnet_idle_timeout_sends_keepalive_after_login(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "telnet_idle_keepalive.db")
         cfg = _mk_config(db)
-        cfg.telnet.idle_timeout_seconds = 0.01
+        cfg.telnet.keepalive_interval_seconds = 0.01
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         reader = asyncio.StreamReader()
@@ -6384,10 +6452,42 @@ def test_telnet_idle_timeout_sends_keepalive_after_login(tmp_path) -> None:
 
         try:
             task = asyncio.create_task(_feed_later())
-            line = await asyncio.wait_for(srv._readline(reader, writer, idle_keepalive=True), timeout=1.0)  # type: ignore[arg-type]
+            line = await asyncio.wait_for(
+                srv._readline(
+                    reader,
+                    writer,  # type: ignore[arg-type]
+                    idle_keepalive=True,
+                    idle_keepalive_text="\r\n" + await srv._prompt("N0CALL"),
+                ),
+                timeout=1.0,
+            )
             await task
             assert line == "show/version"
-            assert bytes((srv._TELNET_IAC, srv._TELNET_NOP)) in bytes(writer.buffer)
+            assert b"N0CALL" not in bytes(writer.buffer)
+            assert b"> " in bytes(writer.buffer)
+            assert bytes((srv._TELNET_IAC, srv._TELNET_NOP)) not in bytes(writer.buffer)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_idle_keepalive_stops_on_eof(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "telnet_keepalive_eof.db"))
+        cfg.telnet.keepalive_interval_seconds = 0.01
+        store = SpotStore(cfg.store.sqlite_path)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        writer = _DummyWriter()
+        try:
+            line = await asyncio.wait_for(
+                srv._readline(reader, writer, idle_keepalive=True, idle_keepalive_text="\r\n> "),
+                timeout=0.2,
+            )
+            assert line is None
+            assert bytes(writer.buffer) == b""
         finally:
             await store.close()
 
@@ -6863,6 +6963,7 @@ def test_telnet_login_requires_email_verification_for_unverified_user(tmp_path) 
         srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
         now = int(datetime.now(timezone.utc).timestamp())
         await store.upsert_user_registry("N0CALL", now, privilege="user", email="n0call@example.test")
+        await store.record_login("N0CALL", now, "test-setup")
         try:
             await srv.start()
         except OSError:

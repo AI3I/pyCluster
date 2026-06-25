@@ -1690,6 +1690,21 @@ class SpotStore:
             row = cur.fetchone()
             return int(row["c"] or 0) if row else 0
 
+    async def recent_logins(self, limit: int = 50) -> list[sqlite3.Row]:
+        lim = max(1, min(int(limit), 500))
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT call, display_name, privilege, last_login_epoch, last_login_peer
+                FROM user_registry
+                WHERE last_login_epoch > 0
+                ORDER BY last_login_epoch DESC, call
+                LIMIT ?
+                """,
+                (lim,),
+            )
+            return cur.fetchall()
+
     async def record_login(self, call: str, epoch: int, peer: str) -> None:
         c = call.strip().upper()
         if not c:

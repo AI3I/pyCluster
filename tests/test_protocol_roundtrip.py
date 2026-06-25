@@ -1,4 +1,4 @@
-from pycluster.protocol import decode_typed, encode_typed, parse_debug_pc_frame, serialize_debug_pc_frame
+from pycluster.protocol import WirePcFrame, decode_typed, encode_typed, parse_debug_pc_frame, sanitize_pc92_private_ips, serialize_debug_pc_frame
 
 
 def _roundtrip(line: str) -> None:
@@ -15,6 +15,33 @@ def _roundtrip(line: str) -> None:
 
 def test_pc92_roundtrip() -> None:
     _roundtrip("1772323200^<- I WB3FFV-2 PC92^UF3K-1^0^D^^5R1BLH-1^H96^")
+
+
+def test_pc92_sanitizer_replaces_private_ipv4_and_ipv6() -> None:
+    frame = WirePcFrame(
+        "PC92",
+        [
+            "N9JR-2",
+            "42291",
+            "A",
+            "",
+            "7N9JR-4:192.168.222.19",
+            "5TEST-1:fd00::1234",
+            "7PUB-1:8.8.8.8",
+            "H96",
+            "",
+        ],
+    )
+    cleaned = sanitize_pc92_private_ips(frame, "44.1.2.3")
+    assert cleaned.payload_fields[4] == "7N9JR-4:44.1.2.3"
+    assert cleaned.payload_fields[5] == "5TEST-1:44.1.2.3"
+    assert cleaned.payload_fields[6] == "7PUB-1:8.8.8.8"
+
+
+def test_pc92_sanitizer_supports_ipv6_public_replacement() -> None:
+    frame = WirePcFrame("PC92", ["N0NODE-1", "1", "A", "", "5LOCAL:[fe80::1]", "H96", ""])
+    cleaned = sanitize_pc92_private_ips(frame, "2606:4700:4700::1111")
+    assert cleaned.payload_fields[4] == "5LOCAL:[2606:4700:4700::1111]"
 
 
 def test_pc93_roundtrip() -> None:

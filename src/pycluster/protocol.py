@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass
 
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 PC_FRAME_RE = re.compile(
     r"^(?P<epoch>\d+)\^(?P<arrow><-?)\s+(?P<io>[IO])\s+(?P<link>[^\s]+)\s+(?P<pc>PC\d+[A-Z]?)\^(?P<payload>.*)$"
 )
+_IPV4_TOKEN_RE = re.compile(r"(?<![0-9])(?:\d{1,3}\.){3}\d{1,3}(?![0-9])")
 
 
 @dataclass(slots=True)
@@ -23,6 +25,64 @@ class PcFrame:
 class WirePcFrame:
     pc_type: str
     payload_fields: list[str]
+
+
+def _valid_public_replacement(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return ""
+    return text if ip.is_global else ""
+
+
+def _replace_private_ip_token(match: re.Match[str], replacement: str) -> str:
+    token = match.group(0)
+    try:
+        ip = ipaddress.ip_address(token)
+    except ValueError:
+        return token
+    return replacement if not ip.is_global else token
+
+
+def _replace_private_ip_literal(raw: str, replacement: str) -> str:
+    token = str(raw or "").strip()
+    bracketed = token.startswith("[") and token.endswith("]")
+    candidate = token[1:-1] if bracketed else token
+    try:
+        ip = ipaddress.ip_address(candidate)
+    except ValueError:
+        return raw
+    if ip.is_global:
+        return raw
+    return f"[{replacement}]" if bracketed and ":" in replacement else replacement
+
+
+def _sanitize_pc92_field(field: str, replacement: str) -> str:
+    text = _IPV4_TOKEN_RE.sub(lambda m: _replace_private_ip_token(m, replacement), field)
+    direct = _replace_private_ip_literal(text, replacement)
+    if direct != text:
+        return direct
+    prefix, sep, suffix = text.partition(":")
+    if not sep or not prefix or not suffix:
+        return text
+    if "." in prefix or " " in prefix:
+        return text
+    replaced = _replace_private_ip_literal(suffix, replacement)
+    return f"{prefix}:{replaced}" if replaced != suffix else text
+
+
+def sanitize_pc92_private_ips(frame: WirePcFrame, public_ip_address: str) -> WirePcFrame:
+    """Replace non-public IPv4 literals in outbound PC92 payloads."""
+    if frame.pc_type.upper() != "PC92":
+        return frame
+    replacement = _valid_public_replacement(public_ip_address)
+    if not replacement:
+        return frame
+    fields = [_sanitize_pc92_field(field, replacement) for field in frame.payload_fields]
+    return WirePcFrame(frame.pc_type, fields)
 
 
 @dataclass(slots=True)

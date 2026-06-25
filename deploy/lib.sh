@@ -84,9 +84,9 @@ prompt_value() {
   local default="${2:-}"
   local answer=""
   if [ -n "$default" ]; then
-    printf '%s [%s] ' "$prompt" "$default"
+    printf '%s [%s] ' "$prompt" "$default" >&2
   else
-    printf '%s ' "$prompt"
+    printf '%s ' "$prompt" >&2
   fi
   IFS= read -r answer || return 1
   printf '%s' "${answer:-$default}"
@@ -509,14 +509,18 @@ stop_service() {
   systemctl stop "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
 }
 
-refresh_cty_best_effort() {
+refresh_runtime_data_best_effort() {
   local cmd
   cmd=("$PYCLUSTER_PYTHON_LINK" "$PYCLUSTER_APP_DIR/scripts/update_cty.py" --config "$PYCLUSTER_CONFIG_DEST")
   if cd "$PYCLUSTER_APP_DIR" && runuser -u "$PYCLUSTER_USER" -- "${cmd[@]}"; then
-    log "Country data refresh succeeded"
+    log "Runtime data refresh succeeded"
   else
-    log "Country data refresh skipped or failed; keeping existing local copies"
+    log "Runtime data refresh skipped or failed; keeping existing local copies"
   fi
+}
+
+refresh_cty_best_effort() {
+  refresh_runtime_data_best_effort
 }
 
 install_or_refresh_fail2ban() {
