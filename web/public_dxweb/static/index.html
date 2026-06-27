@@ -1447,15 +1447,6 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         </div>
 
         <div class="filter-section">
-          <span class="filter-label">ITU Zone</span>
-          <div class="cqz-wrap">
-            <span class="cqz-lbl">Zone #</span>
-            <input id="itu-input" class="cqz-input" type="number" placeholder="1–90" min="1" max="90">
-            <button class="cqz-clear" id="itu-clear" title="Clear ITU zone filter">×</button>
-          </div>
-        </div>
-
-        <div class="filter-section">
           <span class="filter-label">Comment Tags</span>
           <div class="filter-row" id="ctag-filter-row" style="flex-wrap:wrap;gap:3px"></div>
         </div>
@@ -1506,7 +1497,6 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
               <option value="band">Band</option>
               <option value="activity">Activity</option>
               <option value="cqzone">CQ Zone</option>
-              <option value="ituzone">ITU Zone</option>
               <option value="comment">Comment</option>
             </select>
             <input id="watch-input" class="watch-input" type="text" placeholder="Value to watch…" maxlength="24" autocomplete="off">
@@ -2182,7 +2172,6 @@ let wsRetryTimer= null;
 let sortCol     = 'time';
 let sortDir     = 'desc';
 let cqzFilter   = '';         // empty = no DX CQ zone filter
-let ituFilter   = 0;          // 0 = no ITU zone filter
 let spotterCqzFilter = '';
 
 function parseZoneSpec(text, low, high) {
@@ -2238,7 +2227,7 @@ function bindSpotFilterButtons() {
       document.querySelectorAll(`[data-ftype="${type}"]`).forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
       filters[type] = btn.dataset.fval;
-      if (type === 'spotterCont') await saveSpotterContinentFilter(filters[type]);
+      await saveCurrentSpotFilters();
       renderTable();
     });
   });
@@ -2832,13 +2821,27 @@ async function webJson(url, opts={}) {
   return body;
 }
 
-async function saveSpotterContinentFilter(value) {
+function buildServerSpotFilterExpression() {
+  const parts = [];
+  if (filters.band && filters.band !== 'ALL') parts.push('on ' + filters.band);
+  if (filters.mode && filters.mode !== 'ALL') parts.push('info ' + filters.mode);
+  if (filters.activity && filters.activity !== 'ALL' && filters.activity !== 'RARE') parts.push('info ' + filters.activity);
+  if (filters.cont && filters.cont !== 'ALL') parts.push('call_cont ' + filters.cont);
+  if (filters.spotterCont && filters.spotterCont !== 'ALL') parts.push('spotter_cont ' + filters.spotterCont);
+  const dxZones = String(cqzFilter || '').trim();
+  if (parseZoneSpec(dxZones, 1, 40).size) parts.push('call_zone ' + dxZones);
+  const spotterZones = String(spotterCqzFilter || '').trim();
+  if (parseZoneSpec(spotterZones, 1, 40).size) parts.push('spotter_zone ' + spotterZones);
+  return parts.join(' and ');
+}
+
+async function saveCurrentSpotFilters() {
   if (!webToken) return;
   try {
-    const cont = String(value || 'ALL').toUpperCase();
-    const payload = cont === 'ALL'
+    const expr = buildServerSpotFilterExpression();
+    const payload = !expr
       ? {action:'clear', slot:8}
-      : {action:'accept', slot:8, expr:'spotter_cont ' + cont};
+      : {action:'accept', slot:8, expr};
     await webJson(FILTER_SPOTS, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -2846,7 +2849,7 @@ async function saveSpotterContinentFilter(value) {
     });
     await fetchSpots();
   } catch (err) {
-    opSetWarn('Saving spotter filter failed: ' + (err.message || err));
+    opSetWarn('Saving spot filters failed: ' + (err.message || err));
   }
 }
 
@@ -3726,7 +3729,6 @@ function spotMatchesCurrentFilters(s, timeCutoff=0) {
     }
     const dxZones = parseZoneSpec(cqzFilter, 1, 40);
     if (dxZones.size && !dxZones.has(Number(s.dx_cqz || 0))) return false;
-    if (ituFilter && s.dx_ituz !== ituFilter) return false;
     const spotterZones = parseZoneSpec(spotterCqzFilter, 1, 40);
     if (spotterZones.size && !spotterZones.has(Number(s.spotter_cqz || 0))) return false;
     if (filters.cont !== 'ALL' && s.dx_continent !== filters.cont) return false;
@@ -3768,7 +3770,6 @@ function hasActiveSpotFilter() {
     || filters.spotterCont !== 'ALL'
     || commentTagFilter !== 'ALL'
     || parseZoneSpec(cqzFilter, 1, 40).size > 0
-    || ituFilter > 0
     || parseZoneSpec(spotterCqzFilter, 1, 40).size > 0
     || !!searchTerm;
 }
@@ -3783,10 +3784,8 @@ function syncSpotFilterUi() {
     btn.classList.toggle('active', btn.dataset.ctag === commentTagFilter);
   });
   document.getElementById('cqz-input').value = cqzFilter || '';
-  document.getElementById('itu-input').value = ituFilter || '';
   document.getElementById('spotter-cqz-input').value = spotterCqzFilter || '';
   document.getElementById('cqz-clear').classList.toggle('visible', parseZoneSpec(cqzFilter, 1, 40).size > 0);
-  document.getElementById('itu-clear').classList.toggle('visible', ituFilter > 0);
   document.getElementById('spotter-cqz-clear').classList.toggle('visible', parseZoneSpec(spotterCqzFilter, 1, 40).size > 0);
   const searchEl = document.getElementById('search-box');
   if (searchEl) searchEl.value = searchTerm;
@@ -3804,10 +3803,9 @@ function clearSpotFilters() {
   filters.spotterCont = 'ALL';
   commentTagFilter = 'ALL';
   cqzFilter = '';
-  ituFilter = 0;
   spotterCqzFilter = '';
   searchTerm = '';
-  saveSpotterContinentFilter('ALL');
+  saveCurrentSpotFilters();
   syncSpotFilterUi();
   renderTable();
 }
@@ -4337,7 +4335,6 @@ function watchLabel(type) {
     band: 'band',
     activity: 'activity',
     cqzone: 'CQ zone',
-    ituzone: 'ITU zone',
     comment: 'comment',
   };
   return labels[String(type || '').toLowerCase()] || String(type || 'rule');
@@ -4547,7 +4544,6 @@ function checkWatchlist(spot) {
   const band = (spot.band || '').toUpperCase();
   const activity = (spot.activity || '').toUpperCase();
   const cqzone = String(spot.dx_cqz || '').toUpperCase();
-  const ituzone = String(spot.dx_ituz || '').toUpperCase();
   const matched = rules.find(w => {
     if (w.type === 'call') return call.includes(w.value);
     if (w.type === 'spotter') return spotter.includes(w.value);
@@ -4557,7 +4553,6 @@ function checkWatchlist(spot) {
     if (w.type === 'band') return band === w.value;
     if (w.type === 'activity') return activity === w.value;
     if (w.type === 'cqzone') return cqzone === w.value;
-    if (w.type === 'ituzone') return ituzone === w.value;
     if (w.type === 'comment') return comment.includes(w.value);
     return false;
   });
@@ -4947,13 +4942,14 @@ document.getElementById('cqz-input').addEventListener('input', e => {
   clearTimeout(cqzTimer);
   const val = e.target.value.trim();
   document.getElementById('cqz-clear').classList.toggle('visible', parseZoneSpec(val, 1, 40).size > 0);
-  cqzTimer = setTimeout(() => { cqzFilter=val; renderTable(); }, 300);
+  cqzTimer = setTimeout(() => { cqzFilter=val; renderTable(); saveCurrentSpotFilters(); }, 300);
 });
 document.getElementById('cqz-clear').addEventListener('click', () => {
   document.getElementById('cqz-input').value = '';
   document.getElementById('cqz-clear').classList.remove('visible');
   cqzFilter = '';
   renderTable();
+  saveCurrentSpotFilters();
 });
 
 let spotterCqzTimer;
@@ -4961,13 +4957,14 @@ document.getElementById('spotter-cqz-input').addEventListener('input', e => {
   clearTimeout(spotterCqzTimer);
   const val = e.target.value.trim();
   document.getElementById('spotter-cqz-clear').classList.toggle('visible', parseZoneSpec(val, 1, 40).size > 0);
-  spotterCqzTimer = setTimeout(() => { spotterCqzFilter=val; renderTable(); }, 300);
+  spotterCqzTimer = setTimeout(() => { spotterCqzFilter=val; renderTable(); saveCurrentSpotFilters(); }, 300);
 });
 document.getElementById('spotter-cqz-clear').addEventListener('click', () => {
   document.getElementById('spotter-cqz-input').value = '';
   document.getElementById('spotter-cqz-clear').classList.remove('visible');
   spotterCqzFilter = '';
   renderTable();
+  saveCurrentSpotFilters();
 });
 
 // ================================================================ Comment tag filter buttons (generated from COMMENT_TAGS)
@@ -5006,20 +5003,6 @@ renderCommentTagButtons();
 
 document.getElementById('csv-export-btn').addEventListener('click', exportCSV);
 document.getElementById('adif-export-btn').addEventListener('click', exportADIF);
-
-let ituTimer;
-document.getElementById('itu-input').addEventListener('input', e => {
-  clearTimeout(ituTimer);
-  const val = parseInt(e.target.value)||0;
-  document.getElementById('itu-clear').classList.toggle('visible', val > 0);
-  ituTimer = setTimeout(() => { ituFilter=val; renderTable(); }, 300);
-});
-document.getElementById('itu-clear').addEventListener('click', () => {
-  document.getElementById('itu-input').value = '';
-  document.getElementById('itu-clear').classList.remove('visible');
-  ituFilter = 0;
-  renderTable();
-});
 
 // ================================================================ Audio differentiation
 function playSpotSound(spot) {
@@ -5238,7 +5221,7 @@ function renderClusterPage() {
 let filterPresets = JSON.parse(localStorage.getItem('filterPresets') || '[]');
 
 function getCurrentFilterState() {
-  return { ...filters, commentTagFilter, cqzFilter, ituFilter, spotterCqzFilter, timeRangeHrs };
+  return { ...filters, commentTagFilter, cqzFilter, spotterCqzFilter, timeRangeHrs };
 }
 
 function applyPreset(preset) {
@@ -5248,7 +5231,6 @@ function applyPreset(preset) {
   filters.cont     = preset.cont     || 'ALL';
   filters.spotterCont = preset.spotterCont || 'ALL';
   cqzFilter        = preset.cqzFilter  || '';
-  ituFilter        = preset.ituFilter  || 0;
   spotterCqzFilter = preset.spotterCqzFilter || '';
   timeRangeHrs     = preset.timeRangeHrs || 24;
   commentTagFilter = preset.commentTagFilter || 'ALL';
@@ -5257,6 +5239,7 @@ function applyPreset(preset) {
   });
   syncSpotFilterUi();
   renderTable();
+  saveCurrentSpotFilters();
 }
 
 function saveFilterPreset(name) {

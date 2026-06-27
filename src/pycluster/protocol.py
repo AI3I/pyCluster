@@ -75,7 +75,7 @@ def _sanitize_pc92_field(field: str, replacement: str) -> str:
 
 
 def sanitize_pc92_private_ips(frame: WirePcFrame, public_ip_address: str) -> WirePcFrame:
-    """Replace non-public IPv4 literals in outbound PC92 payloads."""
+    """Replace non-public IP literals in outbound PC92 payloads."""
     if frame.pc_type.upper() != "PC92":
         return frame
     replacement = _valid_public_replacement(public_ip_address)

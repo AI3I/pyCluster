@@ -471,9 +471,13 @@ def test_public_dxweb_static_includes_spotter_continent_filter_controls() -> Non
     assert 'data-ftype="spotterCont"' in text
     assert text.index('<span class="filter-label">CQ Zone</span>') < text.index('<span class="filter-label">Spotter Continent</span>')
     assert 'id="cqz-input" class="cqz-input" type="text"' in text
+    assert "ITU Zone" not in text
+    assert "ituzone" not in text
+    assert "ituFilter" not in text
     assert "dxZones.has(Number(s.dx_cqz || 0))" in text
     assert "const FILTER_SPOTS = '/api/filters/spots';" in text
     assert "spotter_cont " in text
+    assert "buildServerSpotFilterExpression" in text
     assert "await webJson(API+'?limit=500')" in text
 
 
@@ -1277,6 +1281,7 @@ def test_public_web_spot_filters_are_persisted_and_applied_to_logged_in_spots(tm
         await store.set_user_pref("AI3I", "password", "secret", now)
         await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
         await store.add_spot(Spot(14074.0, "K1ABC", now, "FT8", "EU1SPT", "AI3I-15", ""))
+        await store.add_spot(Spot(7074.0, "K1ABE", now - 2, "FT8", "EU2SPT", "AI3I-15", ""))
         await store.add_spot(Spot(14075.0, "K1ABD", now - 1, "FT8", "N0SPT", "AI3I-15", ""))
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
         srv._cty_loaded = True
@@ -1301,6 +1306,7 @@ def test_public_web_spot_filters_are_persisted_and_applied_to_logged_in_spots(tm
             )
             assert code == 200
             assert await store.list_filter_rules("AI3I")
+            await store.set_filter_rule("AI3I", "spots", "accept", 8, "spotter_cont EU and on 20m", now)
 
             code, _, body = await _http_request_ex(
                 srv,
