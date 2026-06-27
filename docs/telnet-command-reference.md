@@ -90,7 +90,7 @@ sh/dx day 2
 sh/mydx 10
 ```
 
-`sh/dx` shows the global recent spot history. `sh/mydx` applies the user's personal spot filters, including spotter-based rules such as `spotter_cont NA`. The RBN display toggle is honored by both views.
+`sh/dx` shows the global recent human-posted DX spot history. RBN/Skimmer reports are intentionally kept out of this view; use `show/rbn` for RBN history. `sh/mydx` applies the user's personal spot filters, including spotter-based rules such as `spotter_cont NA`.
 
 Spotter-based filters match the station that posted the spot. They do not match the DX callsign being spotted.
 
@@ -156,7 +156,7 @@ When MFA is required during telnet login, pyCluster prompts for `authenticator c
 
 | Command | Purpose |
 |---|---|
-| `accept/spots <expr>` | Add an accept rule for spots. Supports expressions such as `on 20m`, `by K1*`, `call_zone 5`, `call_itu 9`, and `call_dxcc canada`. |
+| `accept/spots <expr>` | Add an accept rule for spots. Supports expressions such as `on 20m`, `by K1*`, `call_zone 5`, `call_dxcc canada`, and compound web-generated rules such as `on 20m and spotter_cont NA`. |
 | `reject/spots <expr>` | Add a reject rule for spots. |
 | `clear/spots` | Clear spot filter rules. |
 | `accept/rbn [slot] <expr>` | Add an accept rule for RBN/Skimmer spot traffic, for example `accept/rbn 1 call N9JR`. |
@@ -172,9 +172,13 @@ When MFA is required during telnet login, pyCluster prompts for `authenticator c
 
 `show/filter test rbn <freq_khz> <dx_call> <spotter> [info]` previews RBN filter decisions without posting a real spot.
 
+RBN live delivery is off for telnet users by default. Use `set/rbn` to opt in to live RBN/Skimmer reports and `unset/rbn` to stop them. `show/rbn` remains available for recent summarized RBN history.
+
+RBN display is summarized into compact skimmer-style text such as `CW 8dB Q:9* Z:3,4,5`, where `Q` is the number of contributing skimmer reports and `Z` lists observed CQ zones.
+
 ## Registration
 
-`REGISTER` is interactive on a live telnet session. It prompts only for missing required profile fields and password setup, then submits the completed request. After sysop approval, an unverified user receives an email code; running `REGISTER` again opens the verification-code prompt. Approved and verified users do not receive the registration reminder on later logins.
+`REGISTER` is interactive on a live telnet session. It prompts only for missing required profile fields and password setup. When SMTP is configured, an unverified user must verify their email address before the request is submitted to the sysop queue: the first `REGISTER` sends an email code, and `REGISTER <code>` verifies the email and submits the completed request. Approved and verified users do not receive the registration reminder on later logins.
 
 | Command | Purpose |
 |---|---|
@@ -182,7 +186,7 @@ When MFA is required during telnet login, pyCluster prompts for `authenticator c
 
 `register` uses the same database-backed registration request table as the
 public web UI. If required profile fields are missing, it prints a checklist of
-the `set/*` commands needed before submission. If SMTP is configured, pyCluster
+the `set/*` commands needed before verification/submission. If SMTP is configured, pyCluster
 sends sysop notification and user acknowledgement email after the request is
 queued.
 

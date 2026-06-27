@@ -7,8 +7,22 @@ All notable changes to pyCluster should be recorded here.
 ### Added
 
 - RBN/Skimmer spot handling now accepts documented `-#` Skimmer spotter suffixes.
-- `show/rbn [call] [limit]` shows recent RBN/Skimmer reports for a callsign.
+- `show/rbn [call] [limit]` shows summarized RBN/Skimmer reports for a callsign.
 - Optional direct RBN-enabled telnet feed ingestion can log in, send startup commands, and store DX-style Skimmer spots.
+- Public web spot filters now persist common filter combinations into database-backed `accept/spots` rules shared with telnet.
+
+### Changed
+
+- RBN spots are opt-in for telnet users by default through `set/rbn`; `unset/rbn` disables live RBN delivery.
+- `show/dx` now remains a traditional DX spot history and excludes RBN/Skimmer reports. Use `show/rbn` for RBN history and `show/mydx` for filtered personal spot history.
+- Telnet self-registration verifies the user's email before creating the sysop review request when SMTP is configured.
+- Public web filtering no longer exposes ITU-zone filter controls; CQ zone, continent, band, mode, activity, and spotter filters remain available.
+
+### Fixed
+
+- DXSpider-profile peers receive legacy PC11 spot relay frames even when configured over a normal TCP DSN.
+- Telnet keepalive prompts are line-terminated and freshly rendered during idle waits.
+- Outbound PC92 path data sanitizes non-public IPv4 and IPv6 literals when `public_ip_address` is configured.
 
 ## 1.0.8 - 2026-05-10
 

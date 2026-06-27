@@ -61,7 +61,7 @@ The main command is:
 sh/dx
 ```
 
-Use `sh/dx` when you want the traditional global cluster view of recent spots. Personal accept/reject spot filters do not hide results from this history view; use `sh/mydx` when you want the same style of list after applying your filters. The RBN display toggle is still honored, so `unset/rbn` hides RBN/Skimmer spots from both views.
+Use `sh/dx` when you want the traditional global cluster view of recent human-posted DX spots. Personal accept/reject spot filters do not hide results from this history view; use `sh/mydx` when you want the same style of list after applying your filters. RBN/Skimmer reports are kept out of `sh/dx`; use `show/rbn` for recent RBN history.
 
 It is the fastest way to:
 
@@ -248,9 +248,10 @@ Examples:
 accept/spots 20m
 reject/spots FT8
 accept/spots call_zone 5
-accept/spots call_itu 9
 accept/spots call_dxcc canada
 clear/spots
+set/rbn
+unset/rbn
 accept/rbn 1 call N9JR
 reject/rbn 2 info TEST
 clear/rbn
@@ -270,12 +271,16 @@ Filters are useful when:
 - you only want certain activity types
 - you want special handling for RBN-style spot traffic
 - you want recent Skimmer reports showing which stations are hearing a callsign
-- you want entity-aware spot filtering by CQ zone, ITU zone, or DXCC entity name/prefix
+- you want entity-aware spot filtering by CQ zone or DXCC entity name/prefix
 - you want spotter-based filtering so `sh/mydx` reflects spots posted from places you can reasonably use
+
+RBN live delivery is opt-in for telnet users. Run `set/rbn` when you want RBN/Skimmer reports in your live stream, and `unset/rbn` to turn them off. `show/rbn` remains available for recent RBN history even when live delivery is off.
 
 `accept/rbn` and `reject/rbn` are separate RBN filter-family commands. For example, `accept/rbn 1 call N9JR` allows only RBN/Skimmer spots whose spotted DX call matches `N9JR`; it does not affect ordinary human-posted spots. `reject/rbn 2` remains a shorthand for rejecting all RBN spots in slot 2.
 
 Legacy rules such as `accept/spots 1 rbn call N9JR` are interpreted as RBN-scoped rules. When any RBN-scoped rule exists, ordinary `accept/spots ... by ...` rules do not open the full automated RBN stream; general reject rules still apply to both sources.
+
+RBN output is summarized before display. Instead of listing every raw Skimmer line, pyCluster shows mode, signal level, skimmer count, and CQ-zone summary in a compact form such as `CW 8dB Q:9* Z:3,4,5`.
 
 When the node operator configures a direct RBN-enabled telnet feed, pyCluster can also ingest those Skimmer reports locally. The public RBN relays are `telnet.reversebeacon.net:7000` for CW/RTTY and `telnet.reversebeacon.net:7001` for FT8; configure both with named feeds such as `CW/RTTY,telnet.reversebeacon.net,7000` and `FT8,telnet.reversebeacon.net,7001` in SysOp, or with `feeds` in config. If no direct feed is configured, RBN spots can still arrive through linked cluster peers that relay them.
 
@@ -313,6 +318,8 @@ The public web UI gives users a browser interface for:
 - watch rules after login
 - posting after login
 - editing their profile
+
+Logged-in public web filters are stored in the same database-backed filter table used by telnet. Common filter combinations are saved as a compound `accept/spots` rule so the web and telnet views make the same filtering decision for that user. The public web exposes band, mode, activity, continent, CQ-zone, spotter-continent, spotter-CQ, and comment-tag filters; ITU-zone filters are not exposed in the web UI.
 
 The profile modal lets logged-in users update name, QTH, grid square, home node, and email address. It also exposes MFA settings for switching between email and authenticator-app codes, enabling an app with a QR code, verifying the active method, and disabling user-level MFA.
 

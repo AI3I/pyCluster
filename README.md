@@ -84,8 +84,11 @@ Current development release: `1.0.9`
 
 Recent highlights in `1.0.9`:
 
-- RBN/Skimmer spots can be identified, filtered, shown with `show/rbn`, and ingested from an optional direct telnet feed
+- RBN/Skimmer spots can be identified, filtered, summarized with `show/rbn`, and ingested from an optional direct telnet feed
+- telnet RBN delivery is user opt-in with `set/rbn`, while `show/dx` stays focused on traditional DX spots
+- public web filters persist to the shared backend filter table used by telnet
 - Skimmer spotter suffixes such as `-#` are accepted when storing received RBN-style spots
+- telnet self-registration verifies email before sysop approval when SMTP is configured
 - node-link peers receive fresh PC18 identity advertisements on outbound reconnects
 - upgrade and repair paths protect runtime string catalogs by backing up invalid `strings.toml` files and restoring bundled defaults
 
