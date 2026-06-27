@@ -2264,6 +2264,7 @@ class ClusterApp:
             ],
         )
         names = await self.node_link.peer_names()
+        stats = await self.node_link.stats()
         for name in names:
             if exclude_peer and normalize_call(name) == normalize_call(exclude_peer):
                 continue
@@ -2273,7 +2274,8 @@ class ClusterApp:
             if not await self._relay_peer_enabled(sender, name, "spots"):
                 await self.node_link.mark_policy_drop(name, "relay_peer_spots_disabled")
                 continue
-            frame = pc11_frame if name in self._legacy_dxspider_peers else pc61_frame
+            profile = str(stats.get(name, {}).get("profile") or "").strip().lower()
+            frame = pc11_frame if name in self._legacy_dxspider_peers or profile in {"spider", "dxspider"} else pc61_frame
             try:
                 await self.node_link.send(name, frame)
             except Exception:

@@ -394,9 +394,8 @@ class PublicWebServer:
             email=email,
             privilege="",
         )
-        base_call = call.split("-", 1)[0]
         if email_verified:
-            await mark_email_verified(self.store, base_call, now_epoch=now)
+            await mark_email_verified(self.store, call, now_epoch=now)
         await self.store.upsert_registration_request(
             call,
             now,
@@ -974,13 +973,6 @@ class PublicWebServer:
                 if token.isdigit():
                     rules.append({"type": "cqzone", "value": token, "source": source})
             return rules[0] if len(rules) == 1 else {"type": "multi", "value": json.dumps(rules), "source": source}
-        if first == "call_itu" and rest:
-            rules = []
-            for token in re.split(r"[,\s]+", rest):
-                token = token.strip()
-                if token.isdigit():
-                    rules.append({"type": "ituzone", "value": token, "source": source})
-            return rules[0] if len(rules) == 1 else {"type": "multi", "value": json.dumps(rules), "source": source}
         if first == "call_dxcc" and rest:
             values = [token.strip().upper() for token in re.split(r"[,\s]+", rest) if token.strip()]
             return {"type": "entity", "value": values[0], "source": source} if len(values) == 1 else {
@@ -1064,7 +1056,7 @@ class PublicWebServer:
     def _sanitize_watch_rules(self, value: object, *, max_items: int = 80) -> list[dict[str, object]]:
         if not isinstance(value, list):
             return []
-        allowed = {"call", "spotter", "entity", "prefix", "mode", "band", "activity", "cqzone", "ituzone", "comment"}
+        allowed = {"call", "spotter", "entity", "prefix", "mode", "band", "activity", "cqzone", "comment"}
         out: list[dict[str, object]] = []
         seen: set[tuple[str, str]] = set()
         for item in value:
@@ -1148,6 +1140,9 @@ class PublicWebServer:
         toks = low.split()
         if not toks:
             return False
+        if " and " in low:
+            parts = [part.strip() for part in re.split(r"\s+and\s+", text, flags=re.IGNORECASE) if part.strip()]
+            return bool(parts) and all(self._spot_payload_matches_expr(spot, part) for part in parts)
         first = toks[0]
         rest = " ".join(toks[1:]).strip()
         dx_call = str(spot.get("dx_call") or "").upper()
@@ -1165,9 +1160,9 @@ class PublicWebServer:
         if first == "call_zone" and rest:
             wanted = self._parse_zone_spec(rest, 1, 40)
             return bool(wanted) and int(spot.get("dx_cqz") or 0) in wanted
-        if first == "call_itu" and rest:
-            wanted = self._parse_zone_spec(rest, 1, 90)
-            return bool(wanted) and int(spot.get("dx_ituz") or 0) in wanted
+        if first in {"call_cont", "dx_cont"} and rest:
+            wanted = {tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
+            return bool(wanted) and str(spot.get("dx_continent") or "").upper() in wanted
         if first in {"spotter_cont", "by_cont"} and rest:
             wanted = {tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
             return bool(wanted) and str(spot.get("spotter_continent") or "").upper() in wanted
@@ -1177,12 +1172,6 @@ class PublicWebServer:
                 ent = wpx_lookup(spotter)
             wanted = self._parse_zone_spec(rest, 1, 40)
             return bool(ent and wanted) and ent.cq_zone in wanted
-        if first in {"spotter_itu", "by_itu"} and rest:
-            ent = lookup(spotter) if self._cty_loaded else None
-            if ent is None and self._wpx_loaded:
-                ent = wpx_lookup(spotter)
-            wanted = self._parse_zone_spec(rest, 1, 90)
-            return bool(ent and wanted) and ent.itu_zone in wanted
         if first == "rbn":
             if not bool(spot.get("is_rbn")):
                 return False

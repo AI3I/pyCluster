@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import fnmatch
+import inspect
 import json
 import logging
 import math
@@ -31,7 +32,7 @@ from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_p
 from .propagation import effective_muf_for_zenith, estimate_muf3000, estimate_sunspots_from_sfi, signal_report_for_muf
 from .qrz import QRZClient, QRZLookupError
 from .registration import consume_grace_login, has_valid_email, mark_email_unverified, mark_email_verified, registration_state
-from .rbn import is_rbn_spot
+from .rbn import is_rbn_spot, rbn_db, rbn_mode, rbn_quality, rbn_summary_info, rbn_zones
 from .shdx import BAND_RANGES, ShDxQuery, parse_sh_dx_args
 from .satellite import find_tle, load_tles, predict_passes
 from .spot_throttle import (
@@ -938,6 +939,9 @@ class TelnetClusterServer:
         toks = low.split()
         if not toks:
             return False
+        if " and " in low:
+            parts = [part.strip() for part in re.split(r"\s+and\s+", text, flags=re.IGNORECASE) if part.strip()]
+            return bool(parts) and all(self._spot_matches_expr(freq_khz, dx_call, spotter, info, part) for part in parts)
         first = toks[0]
         rest = " ".join(toks[1:]).strip()
 
@@ -993,6 +997,15 @@ class TelnetClusterServer:
                 or re.sub(r"[^A-Z0-9]+", "", tok) == ent_name
                 for tok in wanted
             )
+
+        if first in {"call_cont", "dx_cont"} and rest:
+            ent = lookup(dx_call) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(dx_call)
+            if not ent:
+                return False
+            wanted = {tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
+            return bool(wanted) and ent.continent.upper() in wanted
 
         if first in {"spotter_cont", "by_cont"} and rest:
             ent = lookup(spotter) if self._cty_loaded else None
@@ -1055,7 +1068,7 @@ class TelnetClusterServer:
 
     async def _spot_passes_rbn_pref(self, call: str, dx_call: str, spotter: str, info: str) -> bool:
         prefs = await self._load_prefs_for_call(call.upper())
-        return self._is_on_value(prefs.get("rbn"), default=True) or not self._is_rbn_spot(dx_call, spotter, info)
+        return self._is_on_value(prefs.get("rbn"), default=False) or not self._is_rbn_spot(dx_call, spotter, info)
 
     async def _spot_passes_filters(self, call: str, freq_khz: float, dx_call: str, spotter: str, info: str) -> bool:
         target = call.upper()
@@ -1101,6 +1114,25 @@ class TelnetClusterServer:
         if ent is None and self._wpx_loaded:
             ent = wpx_lookup(callsign)
         return ent
+
+    def _rbn_spotter_zone(self, spotter: str, info: str) -> int | None:
+        ent = self._geo_lookup(spotter)
+        if ent:
+            return int(ent.cq_zone)
+        zones = rbn_zones(info)
+        return zones[0] if zones else None
+
+    def _rbn_display_spotter(self, spotter: str) -> str:
+        text = display_call(str(spotter or "")).upper()
+        if text.endswith("-#"):
+            return text
+        base = text.split("-", 1)[0]
+        return f"{base}-#" if base else text
+
+    def _rbn_single_summary_info(self, spotter: str, info: str) -> str:
+        zone = self._rbn_spotter_zone(spotter, info)
+        zones = [zone] if zone is not None else rbn_zones(info)
+        return rbn_summary_info(rbn_mode(info), rbn_db(info), rbn_quality(info) or 1, zones)
 
     def _text_matches_expr(self, sender: str, text: str, expr: str) -> bool:
         e = (expr or "").strip()
@@ -1194,13 +1226,14 @@ class TelnetClusterServer:
                 continue
             if not await self._spot_passes_filters(s.call, spot.freq_khz, spot.dx_call, spot.spotter, spot.info):
                 continue
+            is_rbn = self._is_rbn_spot(spot.dx_call, spot.spotter, spot.info)
             line = format_live_dx_line_for_profile(
                 profile=s.peer_profile,
                 freq_khz=spot.freq_khz,
                 dx_call=spot.dx_call,
                 when=when,
-                info=spot.info,
-                spotter=display_call(spot.spotter),
+                info=self._rbn_single_summary_info(spot.spotter, spot.info) if is_rbn else spot.info,
+                spotter=self._rbn_display_spotter(spot.spotter) if is_rbn else display_call(spot.spotter),
                 suffix=await self._dx_line_suffix_for_call(s.call, spot.dx_call),
             )
             prefix = "\r\n" if not s.async_line_open else ""
@@ -1295,7 +1328,7 @@ class TelnetClusterServer:
         writer: asyncio.StreamWriter | None = None,
         *,
         idle_keepalive: bool = False,
-        idle_keepalive_text: str = "",
+        idle_keepalive_text: str | Callable[[], Awaitable[str] | str] = "",
     ) -> str | None:
         timeout_value = (
             self.config.telnet.keepalive_interval_seconds
@@ -1313,7 +1346,10 @@ class TelnetClusterServer:
                     if writer is not None:
                         try:
                             if idle_keepalive_text:
-                                await self._write(writer, idle_keepalive_text)
+                                text = idle_keepalive_text() if callable(idle_keepalive_text) else idle_keepalive_text
+                                if inspect.isawaitable(text):
+                                    text = await text
+                                await self._write(writer, text)
                             else:
                                 writer.write(bytes((self._TELNET_IAC, self._TELNET_NOP)))
                                 await writer.drain()
@@ -1463,6 +1499,9 @@ class TelnetClusterServer:
         prefix = "\r\n" if session.async_line_open else ""
         await self._write(session.writer, f"{prefix}{await self._prompt(session.call)}")
         session.async_line_open = False
+
+    async def _idle_keepalive_prompt(self, call: str) -> str:
+        return "\r\n" + await self._prompt(call) + "\r\n"
 
     async def _prompt_template(self) -> str:
         template = str(getattr(self.config.node, "prompt_template", "") or "").strip()
@@ -1623,7 +1662,7 @@ class TelnetClusterServer:
             privilege="",
         )
         if email_verified:
-            await mark_email_verified(self.store, call.split("-", 1)[0], now_epoch=now)
+            await mark_email_verified(self.store, call, now_epoch=now)
         await self.store.upsert_registration_request(
             call,
             now,
@@ -2427,7 +2466,10 @@ class TelnetClusterServer:
 
         lines: list[str] = []
         for row in rows:
-            if not await self._spot_passes_rbn_pref(
+            is_rbn = self._is_rbn_spot(str(row["dx_call"]), str(row["spotter"]), str(row["info"] or ""))
+            if is_rbn and not apply_user_filters:
+                continue
+            if is_rbn and not await self._spot_passes_rbn_pref(
                 call,
                 str(row["dx_call"]),
                 str(row["spotter"]),
@@ -2489,22 +2531,64 @@ class TelnetClusterServer:
     async def _cmd_show_rbn(self, call: str, arg: str | None) -> str:
         target, query, requested_limit = self._parse_show_rbn_query(call, arg)
         prefs = await self._load_prefs_for_call(normalize_call(call))
-        enabled = self._is_on_value(prefs.get("rbn"), default=True)
+        enabled = self._is_on_value(prefs.get("rbn"), default=False)
         rows = await self.store.search_spots(query)
-        lines: list[str] = []
+        grouped: dict[tuple[int, float, str, str], dict[str, object]] = {}
         for row in rows:
             info = str(row["info"] or "")
             spotter = str(row["spotter"])
-            if not self._is_rbn_spot(str(row["dx_call"]), spotter, info):
+            dx_call = str(row["dx_call"])
+            if not self._is_rbn_spot(dx_call, spotter, info):
                 continue
-            spot_when = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc)
+            epoch = int(row["epoch"])
+            minute_epoch = epoch - (epoch % 60)
+            freq = round(float(row["freq_khz"]), 1)
+            mode = rbn_mode(info)
+            key = (minute_epoch, freq, dx_call, mode)
+            item = grouped.setdefault(
+                key,
+                {
+                    "epoch": minute_epoch,
+                    "freq": freq,
+                    "dx_call": dx_call,
+                    "mode": mode,
+                    "spotters": set(),
+                    "zones": set(),
+                    "db": None,
+                    "display_spotter": self._rbn_display_spotter(spotter),
+                },
+            )
+            item["spotters"].add(normalize_call(spotter))  # type: ignore[index,union-attr]
+            zone = self._rbn_spotter_zone(spotter, info)
+            if zone is not None:
+                item["zones"].add(zone)  # type: ignore[index,union-attr]
+            for zone in rbn_zones(info):
+                item["zones"].add(zone)  # type: ignore[index,union-attr]
+            db = rbn_db(info)
+            current_db = item.get("db")
+            if db is not None and (current_db is None or db < int(current_db)):
+                item["db"] = db
+                item["display_spotter"] = self._rbn_display_spotter(spotter)
+
+        ordered = sorted(grouped.values(), key=lambda item: (int(item["epoch"]), float(item["freq"])), reverse=True)
+        lines: list[str] = []
+        for item in ordered:
+            spot_when = datetime.fromtimestamp(int(item["epoch"]), tz=timezone.utc)
+            spotters = item["spotters"] if isinstance(item.get("spotters"), set) else set()
+            zones = sorted(item["zones"]) if isinstance(item.get("zones"), set) else []
+            info = rbn_summary_info(
+                str(item["mode"]),
+                int(item["db"]) if item.get("db") is not None else None,
+                len(spotters),
+                [int(z) for z in zones],
+            )
             lines.append(
                 self._render_string(
                     "show.rbn.line",
                     "  {when} {freq:8.1f}  {spotter:<12} {info}",
                     when=spot_when.strftime("%-d-%b-%Y %H%MZ"),
-                    freq=float(row["freq_khz"]),
-                    spotter=spotter,
+                    freq=float(item["freq"]),
+                    spotter=str(item["display_spotter"]),
                     info=info,
                 )
             )
@@ -6189,6 +6273,30 @@ class TelnetClusterServer:
                 "{call} is approved but email verification is still pending. Run REGISTER to enter the code sent to your email.",
                 call=call,
             ) + "\r\n"
+        code_arg = str(arg or "").strip()
+        if code_arg.lower().startswith("verify "):
+            code_arg = code_arg.split(None, 1)[1].strip()
+
+        if status == "pending" and code_arg:
+            verify_out = await self._verify_approved_registration(call, code_arg)
+            if "Email address verified" not in verify_out:
+                return verify_out
+            req = await self.store.get_registration_request(call)
+            if req is not None:
+                await self.store.upsert_registration_request(
+                    call,
+                    now,
+                    display_name=str(req["display_name"] or ""),
+                    home_node=str(req["home_node"] or ""),
+                    qth=str(req["qth"] or ""),
+                    qra=str(req["qra"] or ""),
+                    email=str(req["email"] or ""),
+                    note=str(req["note"] or ""),
+                    source=str(req["source"] or "telnet"),
+                    email_verified=True,
+                    status="pending",
+                )
+            return verify_out
         if status == "pending" and str(arg or "").strip().lower() not in {"resubmit", "submit", "again"}:
             return self._render_string("registration.already_pending", "Registration request for {call} is already pending sysop review.", call=call) + "\r\n"
 
@@ -6205,6 +6313,28 @@ class TelnetClusterServer:
         email = str(reg["email"] or "").strip()
         _state, verified_epoch, _remaining = await registration_state(self.store, call)
         email_verified = verified_epoch > 0
+        if not email_verified and self._smtp.enabled():
+            if code_arg:
+                verify_out = await self._verify_approved_registration(call, code_arg)
+                if "Email address verified" not in verify_out:
+                    return verify_out
+                email_verified = True
+            else:
+                try:
+                    _challenge_id, sent = await self._ensure_registration_verification_challenge(call)
+                except Exception as exc:
+                    return self._render_string("registration.verify_delivery_error", "Email verification could not start: {error}", error=str(exc)) + "\r\n"
+                sent_line = (
+                    self._string("registration.verify_sent", "A verification code has been sent to your registered email address.")
+                    if sent
+                    else self._string("registration.verify_existing", "An active verification code is already pending for your registered email address.")
+                )
+                return (
+                    sent_line
+                    + "\r\n"
+                    + self._string("registration.verify_before_submit", "Enter REGISTER <code> to verify your email address and submit the sysop review request.")
+                    + "\r\n"
+                )
         await self._submit_registration_request(
             call=call,
             display_name=str(reg["display_name"] or "").strip()[:80],
@@ -10696,7 +10826,7 @@ class TelnetClusterServer:
                         reader,
                         writer,
                         idle_keepalive=True,
-                        idle_keepalive_text="\r\n" + await self._prompt(call),
+                        idle_keepalive_text=lambda: self._idle_keepalive_prompt(call),
                     )
                     if line is None:
                         break
