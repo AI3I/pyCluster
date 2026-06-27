@@ -171,8 +171,10 @@ Notes:
 - `feeds` gives each feed a stable label and can replace `host`/`ports`, for example `feeds = [{ name = "CW/RTTY", host = "telnet.reversebeacon.net", port = 7000 }, { name = "FT8", host = "telnet.reversebeacon.net", port = 7001 }]`.
 - The public Reverse Beacon Network relays are `telnet.reversebeacon.net:7000` for CW/RTTY spots and `telnet.reversebeacon.net:7001` for FT8 spots.
 - The public RBN relays are high-throughput raw feeds and do not provide cluster-side filtering; use pyCluster filters and user preferences after ingestion.
-- RBN feed spots are stored as normal spots with `source_node` set from this section
-- users and cluster-peer records still control RBN access through the access matrix, `set/rbn`, `unset/rbn`, `accept/rbn`, `reject/rbn`, and `show/rbn`
+- RBN feed spots are stored as normal spots with `source_node` set from this section.
+- telnet users do not receive live RBN spots by default; users opt in with `set/rbn` and opt out with `unset/rbn`.
+- cluster-peer records and the SysOp access matrix still control whether a peer account may ingest or relay RBN traffic.
+- `show/rbn` displays summarized RBN history, while `show/dx` remains the traditional human-posted DX history.
 - `accept/rbn` and `reject/rbn` are first-class RBN filter-family commands. `accept/rbn 1 call N9JR` allows only matching RBN/Skimmer spots, while ordinary spot filters remain in the `spots` family.
 - use `config/pycluster.local.toml` for host-specific feed credentials
 

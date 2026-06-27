@@ -68,6 +68,8 @@ This view controls local node identity and welcome-flow presentation.
 - `Support Contact`
 - `Public IP Address`
 
+`Public IP Address` is used when pyCluster sends outbound PC92 path data. If a PC92 payload would otherwise advertise a private, loopback, link-local, or otherwise non-public IPv4/IPv6 literal, pyCluster substitutes this configured public address before sending the frame to peers.
+
 ### Long-Text Fields
 
 - `Welcome Body`
@@ -133,7 +135,9 @@ This section controls:
 - feed status
 - `Advanced Options`
 
-Direct RBN ingestion is disabled by default. When enabled from the disabled state, `CW/RTTY` is selected by default and `FT8` is left disabled unless the sysop enables it. Changes made while RBN is enabled are honored. `Advanced Options` contains host, default port, feed ports, named feeds, login callsign, feed password, source node, startup commands, and reconnect seconds. RBN spots still respect the per-user and peer access matrix.
+Direct RBN ingestion is disabled by default. When enabled from the disabled state, `CW/RTTY` is selected by default and `FT8` is left disabled unless the sysop enables it. Changes made while RBN is enabled are honored. `Advanced Options` contains host, default port, feed ports, named feeds, login callsign, feed password, source node, startup commands, and reconnect seconds.
+
+RBN spots still respect the per-user and peer access matrix. Telnet users do not receive live RBN spots by default; they opt in with `set/rbn`. `show/rbn` remains available for summarized RBN history.
 
 ## Users
 

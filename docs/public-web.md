@@ -15,7 +15,7 @@ System Operator console:
 - profile fields write to `user_registry` and related `user_prefs`
 - public filter presets, watch profiles, local watch rules, and recent watch matches are stored in the user's `public.presets` preference
 - watch seeds are derived from database-backed buddy entries and positive spot filters
-- spotter-continent filter controls write to the same stored spot-filter table used by telnet `accept/spots` and `reject/spots`
+- common spot filter controls write a single compound rule to the same stored spot-filter table used by telnet `accept/spots` and `reject/spots`
 - RBN visibility is controlled through the same access matrix and stored user preferences used elsewhere
 
 Browser storage is used only as a convenience cache or for anonymous,
@@ -41,8 +41,10 @@ Core live spot view.
 
 Features:
 
-- filter by band, mode, activity, continent, zone, and text
+- filter by band, mode, activity, DX continent, spotter continent, DX CQ zone, spotter CQ zone, comment tags, and text
 - time-range filtering for `1h`, `3h`, `6h`, `12h`, `18h`, and `24h`
+
+The web UI intentionally does not expose ITU-zone filtering. Logged-in filter choices are persisted into `filter_rules` as database-backed `accept/spots` rules so telnet and web sessions share the same effective spot filter.
 - filter by spotter continent for logged-in operators; this is based on the station that posted the spot, not the spotted DX entity
 - saved filter presets for logged-in users
 - count of filtered vs total spots

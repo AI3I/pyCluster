@@ -100,6 +100,10 @@ If the remote peer requires a password:
 dxspider://example.net:7300?login=LOCALNODE-1&client=PEERNODE-1&password=secret
 ```
 
+Peers with the `dxspider`/`spider` cluster family receive legacy PC11 spot relay frames. pyCluster peers continue to receive PC61 relay frames.
+
+Outbound PC92 path advertisements are sanitized when `node.public_ip_address` is configured. Private, loopback, link-local, and otherwise non-public IPv4/IPv6 literals in outbound PC92 payload fields are replaced with the configured public address before transmission.
+
 ## Operator Views
 
 Useful visibility commands:
