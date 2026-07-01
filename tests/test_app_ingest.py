@@ -2803,6 +2803,8 @@ def test_app_wire_multi_peer_mixed_chat_and_spot_policies(tmp_path) -> None:
             peers = sorted(await app.node_link.peer_names())
             assert len(peers) == 2
             peer1, peer2 = peers
+            assert await app.node_link.set_peer_profile(peer1, "pycluster") is True
+            assert await app.node_link.set_peer_profile(peer2, "pycluster") is True
 
             now = int(datetime.now(timezone.utc).timestamp())
             await app.store.upsert_user_registry("N0CALL", now, privilege="user")

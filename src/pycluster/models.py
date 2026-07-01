@@ -6,6 +6,7 @@ import re
 
 
 CALL_RE = re.compile(r"^[A-Z0-9/]+(?:-[0-9]{1,2})?$")
+REGISTRATION_CALL_RE = re.compile(r"^[A-Z0-9]{1,4}[0-9][A-Z0-9]{1,6}(?:-[0-9]{1,2})?$")
 SPOT_CALL_RE = re.compile(r"^[A-Z0-9/-]+$")
 
 
@@ -56,6 +57,14 @@ def is_valid_call(value: str) -> bool:
         parts = [core]
     joined = "".join(parts)
     return any(ch.isalpha() for ch in joined) and any(ch.isdigit() for ch in joined)
+
+
+def is_valid_registration_call(value: str) -> bool:
+    call = normalize_call(value)
+    if len(call) > 16 or not REGISTRATION_CALL_RE.match(call):
+        return False
+    base = call.split("-", 1)[0]
+    return any(ch.isalpha() for ch in base) and any(ch.isdigit() for ch in base)
 
 
 def is_plausible_spot_call(value: str) -> bool:

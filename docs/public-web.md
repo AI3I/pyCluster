@@ -16,6 +16,7 @@ System Operator console:
 - public filter presets, watch profiles, local watch rules, and recent watch matches are stored in the user's `public.presets` preference
 - watch seeds are derived from database-backed buddy entries and positive spot filters
 - common spot filter controls write a single compound rule to the same stored spot-filter table used by telnet `accept/spots` and `reject/spots`
+- registration requests validate the callsign before creating registry or review-queue records
 - RBN visibility is controlled through the same access matrix and stored user preferences used elsewhere
 
 Browser storage is used only as a convenience cache or for anonymous,

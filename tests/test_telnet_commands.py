@@ -2769,6 +2769,52 @@ def test_telnet_register_verifies_email_before_sysop_queue(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_register_rejects_invalid_callsign_before_registry_create(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_register_invalid_call.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            keep, out = await srv._execute_command("JOHN", "register")
+            assert keep is True
+            assert "Invalid callsign for self-registration: JOHN." in out
+            assert await store.get_user_registry("JOHN") is None
+            assert await store.get_registration_request("JOHN") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_register_expired_code_points_user_back_to_register(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_register_expired_code.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.upsert_user_registry("N1NEW", now, email="new@example.test")
+            await store.save_mfa_challenge(
+                challenge_id="expired-registration",
+                call="N1NEW",
+                purpose="registration-approval",
+                code="123456",
+                expires_epoch=now - 60,
+                attempts_left=5,
+                issued_epoch=now - 600,
+            )
+            await store.set_user_pref("N1NEW", "registration_verify_challenge_id", "expired-registration", now)
+
+            out = await srv._verify_approved_registration("N1NEW", "123456")
+            assert "Verification code expired. Run REGISTER again to request a new code." in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_telnet_register_interactively_collects_required_profile(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "telnet_register_interactive.db")

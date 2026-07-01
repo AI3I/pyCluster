@@ -43,6 +43,9 @@ If this is your first telnet login and no password exists yet, pyCluster will st
 
 If your node requires or encourages registration, telnet shows a registration
 notice after the MOTD until your account has an approved registration request.
+Self-registration is limited to simple ham-style callsigns with an optional
+numeric SSID, such as `N0CALL` or `N0CALL-2`. Portable/slashed forms are still
+valid in spot traffic, but should not be used as the registration principal.
 Use the normal profile commands to fill in missing fields, then run:
 
 ```text
@@ -50,8 +53,10 @@ register
 ```
 
 `register` submits the current profile to the same pending registration queue
-used by the public web UI. If SMTP is configured, pyCluster notifies the sysop
-and sends an acknowledgement to your profile email address.
+used by the public web UI. If SMTP is configured, pyCluster first sends a
+verification code to your profile email address. Enter `REGISTER <code>` to
+verify the email address and queue the sysop review request. If the code
+expires, run `REGISTER` again to request a fresh code.
 
 ## 2. Getting and Viewing DX
 

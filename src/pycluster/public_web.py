@@ -29,7 +29,7 @@ from .maidenhead import extract_locator
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .qr_svg import qr_svg
 from .rbn import is_rbn_spot
-from .models import Spot, display_call, is_valid_call, normalize_call
+from .models import Spot, display_call, is_valid_call, is_valid_registration_call, normalize_call
 from .pathmeta import describe_session_path
 from .propagation import latest_wwv_snapshot, merge_solar_snapshots, parse_hamqsl_solar_xml, snapshot_payload
 from .registration import has_valid_email, mark_email_verified, registration_state
@@ -1708,7 +1708,7 @@ class PublicWebServer:
                 qra = extract_locator(str(payload.get("qra", "")).strip().upper())[:16]
                 email = str(payload.get("email", "")).strip()
                 note = str(payload.get("note", "")).strip()[:160]
-                if not is_valid_call(call):
+                if not is_valid_registration_call(call):
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 if not has_valid_email(email):
@@ -1735,6 +1735,8 @@ class PublicWebServer:
                     return
                 ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="public-register", otp=otp)
                 if not ok:
+                    if reason == "challenge expired":
+                        reason = "verification code expired; request a new code"
                     await self._write_response(writer, 401, self._json({"error": reason}))
                     return
                 await self._submit_registration_request(

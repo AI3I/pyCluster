@@ -88,7 +88,8 @@ Recent highlights in `1.0.9`:
 - telnet RBN delivery is user opt-in with `set/rbn`, while `show/dx` stays focused on traditional DX spots
 - public web filters persist to the shared backend filter table used by telnet
 - Skimmer spotter suffixes such as `-#` are accepted when storing received RBN-style spots
-- telnet self-registration verifies email before sysop approval when SMTP is configured
+- public web and telnet self-registration validate ham-style callsigns before creating registration records
+- telnet self-registration verifies email before sysop approval when SMTP is configured, and expired verification codes tell the user to rerun `REGISTER`
 - node-link peers receive fresh PC18 identity advertisements on outbound reconnects
 - upgrade and repair paths protect runtime string catalogs by backing up invalid `strings.toml` files and restoring bundled defaults
 

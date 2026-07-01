@@ -1816,6 +1816,102 @@ def test_public_web_registration_request_verifies_email_and_queues_pending_reque
     asyncio.run(run())
 
 
+def test_public_web_registration_rejects_invalid_callsign(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_registration_invalid_call.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(
+                    {
+                        "call": "JOHN",
+                        "name": "John",
+                        "email": "john@example.test",
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 400
+            assert json.loads(body.decode("utf-8"))["error"] == "invalid callsign"
+            assert await store.get_user_registry("JOHN") is None
+            assert await store.get_registration_request("JOHN") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_registration_expired_code_reports_retry_message(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_registration_expired_code.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda _rcpt, _subject, _body: None  # type: ignore[assignment]
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(
+                    {
+                        "call": "N1NEW",
+                        "name": "New User",
+                        "email": "new@example.test",
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 202
+            data = json.loads(body.decode("utf-8"))
+            challenge_id = str(data["challenge_id"])
+            row = await store.get_mfa_challenge(challenge_id)
+            assert row is not None
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.save_mfa_challenge(
+                challenge_id=challenge_id,
+                call="N1NEW",
+                purpose="public-register",
+                code=str(row["code"]),
+                expires_epoch=now - 60,
+                attempts_left=5,
+                issued_epoch=now - 600,
+            )
+            srv._mfa._challenges.pop(challenge_id, None)
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(
+                    {
+                        "call": "N1NEW",
+                        "name": "New User",
+                        "email": "new@example.test",
+                        "challenge_id": challenge_id,
+                        "otp": str(row["code"]),
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 401
+            assert json.loads(body.decode("utf-8"))["error"] == "verification code expired; request a new code"
+            assert await store.get_registration_request("N1NEW") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_non_authenticated_users_are_read_only_by_default(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_access_default.db")
