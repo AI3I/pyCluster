@@ -271,6 +271,16 @@ Ordinary-user registration now tracks:
 - verified email status
 - grace logins remaining before lockout
 
+Self-registration from telnet or the public web UI validates the requested
+principal before any registry or review-queue row is created. User-entered
+registration callsigns must be simple ham-style callsigns with an optional
+numeric SSID. Sysop-created local users and cluster peer accounts remain
+managed through the System Console.
+
+When SMTP is configured, registration verifies the user's email address before
+the sysop review request is queued. If a verification code expires, the user can
+run `REGISTER` again to request a new code.
+
 Normal operator recovery paths:
 
 - System Console user editor:

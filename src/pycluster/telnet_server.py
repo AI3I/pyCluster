@@ -26,7 +26,7 @@ from .wpxloc import load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .geomag import canonicalize_wcy_text, canonicalize_wwv_text, derive_wcy_from_wwv, parse_wcy_text, parse_wwv_text
-from .models import Spot, display_call, is_valid_call, normalize_call
+from .models import Spot, display_call, is_valid_call, is_valid_registration_call, normalize_call
 from .pathmeta import describe_session_path, normalize_recorded_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
 from .propagation import effective_muf_for_zenith, estimate_muf3000, estimate_sunspots_from_sfi, signal_report_for_muf
@@ -1826,6 +1826,13 @@ class TelnetClusterServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> bool:
+        if not is_valid_registration_call(call):
+            await self._write(
+                writer,
+                self._render_string("registration.invalid_call", "Invalid callsign for self-registration: {call}.", call=call)
+                + "\r\n",
+            )
+            return False
         if not self._smtp.enabled():
             await self._write(
                 writer,
@@ -2100,6 +2107,13 @@ class TelnetClusterServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> bool:
+        if not is_valid_registration_call(call):
+            await self._write(
+                writer,
+                self._render_string("registration.invalid_call", "Invalid callsign for self-registration: {call}.", call=call)
+                + "\r\n",
+            )
+            return False
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.upsert_user_registry(call, now)
         row = await self.store.get_user_registry(call)
@@ -2190,6 +2204,11 @@ class TelnetClusterServer:
             otp=code,
         )
         if not ok:
+            if reason == "challenge expired":
+                return self._string(
+                    "registration.verify_expired",
+                    "Verification code expired. Run REGISTER again to request a new code.",
+                ) + "\r\n"
             return self._render_string("registration.verify_failed", "Verification failed ({reason}).", reason=reason) + "\r\n"
         now = int(time.time())
         await mark_email_verified(self.store, call, now_epoch=now)
@@ -6252,6 +6271,8 @@ class TelnetClusterServer:
     async def _cmd_register(self, call: str, arg: str | None) -> str:
         if await self._node_family_for_login(call):
             return self._string("registration.cluster_not_applicable", "Cluster peer accounts do not use user self-registration.") + "\r\n"
+        if not is_valid_registration_call(call):
+            return self._render_string("registration.invalid_call", "Invalid callsign for self-registration: {call}.", call=call) + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
         reg = await self.store.get_user_registry(call)
         if reg is None:
