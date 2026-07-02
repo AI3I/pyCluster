@@ -150,7 +150,7 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     assert "source=' + encodeURIComponent(spotSourceFilter)" in text
     assert '<label>Inbox</label><span>${esc(inboxSummary)}</span>' in text
     assert '<label>Outbox</label><span>${esc(outboxSummary)}</span>' in text
-    assert "masterAccessEnabled(row.access, 'rbn')" in text
+    assert "matrixToggle(row, 'rbn', !!row.rbn_enabled" in text
     assert 'id="public_ip_address"' in text
     assert "Upgrade Target" in text
     assert "Migration hooks:" in text
@@ -3700,8 +3700,33 @@ def test_web_users_matrix_toggle_endpoint_updates_status_and_access(tmp_path) ->
             assert data["ok"] is True
             assert data["user"]["access"]["telnet"]["spots"] is False
             assert data["user"]["access"]["web"]["spots"] is False
+            assert data["user"]["rbn_enabled"] is False
             assert await store.get_user_pref("ZZ2AA", "access.telnet.spots") == "off"
             assert await store.get_user_pref("ZZ2AA", "access.web.spots") == "off"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "rbn", "value": True}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["rbn_enabled"] is True
+            assert await store.get_user_pref("ZZ2AA", "rbn") == "on"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "rbn", "value": False}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["rbn_enabled"] is False
+            assert await store.get_user_pref("ZZ2AA", "rbn") is None
 
             code, _, body = await _http_request(
                 srv,
@@ -3801,6 +3826,7 @@ def test_web_users_cluster_peer_records_are_managed_defaults(tmp_path) -> None:
             assert row["registration_state"] == "verified"
             assert row["access"]["telnet"]["spots"] is True
             assert row["access"]["web"]["wwv"] is True
+            assert row["rbn_enabled"] is True
 
             code, _, body = await _http_request(
                 srv,

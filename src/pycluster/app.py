@@ -1007,6 +1007,14 @@ class ClusterApp:
             await self.telnet.publish_chat(sender_norm, body)
         else:
             await self.telnet.publish_bulletin(category, sender_norm, scope, body)
+            await self._relay_bulletin_to_links(
+                category,
+                sender_norm,
+                scope,
+                body,
+                require_routepc19=False,
+                exclude_peer=peer_name,
+            )
 
     async def _live_peer_profiles(self) -> dict[str, str]:
         profiles: dict[str, str] = {}
@@ -1850,8 +1858,17 @@ class ClusterApp:
         frame = WirePcFrame("PC93", msg.to_fields())
         await self._broadcast_with_policy(sender, "chat", frame)
 
-    async def _relay_bulletin_to_links(self, category: str, sender: str, scope: str, text: str) -> None:
-        if not await self._routepc19_enabled(sender):
+    async def _relay_bulletin_to_links(
+        self,
+        category: str,
+        sender: str,
+        scope: str,
+        text: str,
+        *,
+        require_routepc19: bool = True,
+        exclude_peer: str | None = None,
+    ) -> None:
+        if require_routepc19 and not await self._routepc19_enabled(sender):
             return
         if not await self._relay_category_enabled(sender, category):
             return
@@ -1859,6 +1876,8 @@ class ClusterApp:
         profiles = await self._live_peer_profiles()
         sent = 0
         for name in names:
+            if exclude_peer and name.lower() == exclude_peer.lower():
+                continue
             if not await self._route_filter_allows_peer(sender, name):
                 await self.node_link.mark_policy_drop(name, "route_filter")
                 continue
