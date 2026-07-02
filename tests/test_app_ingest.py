@@ -1382,6 +1382,38 @@ def test_ingest_pc23_maps_to_wwv_bulletin(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_ingest_pc23_relays_wwv_to_other_peers(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc23_relay_wwv.db")
+        app = ClusterApp(_mk_config(db))
+        captured: list[tuple[str, WirePcFrame]] = []
+
+        async def _peer_names():
+            return ["PEER2", "PEER3"]
+
+        async def _send(peer, frame):
+            captured.append((peer, frame))
+
+        async def _stats():
+            return {"PEER2": {"profile": "dxspider"}, "PEER3": {"profile": "dxspider"}}
+
+        app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+        app.node_link.send = _send  # type: ignore[method-assign]
+        app.node_link.stats = _stats  # type: ignore[method-assign]
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref("W0MU", "routepc19", "off", now)
+            msg = Pc23Message.from_fields(
+                ["14-Mar-2026", "18", "120", "24", "4", "Moderate w/G2 -> Minor w/G1", "W0MU", "AI3I-16", "H96", ""]
+            )
+            await app._handle_node_link_item("PEER2", WirePcFrame("PC23", msg.to_fields()), msg)
+            assert [(peer, frame.pc_type) for peer, frame in captured] == [("PEER3", "PC23")]
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_ingest_pc12_wcy_announcement_maps_to_wcy_bulletin(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_pc12_wcy.db")

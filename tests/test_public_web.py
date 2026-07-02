@@ -867,6 +867,35 @@ def test_email_otp_manager_enforces_resend_cooldown() -> None:
     asyncio.run(run())
 
 
+def test_email_otp_manager_rolls_back_failed_delivery(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "mfa_failed_delivery.db")
+        store = SpotStore(db)
+        cfg = _mk_config(db).mfa
+        cfg.enabled = True
+        cfg.resend_cooldown_seconds = 60
+        mgr = EmailOtpManager(cfg, lambda _rcpt, _subject, _body: (_ for _ in ()).throw(RuntimeError("smtp down")), store)
+        try:
+            try:
+                await mgr.issue(call="AI3I", email="ai3i@example.test", purpose="public-web")
+                assert False, "expected delivery failure"
+            except RuntimeError as exc:
+                assert str(exc) == "smtp down"
+            assert mgr._challenges == {}
+            assert mgr._recent_issue == {}
+            assert await store.get_mfa_challenge("missing") is None
+
+            sent: list[tuple[str, str, str]] = []
+            mgr._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+            challenge_id, _expires = await mgr.issue(call="AI3I", email="ai3i@example.test", purpose="public-web")
+            assert sent
+            assert await store.get_mfa_challenge(challenge_id) is not None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_mfa_challenge_survives_server_restart(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_web_mfa_restart.db")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import base64
 import hashlib
@@ -171,7 +172,14 @@ class EmailOtpManager:
             f"This code expires in {ttl // 60} minute(s).\n"
             f"If you did not request this login, ignore this message.\n"
         )
-        self._sender(email.strip(), subject, body)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(self._sender, email.strip(), subject, body), timeout=8.0)
+        except Exception:
+            self._challenges.pop(challenge_id, None)
+            self._recent_issue.pop(key, None)
+            if self._store is not None:
+                await self._store.delete_mfa_challenge(challenge_id)
+            raise
         return challenge_id, challenge.expires_epoch
 
     async def verify(self, *, challenge_id: str, call: str, purpose: str, otp: str) -> tuple[bool, str]:

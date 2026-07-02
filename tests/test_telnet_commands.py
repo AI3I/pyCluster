@@ -2574,6 +2574,10 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
             assert "K1ABC" not in out
             assert "K9DEF" not in out
             assert "K1XYZ" in out
+            _, out = await srv._execute_command("N0CALL", "show/mydx 10")
+            assert "K1ABC" not in out
+            assert "K9DEF" not in out
+            assert "K1XYZ" in out
             _, out = await srv._execute_command("N0CALL", "accept/rbn 1 call K1ABC")
             assert "filter for rbn saved" in out
             rules = await store.list_filter_rules("N0CALL")
@@ -2587,6 +2591,7 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/mydx 10")
             assert "K1ABC" in out
             assert "K9DEF" not in out
+            assert "K1XYZ" in out
             _, out = await srv._execute_command("N0CALL", "clear/rbn")
             assert "Cleared" in out and "rbn filters" in out
             _, out = await srv._execute_command("N0CALL", "reject/rbn 2")

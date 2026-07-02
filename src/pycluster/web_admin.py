@@ -518,6 +518,8 @@ class WebAdminServer:
         if mfa_email_otp not in {"required", "off"}:
             mfa_email_otp = "default"
         mfa_totp_enabled = bool(str(await self.store.get_user_pref(state_call, "mfa_totp_secret") or "").strip())
+        rbn_pref = str(await self.store.get_user_pref(state_call, "rbn") or "").strip().lower()
+        rbn_enabled = rbn_pref in {"1", "on", "true", "yes"}
         if mfa_email_otp == "required":
             mfa_email_effective = True
         elif mfa_email_otp == "off":
@@ -548,6 +550,7 @@ class WebAdminServer:
             mfa_enabled = False
             mfa_methods = []
             mfa_policy = "cluster peer"
+            rbn_enabled = True
             reg_state = "verified"
             email_verified_epoch = int(row["updated_epoch"] or row["registered_epoch"] or time.time())
             grace_logins_remaining = 0
@@ -573,6 +576,7 @@ class WebAdminServer:
             "blocked_reason": blocked_reason or ("Blocked by local policy" if blocked_login else ""),
             "user_note": user_note or blocked_reason,
             "access": access,
+            "rbn_enabled": rbn_enabled,
             "access_login_summary": self._access_login_summary(access),
             "access_post_summary": self._access_post_summary(access),
             "mail_inbox_total": inbox_total,
@@ -4303,7 +4307,7 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
     <td>${row.node_family ? matrixStatus(false, 'Cluster peer records cannot be blocked') : matrixToggle(row, 'blocked', !!row.blocked_login, 'Blocked; tap to unblock login', 'Unblocked; tap to block login')}</td>
     <td>${row.node_family ? matrixStatus(true, 'Cluster peer login is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'login'), 'Login allowed; tap to disable login', 'Login disabled; tap to enable login', 'login')}</td>
     <td>${row.node_family ? matrixStatus(true, 'Cluster peer spots are always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'spots'), 'DX spots allowed; tap to disable spots', 'DX spots disabled; tap to enable spots', 'spots')}</td>
-    <td>${row.node_family ? matrixStatus(true, 'Cluster peer RBN is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'rbn'), 'RBN allowed; tap to disable RBN', 'RBN disabled; tap to enable RBN', 'rbn')}</td>
+    <td>${row.node_family ? matrixStatus(true, 'Cluster peer RBN is always allowed') : matrixToggle(row, 'rbn', !!row.rbn_enabled, 'RBN stream enabled; tap to disable RBN', 'RBN stream disabled; tap to enable RBN')}</td>
     <td>${row.node_family ? matrixStatus(true, 'Cluster peer chat is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'chat'), 'Chat allowed; tap to disable chat', 'Chat disabled; tap to enable chat', 'chat')}</td>
     <td>${row.node_family ? matrixStatus(true, 'Cluster peer announce is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'announce'), 'Announce allowed; tap to disable announce', 'Announce disabled; tap to enable announce', 'announce')}</td>
     <td>${row.node_family ? matrixStatus(true, 'Cluster peer WX is always allowed') : matrixToggle(row, 'access', masterAccessEnabled(row.access, 'wx'), 'WX allowed; tap to disable WX', 'WX disabled; tap to enable WX', 'wx')}</td>
@@ -6191,6 +6195,13 @@ if (restoreWebSession()) {
                             await self.store.delete_user_pref(target, "blocked_login")
                             await self.store.delete_user_pref(target, "blocked_reason")
                         audit_detail = "blocked=off"
+                elif kind == "rbn":
+                    if value:
+                        await self.store.set_user_pref(state_call, "rbn", "on", now)
+                        audit_detail = "rbn=on"
+                    else:
+                        await self.store.delete_user_pref(state_call, "rbn")
+                        audit_detail = "rbn=off"
                 else:
                     await self._write_response(writer, 400, self._json({"error": "invalid toggle kind"}))
                     return

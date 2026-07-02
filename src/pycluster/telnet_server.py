@@ -42,7 +42,7 @@ from .spot_throttle import (
     check_spot_throttle,
     load_spot_throttle_policy,
 )
-from .spot_filters import SpotFilterEntry, evaluate_spot_entries
+from .spot_filters import SpotFilterEntry, evaluate_spot_entries, is_legacy_rbn_expr
 from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
@@ -1088,6 +1088,17 @@ class TelnetClusterServer:
             lambda expr: self._spot_matches_expr(freq_khz, dx_call, spotter, info, expr),
             is_rbn=is_rbn,
         )
+
+    async def _has_rbn_history_filters(self, call: str) -> bool:
+        target = call.upper()
+        if target not in self._filters:
+            await self._load_filters_for_call(target)
+        fams = self._filters.get(target, {})
+        rbn_fam = fams.get("rbn", {})
+        if any(rules for rules in rbn_fam.values()):
+            return True
+        spots_fam = fams.get("spots", {})
+        return any(is_legacy_rbn_expr(rule.expr) for rules in spots_fam.values() for rule in rules)
 
     async def _dx_line_suffix_for_call(self, call: str, dx_call: str) -> str:
         if not self._cty_loaded:
@@ -2484,10 +2495,16 @@ class TelnetClusterServer:
             return self._string("show.dx.empty", "No spots available") + "\r\n"
 
         lines: list[str] = []
+        has_rbn_history_filters: bool | None = None
         for row in rows:
             is_rbn = self._is_rbn_spot(str(row["dx_call"]), str(row["spotter"]), str(row["info"] or ""))
             if is_rbn and not apply_user_filters:
                 continue
+            if is_rbn and apply_user_filters:
+                if has_rbn_history_filters is None:
+                    has_rbn_history_filters = await self._has_rbn_history_filters(call)
+                if not has_rbn_history_filters:
+                    continue
             if is_rbn and not await self._spot_passes_rbn_pref(
                 call,
                 str(row["dx_call"]),
