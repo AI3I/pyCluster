@@ -684,8 +684,14 @@ class WebAdminServer:
         return self._admin_call_from_headers(headers) or "SYSOP"
 
     async def _email_for_call(self, call: str) -> str:
-        row = await self.store.get_user_registry(call)
-        return str(row["email"] or "").strip() if row else ""
+        exact = call.upper()
+        base = exact.split("-", 1)[0]
+        for candidate in (exact, base):
+            row = await self.store.get_user_registry(candidate)
+            email = str(row["email"] or "").strip() if row else ""
+            if email:
+                return email
+        return ""
 
     async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
         base_call = call.split("-", 1)[0]
@@ -4157,7 +4163,8 @@ function mfaStatusMark(row) {
   const methods = Array.isArray(row.mfa_methods) && row.mfa_methods.length ? row.mfa_methods.join(', ') : 'none';
   const title = `MFA ${row.mfa_enabled ? 'enabled' : 'disabled'}; methods: ${methods}; policy: ${row.mfa_policy || 'not required by node policy'}`;
   const enabled = !!row.mfa_enabled;
-  return `<span class="matrix-toggle ${enabled ? 'on' : 'off'}" title="${esc(title)}">${enabled ? '✓' : '✗'}</span>`;
+  if (row.node_family) return matrixStatus(false, 'Cluster peer records cannot use MFA');
+  return matrixToggle(row, 'mfa', enabled, `${title}; tap to disable MFA`, `${title}; tap to enable email MFA`);
 }
 function masterAccessEnabled(access, capability) {
   return !!(((access || {}).telnet || {})[capability]) && !!(((access || {}).web || {})[capability]);
@@ -6047,9 +6054,25 @@ if (restoreWebSession()) {
                 if int(req["email_verified"] or 0):
                     await mark_email_verified(self.store, call, now_epoch=now)
                     verification_sent = False
+                    approved_notice_sent = False
+                    email = str(req["email"] or "").strip()
+                    if self._smtp.enabled() and has_valid_email(email):
+                        try:
+                            self._smtp.send_code(
+                                email,
+                                f"pyCluster registration approved for {call}",
+                                (
+                                    f"Your pyCluster registration request for {call} has been approved.\n\n"
+                                    "You can now log in with the password you configured during registration.\n"
+                                ),
+                            )
+                            approved_notice_sent = True
+                        except Exception:
+                            LOG.exception("registration approval notification failed call=%s", call)
                 else:
                     await mark_email_unverified(self.store, call, now_epoch=now, grace_logins=int(self.config.node.initial_grace_logins))
                     verification_sent = False
+                    approved_notice_sent = False
                     email = str(req["email"] or "").strip()
                     if self._smtp.enabled() and has_valid_email(email):
                         try:
@@ -6079,6 +6102,7 @@ if (restoreWebSession()) {
                             "ok": True,
                             "call": call,
                             "verification_sent": verification_sent,
+                            "approved_notice_sent": approved_notice_sent,
                             "user": await self._user_registry_json(row) if row else {"call": call},
                         }
                     ),
@@ -6202,6 +6226,22 @@ if (restoreWebSession()) {
                     else:
                         await self.store.delete_user_pref(state_call, "rbn")
                         audit_detail = "rbn=off"
+                elif kind == "mfa":
+                    if value:
+                        email = await self._email_for_call(state_call)
+                        if not has_valid_email(email):
+                            await self._write_response(writer, 400, self._json({"error": "valid email is required before enabling email MFA"}))
+                            return
+                        await self.store.set_user_pref(state_call, "mfa_email_otp", "required", now)
+                        await self.store.delete_user_pref(state_call, "mfa_totp_pending_secret")
+                        audit_detail = "mfa=email_required"
+                    else:
+                        await self.store.set_user_pref(state_call, "mfa_email_otp", "off", now)
+                        await self.store.delete_user_pref(state_call, "mfa_totp_secret")
+                        await self.store.delete_user_pref(state_call, "mfa_totp_pending_secret")
+                        await self.store.delete_user_pref(state_call, "mfa_totp_verified_epoch")
+                        cleared = await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
+                        audit_detail = f"mfa=off challenges={cleared}"
                 else:
                     await self._write_response(writer, 400, self._json({"error": "invalid toggle kind"}))
                     return

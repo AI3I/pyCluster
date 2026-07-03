@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import fnmatch
+import ipaddress
 import json
 import logging
 from pathlib import Path
@@ -2255,6 +2256,7 @@ class ClusterApp:
             return
         dt = datetime.fromtimestamp(spot.epoch, tz=timezone.utc)
         source_node = normalize_call(spot.source_node) if spot.source_node else normalize_call(self.config.node.node_call)
+        relay_ip = self._public_relay_ip()
         pc61 = Pc61Message(
             freq_khz=f"{spot.freq_khz:.1f}",
             dx_call=spot.dx_call,
@@ -2263,7 +2265,7 @@ class ClusterApp:
             info=spot.info,
             spotter=sender,
             source_node=source_node,
-            ip="127.0.0.1",
+            ip=relay_ip,
             hops_token="H1",
             trailer="~",
         )
@@ -2299,6 +2301,17 @@ class ClusterApp:
                 await self.node_link.send(name, frame)
             except Exception:
                 LOG.exception("relay send failed peer=%s category=spots", name)
+
+    def _public_relay_ip(self) -> str:
+        raw = str(self.config.node.public_ip_address or "").strip()
+        if raw:
+            try:
+                ip = ipaddress.ip_address(raw)
+            except ValueError:
+                ip = None
+            if ip is not None and ip.is_global:
+                return raw
+        return "127.0.0.1"
 
     async def _node_ingest_loop(self) -> None:
         while not self._node_ingest_stop.is_set():
