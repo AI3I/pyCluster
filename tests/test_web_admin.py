@@ -339,6 +339,7 @@ def test_web_admin_static_exposes_totp_mfa_controls() -> None:
     assert '<label>MFA</label><span>${esc(mfaStatus)}</span>' in text
     assert "function mfaStatusMark(row)" in text
     assert "data.mfa_enabled ? 'enabled' : 'disabled'" in text
+    assert "matrixToggle(row, 'mfa', enabled" in text
 
 
 def test_web_admin_system_tools_do_not_offer_wcy_posting() -> None:
@@ -671,8 +672,12 @@ def test_registration_approval_creates_authenticated_user_record(tmp_path) -> No
     async def run() -> None:
         db = str(tmp_path / "approve_registration.db")
         cfg = _mk_config(db, admin_token="adm")
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
         store = SpotStore(db)
         srv = WebAdminServer(config=cfg, store=store, started_at=datetime.now(timezone.utc), session_count_fn=lambda: 0)
+        sent: list[tuple[str, str, str]] = []
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
         now = int(datetime.now(timezone.utc).timestamp())
         await store.upsert_registration_request(
             "N0CALL",
@@ -698,12 +703,15 @@ def test_registration_approval_creates_authenticated_user_record(tmp_path) -> No
             assert code == 200
             payload = json.loads(body.decode("utf-8"))
             assert payload["ok"] is True
+            assert payload["approved_notice_sent"] is True
             assert payload["user"]["privilege"] == "user"
             assert payload["user"]["registration_state"] == "verified"
             assert payload["user"]["email_verified"] is True
             assert payload["user"]["access"]["telnet"]["login"] is True
             assert payload["user"]["access"]["telnet"]["spots"] is True
             assert payload["user"]["access"]["web"]["announce"] is True
+            assert sent and sent[-1][0] == "joe@example.test"
+            assert "registration approved" in sent[-1][1].lower()
         finally:
             await store.close()
 
@@ -3684,6 +3692,7 @@ def test_web_users_matrix_toggle_endpoint_updates_status_and_access(tmp_path) ->
             started_at=datetime.now(timezone.utc),
             session_count_fn=lambda: 0,
         )
+        srv._mfa._sender = lambda _rcpt, _subject, _body: None  # type: ignore[assignment]
         try:
             now = int(datetime.now(timezone.utc).timestamp())
             await store.upsert_user_registry("ZZ2AA", now, privilege="user", email="zz2aa@example.org")
@@ -3727,6 +3736,37 @@ def test_web_users_matrix_toggle_endpoint_updates_status_and_access(tmp_path) ->
             data = json.loads(body.decode("utf-8"))
             assert data["user"]["rbn_enabled"] is False
             assert await store.get_user_pref("ZZ2AA", "rbn") is None
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "mfa", "value": True}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["mfa_email_otp"] == "required"
+            assert data["user"]["mfa_enabled"] is True
+            assert await store.get_user_pref("ZZ2AA", "mfa_email_otp") == "required"
+
+            await store.set_user_pref("ZZ2AA", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+            challenge_id, _expires = await srv._mfa.issue(call="ZZ2AA", email="zz2aa@example.org", purpose="sysop-web")
+            assert await store.get_mfa_challenge(challenge_id) is not None
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/users/toggle",
+                headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
+                body=json.dumps({"call": "ZZ2AA", "kind": "mfa", "value": False}).encode("utf-8"),
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["user"]["mfa_email_otp"] == "off"
+            assert data["user"]["mfa_enabled"] is False
+            assert await store.get_user_pref("ZZ2AA", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("ZZ2AA", "mfa_totp_secret") is None
+            assert await store.get_mfa_challenge(challenge_id) is None
 
             code, _, body = await _http_request(
                 srv,

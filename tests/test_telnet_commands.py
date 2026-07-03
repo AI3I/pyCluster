@@ -6951,6 +6951,63 @@ def test_telnet_login_can_require_email_otp(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_login_email_mfa_uses_base_call_email_for_ssid(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_mfa_ssid_email.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16"),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = False
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        sent: list[tuple[str, str, str]] = []
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N9JR", now, privilege="user", email="n9jr@example.test")
+        await store.upsert_user_registry("N9JR-10", now, privilege="user", email="")
+        await store.set_user_pref("N9JR-10", "password", "pw1", now)
+        await store.set_user_pref("N9JR-10", "mfa_email_otp", "required", now)
+        await store.set_user_pref("N9JR-10", "email_verified_epoch", str(now), now)
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            r1, w1 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
+            w1.write(b"N9JR-10\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"password: "), timeout=2.0)
+            w1.write(b"pw1\r\n")
+            await w1.drain()
+            otp_prompt = await asyncio.wait_for(r1.readuntil(b"otp: "), timeout=2.0)
+            assert b"otp:" in otp_prompt
+            assert sent and sent[0][0] == "n9jr@example.test"
+            challenge = next(iter(srv._mfa._challenges.values()))
+            w1.write((challenge.code + "\r\n").encode("ascii"))
+            await w1.drain()
+            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            assert b"Welcome" in hello
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_telnet_login_can_use_totp_authenticator(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "telnet_totp.db")

@@ -355,8 +355,14 @@ class PublicWebServer:
                 LOG.exception("public web audit log failed")
 
     async def _email_for_call(self, call: str) -> str:
-        row = await self.store.get_user_registry(call)
-        return str(row["email"] or "").strip() if row else ""
+        exact = call.upper()
+        base = exact.split("-", 1)[0]
+        for candidate in (exact, base):
+            row = await self.store.get_user_registry(candidate)
+            email = str(row["email"] or "").strip() if row else ""
+            if email:
+                return email
+        return ""
 
     async def _sysop_notification_emails(self) -> list[str]:
         rows = await self.store.list_user_registry(limit=200, privilege="sysop")

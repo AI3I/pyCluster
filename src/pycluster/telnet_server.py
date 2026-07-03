@@ -1633,8 +1633,14 @@ class TelnetClusterServer:
         return self._is_on_value(str(data.get(key, "") or "off"))
 
     async def _email_for_call(self, call: str) -> str:
-        row = await self.store.get_user_registry(call)
-        return str(row["email"] or "").strip() if row else ""
+        exact = call.upper()
+        base = exact.split("-", 1)[0]
+        for candidate in (exact, base):
+            row = await self.store.get_user_registry(candidate)
+            email = str(row["email"] or "").strip() if row else ""
+            if email:
+                return email
+        return ""
 
     async def _sysop_notification_emails(self) -> list[str]:
         rows = await self.store.list_user_registry(limit=200, privilege="sysop")
@@ -2204,6 +2210,14 @@ class TelnetClusterServer:
         await self.store.set_user_pref(call, "registration_verify_challenge_id", challenge_id, now)
         return challenge_id, True
 
+    def _registration_verify_failure_text(self, reason: str) -> str:
+        if reason == "challenge expired":
+            return self._string(
+                "registration.verify_expired",
+                "Verification code expired. Run REGISTER again to request a new code.",
+            ) + "\r\n"
+        return self._render_string("registration.verify_failed", "Verification failed ({reason}).", reason=reason) + "\r\n"
+
     async def _verify_approved_registration(self, call: str, code: str) -> str:
         challenge_id = str(await self.store.get_user_pref(call, "registration_verify_challenge_id") or "").strip()
         if not challenge_id:
@@ -2215,12 +2229,7 @@ class TelnetClusterServer:
             otp=code,
         )
         if not ok:
-            if reason == "challenge expired":
-                return self._string(
-                    "registration.verify_expired",
-                    "Verification code expired. Run REGISTER again to request a new code.",
-                ) + "\r\n"
-            return self._render_string("registration.verify_failed", "Verification failed ({reason}).", reason=reason) + "\r\n"
+            return self._registration_verify_failure_text(reason)
         now = int(time.time())
         await mark_email_verified(self.store, call, now_epoch=now)
         await self.store.delete_user_pref(call, "registration_verify_challenge_id")

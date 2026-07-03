@@ -1837,6 +1837,50 @@ def test_dxspider_profile_peer_uses_pc11_for_spot_relay(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_pycluster_spot_relay_uses_configured_public_ip_in_pc61(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "pc61_public_ip.db")
+        cfg = _mk_config(db)
+        cfg.node.public_ip_address = "44.2.3.4"
+        app = ClusterApp(cfg)
+        captured = []
+
+        async def _peer_names():
+            return ["peer1", "peer2"]
+
+        async def _stats():
+            return {
+                "peer1": {"profile": "pycluster"},
+                "peer2": {"profile": "dxspider"},
+            }
+
+        async def _send(peer, frame):
+            captured.append((peer, frame))
+
+        app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+        app.node_link.stats = _stats  # type: ignore[method-assign]
+        app.node_link.send = _send  # type: ignore[method-assign]
+        try:
+            spot = Spot(
+                freq_khz=14074.0,
+                dx_call="N0TST",
+                epoch=int(datetime.now(timezone.utc).timestamp()),
+                info="relay test",
+                spotter="N0CALL",
+                source_node=app.config.node.node_call,
+                raw="",
+            )
+            await app._relay_spot_to_links(spot)
+            frames = {peer: frame for peer, frame in captured}
+            assert frames["peer1"].pc_type == "PC61"
+            assert Pc61Message.from_fields(frames["peer1"].payload_fields).ip == "44.2.3.4"
+            assert frames["peer2"].pc_type == "PC11"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_inbound_pc61_spot_relays_to_other_peers_but_not_origin(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "inbound_pc61_relay.db")
