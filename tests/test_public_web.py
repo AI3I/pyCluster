@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from types import SimpleNamespace
 
+from pycluster.auth import verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.mfa import EmailOtpManager, totp_code
 from pycluster import __version__
@@ -431,6 +432,8 @@ def test_public_web_branding_uses_node_settings(tmp_path) -> None:
             assert data["software_version"] == f"pyCluster {__version__}"
             assert "Western Pennsylvania" in data["page_title"]
             assert data["ui_strings"]["profile_mfa_email_sent"] == "Email MFA code sent. Check your email, then enter the code."
+            assert data["ui_strings"]["register_required_fields"] == "Callsign, email, and password are required."
+            assert data["ui_strings"]["register_password_mismatch"] == "Passwords do not match."
         finally:
             await store.close()
 
@@ -485,6 +488,12 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
     assert 'id="register-modal-bg"' in text
     assert 'id="footer-register"' in text
+    assert 'id="register-password"' in text
+    assert 'id="register-password-confirm"' in text
+    assert "uiText('register_required_fields')" in text
+    assert "uiText('register_password_mismatch')" in text
+    assert "Callsign, email, and password are required." not in text
+    assert "Passwords do not match." not in text
     assert "const REGISTER_REQUEST = '/api/register/request';" in text
     assert "@media (max-width:1100px)" in text
     assert "@media (max-width:760px)" in text
@@ -1792,6 +1801,8 @@ def test_public_web_registration_request_verifies_email_and_queues_pending_reque
                         "qth": "Hartford",
                         "qra": "FN31",
                         "email": "new@example.test",
+                        "password": "secret-pass",
+                        "password_confirm": "secret-pass",
                         "note": "Please approve me",
                     }
                 ).encode("utf-8"),
@@ -1816,6 +1827,8 @@ def test_public_web_registration_request_verifies_email_and_queues_pending_reque
                         "qth": "Hartford",
                         "qra": "FN31",
                         "email": "new@example.test",
+                        "password": "secret-pass",
+                        "password_confirm": "secret-pass",
                         "note": "Please approve me",
                         "challenge_id": challenge_id,
                         "otp": otp,
@@ -1837,8 +1850,65 @@ def test_public_web_registration_request_verifies_email_and_queues_pending_reque
             assert str(user["email"]) == "new@example.test"
             assert await store.get_user_pref("N1NEW", "registration_state") == "verified"
             assert await store.get_user_pref("N1NEW", "email_verified_epoch") is not None
+            stored_password = await store.get_user_pref("N1NEW", "password")
+            assert stored_password is not None
+            assert verify_password("secret-pass", str(stored_password))
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "N1NEW", "password": "secret-pass"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "registration pending"
+            await store.set_registration_request_status("N1NEW", status="approved", epoch=now, reviewer="AI3I")
+            await store.upsert_user_registry("N1NEW", now, privilege="user", email="new@example.test")
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "N1NEW", "password": "secret-pass"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
             assert any(rcpt == "sysop@example.test" for rcpt, _subject, _body in sent)
             assert any(rcpt == "new@example.test" for rcpt, _subject, _body in sent)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_registration_rejects_password_mismatch(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_registration_password_mismatch.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(
+                    {
+                        "call": "N1NEW",
+                        "name": "New User",
+                        "email": "new@example.test",
+                        "password": "secret-pass",
+                        "password_confirm": "different-pass",
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 400
+            assert json.loads(body.decode("utf-8"))["error"] == "passwords do not match"
+            assert await store.get_user_registry("N1NEW") is None
+            assert await store.get_registration_request("N1NEW") is None
         finally:
             await store.close()
 
@@ -1896,6 +1966,8 @@ def test_public_web_registration_expired_code_reports_retry_message(tmp_path) ->
                         "call": "N1NEW",
                         "name": "New User",
                         "email": "new@example.test",
+                        "password": "secret-pass",
+                        "password_confirm": "secret-pass",
                     }
                 ).encode("utf-8"),
                 {"Content-Type": "application/json"},
@@ -1926,6 +1998,8 @@ def test_public_web_registration_expired_code_reports_retry_message(tmp_path) ->
                         "call": "N1NEW",
                         "name": "New User",
                         "email": "new@example.test",
+                        "password": "secret-pass",
+                        "password_confirm": "secret-pass",
                         "challenge_id": challenge_id,
                         "otp": str(row["code"]),
                     }
