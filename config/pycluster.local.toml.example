@@ -1,6 +1,8 @@
 [node]
 # qth = "Boston, MA"
 # node_locator = "FN42LI"
+# public_ip_address = "203.0.113.10"
+# public_ipv6_address = "2001:db8::10"
 
 [telnet]
 # port = 7300

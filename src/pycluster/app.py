@@ -89,7 +89,7 @@ class ClusterApp:
         self.store = SpotStore(config.store.sqlite_path)
         strings_path = str(Path(config_path).with_name("strings.toml")) if config_path else None
         self._strings = StringCatalog(strings_path)
-        self.node_link = NodeLinkEngine(public_ip_address=config.node.public_ip_address)
+        self.node_link = NodeLinkEngine(public_ip_address=config.node.public_ip_address, public_ipv6_address=config.node.public_ipv6_address)
         self.node_link.set_trace_hook(self._trace_protocol_line)
         self._legacy_dxspider_peers: set[str] = set()
         self._mail_stream_seq = 0
@@ -182,7 +182,7 @@ class ClusterApp:
         self._public_web_started = False
 
     def _apply_runtime_config(self) -> None:
-        self.node_link.set_public_ip_address(self.config.node.public_ip_address)
+        self.node_link.set_public_ip_address(self.config.node.public_ip_address, self.config.node.public_ipv6_address)
 
     def _string(self, key: str, default: str) -> str:
         return self._strings.get(key, default)
@@ -2306,13 +2306,15 @@ class ClusterApp:
                 LOG.exception("relay send failed peer=%s category=spots", name)
 
     def _public_relay_ip(self) -> str:
-        raw = str(self.config.node.public_ip_address or "").strip()
-        if raw:
+        for raw in (self.config.node.public_ip_address, self.config.node.public_ipv6_address):
+            raw = str(raw or "").strip()
+            if not raw:
+                continue
             try:
                 ip = ipaddress.ip_address(raw)
             except ValueError:
-                ip = None
-            if ip is not None and ip.is_global:
+                continue
+            if ip.is_global:
                 return raw
         return "127.0.0.1"
 

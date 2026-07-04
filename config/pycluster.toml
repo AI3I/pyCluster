@@ -18,6 +18,7 @@ initial_grace_logins = 5
 support_contact = "sysop@example.org"
 website_url = "https://github.com/AI3I/pyCluster"
 public_ip_address = ""
+public_ipv6_address = ""
 prompt_template = "[{timestamp}] {node}{suffix}"
 
 [telnet]

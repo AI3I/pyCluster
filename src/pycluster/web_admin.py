@@ -58,10 +58,58 @@ _CONFIG_AUTH_NODE_FIELDS = {
     "support_contact",
     "website_url",
     "public_ip_address",
+    "public_ipv6_address",
     "motd",
     "prompt_template",
     "telnet_ports",
 }
+
+
+def _detected_public_ip_addresses() -> dict[str, str]:
+    found: dict[int, str] = {}
+
+    def add(raw: object) -> None:
+        text = str(raw or "").strip()
+        if not text:
+            return
+        text = text.split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(text)
+        except ValueError:
+            return
+        if ip.is_global and ip.version not in found:
+            found[ip.version] = str(ip)
+
+    try:
+        proc = subprocess.run(
+            ["ip", "-j", "addr", "show", "scope", "global"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            rows = json.loads(proc.stdout)
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    for addr in row.get("addr_info", []) or []:
+                        if isinstance(addr, dict):
+                            add(addr.get("local"))
+    except Exception:
+        pass
+
+    if 4 not in found or 6 not in found:
+        try:
+            proc = subprocess.run(["hostname", "-I"], check=False, capture_output=True, text=True, timeout=2)
+            if proc.returncode == 0:
+                for token in proc.stdout.split():
+                    add(token)
+        except Exception:
+            pass
+
+    return {"ipv4": found.get(4, ""), "ipv6": found.get(6, "")}
 
 
 def _is_valid_admin_record_call(call: str) -> bool:
@@ -370,6 +418,9 @@ class WebAdminServer:
                     return str(data.get(key, "")).strip()
             return default
         branding_name = str(data.get("branding_name", "")).strip() or "pyCluster"
+        detected_ips = _detected_public_ip_addresses()
+        configured_ipv4 = str(data.get("public_ip_address", "")).strip()
+        configured_ipv6 = str(data.get("public_ipv6_address", "")).strip()
         return {
             "node_call": str(data.get("node_call", "")).strip(),
             "node_alias": str(data.get("node_alias", "")).strip(),
@@ -390,7 +441,10 @@ class WebAdminServer:
             "initial_grace_logins": max(0, min(100, _to_int(data.get("initial_grace_logins", "5"), 5))),
             "support_contact": str(data.get("support_contact", "")).strip(),
             "website_url": str(data.get("website_url", "")).strip(),
-            "public_ip_address": str(data.get("public_ip_address", "")).strip(),
+            "public_ip_address": configured_ipv4,
+            "public_ipv6_address": configured_ipv6,
+            "detected_public_ip_address": detected_ips["ipv4"],
+            "detected_public_ipv6_address": detected_ips["ipv6"],
             "motd": str(data.get("motd", "")).rstrip(),
             "prompt_template": str(data.get("prompt_template", "")).strip(),
             "telnet_ports": (
@@ -2650,7 +2704,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="field"><label for="welcome_title" title="First line shown to a telnet user after successful login.">Welcome Title</label><input id="welcome_title" placeholder="Short welcome line" title="Keep this short and warm; it is prepended to the connecting callsign."></div>
               <div class="field"><label for="website_url" title="Optional URL shown in the telnet welcome block and useful for directing operators to documentation or a public site.">Website URL</label><input id="website_url" placeholder="https://example.org" title="Shown as a reference URL in the login welcome text if set."></div>
               <div class="field"><label for="support_contact" title="Contact string displayed to operators who need help with the node.">Support Contact</label><input id="support_contact" placeholder="support@example.org" title="Email address or other support contact shown in the telnet welcome block."></div>
-              <div class="field"><label for="public_ip_address" title="Public address substituted into outbound cluster path messages when a local private address would otherwise be advertised.">Public IP Address</label><input id="public_ip_address" placeholder="203.0.113.10 or 2001:db8::10" title="Used only to replace private, loopback, link-local, or otherwise non-public IP literals in outbound PC92 path data."></div>
+              <div class="field"><label for="public_ip_address" title="Public IPv4 address substituted into outbound cluster path messages when a local private IPv4 address would otherwise be advertised.">Public IPv4 Address</label><input id="public_ip_address" placeholder="Auto-detect when blank" title="Used only to replace private, loopback, link-local, or otherwise non-public IPv4 literals in outbound PC92 path data."></div>
+              <div class="field"><label for="public_ipv6_address" title="Public IPv6 address substituted into outbound cluster path messages when a local private IPv6 address would otherwise be advertised.">Public IPv6 Address</label><input id="public_ipv6_address" placeholder="Auto-detect when blank" title="Used only to replace private, loopback, link-local, or otherwise non-public IPv6 literals in outbound PC92 path data."></div>
               <div class="field"><label for="prompt_template" title="Prompt format shown to telnet operators. Available tokens: {timestamp}, {node}, {callsign}, {suffix}.">Prompt Template</label><input id="prompt_template" placeholder="[{timestamp}] {node}{suffix}" title="Use {timestamp}, {node}, {callsign}, and {suffix}. Example: [{timestamp}] {node}{suffix}"></div>
               <div class="field">
                 <label title="Optional telnet presentation behavior for the node welcome flow.">Options</label>
@@ -4345,9 +4400,15 @@ function setRegistryRows(bodyId, pageInfoId, prevId, nextId, payload, emptyText)
 }
 function fillNodeForm(data) {
   if (!data) return;
-  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','public_ip_address','motd','prompt_template','smtp_host','smtp_username','smtp_password','smtp_from_addr','smtp_from_name','qrz_username','qrz_password','qrz_agent','qrz_api_url','satellite_keps_path','rbn_host','rbn_ports','rbn_feeds','rbn_callsign','rbn_password','rbn_source_node','rbn_startup_commands','mfa_issuer'].forEach((key) => {
+  ['node_call','node_alias','owner_name','qth','node_locator','telnet_ports','branding_name','welcome_title','welcome_body','login_tip','support_contact','website_url','public_ip_address','public_ipv6_address','motd','prompt_template','smtp_host','smtp_username','smtp_password','smtp_from_addr','smtp_from_name','qrz_username','qrz_password','qrz_agent','qrz_api_url','satellite_keps_path','rbn_host','rbn_ports','rbn_feeds','rbn_callsign','rbn_password','rbn_source_node','rbn_startup_commands','mfa_issuer'].forEach((key) => {
     if (byId(key) && data[key] !== undefined) byId(key).value = data[key];
   });
+  if (byId('public_ip_address') && !byId('public_ip_address').value && data.detected_public_ip_address) {
+    byId('public_ip_address').value = data.detected_public_ip_address;
+  }
+  if (byId('public_ipv6_address') && !byId('public_ipv6_address').value && data.detected_public_ipv6_address) {
+    byId('public_ipv6_address').value = data.detected_public_ipv6_address;
+  }
   byId('show_status_after_login').checked = !!data.show_status_after_login;
   byId('require_password').checked = !!data.require_password;
   byId('registration_required').checked = !!data.registration_required;
@@ -4761,6 +4822,7 @@ byId('saveNode').onclick = async () => {
         support_contact: byId('support_contact').value.trim(),
         website_url: byId('website_url').value.trim(),
         public_ip_address: byId('public_ip_address').value.trim(),
+        public_ipv6_address: byId('public_ipv6_address').value.trim(),
         motd: byId('motd').value,
         prompt_template: byId('prompt_template').value.trim()
       };
@@ -5406,6 +5468,7 @@ if (restoreWebSession()) {
                         "support_contact": "",
                         "website_url": "",
                         "public_ip_address": "",
+                        "public_ipv6_address": "",
                         "motd": "",
                         "prompt_template": "",
                     }
@@ -5499,9 +5562,21 @@ if (restoreWebSession()) {
                                 val = val.upper()
                             if key == "public_ip_address" and val:
                                 try:
-                                    ipaddress.ip_address(val)
+                                    ip = ipaddress.ip_address(val)
                                 except ValueError:
                                     await self._write_response(writer, 400, self._json({"error": "invalid public_ip_address"}))
+                                    return
+                                if ip.version != 4:
+                                    await self._write_response(writer, 400, self._json({"error": "invalid public_ip_address"}))
+                                    return
+                            if key == "public_ipv6_address" and val:
+                                try:
+                                    ip = ipaddress.ip_address(val)
+                                except ValueError:
+                                    await self._write_response(writer, 400, self._json({"error": "invalid public_ipv6_address"}))
+                                    return
+                                if ip.version != 6:
+                                    await self._write_response(writer, 400, self._json({"error": "invalid public_ipv6_address"}))
                                     return
                             if key == "prompt_template" and len(val) > 256:
                                 await self._write_response(writer, 400, self._json({"error": "prompt_template too long"}))

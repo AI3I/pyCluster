@@ -152,6 +152,9 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     assert '<label>Outbox</label><span>${esc(outboxSummary)}</span>' in text
     assert "matrixToggle(row, 'rbn', !!row.rbn_enabled" in text
     assert 'id="public_ip_address"' in text
+    assert 'id="public_ipv6_address"' in text
+    assert "detected_public_ip_address" in text
+    assert "detected_public_ipv6_address" in text
     assert "Upgrade Target" in text
     assert "Migration hooks:" in text
     assert "data-toggle-capability" in text
@@ -2033,6 +2036,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["motd"] == "Default MOTD"
             assert data["software_version"] == f"pyCluster {__version__}"
             assert data["public_ip_address"] == ""
+            assert data["public_ipv6_address"] == ""
             assert data["rbn_status"]["state"] == "connected"
             assert data["retention_stale_users_enabled"] is False
             assert data["retention_stale_users_days"] == 365
@@ -2094,6 +2098,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
                 "support_contact": "dxcluster@ai3i.net",
                 "website_url": "https://github.com/AI3I/pyCluster",
                 "public_ip_address": "44.1.2.3",
+                "public_ipv6_address": "2606:4700:4700::1111",
                 "motd": "Warm MOTD",
                 "prompt_template": "[{timestamp}] {node}{suffix}",
             }
@@ -2155,6 +2160,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["retention_stale_users_enabled"] is True
             assert data["retention_stale_users_days"] == 180
             assert data["public_ip_address"] == "44.1.2.3"
+            assert data["public_ipv6_address"] == "2606:4700:4700::1111"
             assert data["motd"] == "Warm MOTD"
             assert data["prompt_template"] == "[{timestamp}] {node}{suffix}"
             assert runtime_updates == 1
@@ -2175,6 +2181,7 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert saved["node"]["verified_email_required_for_telnet"] is True
             assert saved["node"]["initial_grace_logins"] == 5
             assert saved["node"]["public_ip_address"] == "44.1.2.3"
+            assert saved["node"]["public_ipv6_address"] == "2606:4700:4700::1111"
             assert saved["node"]["prompt_template"] == "[{timestamp}] {node}{suffix}"
             assert saved["telnet"]["ports"] == [7300, 7373, 8000]
             assert saved["smtp"]["host"] == "smtp.example.test"

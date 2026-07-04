@@ -43,7 +43,7 @@ class NodeLinkEngine:
     Wire format is line-delimited `PCxx^field^field...` frames.
     """
 
-    def __init__(self, public_ip_address: str = "") -> None:
+    def __init__(self, public_ip_address: str = "", public_ipv6_address: str = "") -> None:
         self._listener: LinkListener | None = None
         self._peers: dict[str, LinkPeer] = {}
         self._lock = asyncio.Lock()
@@ -51,9 +51,11 @@ class NodeLinkEngine:
         self._trace_hook: Callable[[str, str, str], Awaitable[None]] | None = None
         self._reader_tasks: set[asyncio.Task[None]] = set()
         self.public_ip_address = str(public_ip_address or "").strip()
+        self.public_ipv6_address = str(public_ipv6_address or "").strip()
 
-    def set_public_ip_address(self, public_ip_address: str) -> None:
+    def set_public_ip_address(self, public_ip_address: str, public_ipv6_address: str = "") -> None:
         self.public_ip_address = str(public_ip_address or "").strip()
+        self.public_ipv6_address = str(public_ipv6_address or "").strip()
 
     def set_trace_hook(self, hook: Callable[[str, str, str], Awaitable[None]] | None) -> None:
         self._trace_hook = hook
@@ -168,7 +170,7 @@ class NodeLinkEngine:
         if peer is None:
             raise KeyError(f"unknown peer: {peer_name}")
 
-        frame = sanitize_pc92_private_ips(frame, self.public_ip_address)
+        frame = sanitize_pc92_private_ips(frame, self.public_ip_address, self.public_ipv6_address)
 
         if not profile_allows_pc(peer.profile, frame.pc_type):
             peer.policy_dropped += 1

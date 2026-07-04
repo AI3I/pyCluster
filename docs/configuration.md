@@ -27,6 +27,7 @@ Important fields:
 - `support_contact`
 - `website_url`
 - `public_ip_address`
+- `public_ipv6_address`
 - `require_password`
 - `registration_required`
 - `verified_email_required_for_web`
@@ -41,7 +42,7 @@ Auth policy notes:
 - When `verified_email_required_for_telnet = true`, ordinary telnet login requires a verified email address. New telnet users can complete first-login profile/password setup before the verification gate is enforced, and unverified users are driven through telnet email verification before normal commands continue.
 - `initial_grace_logins` controls how many failed or skipped telnet verification attempts are allowed before the pending account is locked.
 - `require_password` is now a narrower legacy telnet-password toggle. For ordinary human users, the stronger registration policy effectively implies passworded access.
-- `public_ip_address` is optional. When set to a valid public IPv4 or IPv6 address, outbound PC92 path data replaces private, loopback, link-local, or otherwise non-public IP literals with this value before advertising them to peers.
+- `public_ip_address` is optional IPv4. `public_ipv6_address` is optional IPv6. When set, outbound PC92 path data replaces private, loopback, link-local, or otherwise non-public IP literals with the same-family configured public address before advertising them to peers. Existing configs that stored an IPv6 address in `public_ip_address` are accepted and migrated in memory.
 
 ### `[telnet]`
 

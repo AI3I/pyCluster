@@ -88,6 +88,20 @@ def test_load_config_merges_sibling_local_override(tmp_path: Path) -> None:
     assert cfg.rbn.enabled is False
 
 
+def test_load_config_migrates_legacy_public_ipv6_address(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    base = config_dir / "pycluster.toml"
+    _write_base_config(base)
+    text = base.read_text(encoding="utf-8")
+    base.write_text(text.replace('[node]\n', '[node]\npublic_ip_address = "2606:4700:4700::1111"\n'), encoding="utf-8")
+
+    cfg = load_config(base)
+
+    assert cfg.node.public_ip_address == ""
+    assert cfg.node.public_ipv6_address == "2606:4700:4700::1111"
+
+
 def test_tracked_default_config_uses_neutral_runtime_data_paths() -> None:
     cfg = load_config(Path("/home/jdlewis/GitHub/pyCluster/config/pycluster.toml"))
 

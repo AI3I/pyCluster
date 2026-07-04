@@ -66,9 +66,10 @@ This view controls local node identity and welcome-flow presentation.
 - `Welcome Title`
 - `Website URL`
 - `Support Contact`
-- `Public IP Address`
+- `Public IPv4 Address`
+- `Public IPv6 Address`
 
-`Public IP Address` is used when pyCluster sends outbound PC92 path data. If a PC92 payload would otherwise advertise a private, loopback, link-local, or otherwise non-public IPv4/IPv6 literal, pyCluster substitutes this configured public address before sending the frame to peers.
+`Public IPv4 Address` and `Public IPv6 Address` are used when pyCluster sends outbound PC92 path data. If a PC92 payload would otherwise advertise a private, loopback, link-local, or otherwise non-public IP literal, pyCluster substitutes the same-family configured public address before sending the frame to peers. Blank fields are auto-populated in the SysOp form from detected global interface addresses when available; saving persists the displayed values.
 
 ### Long-Text Fields
 

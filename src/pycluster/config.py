@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import ipaddress
 from pathlib import Path
 import json
 import tomllib
@@ -55,6 +56,7 @@ class NodeConfig:
     support_contact: str = ""
     website_url: str = ""
     public_ip_address: str = ""
+    public_ipv6_address: str = ""
     prompt_template: str = "[{timestamp}] {node}{suffix}"
 
 
@@ -159,6 +161,7 @@ def node_presentation_defaults(node: NodeConfig) -> dict[str, str]:
         "support_contact": node.support_contact,
         "website_url": node.website_url,
         "public_ip_address": node.public_ip_address,
+        "public_ipv6_address": node.public_ipv6_address,
         "prompt_template": node.prompt_template,
         "motd": node.motd,
     }
@@ -239,7 +242,18 @@ def load_config(path: str | Path) -> AppConfig:
         if override_path.exists():
             data = _merge_config_dict(data, _load_toml(override_path))
 
-    node = NodeConfig(**_load_section(data, "node"))
+    node_raw = _load_section(data, "node")
+    if "public_ipv6_address" not in node_raw:
+        legacy_ip = str(node_raw.get("public_ip_address", "") or "").strip()
+        if legacy_ip:
+            try:
+                parsed = ipaddress.ip_address(legacy_ip)
+            except ValueError:
+                parsed = None
+            if parsed is not None and parsed.version == 6:
+                node_raw["public_ip_address"] = ""
+                node_raw["public_ipv6_address"] = legacy_ip
+    node = NodeConfig(**node_raw)
     telnet_raw = _load_section(data, "telnet")
     if "ports" in telnet_raw:
         telnet_raw["ports"] = parse_telnet_ports(telnet_raw.get("ports"), fallback=int(telnet_raw.get("port", 7300)))
