@@ -6140,7 +6140,9 @@ if (restoreWebSession()) {
                     email=str(req["email"] or ""),
                     privilege="user",
                 )
-                if int(req["email_verified"] or 0):
+                _reg_state, verified_epoch, _remaining = await registration_state(self.store, call)
+                request_email_verified = bool(int(req["email_verified"] or 0)) or verified_epoch > 0
+                if request_email_verified:
                     await mark_email_verified(self.store, call, now_epoch=now)
                     verification_sent = False
                     approved_notice_sent = False

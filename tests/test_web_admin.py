@@ -721,6 +721,48 @@ def test_registration_approval_creates_authenticated_user_record(tmp_path) -> No
     asyncio.run(run())
 
 
+def test_registration_approval_uses_stored_email_verification_for_notice(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "approve_registration_verified_pref.db")
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = WebAdminServer(config=cfg, store=store, started_at=datetime.now(timezone.utc), session_count_fn=lambda: 0)
+        sent: list[tuple[str, str, str]] = []
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N0CALL", now, email="joe@example.test", privilege="")
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
+        await store.upsert_registration_request(
+            "N0CALL",
+            now,
+            display_name="Joe",
+            email="joe@example.test",
+            source="telnet",
+            email_verified=False,
+            status="pending",
+        )
+        try:
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/registrations/approve",
+                headers={"Content-Type": "application/json", "X-Admin-Token": "adm"},
+                body=json.dumps({"call": "N0CALL"}).encode("utf-8"),
+            )
+            assert code == 200
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["approved_notice_sent"] is True
+            assert payload["verification_sent"] is False
+            assert sent and sent[-1][0] == "joe@example.test"
+            assert "registration approved" in sent[-1][1].lower()
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_user_save_preserves_explicit_grid_square_when_qth_is_already_set(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "user_save_qra.db")

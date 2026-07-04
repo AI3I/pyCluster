@@ -10,6 +10,7 @@ from pycluster.peer_profiles import (
 def test_normalize_profile() -> None:
     assert normalize_profile("pycluster") == "pycluster"
     assert normalize_profile("ARCLUSTER") == "arcluster"
+    assert normalize_profile("spider") == "dxspider"
     assert normalize_profile("unknown") == "pycluster"
 
 

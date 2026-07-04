@@ -1395,7 +1395,7 @@ def test_ingest_pc23_relays_wwv_to_other_peers(tmp_path) -> None:
             captured.append((peer, frame))
 
         async def _stats():
-            return {"PEER2": {"profile": "dxspider"}, "PEER3": {"profile": "dxspider"}}
+            return {"PEER2": {"profile": "dxspider"}, "PEER3": {"profile": "spider"}}
 
         app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
         app.node_link.send = _send  # type: ignore[method-assign]
