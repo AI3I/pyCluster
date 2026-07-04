@@ -14,7 +14,7 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
 
 ## Community
 
-- groups.io: https://groups.io/g/pycluster
+- Groups.io: https://groups.io/g/pycluster
 - Slack: https://pyclusterapp.slack.com/
 
 The groups.io list and Slack workspace are good places to sign up, collaborate, discuss operations, and coordinate testing.
@@ -408,7 +408,7 @@ pyCluster can automatically prune older operational data.
 
 ## 🙏 Credits
 
-pyCluster is created and led by John D. Lewis, AI3I and Joe Reed, N9JR with help from ChatGPT OpenAI Codex and Anthropic Claude AI.
+pyCluster was created by John D. Lewis, AI3I, with direction from Joe Reed, N9JR, and help from ChatGPT OpenAI Codex and Anthropic Claude AI.
 
 Special thanks for advice, assistance, consideration and testing:
 
