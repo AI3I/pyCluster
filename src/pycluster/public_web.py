@@ -388,6 +388,7 @@ class PublicWebServer:
         note: str,
         source: str,
         email_verified: bool,
+        password: str = "",
     ) -> None:
         now = int(time.time())
         await self.store.upsert_user_registry(
@@ -402,6 +403,8 @@ class PublicWebServer:
         )
         if email_verified:
             await mark_email_verified(self.store, call, now_epoch=now)
+        if password:
+            await self.store.set_user_pref(call, "password", hash_password(password), now)
         await self.store.upsert_registration_request(
             call,
             now,
@@ -600,6 +603,8 @@ class PublicWebServer:
             "profile_mfa_email_cancelled": "Email MFA verification cancelled.",
             "profile_mfa_authenticator_prompt": "Enter your authenticator code:",
             "profile_mfa_enter_code": "Enter the MFA code first.",
+            "register_required_fields": "Callsign, email, and password are required.",
+            "register_password_mismatch": "Passwords do not match.",
             "presets_login_required": "Log in to save presets.",
             "presets_save_failed": "Saving presets failed:",
             "presets_load_failed": "Loading presets failed:",
@@ -1714,11 +1719,19 @@ class PublicWebServer:
                 qra = extract_locator(str(payload.get("qra", "")).strip().upper())[:16]
                 email = str(payload.get("email", "")).strip()
                 note = str(payload.get("note", "")).strip()[:160]
+                password = str(payload.get("password", ""))
+                password_confirm = str(payload.get("password_confirm", ""))
                 if not is_valid_registration_call(call):
                     await self._write_response(writer, 400, self._json({"error": "invalid callsign"}))
                     return
                 if not has_valid_email(email):
                     await self._write_response(writer, 400, self._json({"error": "valid email required"}))
+                    return
+                if not password.strip():
+                    await self._write_response(writer, 400, self._json({"error": "password is required"}))
+                    return
+                if password != password_confirm:
+                    await self._write_response(writer, 400, self._json({"error": "passwords do not match"}))
                     return
                 reg = await self.store.get_user_registry(call)
                 if reg is not None:
@@ -1755,6 +1768,7 @@ class PublicWebServer:
                     note=note,
                     source="public-web",
                     email_verified=True,
+                    password=password,
                 )
                 await self._write_response(writer, 200, self._json({"ok": True, "call": call, "pending": True}))
                 return
@@ -1782,6 +1796,12 @@ class PublicWebServer:
                 if reg is None:
                     self._log_auth_failure(writer, headers, "public-web", call, "registration_required")
                     await self._write_response(writer, 403, self._json({"error": "registration required"}))
+                    return
+                req = await self.store.get_registration_request(call)
+                req_status = str(req["status"] or "").strip().lower() if req is not None else ""
+                if req_status and req_status != "approved":
+                    self._log_auth_failure(writer, headers, "public-web", call, "registration_pending")
+                    await self._write_response(writer, 403, self._json({"error": "registration pending"}))
                     return
                 if not self._has_valid_email(str(reg["email"] or "")):
                     self._log_auth_failure(writer, headers, "public-web", call, "valid_email_required")

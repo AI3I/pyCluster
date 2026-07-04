@@ -1978,6 +1978,14 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <label for="register-email">Email</label>
         <input id="register-email" type="email" maxlength="120" placeholder="operator@example.org">
       </div>
+      <div class="field">
+        <label for="register-password">Password</label>
+        <input id="register-password" type="password" maxlength="128" autocomplete="new-password" placeholder="Password">
+      </div>
+      <div class="field">
+        <label for="register-password-confirm">Confirm Password</label>
+        <input id="register-password-confirm" type="password" maxlength="128" autocomplete="new-password" placeholder="Confirm password">
+      </div>
       <div class="field span-2">
         <label for="register-note">Note to Sysop</label>
         <input id="register-note" type="text" maxlength="160" placeholder="Optional note">
@@ -2494,7 +2502,7 @@ function setRegisterStatus(msg, cls='') {
 
 function openRegisterModal() {
   registerChallengeId = '';
-  ['register-call','register-name','register-homenode','register-qra','register-qth','register-email','register-note','register-otp'].forEach((id) => {
+  ['register-call','register-name','register-homenode','register-qra','register-qth','register-email','register-password','register-password-confirm','register-note','register-otp'].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -2521,10 +2529,16 @@ async function submitRegisterRequest() {
     qth: (document.getElementById('register-qth')?.value || '').trim(),
     qra: (document.getElementById('register-qra')?.value || '').trim().toUpperCase(),
     email: (document.getElementById('register-email')?.value || '').trim(),
+    password: document.getElementById('register-password')?.value || '',
+    password_confirm: document.getElementById('register-password-confirm')?.value || '',
     note: (document.getElementById('register-note')?.value || '').trim(),
   };
-  if (!payload.call || !payload.email) {
-    setRegisterStatus('Callsign and email are required.', 'err');
+  if (!payload.call || !payload.email || !payload.password) {
+    setRegisterStatus(uiText('register_required_fields'), 'err');
+    return;
+  }
+  if (payload.password !== payload.password_confirm) {
+    setRegisterStatus(uiText('register_password_mismatch'), 'err');
     return;
   }
   const submit = document.getElementById('register-submit');
