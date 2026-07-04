@@ -1676,12 +1676,18 @@ html.light .panel{ box-shadow:0 10px 24px rgba(17,24,39,.06); }
 .auth-layout .form-grid.compact-controls{
   grid-template-columns:repeat(2,minmax(0,1fr));
 }
-.auth-layout input,
-.auth-layout select{
-  min-height:36px;
-  padding:7px 10px;
+#node-group-auth .form-grid.compact-controls input:not([type="checkbox"]),
+#node-group-auth .form-grid.compact-controls select{
+  height:34px;
+  min-height:34px;
+  padding:5px 9px;
+  border-radius:8px;
+  line-height:1.15;
 }
-.auth-layout .field{
+#node-group-auth .form-grid.compact-controls select{
+  padding-right:32px;
+}
+#node-group-auth .form-grid.compact-controls .field{
   gap:4px;
 }
 .maintenance-toggle-row{
