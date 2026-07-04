@@ -27,7 +27,7 @@ class WirePcFrame:
     payload_fields: list[str]
 
 
-def _valid_public_replacement(raw: str) -> str:
+def _valid_public_replacement(raw: str, version: int | None = None) -> str:
     text = str(raw or "").strip()
     if not text:
         return ""
@@ -35,19 +35,26 @@ def _valid_public_replacement(raw: str) -> str:
         ip = ipaddress.ip_address(text)
     except ValueError:
         return ""
+    if version is not None and ip.version != version:
+        return ""
     return text if ip.is_global else ""
 
 
-def _replace_private_ip_token(match: re.Match[str], replacement: str) -> str:
+def _replacement_for_version(replacements: dict[int, str], version: int) -> str:
+    return replacements.get(version) or replacements.get(0, "")
+
+
+def _replace_private_ip_token(match: re.Match[str], replacements: dict[int, str]) -> str:
     token = match.group(0)
     try:
         ip = ipaddress.ip_address(token)
     except ValueError:
         return token
-    return replacement if not ip.is_global else token
+    replacement = _replacement_for_version(replacements, ip.version)
+    return replacement if replacement and not ip.is_global else token
 
 
-def _replace_private_ip_literal(raw: str, replacement: str) -> str:
+def _replace_private_ip_literal(raw: str, replacements: dict[int, str]) -> str:
     token = str(raw or "").strip()
     bracketed = token.startswith("[") and token.endswith("]")
     candidate = token[1:-1] if bracketed else token
@@ -55,14 +62,15 @@ def _replace_private_ip_literal(raw: str, replacement: str) -> str:
         ip = ipaddress.ip_address(candidate)
     except ValueError:
         return raw
-    if ip.is_global:
+    replacement = _replacement_for_version(replacements, ip.version)
+    if ip.is_global or not replacement:
         return raw
     return f"[{replacement}]" if bracketed and ":" in replacement else replacement
 
 
-def _sanitize_pc92_field(field: str, replacement: str) -> str:
-    text = _IPV4_TOKEN_RE.sub(lambda m: _replace_private_ip_token(m, replacement), field)
-    direct = _replace_private_ip_literal(text, replacement)
+def _sanitize_pc92_field(field: str, replacements: dict[int, str]) -> str:
+    text = _IPV4_TOKEN_RE.sub(lambda m: _replace_private_ip_token(m, replacements), field)
+    direct = _replace_private_ip_literal(text, replacements)
     if direct != text:
         return direct
     prefix, sep, suffix = text.partition(":")
@@ -70,18 +78,23 @@ def _sanitize_pc92_field(field: str, replacement: str) -> str:
         return text
     if "." in prefix or " " in prefix:
         return text
-    replaced = _replace_private_ip_literal(suffix, replacement)
+    replaced = _replace_private_ip_literal(suffix, replacements)
     return f"{prefix}:{replaced}" if replaced != suffix else text
 
 
-def sanitize_pc92_private_ips(frame: WirePcFrame, public_ip_address: str) -> WirePcFrame:
+def sanitize_pc92_private_ips(frame: WirePcFrame, public_ip_address: str, public_ipv6_address: str = "") -> WirePcFrame:
     """Replace non-public IP literals in outbound PC92 payloads."""
     if frame.pc_type.upper() != "PC92":
         return frame
-    replacement = _valid_public_replacement(public_ip_address)
-    if not replacement:
+    legacy = _valid_public_replacement(public_ip_address)
+    replacements = {
+        0: legacy,
+        4: _valid_public_replacement(public_ip_address, 4) or legacy,
+        6: _valid_public_replacement(public_ipv6_address, 6) or legacy,
+    }
+    if not any(replacements.values()):
         return frame
-    fields = [_sanitize_pc92_field(field, replacement) for field in frame.payload_fields]
+    fields = [_sanitize_pc92_field(field, replacements) for field in frame.payload_fields]
     return WirePcFrame(frame.pc_type, fields)
 
 
