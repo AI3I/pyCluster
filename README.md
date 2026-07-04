@@ -12,6 +12,13 @@ It keeps the familiar telnet-style operator experience, adds a public web UI and
   - [pycluster.ai3i.net:7373](telnet://pycluster.ai3i.net:7373)
   - [pycluster.ai3i.net:8000](telnet://pycluster.ai3i.net:8000)
 
+## Community
+
+- groups.io: https://groups.io/g/pycluster
+- Slack: https://pyclusterapp.slack.com/
+
+The groups.io list and Slack workspace are good places to sign up, collaborate, discuss operations, and coordinate testing.
+
 ## ✨ Highlights
 
 - Telnet-first DX cluster workflow with modernized operator output
