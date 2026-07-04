@@ -10989,9 +10989,12 @@ class TelnetClusterServer:
                     if line is None:
                         break
                     if line.strip().lower() == "register":
+                        await self._flush_rbn_live_queue()
                         keep_going, output = True, await self._run_register_interactive(call, reader, writer)
                     else:
+                        await self._flush_rbn_live_queue()
                         keep_going, output = await self._execute_command(call, line)
+                    await self._flush_rbn_live_queue()
                     if output:
                         await self._write(writer, output)
                     if not keep_going:

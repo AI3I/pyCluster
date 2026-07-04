@@ -3788,6 +3788,16 @@ def test_web_users_matrix_toggle_endpoint_updates_status_and_access(tmp_path) ->
 
             code, _, body = await _http_request(
                 srv,
+                "GET",
+                "/api/users?search=ZZ2AA",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["rows"][0]["rbn_enabled"] is False
+
+            code, _, body = await _http_request(
+                srv,
                 "POST",
                 "/api/users/toggle",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},

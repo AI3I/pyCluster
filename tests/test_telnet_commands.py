@@ -1800,6 +1800,33 @@ def test_show_dx_ignores_spot_filters_and_show_mydx_applies_them(tmp_path) -> No
     asyncio.run(run())
 
 
+def test_show_dx_shortcuts_do_not_return_rbn_history(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_dx_shortcuts_rbn.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.add_spot(Spot(14011.2, "WS3W", now, "CW 6dB Q:3 Z:5", "KD2OGR-#", "RBN", ""))
+            await store.add_spot(Spot(50140.0, "N3ALN", now + 1, "", "N3ALN", "N2WQ-1", ""))
+
+            _, out = await srv._execute_command("N0CALL", "sh/dx")
+            assert "N3ALN" in out
+            assert "WS3W" not in out
+            assert "RBN reports" not in out
+
+            _, out = await srv._execute_command("N0CALL", "sh/mydx")
+            assert "N3ALN" in out
+            assert "WS3W" not in out
+            assert "RBN reports" not in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_show_mydx_filtering_fills_requested_count_from_deeper_history(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "spot_filter_show_limit.db")
