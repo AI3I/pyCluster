@@ -1161,7 +1161,8 @@ class PublicWebServer:
         comment = str(spot.get("comment") or "")
 
         if first == "on" and rest:
-            return str(spot.get("band") or "").lower() == rest.split()[0].lower()
+            wanted = {tok.strip().lower() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
+            return str(spot.get("band") or "").lower() in wanted
         if first == "by" and rest:
             pat = rest.upper()
             return fnmatch.fnmatchcase(spotter, pat) if any(ch in pat for ch in "*?") else spotter.startswith(pat)

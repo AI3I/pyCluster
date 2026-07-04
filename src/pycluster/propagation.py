@@ -37,6 +37,135 @@ def estimate_sunspots_from_sfi(sfi: int | float | None) -> int | None:
     return max(0, int(round((float(sfi) - 85.0) * 2.0)))
 
 
+def minimuf_sunspots_from_sfi(sfi: int | float | None) -> float | None:
+    if sfi is None:
+        return None
+    flux = float(sfi)
+    if flux < 65:
+        return 0.0
+    if flux < 110:
+        temp = flux - 200.6
+        return 108.36 - 0.005896 * temp * temp
+    if flux < 213:
+        return 60.0 + 1.0680 * (flux - 110.0)
+    temp = flux - 652.9
+    return 384.0 - 0.0011059 * temp * temp
+
+
+def _sgn(value: float) -> int:
+    if value == 0:
+        return 0
+    return 1 if value > 0 else -1
+
+
+def minimuf35_muf(
+    sfi: int | float | None,
+    when: datetime,
+    lat1_deg: float,
+    lon1_deg: float,
+    lat2_deg: float,
+    lon2_deg: float,
+) -> float | None:
+    """Return a MINIMUF 3.5-style path MUF in MHz.
+
+    This follows the QST December 1982 MINIMUF 3.5 geometry used by
+    traditional DXCluster implementations. Input longitudes are normal
+    east-positive degrees; the model internally uses west-positive radians.
+    """
+    ssn = minimuf_sunspots_from_sfi(sfi)
+    if ssn is None:
+        return None
+    dt = when.astimezone(timezone.utc)
+    month = dt.month
+    day = dt.day
+    hour = dt.hour
+    lat1 = math.radians(float(lat1_deg))
+    lat2 = math.radians(float(lat2_deg))
+    lon1 = math.radians(-float(lon1_deg))
+    lon2 = math.radians(-float(lon2_deg))
+    halfpi = math.pi / 2.0
+    pi2 = math.pi * 2.0
+
+    ftemp = math.sin(lat1) * math.sin(lat2) + math.cos(lat1) * math.cos(lat2) * math.cos(lon2 - lon1)
+    ftemp = max(-1.0, min(1.0, ftemp))
+    dist = math.acos(ftemp)
+    if dist <= 0.0:
+        return None
+    k6 = max(1.0, 1.59 * dist)
+    p = math.sin(lat2)
+    q = math.cos(lat2)
+    denom = q * math.sin(dist)
+    if abs(denom) < 1e-9:
+        return None
+    a = (math.sin(lat1) - p * math.cos(dist)) / denom
+    y1 = 0.0172 * (10.0 + (month - 1) * 30.4 + day)
+    y2 = 0.409 * math.cos(y1)
+    ftemp = min(halfpi, 2.5 * dist / k6)
+    ftemp = math.sin(ftemp)
+    m9 = 1.0 + 2.5 * ftemp * math.sqrt(ftemp)
+    muf = 100.0
+
+    step = abs(0.9999 - 1.0 / k6)
+    if step <= 0.0:
+        step = 1.0
+    k1 = 1.0 / (2.0 * k6)
+    while k1 <= 1.0 - 1.0 / (2.0 * k6) + 1e-9:
+        gtemp = dist * k1
+        ftemp = p * math.cos(gtemp) + q * math.sin(gtemp) * a
+        ftemp = max(-1.0, min(1.0, ftemp))
+        y3 = halfpi - math.acos(ftemp)
+        root = max(1e-12, 1.0 - ftemp * ftemp)
+        denom2 = q * math.sqrt(root)
+        if abs(denom2) < 1e-9:
+            k1 += step
+            continue
+        ftemp = (math.cos(gtemp) - ftemp * p) / denom2
+        ftemp = max(-1.0, min(1.0, ftemp))
+        ftemp = lon2 + _sgn(math.sin(lon1 - lon2)) * math.acos(ftemp)
+        if ftemp < 0:
+            ftemp += pi2
+        if ftemp >= pi2:
+            ftemp -= pi2
+        ftemp = 3.82 * ftemp + 12.0 + 0.13 * (math.sin(y1) + 1.2 * math.sin(2.0 * y1))
+        k8 = ftemp - 12.0 * (1 + _sgn(ftemp - 24.0)) * _sgn(abs(ftemp - 24.0))
+        if math.cos(y3 + y2) <= -0.26:
+            k9 = 0.0
+            g0 = 0.0
+        else:
+            denom3 = math.cos(y2) * math.cos(y3) + 0.001
+            ftemp = (-0.26 + math.sin(y2) * math.sin(y3)) / denom3
+            root = max(1e-12, abs(1.0 - ftemp * ftemp))
+            k9 = 12.0 - math.atan(ftemp / math.sqrt(root)) * 7.639437
+            if abs(k9) < 1e-9:
+                g0 = 0.0
+            else:
+                t = k8 - k9 / 2.0 + 12.0 * (1 - _sgn(k8 - k9 / 2.0)) * _sgn(abs(k8 - k9 / 2.0))
+                t4 = k8 + k9 / 2.0 - 12.0 * (1 + _sgn(k8 + k9 / 2.0 - 24.0)) * _sgn(abs(k8 + k9 / 2.0 - 24.0))
+                c0 = abs(math.cos(y3 + y2))
+                t9 = max(0.1, 9.7 * (c0 ** 9.6))
+                g8 = math.pi * t9 / k9
+                if (t4 < t and (hour - t4) * (t - hour) > 0.0) or (t4 >= t and (hour - t) * (t4 - hour) <= 0.0):
+                    ftemp = hour + 12.0 * (1 + _sgn(t4 - hour)) * _sgn(abs(t4 - hour))
+                    ftemp = (t4 - ftemp) / 2.0
+                    g0 = c0 * (g8 * (math.exp(-k9 / t9) + 1.0)) * math.exp(ftemp) / (1.0 + g8 * g8)
+                else:
+                    ftemp = hour + 12.0 * (1 + _sgn(t - hour)) * _sgn(abs(t - hour))
+                    gtemp = math.pi * (ftemp - t) / k9
+                    ftemp = (t - ftemp) / t9
+                    g0 = c0 * (math.sin(gtemp) + g8 * (math.exp(ftemp) - math.cos(gtemp))) / (1.0 + g8 * g8)
+                    floor = c0 * (g8 * (math.exp(-k9 / t9) + 1.0)) * math.exp((k9 - 24.0) / 2.0) / (1.0 + g8 * g8)
+                    if g0 < floor:
+                        g0 = floor
+        ftemp = (1.0 + ssn / 250.0) * m9 * math.sqrt(6.0 + 58.0 * math.sqrt(max(0.0, g0)))
+        ftemp *= 1.0 - 0.1 * math.exp((k9 - 24.0) / 3.0)
+        ftemp *= 1.0 + 0.1 * (1 - _sgn(lat1) * _sgn(lat2))
+        ftemp *= 1.0 - 0.1 * (1 + _sgn(abs(math.sin(y3)) - math.cos(y3)))
+        if ftemp < muf:
+            muf = ftemp
+        k1 += step
+    return max(0.0, muf)
+
+
 def effective_muf_for_zenith(muf_mhz: float, zenith_deg: float) -> float:
     if zenith_deg >= 90.0:
         return 0.0

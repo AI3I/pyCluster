@@ -338,8 +338,11 @@ class ClusterApp:
                 return False
             return True if not rest else self._spot_matches_filter_expr(spot, rest)
         if first == "on" and rest:
-            rng = BAND_RANGES.get(rest.split()[0].lower())
-            return bool(rng and rng[0] <= float(spot.freq_khz) <= rng[1])
+            wanted = [tok.strip().lower() for tok in re.split(r"[,\s]+", rest) if tok.strip()]
+            return any(
+                (rng := BAND_RANGES.get(band)) is not None and rng[0] <= float(spot.freq_khz) <= rng[1]
+                for band in wanted
+            )
         if first == "by" and rest:
             pat = rest.upper()
             return fnmatch.fnmatchcase(spotter, pat) if any(ch in pat for ch in "*?") else spotter.startswith(pat)
