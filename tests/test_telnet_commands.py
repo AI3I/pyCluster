@@ -2634,7 +2634,7 @@ def test_live_rbn_spots_are_grouped_into_dxspider_style_summary(tmp_path) -> Non
             samples = [
                 Spot(14011.2, "N9JR", now, "CW 6 dB 21 WPM CQ", "WS3W", "RBN", ""),
                 Spot(14011.2, "N9JR", now + 2, "CW 17 dB 21 WPM CQ", "W1NT", "RBN", ""),
-                Spot(14011.2, "N9JR", now + 4, "CW 36 dB 21 WPM CQ", "KD7EFG", "RBN", ""),
+                Spot(14011.2, "N9JR", now + 62, "CW 36 dB 21 WPM CQ", "KD7EFG", "RBN", ""),
             ]
             before = len(writer.buffer)
             for spot in samples:
@@ -6870,6 +6870,48 @@ def test_first_login_interview_defaults_blank_qra_to_node_locator(tmp_path) -> N
             row = await store.get_user_registry("N0CALL")
             assert row is not None
             assert str(row["qra"]) == "FN20"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_first_login_interview_does_not_offer_mfa_before_email_verified(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "interview_no_mfa_before_verified.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry(
+            "N0CALL",
+            now,
+            display_name="Alice Example",
+            home_node="W1AW",
+            qth="Milwaukee, WI",
+            qra="EN63AA",
+            email="alice@example.test",
+            privilege="user",
+        )
+        await store.set_user_pref("N0CALL", "homenode", "W1AW", now)
+        await store.set_user_pref("N0CALL", "forward_lat", "43.0389", now)
+        await store.set_user_pref("N0CALL", "forward_lon", "-87.9065", now)
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        reader.feed_eof()
+        try:
+            ok = await srv._run_first_login_interview(
+                "N0CALL",
+                reader,
+                writer,  # type: ignore[arg-type]
+                node_family="",
+                password_set=True,
+            )
+            assert ok is True
+            assert b"Enable email MFA now?" not in bytes(writer.buffer)
+            assert await store.get_user_pref("N0CALL", "mfa_email_otp") is None
         finally:
             await store.close()
 

@@ -51,6 +51,12 @@ def test_pc92_sanitizer_prefers_same_family_replacements() -> None:
     assert cleaned.payload_fields[5] == "5V6:[2606:4700:4700::1111]"
 
 
+def test_pc92_sanitizer_replaces_localhost_path_alias() -> None:
+    frame = WirePcFrame("PC92", ["N9JR-2", "61551", "A", "", "7N9JR-3:localhost", "H99", ""])
+    cleaned = sanitize_pc92_private_ips(frame, "44.1.2.3")
+    assert cleaned.payload_fields[4] == "7N9JR-3:44.1.2.3"
+
+
 def test_pc93_roundtrip() -> None:
     _roundtrip(
         "1772323200^<- I WB3FFV-2 PC93^YO3FCA-8^0^*^YO3FCA-8^*^DXspider Node YO3FCA-8 *** Telnet amprnet.ddns.net : 7301 *** CW/RTTY/FTx RBN ***^^127.0.0.1^H94^"

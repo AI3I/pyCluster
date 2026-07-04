@@ -17,6 +17,8 @@ _ALLOWED_BY_PROFILE: dict[str, set[str]] = {
 
 def normalize_profile(profile: str) -> str:
     p = (profile or "").strip().lower()
+    if p == "spider":
+        return "dxspider"
     if p in {"pycluster", "dxspider", "arcluster", "dxnet", "clx"}:
         return p
     return "pycluster"

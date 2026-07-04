@@ -1079,6 +1079,8 @@ def test_public_static_keeps_button_icons_but_not_taxonomy_emoji_labels() -> Non
     assert 'id="profile-close" type="button" title="Close" aria-label="Close profile">✕</button>' in text
     assert 'id="login-close" type="button" title="Close" aria-label="Close login">✕</button>' in text
     assert 'id="register-close" type="button" title="Close" aria-label="Close registration">✕</button>' in text
+    assert ".toast {\n  background:var(--bg-card);" in text
+    assert "html.light .toast" in text
 
     comment_tags = text.split("let COMMENT_TAGS = [", 1)[1].split("];", 1)[0]
     assert not re.search(r"label:'[^']*[\U0001F000-\U0001FAFF\u2600-\u27BF]", comment_tags)

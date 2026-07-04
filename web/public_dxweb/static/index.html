@@ -865,12 +865,13 @@ html.light .watch-type option { background:#ffffff; color:#111827; }
   display:flex; flex-direction:column-reverse; gap:6px; pointer-events:none;
 }
 .toast {
-  background:rgba(13,20,36,.96); border:1px solid var(--border-card);
+  background:var(--bg-card); border:1px solid var(--border-card);
   border-left:3px solid var(--accent); border-radius:7px;
   padding:7px 13px; font-size:0.73rem; color:var(--text-primary);
-  box-shadow:0 4px 20px rgba(0,0,0,.5); pointer-events:auto;
+  box-shadow:0 4px 20px rgba(0,0,0,.32); pointer-events:auto;
   animation:toastIn .25s ease-out; max-width:260px; cursor:pointer;
 }
+html.light .toast { box-shadow:0 8px 24px rgba(15,23,42,.14); }
 .toast .t-call { color:var(--accent); font-weight:700; font-size:0.80rem; }
 .toast .t-sub  { color:var(--text-secondary); font-size:0.67rem; margin-top:1px; }
 .toast.texiting { animation:toastOut .3s ease-in forwards; }

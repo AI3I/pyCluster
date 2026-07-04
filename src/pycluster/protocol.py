@@ -58,6 +58,9 @@ def _replace_private_ip_literal(raw: str, replacements: dict[int, str]) -> str:
     token = str(raw or "").strip()
     bracketed = token.startswith("[") and token.endswith("]")
     candidate = token[1:-1] if bracketed else token
+    if candidate.lower() == "localhost":
+        replacement = _replacement_for_version(replacements, 4)
+        return replacement or raw
     try:
         ip = ipaddress.ip_address(candidate)
     except ValueError:

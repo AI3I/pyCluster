@@ -1165,7 +1165,7 @@ class TelnetClusterServer:
         return rbn_summary_info(rbn_mode(info), rbn_db(info), rbn_quality(info) or 1, zones)
 
     def _rbn_live_group_key(self, session_id: int, spot: Spot) -> tuple[int, int, int, str, str]:
-        minute_epoch = int(spot.epoch) - (int(spot.epoch) % 60)
+        minute_epoch = int(spot.epoch) - (int(spot.epoch) % 300)
         freq_bucket = int(round(float(spot.freq_khz)))
         return (session_id, minute_epoch, freq_bucket, normalize_call(spot.dx_call), rbn_mode(spot.info))
 
@@ -1175,7 +1175,7 @@ class TelnetClusterServer:
             key,
             {
                 "session_id": session_id,
-                "epoch": int(spot.epoch) - (int(spot.epoch) % 60),
+                "epoch": int(spot.epoch),
                 "dx_call": normalize_call(spot.dx_call),
                 "mode": rbn_mode(spot.info),
                 "freq_votes": {},
@@ -1190,6 +1190,7 @@ class TelnetClusterServer:
         freq_votes = group["freq_votes"] if isinstance(group.get("freq_votes"), dict) else {}
         freq_votes[freq] = int(freq_votes.get(freq, 0)) + 1
         group["freq_votes"] = freq_votes
+        group["epoch"] = min(int(group.get("epoch") or spot.epoch), int(spot.epoch))
         spotters = group["spotters"] if isinstance(group.get("spotters"), set) else set()
         spotters.add(normalize_call(spot.spotter))
         group["spotters"] = spotters
@@ -2388,6 +2389,8 @@ class TelnetClusterServer:
         has_coords = bool(str(prefs.get("forward_lat", "")).strip() and str(prefs.get("forward_lon", "")).strip())
         raw_mfa = await self.store.get_user_pref(call, "mfa_email_otp")
         mfa_txt = str(raw_mfa or "").strip().lower()
+        _reg_state, verified_epoch, _remaining = await registration_state(self.store, call)
+        can_offer_mfa = verified_epoch > 0
         needs_interview = any(
             (
                 not str(reg_row.get("display_name") or "").strip(),
@@ -2396,7 +2399,7 @@ class TelnetClusterServer:
                 not str(reg_row.get("qra") or "").strip(),
                 not has_coords,
                 not has_valid_email(str(reg_row.get("email") or "").strip()),
-                self._smtp.enabled() and has_valid_email(str(reg_row.get("email") or "").strip()) and mfa_txt not in {"required", "off"},
+                can_offer_mfa and self._smtp.enabled() and has_valid_email(str(reg_row.get("email") or "").strip()) and mfa_txt not in {"required", "off"},
             )
         )
         if not needs_interview:
@@ -2568,7 +2571,7 @@ class TelnetClusterServer:
                 )
 
         email = str(reg_row.get("email") or "").strip()
-        if self._smtp.enabled() and has_valid_email(email) and mfa_txt not in {"required", "off"}:
+        if can_offer_mfa and self._smtp.enabled() and has_valid_email(email) and mfa_txt not in {"required", "off"}:
             answer = await self._prompt_optional_value(
                 reader,
                 writer,

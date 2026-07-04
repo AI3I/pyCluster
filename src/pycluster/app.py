@@ -1889,7 +1889,7 @@ class ClusterApp:
                 await self.node_link.mark_policy_drop(name, f"relay_peer_{category}_disabled")
                 continue
             frame: WirePcFrame
-            peer_profile = profiles.get(name, "dxspider")
+            peer_profile = normalize_profile(str(profiles.get(name, "dxspider") or "dxspider"))
             if peer_profile == "dxspider" and category in {"announce", "wx"}:
                 frame = WirePcFrame(
                     "PC12",
