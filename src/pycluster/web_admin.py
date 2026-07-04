@@ -1676,6 +1676,14 @@ html.light .panel{ box-shadow:0 10px 24px rgba(17,24,39,.06); }
 .auth-layout .form-grid.compact-controls{
   grid-template-columns:repeat(2,minmax(0,1fr));
 }
+.auth-layout input,
+.auth-layout select{
+  min-height:36px;
+  padding:7px 10px;
+}
+.auth-layout .field{
+  gap:4px;
+}
 .maintenance-toggle-row{
   margin-bottom:12px;
 }

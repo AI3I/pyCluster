@@ -29,7 +29,14 @@ from .geomag import canonicalize_wcy_text, canonicalize_wwv_text, derive_wcy_fro
 from .models import Spot, display_call, is_valid_call, is_valid_registration_call, normalize_call
 from .pathmeta import describe_session_path, normalize_recorded_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
-from .propagation import effective_muf_for_zenith, estimate_muf3000, estimate_sunspots_from_sfi, signal_report_for_muf
+from .propagation import (
+    effective_muf_for_zenith,
+    estimate_muf3000,
+    estimate_sunspots_from_sfi,
+    minimuf35_muf,
+    minimuf_sunspots_from_sfi,
+    signal_report_for_muf,
+)
 from .qrz import QRZClient, QRZLookupError
 from .registration import consume_grace_login, has_valid_email, mark_email_unverified, mark_email_verified, registration_state
 from .rbn import is_rbn_spot, rbn_db, rbn_mode, rbn_quality, rbn_summary_info, rbn_zones
@@ -300,6 +307,9 @@ class TelnetClusterServer:
         self._smtp = SMTPMailer(self.config.smtp)
         self._mfa = EmailOtpManager(self.config.mfa, self._smtp.send_code, store)
         self._telnet_option_seen: set[int] = set()
+        self._rbn_live_groups: dict[tuple[int, int, int, str, str], dict[str, object]] = {}
+        self._rbn_live_flush_task: asyncio.Task[None] | None = None
+        self._rbn_live_dwell_seconds = 2.0
         self._cty_loaded = False
         self._wpx_loaded = False
         self._cty_mtime_ns = 0
@@ -879,6 +889,14 @@ class TelnetClusterServer:
         self._keps_refresh_task = asyncio.create_task(self._keps_refresh_loop(), name="pycluster-keps-refresh")
 
     async def stop(self) -> None:
+        await self._flush_rbn_live_queue()
+        if self._rbn_live_flush_task:
+            self._rbn_live_flush_task.cancel()
+            try:
+                await self._rbn_live_flush_task
+            except asyncio.CancelledError:
+                pass
+            self._rbn_live_flush_task = None
         if self._keps_refresh_task:
             self._keps_refresh_task.cancel()
             try:
@@ -949,10 +967,11 @@ class TelnetClusterServer:
             return True
 
         if first == "on" and rest:
-            band = rest.split()[0]
-            rng = BAND_RANGES.get(band)
-            if rng:
-                return rng[0] <= freq_khz <= rng[1]
+            for band in [tok.strip().lower() for tok in re.split(r"[,\s]+", rest) if tok.strip()]:
+                rng = BAND_RANGES.get(band)
+                if rng and rng[0] <= freq_khz <= rng[1]:
+                    return True
+            return False
 
         if first == "by" and rest:
             pat = rest.upper()
@@ -1145,6 +1164,96 @@ class TelnetClusterServer:
         zones = [zone] if zone is not None else rbn_zones(info)
         return rbn_summary_info(rbn_mode(info), rbn_db(info), rbn_quality(info) or 1, zones)
 
+    def _rbn_live_group_key(self, session_id: int, spot: Spot) -> tuple[int, int, int, str, str]:
+        minute_epoch = int(spot.epoch) - (int(spot.epoch) % 60)
+        freq_bucket = int(round(float(spot.freq_khz)))
+        return (session_id, minute_epoch, freq_bucket, normalize_call(spot.dx_call), rbn_mode(spot.info))
+
+    def _queue_rbn_live_spot(self, session_id: int, session: Session, spot: Spot) -> None:
+        key = self._rbn_live_group_key(session_id, spot)
+        group = self._rbn_live_groups.setdefault(
+            key,
+            {
+                "session_id": session_id,
+                "epoch": int(spot.epoch) - (int(spot.epoch) % 60),
+                "dx_call": normalize_call(spot.dx_call),
+                "mode": rbn_mode(spot.info),
+                "freq_votes": {},
+                "spotters": set(),
+                "zones": set(),
+                "db": None,
+                "display_spotter": self._rbn_display_spotter(spot.spotter),
+                "peer_profile": session.peer_profile,
+            },
+        )
+        freq = round(float(spot.freq_khz), 1)
+        freq_votes = group["freq_votes"] if isinstance(group.get("freq_votes"), dict) else {}
+        freq_votes[freq] = int(freq_votes.get(freq, 0)) + 1
+        group["freq_votes"] = freq_votes
+        spotters = group["spotters"] if isinstance(group.get("spotters"), set) else set()
+        spotters.add(normalize_call(spot.spotter))
+        group["spotters"] = spotters
+        zones = group["zones"] if isinstance(group.get("zones"), set) else set()
+        zone = self._rbn_spotter_zone(spot.spotter, spot.info)
+        if zone is not None:
+            zones.add(int(zone))
+        for item in rbn_zones(spot.info):
+            zones.add(int(item))
+        group["zones"] = zones
+        db = rbn_db(spot.info)
+        current_db = group.get("db")
+        if db is not None and (current_db is None or int(db) < int(current_db)):
+            group["db"] = int(db)
+            group["display_spotter"] = self._rbn_display_spotter(spot.spotter)
+        if self._rbn_live_flush_task is None or self._rbn_live_flush_task.done():
+            self._rbn_live_flush_task = asyncio.create_task(self._rbn_live_flush_later(), name="pycluster-rbn-live-flush")
+
+    async def _rbn_live_flush_later(self) -> None:
+        await asyncio.sleep(self._rbn_live_dwell_seconds)
+        await self._flush_rbn_live_queue()
+
+    async def _flush_rbn_live_queue(self) -> int:
+        if not self._rbn_live_groups:
+            return 0
+        groups = sorted(self._rbn_live_groups.values(), key=lambda item: (int(item["epoch"]), str(item["dx_call"])))
+        self._rbn_live_groups = {}
+        delivered = 0
+        for group in groups:
+            session_id = int(group["session_id"])
+            session = self._sessions.get(session_id)
+            if session is None:
+                continue
+            freq_votes = group["freq_votes"] if isinstance(group.get("freq_votes"), dict) else {}
+            if freq_votes:
+                freq = sorted(freq_votes.items(), key=lambda item: (-int(item[1]), float(item[0])))[0][0]
+            else:
+                freq = float(group.get("freq") or 0.0)
+            zones = sorted(group["zones"]) if isinstance(group.get("zones"), set) else []
+            spotters = group["spotters"] if isinstance(group.get("spotters"), set) else set()
+            spot_when = datetime.fromtimestamp(int(group["epoch"]), tz=timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            when = spot_when.strftime("%H%MZ") if spot_when.date() == now_utc.date() else spot_when.strftime("%-d-%b-%Y %H%MZ")
+            info = rbn_summary_info(
+                str(group.get("mode") or "RBN"),
+                int(group["db"]) if group.get("db") is not None else None,
+                max(1, len(spotters)),
+                [int(z) for z in zones],
+            )
+            line = format_live_dx_line_for_profile(
+                profile=str(group.get("peer_profile") or session.peer_profile),
+                freq_khz=float(freq),
+                dx_call=str(group["dx_call"]),
+                when=when,
+                info=info,
+                spotter=str(group.get("display_spotter") or ""),
+                suffix=await self._dx_line_suffix_for_call(session.call, str(group["dx_call"])),
+            )
+            prefix = "\r\n" if not session.async_line_open else ""
+            await self._write(session.writer, f"{prefix}{line}\r\n")
+            session.async_line_open = True
+            delivered += 1
+        return delivered
+
     def _text_matches_expr(self, sender: str, text: str, expr: str) -> bool:
         e = (expr or "").strip()
         if not e:
@@ -1232,19 +1341,23 @@ class TelnetClusterServer:
         else:
             when = spot_when.strftime("%-d-%b-%Y %H%MZ")
         delivered = 0
-        for s in self._sessions.values():
+        is_rbn = self._is_rbn_spot(spot.dx_call, spot.spotter, spot.info)
+        for sid, s in self._sessions.items():
             if not self._is_on_value(s.vars.get("dx"), default=True):
                 continue
             if not await self._spot_passes_filters(s.call, spot.freq_khz, spot.dx_call, spot.spotter, spot.info):
                 continue
-            is_rbn = self._is_rbn_spot(spot.dx_call, spot.spotter, spot.info)
+            if is_rbn:
+                self._queue_rbn_live_spot(sid, s, spot)
+                delivered += 1
+                continue
             line = format_live_dx_line_for_profile(
                 profile=s.peer_profile,
                 freq_khz=spot.freq_khz,
                 dx_call=spot.dx_call,
                 when=when,
-                info=self._rbn_single_summary_info(spot.spotter, spot.info) if is_rbn else spot.info,
-                spotter=self._rbn_display_spotter(spot.spotter) if is_rbn else display_call(spot.spotter),
+                info=spot.info,
+                spotter=display_call(spot.spotter),
                 suffix=await self._dx_line_suffix_for_call(s.call, spot.dx_call),
             )
             prefix = "\r\n" if not s.async_line_open else ""
@@ -1809,10 +1922,7 @@ class TelnetClusterServer:
             return False
         ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="telnet-verify", otp=supplied_otp)
         if not ok:
-            await self._write(
-                writer,
-                self._render_string("registration.verify_failed", "Verification failed ({reason}).", reason=reason) + "\r\n",
-            )
+            await self._write(writer, self._registration_verify_failure_text(reason))
             remaining = await consume_grace_login(
                 self.store,
                 call,
@@ -1932,10 +2042,7 @@ class TelnetClusterServer:
             return False
         ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="telnet-register", otp=supplied_otp)
         if not ok:
-            await self._write(
-                writer,
-                self._render_string("registration.verify_failed", "Verification failed ({reason}).", reason=reason) + "\r\n",
-            )
+            await self._write(writer, self._registration_verify_failure_text(reason))
             return False
         await self._submit_registration_request(
             call=call,
@@ -4945,7 +5052,7 @@ class TelnetClusterServer:
         from_name = source.split(" ", 1)[1] if source.startswith("node grid square ") else (
             self.config.node.qth if using_node_coords or source.startswith("QRA ") or source.startswith("location ") else source
         )
-        sunspots = estimate_sunspots_from_sfi(latest[1]) or 0
+        sunspots = int(round(minimuf_sunspots_from_sfi(latest[1]) or estimate_sunspots_from_sfi(latest[1]) or 0))
         lines: list[str] = []
         if using_node_coords or source.startswith("node grid square "):
             lines.append(self._render_string("show.muf.using_node", "Using {node_call} Coords, consider doing a set/location or set/qra", node_call=self.config.node.node_call))
@@ -4991,11 +5098,12 @@ class TelnetClusterServer:
                 self._solar_zenith_angle(ts, lat1, lon1),
                 self._solar_zenith_angle(ts, lat2, lon2),
             )
-            displayed_muf = self._effective_muf_for_zenith(muf, zen)
+            path_muf = minimuf35_muf(latest[1], ts, lat1, lon1, lat2, lon2)
+            displayed_muf = path_muf if path_muf is not None else self._effective_muf_for_zenith(muf, zen)
             row = f"{ut:2d} {local:2d} {displayed_muf:4.1f} {zen:4.0f}"
             if not long_form:
                 for freq in freq_cols:
-                    sig = self._signal_report_for_muf(freq, muf, zen, path_zen_samples)
+                    sig = self._signal_report_for_muf(freq, displayed_muf, zen, path_zen_samples)
                     row += f" {sig:>4}" if sig else "     "
             lines.append(row.rstrip())
         return "\r\n".join(lines) + "\r\n"

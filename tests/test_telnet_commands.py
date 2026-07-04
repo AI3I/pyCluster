@@ -1894,8 +1894,11 @@ def test_spot_filters_support_compound_web_expressions(tmp_path) -> None:
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         try:
             assert srv._spot_matches_expr(14074.0, "K1ABC", "EU1SPT", "FT8", "on 20m and info FT8")
+            assert srv._spot_matches_expr(14074.0, "K1ABC", "EU1SPT", "FT8", "on 20m,40m and info FT8")
+            assert srv._spot_matches_expr(7074.0, "K1ABC", "EU1SPT", "FT8", "on 20m,40m and info FT8")
             assert not srv._spot_matches_expr(7074.0, "K1ABC", "EU1SPT", "FT8", "on 20m and info FT8")
             assert not srv._spot_matches_expr(14074.0, "K1ABC", "EU1SPT", "CW", "on 20m and info FT8")
+            assert not srv._spot_matches_expr(10136.0, "K1ABC", "EU1SPT", "FT8", "on 20m,40m and info FT8")
         finally:
             await store.close()
 
@@ -2608,8 +2611,44 @@ def test_rbn_preferences_and_filter_aliases_apply_to_spots(tmp_path) -> None:
             assert "Cleared" in out and "rbn filters" in out
             before = len(writer.buffer)
             await srv.publish_spot(rbn_spot)
+            await srv._flush_rbn_live_queue()
             live = bytes(writer.buffer[before:]).decode("utf-8", "replace")
             assert "K1ABC" in live
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_live_rbn_spots_are_grouped_into_dxspider_style_summary(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "live_rbn_grouped.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(call="N0CALL", writer=writer, connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime(2026, 5, 6, 18, 16, tzinfo=timezone.utc).timestamp())
+            await srv._execute_command("N0CALL", "set/rbn")
+            samples = [
+                Spot(14011.2, "N9JR", now, "CW 6 dB 21 WPM CQ", "WS3W", "RBN", ""),
+                Spot(14011.2, "N9JR", now + 2, "CW 17 dB 21 WPM CQ", "W1NT", "RBN", ""),
+                Spot(14011.2, "N9JR", now + 4, "CW 36 dB 21 WPM CQ", "KD7EFG", "RBN", ""),
+            ]
+            before = len(writer.buffer)
+            for spot in samples:
+                await srv.publish_spot(spot)
+            delivered = await srv._flush_rbn_live_queue()
+            live = bytes(writer.buffer[before:]).decode("utf-8", "replace")
+
+            assert delivered == 1
+            assert live.count("N9JR") == 1
+            assert "WS3W-#" in live
+            assert "CW 6dB Q:3" in live
+            assert "21 WPM CQ" not in live
+            assert "W1NT-#" not in live
+            assert "KD7EFG-#" not in live
         finally:
             await store.close()
 
@@ -6355,6 +6394,82 @@ def test_telnet_login_without_required_password_skips_first_time_password_setup(
             await w1.wait_closed()
         finally:
             await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_login_email_verification_expired_code_points_user_back_to_register(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_login_verify_expired_code.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"123456\r\n")
+        writer = _DummyWriter()
+        now = int(datetime.now(timezone.utc).timestamp())
+
+        async def _issue(*, call: str, email: str, purpose: str):
+            await store.save_mfa_challenge(
+                challenge_id="expired-login-verification",
+                call=call,
+                purpose=purpose,
+                code="123456",
+                expires_epoch=now - 60,
+                attempts_left=5,
+                issued_epoch=now - 600,
+            )
+            return "expired-login-verification", now - 60
+
+        srv._mfa.issue = _issue  # type: ignore[method-assign]
+        try:
+            await store.upsert_user_registry("N1NEW", now, email="new@example.test")
+            ok = await srv._require_verified_email_for_login("N1NEW", reader, writer)  # type: ignore[arg-type]
+            assert ok is False
+            assert "Verification code expired. Run REGISTER again to request a new code." in writer.buffer.decode("utf-8", "ignore")
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_prelogin_registration_expired_code_points_user_back_to_register(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_prelogin_register_expired_code.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        reader.feed_data(
+            b"y\r\nNew User\r\nW1AW\r\nHartford\r\nFN31\r\nnew@example.test\r\nPlease approve me\r\n123456\r\n"
+        )
+        writer = _DummyWriter()
+        now = int(datetime.now(timezone.utc).timestamp())
+
+        async def _issue(*, call: str, email: str, purpose: str):
+            await store.save_mfa_challenge(
+                challenge_id="expired-prelogin-registration",
+                call=call,
+                purpose=purpose,
+                code="123456",
+                expires_epoch=now - 60,
+                attempts_left=5,
+                issued_epoch=now - 600,
+            )
+            return "expired-prelogin-registration", now - 60
+
+        srv._mfa.issue = _issue  # type: ignore[method-assign]
+        try:
+            ok = await srv._prompt_registration_request_before_login("N1NEW", reader, writer)  # type: ignore[arg-type]
+            assert ok is False
+            assert "Verification code expired. Run REGISTER again to request a new code." in writer.buffer.decode("utf-8", "ignore")
+            assert await store.get_registration_request("N1NEW") is None
+        finally:
             await store.close()
 
     asyncio.run(run())

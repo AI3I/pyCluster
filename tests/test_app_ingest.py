@@ -1533,6 +1533,24 @@ def test_direct_rbn_ingest_honors_legacy_scoped_rbn_rules(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_direct_spot_ingest_supports_multi_band_filter_rules(tmp_path) -> None:
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "multi_band_ingest.db")))
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await app.store.set_filter_rule("N0CALL", "spots", "accept", 8, "on 20m,40m", now)
+            spot20 = Spot(14074.0, "K1ABC", now, "FT8", "W1AW", "AI3I-15", "")
+            spot40 = Spot(7074.0, "K1ABD", now, "FT8", "W1AW", "AI3I-15", "")
+            spot30 = Spot(10136.0, "K1ABE", now, "FT8", "W1AW", "AI3I-15", "")
+            assert await app._spot_passes_ingest_filters("N0CALL", spot20) is True
+            assert await app._spot_passes_ingest_filters("N0CALL", spot40) is True
+            assert await app._spot_passes_ingest_filters("N0CALL", spot30) is False
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_outbound_bulletin_relay_with_category_prefix(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "relay_bulletin.db")

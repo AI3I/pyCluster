@@ -481,6 +481,9 @@ def test_public_dxweb_static_includes_spotter_continent_filter_controls() -> Non
     assert "const FILTER_SPOTS = '/api/filters/spots';" in text
     assert "spotter_cont " in text
     assert "buildServerSpotFilterExpression" in text
+    assert "normalizeBandSelection" in text
+    assert "selectedBands().forEach(band => addToWatchlist(band))" in text
+    assert "parts.push('on ' + bands.join(','))" in text
     assert "await webJson(API+'?limit=500')" in text
 
 
@@ -1344,7 +1347,7 @@ def test_public_web_spot_filters_are_persisted_and_applied_to_logged_in_spots(tm
             )
             assert code == 200
             assert await store.list_filter_rules("AI3I")
-            await store.set_filter_rule("AI3I", "spots", "accept", 8, "spotter_cont EU and on 20m", now)
+            await store.set_filter_rule("AI3I", "spots", "accept", 8, "spotter_cont EU and on 20m,40m", now)
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -1354,7 +1357,7 @@ def test_public_web_spot_filters_are_persisted_and_applied_to_logged_in_spots(tm
             )
             assert code == 200
             rows = json.loads(body.decode("utf-8"))
-            assert [row["spotter"] for row in rows] == ["EU1SPT"]
+            assert [row["spotter"] for row in rows] == ["EU1SPT", "EU2SPT"]
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -1386,6 +1389,7 @@ def test_public_web_spot_filter_expressions_accept_zone_ranges(tmp_path, monkeyp
     try:
         spot = {
             "freq": 14074.0,
+            "band": "20m",
             "dx_call": "K1ABC",
             "spotter": "W6SPT",
             "comment": "FT8",
@@ -1395,7 +1399,9 @@ def test_public_web_spot_filter_expressions_accept_zone_ranges(tmp_path, monkeyp
         }
         assert srv._spot_payload_matches_expr(spot, "spotter_zone 3-5")
         assert srv._spot_payload_matches_expr(spot, "call_zone 3-5")
+        assert srv._spot_payload_matches_expr(spot, "on 20m,40m")
         assert not srv._spot_payload_matches_expr(spot, "spotter_zone 6-8")
+        assert not srv._spot_payload_matches_expr(spot, "on 40m,80m")
     finally:
         asyncio.run(store.close())
 

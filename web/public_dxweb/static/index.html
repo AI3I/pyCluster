@@ -2167,7 +2167,7 @@ document.querySelectorAll('.stats-rng-btn').forEach(btn => {
 });
 
 // ================================================================ State
-let filters     = { band:'ALL', mode:'ALL', activity:'ALL', cont:'ALL', spotterCont:'ALL' };
+let filters     = { band:[], mode:'ALL', activity:'ALL', cont:'ALL', spotterCont:'ALL' };
 let commentTagFilter = 'ALL';
 let timeRangeHrs = 24;
 let searchTerm  = '';
@@ -2181,6 +2181,21 @@ let sortCol     = 'time';
 let sortDir     = 'desc';
 let cqzFilter   = '';         // empty = no DX CQ zone filter
 let spotterCqzFilter = '';
+
+function normalizeBandSelection(value) {
+  if (!value || value === 'ALL') return [];
+  const raw = Array.isArray(value) ? value : String(value).split(',');
+  return [...new Set(raw.map(v => String(v || '').trim()).filter(v => v && v !== 'ALL'))];
+}
+
+function selectedBands() {
+  filters.band = normalizeBandSelection(filters.band);
+  return filters.band;
+}
+
+function bandFilterActive() {
+  return selectedBands().length > 0;
+}
 
 function parseZoneSpec(text, low, high) {
   const out = new Set();
@@ -2232,9 +2247,23 @@ function bindSpotFilterButtons() {
     btn.dataset.bound = '1';
     btn.addEventListener('click', async () => {
       const type = btn.dataset.ftype;
-      document.querySelectorAll(`[data-ftype="${type}"]`).forEach(b=>b.classList.remove('active'));
-      btn.classList.add('active');
-      filters[type] = btn.dataset.fval;
+      const value = btn.dataset.fval;
+      if (type === 'band') {
+        const bands = new Set(selectedBands());
+        if (value === 'ALL') {
+          bands.clear();
+        } else if (bands.has(value)) {
+          bands.delete(value);
+        } else {
+          bands.add(value);
+        }
+        filters.band = [...bands];
+        syncSpotFilterUi();
+      } else {
+        document.querySelectorAll(`[data-ftype="${type}"]`).forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        filters[type] = value;
+      }
       await saveCurrentSpotFilters();
       renderTable();
     });
@@ -2837,7 +2866,8 @@ async function webJson(url, opts={}) {
 
 function buildServerSpotFilterExpression() {
   const parts = [];
-  if (filters.band && filters.band !== 'ALL') parts.push('on ' + filters.band);
+  const bands = selectedBands();
+  if (bands.length) parts.push('on ' + bands.join(','));
   if (filters.mode && filters.mode !== 'ALL') parts.push('info ' + filters.mode);
   if (filters.activity && filters.activity !== 'ALL' && filters.activity !== 'RARE') parts.push('info ' + filters.activity);
   if (filters.cont && filters.cont !== 'ALL') parts.push('call_cont ' + filters.cont);
@@ -3128,7 +3158,7 @@ function updateMapLegend(activeBands) {
   el.innerHTML = '';
   ordered.forEach(band => {
     const col = BAND_COLORS[band] || '#aaa';
-    const active = filters.band === band;
+    const active = selectedBands().includes(band);
     const row = document.createElement('div');
     row.className = 'ml-row' + (active ? ' active' : '');
     row.innerHTML = `<span class="ml-dot" style="background:${col}"></span><span class="ml-lbl">${band}</span>`;
@@ -3732,7 +3762,8 @@ function onRowClick(spot, tr) {
 
 function spotMatchesCurrentFilters(s, timeCutoff=0) {
     if (timeCutoff && new Date(s.time).getTime() < timeCutoff) return false;
-    if (filters.band    !=='ALL'&&s.band    !==filters.band)    return false;
+    const bands = selectedBands();
+    if (bands.length && !bands.includes(s.band)) return false;
     if (filters.mode    !=='ALL'&&s.mode    !==filters.mode)    return false;
     if (filters.activity!=='ALL') {
       if (filters.activity==='RARE') {
@@ -3777,7 +3808,7 @@ function filteredSpots() {
 
 const tbody = document.getElementById('spot-tbody');
 function hasActiveSpotFilter() {
-  return filters.band !== 'ALL'
+  return bandFilterActive()
     || filters.mode !== 'ALL'
     || filters.activity !== 'ALL'
     || filters.cont !== 'ALL'
@@ -3789,7 +3820,11 @@ function hasActiveSpotFilter() {
 }
 
 function syncSpotFilterUi() {
-  ['band','mode','activity','cont','spotterCont'].forEach(type => {
+  const bands = new Set(selectedBands());
+  document.querySelectorAll('[data-ftype="band"]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.fval === 'ALL' ? bands.size === 0 : bands.has(btn.dataset.fval));
+  });
+  ['mode','activity','cont','spotterCont'].forEach(type => {
     document.querySelectorAll(`[data-ftype="${type}"]`).forEach(btn => {
       btn.classList.toggle('active', btn.dataset.fval === filters[type]);
     });
@@ -3810,7 +3845,7 @@ function syncSpotFilterUi() {
 }
 
 function clearSpotFilters() {
-  filters.band = 'ALL';
+  filters.band = [];
   filters.mode = 'ALL';
   filters.activity = 'ALL';
   filters.cont = 'ALL';
@@ -4518,7 +4553,7 @@ document.getElementById('watch-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('watch-add').click();
 });
 document.getElementById('watch-add-band').addEventListener('click', () => {
-  if (filters.band && filters.band !== 'ALL') addToWatchlist(filters.band);
+  selectedBands().forEach(band => addToWatchlist(band));
 });
 document.getElementById('watch-add-mode').addEventListener('click', () => {
   if (filters.mode && filters.mode !== 'ALL') addToWatchlist(filters.mode);
@@ -5239,7 +5274,7 @@ function getCurrentFilterState() {
 }
 
 function applyPreset(preset) {
-  filters.band     = preset.band     || 'ALL';
+  filters.band     = normalizeBandSelection(preset.band);
   filters.mode     = preset.mode     || 'ALL';
   filters.activity = preset.activity || 'ALL';
   filters.cont     = preset.cont     || 'ALL';
