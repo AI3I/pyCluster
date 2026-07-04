@@ -401,11 +401,10 @@ pyCluster can automatically prune older operational data.
 
 ## 🙏 Credits
 
-pyCluster is created and led by John D. Lewis, AI3I with help from ChatGPT OpenAI Codex and Anthropic Claude AI.
+pyCluster is created and led by John D. Lewis, AI3I and Joe Reed, N9JR with help from ChatGPT OpenAI Codex and Anthropic Claude AI.
 
 Special thanks for advice, assistance, consideration and testing:
 
-- Joe Reed, N9JR
 - Howard Leadmon, WB3FFV
 - Eric Tichansky, NO3M
 
