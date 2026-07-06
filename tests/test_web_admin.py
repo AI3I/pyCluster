@@ -424,8 +424,8 @@ def test_public_web_static_supports_sidebar_hide_toggle() -> None:
     assert 'id="footer">' not in text or "footer-controls" in text
     assert '<button id="toast-toggle" class="on" type="button" title="Hide spot popups" aria-label="Hide spot popups"><span class="footer-control-label">Popups</span></button>' in text
     assert "btn.innerHTML = '<span class=\"footer-control-label\">Popups</span>';" in text
-    assert '<button id="sidebar-toggle" class="on" type="button" title="Hide the sidebar" aria-label="Hide the sidebar"><span class="footer-control-label">Sidebar</span></button>' in text
-    assert "btn.innerHTML = '<span class=\"footer-control-label\">Sidebar</span>';" in text
+    assert '<button id="sidebar-toggle" class="on" type="button" title="Hide the configuration panel" aria-label="Hide the configuration panel"><span class="footer-control-label">Config</span></button>' in text
+    assert "btn.innerHTML = '<span class=\"footer-control-label\">Config</span>';" in text
     assert '<span class="footer-control-label">Greyline</span>' in text
     assert '<span class="footer-control-label">Sound</span>' in text
     assert '<span class="footer-control-label">Theme</span>' in text

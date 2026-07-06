@@ -1375,6 +1375,7 @@ def test_ingest_pc23_maps_to_wwv_bulletin(tmp_path) -> None:
             rows = await app.store.list_bulletins("wwv", limit=5)
             assert len(rows) == 1
             assert rows[0]["sender"] == "W0MU"
+            assert rows[0]["scope"] == "FULL"
             assert "SFI=120 A=24 K=4 Moderate w/G2 -> Minor w/G1" == str(rows[0]["body"])
         finally:
             await app.store.close()
@@ -1408,6 +1409,8 @@ def test_ingest_pc23_relays_wwv_to_other_peers(tmp_path) -> None:
             )
             await app._handle_node_link_item("PEER2", WirePcFrame("PC23", msg.to_fields()), msg)
             assert [(peer, frame.pc_type) for peer, frame in captured] == [("PEER3", "PC23")]
+            rows = await app.store.list_bulletins("wwv", limit=5)
+            assert rows and rows[0]["scope"] == "FULL"
         finally:
             await app.store.close()
 
@@ -1448,6 +1451,7 @@ def test_ingest_pc73_maps_to_wcy_bulletin(tmp_path) -> None:
             rows = await app.store.list_bulletins("wcy", limit=5)
             assert len(rows) == 1
             assert rows[0]["sender"] == "DK0WCY"
+            assert rows[0]["scope"] == "FULL"
             assert "SFI=120 A=18 K=3 ExpK=2 R=105 SA=qui GMF=maj Aurora=no" == str(rows[0]["body"])
         finally:
             await app.store.close()

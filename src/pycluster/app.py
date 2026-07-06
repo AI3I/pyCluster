@@ -1502,7 +1502,7 @@ class ClusterApp:
             await self._ingest_bulletin_from_peer(
                 peer_name,
                 category="wwv",
-                scope="LOCAL",
+                scope="FULL",
                 sender=msg.sender,
                 body=body,
                 duplicate_reason="ingest_pc23_duplicate",
@@ -1531,7 +1531,7 @@ class ClusterApp:
             await self._ingest_bulletin_from_peer(
                 peer_name,
                 category="wcy",
-                scope="LOCAL",
+                scope="FULL",
                 sender=msg.sender,
                 body=body,
                 duplicate_reason="ingest_pc73_duplicate",

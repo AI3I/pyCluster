@@ -130,6 +130,7 @@ class Session:
     catchup: bool = False
     vars: dict[str, str] = field(default_factory=dict)
     async_line_open: bool = False
+    suppress_async_spots: bool = False
 
 
 @dataclass(slots=True)
@@ -1344,6 +1345,8 @@ class TelnetClusterServer:
         delivered = 0
         is_rbn = self._is_rbn_spot(spot.dx_call, spot.spotter, spot.info)
         for sid, s in self._sessions.items():
+            if s.suppress_async_spots:
+                continue
             if not self._is_on_value(s.vars.get("dx"), default=True):
                 continue
             if not await self._spot_passes_filters(s.call, spot.freq_khz, spot.dx_call, spot.spotter, spot.info):
@@ -10946,13 +10949,19 @@ class TelnetClusterServer:
                 LOG.info("login call=%s peer=%s", call, peer)
                 await self._write(writer, await self._welcome_block(call))
                 if first_login:
-                    ok = await self._run_first_login_interview(
-                        call,
-                        reader,
-                        writer,
-                        node_family=node_family,
-                        password_set=password_set,
-                    )
+                    self._sessions[session_id].suppress_async_spots = True
+                    try:
+                        ok = await self._run_first_login_interview(
+                            call,
+                            reader,
+                            writer,
+                            node_family=node_family,
+                            password_set=password_set,
+                        )
+                    finally:
+                        sess = self._sessions.get(session_id)
+                        if sess:
+                            sess.suppress_async_spots = False
                     if not ok:
                         writer.close()
                         await writer.wait_closed()
@@ -10990,7 +10999,15 @@ class TelnetClusterServer:
                         break
                     if line.strip().lower() == "register":
                         await self._flush_rbn_live_queue()
-                        keep_going, output = True, await self._run_register_interactive(call, reader, writer)
+                        sess = self._sessions.get(session_id)
+                        if sess:
+                            sess.suppress_async_spots = True
+                        try:
+                            keep_going, output = True, await self._run_register_interactive(call, reader, writer)
+                        finally:
+                            sess = self._sessions.get(session_id)
+                            if sess:
+                                sess.suppress_async_spots = False
                     else:
                         await self._flush_rbn_live_queue()
                         keep_going, output = await self._execute_command(call, line)
