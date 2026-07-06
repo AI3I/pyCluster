@@ -2067,6 +2067,35 @@ def test_publish_spot_uses_live_dx_format_without_blank_lines(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_publish_spot_suppressed_during_registration_interview(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "publish_spot_registration_suppressed.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(
+            call="N0CALL",
+            writer=writer,
+            connected_at=datetime.now(timezone.utc),
+            suppress_async_spots=True,
+        )
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            delivered = await srv.publish_spot(Spot(14074.0, "W1AW", now, "FT8", "K1ABC", "AI3I-15", ""))
+            assert delivered == 0
+            assert bytes(writer.buffer) == b""
+
+            srv._sessions[1].suppress_async_spots = False
+            delivered = await srv.publish_spot(Spot(14075.0, "K1ZZ", now, "FT8", "K1ABC", "AI3I-15", ""))
+            assert delivered == 1
+            assert b"K1ZZ" in bytes(writer.buffer)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_wcy_filters_are_not_registered_or_applied_to_live_and_show(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "wcy_filters.db")
