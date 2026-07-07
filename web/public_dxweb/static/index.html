@@ -2416,6 +2416,18 @@ function saveWebSession() {
   }
 }
 
+function syncQthFromProfile() {
+  const profileGrid = String(webProfile?.qra || '').trim().toUpperCase();
+  if (!profileGrid || qthGrid) return;
+  qthGrid = profileGrid;
+  if (!qthCall && webCall) qthCall = webCall;
+  const callEl = document.getElementById('qth-call');
+  const gridEl = document.getElementById('qth-grid');
+  if (callEl) callEl.value = qthCall;
+  if (gridEl) gridEl.value = qthGrid;
+  saveQthProfile();
+}
+
 function loadWebSession() {
   try {
     const raw = sessionStorage.getItem(WEB_SESSION_KEY);
@@ -2650,6 +2662,7 @@ async function saveProfile() {
     });
     webProfile = body.profile || {};
     saveWebSession();
+    syncQthFromProfile();
     syncServerWatchSeedFromProfile();
     renderWatchlist();
     applyOperatorState();
@@ -2909,6 +2922,7 @@ async function restoreWebSession() {
     webAccess = me.access || {};
     webProfile = me.profile || {};
     saveWebSession();
+    syncQthFromProfile();
     await loadAccountPresets();
   } catch {
     webToken = '';
@@ -2949,6 +2963,7 @@ async function performOperatorLogin(call, password, setStatus, clearPassword, ex
     webAccess = body.access || {};
     webProfile = body.profile || {};
     saveWebSession();
+    syncQthFromProfile();
     await loadAccountPresets();
     syncServerWatchSeedFromProfile();
     renderWatchlist();

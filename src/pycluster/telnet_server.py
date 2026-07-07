@@ -7117,11 +7117,11 @@ class TelnetClusterServer:
         ) + "\r\n"
 
     async def _cmd_mfa(self, call: str, _arg: str | None) -> str:
-        principal = call.split("-", 1)[0].upper()
-        raw = str(await self.store.get_user_pref(principal, "mfa_email_otp") or "").strip().lower()
+        target = call.upper()
+        raw = str(await self.store.get_user_pref(target, "mfa_email_otp") or "").strip().lower()
         email_override = raw if raw in {"required", "off"} else "default"
-        totp_enabled = bool(str(await self.store.get_user_pref(principal, "mfa_totp_secret") or "").strip())
-        is_sysop = await self._privilege_level_for(principal) >= 2
+        totp_enabled = bool(str(await self.store.get_user_pref(target, "mfa_totp_secret") or "").strip())
+        is_sysop = await self._privilege_level_for(target) >= 2
         if email_override == "required":
             email_effective = True
         elif email_override == "off":
@@ -7146,7 +7146,7 @@ class TelnetClusterServer:
         return self._render_string(
             "mfa.status",
             "MFA for {call}: {state}; methods: {methods}; email override: {override}; policy: {policy}.",
-            call=principal,
+            call=target,
             state=state,
             methods=method_text,
             override=email_override,
@@ -7159,32 +7159,32 @@ class TelnetClusterServer:
             mode = "email"
         if mode not in {"email", "totp", "authenticator", "default"}:
             return self._string("mfa.set_usage", "Usage: set/mfa [email|authenticator|default]") + "\r\n"
-        principal = call.split("-", 1)[0].upper()
+        target = call.upper()
         now = int(datetime.now(timezone.utc).timestamp())
         if mode == "default":
-            await self.store.delete_user_pref(principal, "mfa_email_otp")
+            await self.store.delete_user_pref(target, "mfa_email_otp")
             self._log_event("user", f"{call} set/mfa default")
-            return self._render_string("mfa.default_done", "MFA email override reset to node default for {call}.", call=principal) + "\r\n"
-        email = await self._email_for_call(principal)
+            return self._render_string("mfa.default_done", "MFA email override reset to node default for {call}.", call=target) + "\r\n"
+        email = await self._email_for_call(target)
         if mode == "email":
             if not has_valid_email(email):
-                return self._render_string("mfa.valid_email_required", "A valid email address is required before enabling email MFA for {call}.", call=principal) + "\r\n"
-            await self.store.set_user_pref(principal, "mfa_email_otp", "required", now)
+                return self._render_string("mfa.valid_email_required", "A valid email address is required before enabling email MFA for {call}.", call=target) + "\r\n"
+            await self.store.set_user_pref(target, "mfa_email_otp", "required", now)
             self._log_event("user", f"{call} set/mfa email")
-            return self._render_string("mfa.email_enabled", "Email MFA enabled for {call}.", call=principal) + "\r\n"
+            return self._render_string("mfa.email_enabled", "Email MFA enabled for {call}.", call=target) + "\r\n"
         secret = generate_totp_secret()
-        await self.store.set_user_pref(principal, "mfa_totp_secret", secret, now)
-        await self.store.set_user_pref(principal, "mfa_email_otp", "required", now)
-        cleared = await self.store.delete_mfa_challenges_for_call(principal, include_ssids=True)
+        await self.store.set_user_pref(target, "mfa_totp_secret", secret, now)
+        await self.store.set_user_pref(target, "mfa_email_otp", "required", now)
+        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
         uri = totp_otpauth_uri(
             issuer=self.config.mfa.issuer.strip() or self.config.node.node_call,
-            account=principal,
+            account=target,
             secret=secret,
         )
         self._log_event("user", f"{call} set/mfa authenticator challenges={cleared}")
         return "\r\n".join(
             [
-                self._render_string("mfa.authenticator_enabled", "Authenticator MFA enabled for {call}.", call=principal),
+                self._render_string("mfa.authenticator_enabled", "Authenticator MFA enabled for {call}.", call=target),
                 self._render_string("mfa.authenticator_secret", "Setup key: {secret}", secret=secret),
                 self._render_string("mfa.authenticator_uri", "Setup URI: {uri}", uri=uri),
                 "",
@@ -7192,16 +7192,16 @@ class TelnetClusterServer:
         )
 
     async def _cmd_unset_mfa(self, call: str, _arg: str | None) -> str:
-        principal = call.split("-", 1)[0].upper()
+        target = call.upper()
         now = int(datetime.now(timezone.utc).timestamp())
-        await self.store.set_user_pref(principal, "mfa_email_otp", "off", now)
-        await self.store.delete_user_pref(principal, "mfa_totp_secret")
-        cleared = await self.store.delete_mfa_challenges_for_call(principal, include_ssids=True)
+        await self.store.set_user_pref(target, "mfa_email_otp", "off", now)
+        await self.store.delete_user_pref(target, "mfa_totp_secret")
+        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
         self._log_event("user", f"{call} unset/mfa challenges={cleared}")
         return self._render_string(
             "mfa.disabled",
             "MFA disabled for {call}. Outstanding challenges cleared: {cleared}.",
-            call=principal,
+            call=target,
             cleared=cleared,
         ) + "\r\n"
 
@@ -7718,7 +7718,10 @@ class TelnetClusterServer:
                 continue
             keep_going, out = await self._execute_command(call, text)
             if out:
-                outputs.append(out if out.endswith("\r\n") else out + "\r\n")
+                rendered = out if out.endswith("\r\n") else out + "\r\n"
+                if not rendered.startswith("\r\n"):
+                    rendered = "\r\n" + rendered
+                outputs.append(rendered)
             if not keep_going:
                 outputs.append(self._string("startup.halted", "[startup] halted by command request") + "\r\n")
                 break
