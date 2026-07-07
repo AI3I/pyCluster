@@ -17,12 +17,16 @@ All notable changes to pyCluster should be recorded here.
 - `show/dx` now remains a traditional DX spot history and excludes RBN/Skimmer reports. Use `show/rbn` for RBN history and `show/mydx` for filtered personal spot history.
 - Telnet self-registration verifies the user's email before creating the sysop review request when SMTP is configured.
 - Public web filtering no longer exposes ITU-zone filter controls; CQ zone, continent, band, mode, activity, and spotter filters remain available.
+- The public web map seeds the QTH marker from the logged-in user's stored profile grid when no local map override exists.
 
 ### Fixed
 
 - DXSpider-profile peers receive legacy PC11 spot relay frames even when configured over a normal TCP DSN.
 - Telnet keepalive prompts are line-terminated and freshly rendered during idle waits.
+- Telnet startup command output is separated from the final login prompt so configured startup displays do not run into the prompt line.
+- Telnet self-service MFA commands now apply to the exact logged-in callsign or SSID instead of collapsing every action to the base callsign.
 - Outbound PC92 path data sanitizes non-public IPv4 and IPv6 literals when `public_ip_address` is configured.
+- Bare-metal nginx setup always writes a `pycluster-sysop.conf` file; when no sysop hostname is configured it is an inert placeholder rather than a public listener.
 
 ## 1.0.8 - 2026-05-10
 

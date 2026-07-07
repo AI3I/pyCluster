@@ -372,9 +372,9 @@ The helper writes pyCluster-owned nginx `server` blocks under `/etc/nginx/conf.d
 Expected files:
 
 - `/etc/nginx/conf.d/pycluster-public.conf`
-- `/etc/nginx/conf.d/pycluster-sysop.conf`, only when `--sysop-host` is used
+- `/etc/nginx/conf.d/pycluster-sysop.conf`
 
-The public site proxies to `127.0.0.1:8081`. The sysop site proxies to `127.0.0.1:8080`. Those backend listeners stay local; nginx is the public entry point.
+The public site proxies to `127.0.0.1:8081`. When `--sysop-host` is provided, the sysop site proxies to `127.0.0.1:8080`. Without `--sysop-host`, `pycluster-sysop.conf` is still written as an inert placeholder so the expected file exists, but it does not expose the sysop UI. Those backend listeners stay local; nginx is the public entry point.
 
 Examples:
 
@@ -417,7 +417,7 @@ server {
 }
 ```
 
-If `--sysop-host` is provided, the same pattern is generated for the sysop listener with `proxy_pass http://127.0.0.1:8080;`. Without `--sysop-host`, only the public web UI is exposed through nginx.
+If `--sysop-host` is provided, the same pattern is generated for the sysop listener with `proxy_pass http://127.0.0.1:8080;`. Without `--sysop-host`, only the public web UI is exposed through nginx and the sysop config file remains a comment-only placeholder.
 
 Common nginx and Let's Encrypt checks:
 

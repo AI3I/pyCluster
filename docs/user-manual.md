@@ -39,6 +39,8 @@ N0CALL-1>
 
 If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal.
 
+For SSID logins, self-service MFA commands apply to the exact callsign you used to log in. For example, `set/mfa authenticator` as `N0CALL-2` enrolls MFA for `N0CALL-2`, not for the base `N0CALL` account.
+
 If this is your first telnet login and no password exists yet, pyCluster will stop and require password creation before continuing.
 
 If your node requires or encourages registration, telnet shows a registration
@@ -327,6 +329,8 @@ The public web UI gives users a browser interface for:
 Logged-in public web filters are stored in the same database-backed filter table used by telnet. Common filter combinations are saved as a compound `accept/spots` rule so the web and telnet views make the same filtering decision for that user. The public web exposes band, mode, activity, continent, CQ-zone, spotter-continent, spotter-CQ, and comment-tag filters; ITU-zone filters are not exposed in the web UI.
 
 The profile modal lets logged-in users update name, QTH, grid square, home node, and email address. It also exposes MFA settings for switching between email and authenticator-app codes, enabling an app with a QR code, verifying the active method, and disabling user-level MFA.
+
+If the browser does not already have a local QTH override, the spot map seeds its QTH marker from the logged-in profile grid square.
 
 See:
 
