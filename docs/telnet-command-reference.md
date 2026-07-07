@@ -125,14 +125,18 @@ Spotter-based filters match the station that posted the spot. They do not match 
 | `set/logininfo` / `unset/logininfo` | Control login-info display preference. |
 | `set/maxconnect <n>` | Set the per-callsign connection cap. |
 | `set/startup ...` | Add a startup command for login-time replay. |
-
-When MFA is required during telnet login, pyCluster prompts for `authenticator code:` for authenticator-app accounts and `otp:` for email one-time-code accounts. Password and MFA-code prompts suppress local echo.
 | `unset/startup ...` | Remove a startup command. |
 | `show/startup` | Show configured startup commands. |
 | `show/station [call]` | Show stored station/profile details and USDB fields. |
 | `show/registered [call]` | Show registry information for users. |
 | `show/configuration` | Show node configuration summary. |
 | `show/newconfiguration` | Alias to the current configuration view. |
+
+When MFA is required during telnet login, pyCluster prompts for `authenticator code:` for authenticator-app accounts and `otp:` for email one-time-code accounts. Password and MFA-code prompts suppress local echo.
+
+Self-service MFA commands act on the exact logged-in callsign, including SSIDs such as `N9JR-10`; login-time email lookup can still fall back to the base callsign's email record when the SSID record has no address.
+
+Startup commands run after login and before the final prompt. Their output is line-separated from the prompt so saved startup displays such as `show/dx` and `show/wwv` do not run into the command line.
 
 ## User Variables, USDB, and Buddy Lists
 

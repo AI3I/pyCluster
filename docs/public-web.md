@@ -21,7 +21,8 @@ System Operator console:
 
 Browser storage is used only as a convenience cache or for anonymous,
 not-yet-authenticated UI state such as display toggles and temporary map/QTH
-inputs.
+inputs. After login, the map uses the stored profile grid square to seed the
+QTH marker when the browser does not already have a local QTH override.
 
 ## Main Pages
 
@@ -51,6 +52,7 @@ The web UI intentionally does not expose ITU-zone filtering. Logged-in filter ch
 - count of filtered vs total spots
 - `RARE` badge support for selected entities
 - `All` reset button when a filter is active
+- QTH marker support from the local map profile or, after login, the user's stored grid square
 
 ### Stats
 
