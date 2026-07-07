@@ -5291,6 +5291,43 @@ def test_user_can_manage_own_mfa_from_telnet(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_ssid_user_manages_own_mfa_without_touching_base_call(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_ssid_user_mfa_self_service.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N9JR", now, privilege="sysop", email="n9jr@example.test")
+            await store.upsert_user_registry("N9JR-10", now, privilege="user", email="")
+
+            _, out = await srv._execute_command("N9JR-10", "mfa")
+            assert "MFA for N9JR-10: disabled" in out
+
+            _, out = await srv._execute_command("N9JR-10", "set/mfa email")
+            assert "Email MFA enabled for N9JR-10." in out
+            assert await store.get_user_pref("N9JR-10", "mfa_email_otp") == "required"
+            assert await store.get_user_pref("N9JR", "mfa_email_otp") is None
+
+            _, out = await srv._execute_command("N9JR-10", "set/mfa authenticator")
+            assert "Authenticator MFA enabled for N9JR-10." in out
+            assert "Setup key:" in out
+            assert await store.get_user_pref("N9JR-10", "mfa_totp_secret")
+            assert await store.get_user_pref("N9JR", "mfa_totp_secret") is None
+
+            _, out = await srv._execute_command("N9JR-10", "unset/mfa")
+            assert "MFA disabled for N9JR-10." in out
+            assert await store.get_user_pref("N9JR-10", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("N9JR-10", "mfa_totp_secret") is None
+            assert await store.get_user_pref("N9JR", "mfa_email_otp") is None
+            assert await store.get_user_pref("N9JR", "mfa_totp_secret") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_global_mfa_default_waits_for_user_mfa_material(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "telnet_mfa_default_material.db")
@@ -6044,6 +6081,7 @@ def test_login_startup_dx_and_wwv_output_precedes_prompt(tmp_path) -> None:
 
             rendered = writer.buffer.decode("utf-8", errors="replace")
             prompt = await srv._prompt("N0CALL")
+            assert "\r\n 14236.0  VP2ETE" in rendered
             assert rendered.index(" 14236.0  VP2ETE") < rendered.index("Date        Hour   SFI   A   K Forecast")
             assert rendered.index("Date        Hour   SFI   A   K Forecast") < rendered.index(prompt)
             assert rendered.index("Date        Hour   SFI   A   K Forecast") < rendered.index("run REGISTER")

@@ -325,6 +325,15 @@ server {
 EOF
 }
 
+write_sysop_placeholder_config() {
+  local conf="$NGINX_CONFIG_DIR/pycluster-sysop.conf"
+  cat > "$conf" <<EOF
+# pyCluster sysop web UI is not exposed through nginx.
+# Re-run deploy/setup-nginx.sh with --sysop-host HOST to replace this
+# placeholder with an active reverse-proxy server block for 127.0.0.1:8080.
+EOF
+}
+
 issue_self_signed() {
   local host="$1"
   local aliases="$2"
@@ -380,6 +389,8 @@ configure_site() {
 configure_site public "$PUBLIC_HOST" "$PUBLIC_ALIASES" 8081
 if [ -n "$SYSOP_HOST" ]; then
   configure_site sysop "$SYSOP_HOST" "$SYSOP_ALIASES" 8080
+else
+  write_sysop_placeholder_config
 fi
 
 if [ "$TLS_MODE" = "none" ]; then
@@ -395,14 +406,14 @@ systemctl enable nginx >/dev/null
 systemctl restart nginx
 
 if [ "$TLS_MODE" = "letsencrypt" ]; then
-  certbot_cmd=(certbot --nginx --non-interactive --agree-tos --redirect -m "$LETSENCRYPT_EMAIL")
+  certbot_cmd=(certbot --nginx --nginx-server-root /etc/nginx --non-interactive --agree-tos --redirect -m "$LETSENCRYPT_EMAIL")
   while IFS= read -r item; do
     [ -n "$item" ] || continue
     certbot_cmd+=(-d "$item")
   done < <(build_host_array "$PUBLIC_HOST" "$PUBLIC_ALIASES")
   "${certbot_cmd[@]}"
   if [ -n "$SYSOP_HOST" ]; then
-    certbot_cmd=(certbot --nginx --non-interactive --agree-tos --redirect -m "$LETSENCRYPT_EMAIL")
+    certbot_cmd=(certbot --nginx --nginx-server-root /etc/nginx --non-interactive --agree-tos --redirect -m "$LETSENCRYPT_EMAIL")
     while IFS= read -r item; do
       [ -n "$item" ] || continue
       certbot_cmd+=(-d "$item")

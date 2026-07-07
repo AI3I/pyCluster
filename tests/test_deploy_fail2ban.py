@@ -32,6 +32,9 @@ def test_setup_nginx_disables_distribution_default_site() -> None:
     assert 'rm -f "$NGINX_CONFIG_DIR/default.conf"' in setup
     assert "rm -f /etc/nginx/sites-enabled/default" in setup
     assert "proxy_pass http://127.0.0.1:${upstream_port};" in setup
+    assert "write_sysop_placeholder_config" in setup
+    assert 'local conf="$NGINX_CONFIG_DIR/pycluster-sysop.conf"' in setup
+    assert "--nginx-server-root /etc/nginx" in setup
 
 
 def test_data_refresh_service_uses_generic_names_and_migrates_legacy_timer() -> None:
