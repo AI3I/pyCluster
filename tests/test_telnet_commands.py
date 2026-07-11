@@ -6713,6 +6713,57 @@ def test_telnet_first_login_password_mismatch_reprompts(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_set_password_requires_confirmation(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "set_password_confirm.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            _, out = await srv._execute_command("N0CALL", "set/password one")
+            assert "Usage: set/password <newpass> <confirm-newpass>" in out
+            assert await store.get_user_pref("N0CALL", "password") is None
+
+            _, out = await srv._execute_command("N0CALL", "set/password one two")
+            assert "Passwords did not match." in out
+            assert await store.get_user_pref("N0CALL", "password") is None
+
+            _, out = await srv._execute_command("N0CALL", "set/password three three")
+            assert "Password updated for N0CALL." in out
+            saved = await store.get_user_pref("N0CALL", "password")
+            assert is_password_hash(saved)
+            assert verify_password("three", saved)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_set_password_interactive_mismatch_reprompts(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "set_password_interactive_retry.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        try:
+            reader.feed_data(b"one\r\ntwo\r\nthree\r\nthree\r\n")
+            ok = await srv._prompt_change_password("N0CALL", reader, writer)  # type: ignore[arg-type]
+            text = writer.buffer.decode("utf-8", errors="replace")
+            assert ok is True
+            assert "Enter and confirm a new password." in text
+            assert "Passwords did not match. Try again." in text
+            assert text.count("new password: ") == 2
+            saved = await store.get_user_pref("N0CALL", "password")
+            assert is_password_hash(saved)
+            assert verify_password("three", saved)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_telnet_first_login_password_mismatch_socket_stays_open(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "first_login_password_retry_socket.db")

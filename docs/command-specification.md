@@ -157,7 +157,8 @@ These commands are user-facing and should remain visible in normal help and comm
 - `unset/email`
 - `set/homenode <node>`
 - `set/homebbs <bbs>`
-- `set/password <newpass>`
+- `set/password`
+- `set/password <newpass> <confirm-newpass>`
 - `unset/password`
 - `set/page <lines>`
 - `set/language <code>`

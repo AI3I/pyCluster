@@ -1555,8 +1555,19 @@ class TelnetClusterServer:
         except Exception:
             return
 
-    async def _prompt_new_password(self, call: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
-        await self._write(writer, self._string("password_setup.required", "A password is required before continuing.") + "\r\n")
+    async def _prompt_password_update(
+        self,
+        call: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        *,
+        intro_key: str,
+        intro_default: str,
+        done_key: str,
+        done_default: str,
+        event: str,
+    ) -> bool:
+        await self._write(writer, self._string(intro_key, intro_default) + "\r\n")
         max_attempts = 3
         first = ""
         for attempt in range(max_attempts):
@@ -1583,9 +1594,33 @@ class TelnetClusterServer:
             return False
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(call, "password", hash_password(first), now)
-        self._log_event("user", f"{call} initial_password_set")
-        await self._write(writer, self._render_string("password_setup.set", "Password set for {call}.", call=call) + "\r\n")
+        self._log_event("user", f"{call} {event}")
+        await self._write(writer, self._render_string(done_key, done_default, call=call) + "\r\n")
         return True
+
+    async def _prompt_new_password(self, call: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
+        return await self._prompt_password_update(
+            call,
+            reader,
+            writer,
+            intro_key="password_setup.required",
+            intro_default="A password is required before continuing.",
+            done_key="password_setup.set",
+            done_default="Password set for {call}.",
+            event="initial_password_set",
+        )
+
+    async def _prompt_change_password(self, call: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
+        return await self._prompt_password_update(
+            call,
+            reader,
+            writer,
+            intro_key="password_change.required",
+            intro_default="Enter and confirm a new password.",
+            done_key="password_change.set",
+            done_default="Password updated for {call}.",
+            event="password_changed",
+        )
 
     async def _prompt_optional_value(
         self,
@@ -6614,6 +6649,21 @@ class TelnetClusterServer:
         await self._persist_pref(call, "language", s.language)
         return self._render_string("set.language_set", "Language set to {language} for {call}.", language=s.language, call=call) + "\r\n"
 
+    async def _cmd_set_password(self, call: str, arg: str | None) -> str:
+        tokens = [tok for tok in (arg or "").split() if tok]
+        if len(tokens) != 2:
+            return self._string("set.password_usage", "Usage: set/password <newpass> <confirm-newpass>") + "\r\n"
+        first, second = tokens
+        if first != second:
+            return self._string("set.password_mismatch", "Passwords did not match.") + "\r\n"
+        value = hash_password(first)
+        s = self._find_session(call)
+        if s:
+            s.vars["password"] = value
+        await self._persist_pref(call, "password", value)
+        self._log_event("set", f"{call} password=<redacted>")
+        return self._render_string("set.password_updated", "Password updated for {call}.", call=call) + "\r\n"
+
     async def _cmd_set_named_var(self, call: str, arg: str | None, name: str, default: str = "on") -> str:
         s = self._find_session(call)
         if not s:
@@ -10441,7 +10491,7 @@ class TelnetClusterServer:
             "set/send_dbg": lambda c, a: self._cmd_set_named_var(c, a, "send_dbg", "on"),
             "set/address": lambda c, a: self._cmd_set_contact_field(c, a, "address"),
             "set/email": lambda c, a: self._cmd_set_contact_field(c, a, "email"),
-            "set/password": lambda c, a: self._cmd_set_named_var(c, a, "password", ""),
+            "set/password": self._cmd_set_password,
             "set/passphrase": lambda c, a: self._cmd_set_named_var(c, a, "passphrase", ""),
             "set/pinginterval": lambda c, a: self._cmd_set_named_var(c, a, "pinginterval", ""),
             "set/privilege": self._cmd_set_privilege,
@@ -11007,6 +11057,18 @@ class TelnetClusterServer:
                             sess.suppress_async_spots = True
                         try:
                             keep_going, output = True, await self._run_register_interactive(call, reader, writer)
+                        finally:
+                            sess = self._sessions.get(session_id)
+                            if sess:
+                                sess.suppress_async_spots = False
+                    elif line.strip().lower() == "set/password":
+                        await self._flush_rbn_live_queue()
+                        sess = self._sessions.get(session_id)
+                        if sess:
+                            sess.suppress_async_spots = True
+                        try:
+                            keep_going = await self._prompt_change_password(call, reader, writer)
+                            output = ""
                         finally:
                             sess = self._sessions.get(session_id)
                             if sess:

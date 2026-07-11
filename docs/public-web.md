@@ -143,6 +143,7 @@ Features:
 - permission-aware posting controls
 - footer `Log In` popup for authentication
 - footer `Register` popup for new registration requests
+- login-modal password reset for verified accounts
 - footer `Edit Profile` popup after login
 
 Profile fields:
@@ -162,6 +163,14 @@ MFA controls:
 - disable user-level MFA and clear outstanding challenges
 
 When email MFA is selected, `Verify` sends a code to the profile email address and asks for that code. When authenticator-app MFA is selected, `Verify` asks for the current app code. Login prompts say whether the code came from email or from the authenticator app.
+
+Password reset:
+
+- available from the web login popup
+- requires a verified email address already stored on the account
+- sends a reset code through the configured SMTP path
+- requires the reset code plus matching new-password fields
+- clears the failed-password lock state after a successful reset
 
 ## Posting Controls
 

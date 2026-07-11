@@ -55,7 +55,7 @@ set/name Example Operator
 set/qth Example City
 set/qra FN31PR
 set/homenode N0CALL-1
-set/password mynewpass
+set/password
 set/page 20
 set/nowrap
 show/users

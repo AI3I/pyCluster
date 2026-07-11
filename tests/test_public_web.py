@@ -434,6 +434,7 @@ def test_public_web_branding_uses_node_settings(tmp_path) -> None:
             assert data["ui_strings"]["profile_mfa_email_sent"] == "Email MFA code sent. Check your email, then enter the code."
             assert data["ui_strings"]["register_required_fields"] == "Callsign, email, and password are required."
             assert data["ui_strings"]["register_password_mismatch"] == "Passwords do not match."
+            assert data["ui_strings"]["password_reset_code_sent"] == "Password reset code sent. Enter the code and your new password."
         finally:
             await store.close()
 
@@ -498,6 +499,12 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "Callsign, email, and password are required." not in text
     assert "Passwords do not match." not in text
     assert "const REGISTER_REQUEST = '/api/register/request';" in text
+    assert 'id="password-reset-modal-bg"' in text
+    assert 'id="login-reset-password"' in text
+    assert "const PASSWORD_RESET_REQUEST = '/api/auth/password-reset/request';" in text
+    assert "const PASSWORD_RESET_CONFIRM = '/api/auth/password-reset/confirm';" in text
+    assert "uiText('password_reset_code_sent')" in text
+    assert "location.hash === '#password-reset'" in text
     assert "@media (max-width:1100px)" in text
     assert "@media (max-width:760px)" in text
     assert "#content { flex-direction:column; overflow:auto; -webkit-overflow-scrolling:touch; }" in text
@@ -1456,7 +1463,61 @@ def test_public_web_spots_hide_rbn_for_anonymous_and_honor_rbn_access(tmp_path) 
             )
             assert code == 200
             rows = json.loads(body.decode("utf-8"))
+            assert [row["dx_call"] for row in rows] == ["K1XYZ"]
+
+            await store.set_user_pref("AI3I", "rbn", "on", now)
+            code, _, body = await _http_request_ex(
+                srv,
+                "GET",
+                "/api/spots?limit=10",
+                headers={"X-Web-Token": token},
+            )
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
             assert [row["dx_call"] for row in rows] == ["K1ABC", "K1XYZ"]
+            assert rows[0]["is_rbn"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_spots_honor_rbn_filter_family(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_rbn_filters.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+        await store.set_user_pref("AI3I", "access.web.rbn", "on", now)
+        await store.set_user_pref("AI3I", "rbn", "on", now)
+        await store.set_filter_rule("AI3I", "rbn", "accept", 1, "call N9JR", now)
+        await store.add_spot(Spot(14074.0, "N9JR", now, "CQ TEST 18 dB", "SKIMMER1", "AI3I-15", ""))
+        await store.add_spot(Spot(14075.0, "K1ABC", now - 1, "CQ TEST 22 dB", "SKIMMER2", "AI3I-15", ""))
+        await store.add_spot(Spot(14076.0, "K1XYZ", now - 2, "FT8", "W1AW", "AI3I-15", ""))
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            token = json.loads(body.decode("utf-8"))["token"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "GET",
+                "/api/spots?limit=10",
+                headers={"X-Web-Token": token},
+            )
+            assert code == 200
+            rows = json.loads(body.decode("utf-8"))
+            assert [row["dx_call"] for row in rows] == ["N9JR", "K1XYZ"]
             assert rows[0]["is_rbn"] is True
         finally:
             await store.close()
@@ -2119,6 +2180,124 @@ def test_public_web_blocked_login_is_denied(tmp_path) -> None:
             )
             assert code == 403
             assert json.loads(body.decode("utf-8"))["error"] == "login blocked"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_bad_passwords_lock_account_and_send_notice(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_bad_password_locks.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+        try:
+            for idx in range(5):
+                code, _, body = await _http_request_ex(
+                    srv,
+                    "POST",
+                    "/api/auth/login",
+                    json.dumps({"call": "AI3I", "password": "wrong"}).encode("utf-8"),
+                    {"Content-Type": "application/json", "Host": "cluster.example.test", "X-Forwarded-Proto": "https"},
+                )
+                assert code == (403 if idx == 4 else 401)
+            assert await store.get_user_pref("AI3I", "registration_state") == "locked"
+            assert await store.get_user_pref("AI3I", "failed_password_count") == "5"
+            assert sent
+            assert sent[0][0] == "ai3i@example.test"
+            assert "#password-reset" in sent[0][2]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "account locked; use password reset"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_password_reset_unlocks_account_and_changes_password(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_password_reset.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "old-secret", now)
+        await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
+        await store.set_user_pref("AI3I", "registration_state", "locked", now)
+        await store.set_user_pref("AI3I", "failed_password_count", "5", now)
+        await store.set_user_pref("AI3I", "failed_password_locked_epoch", str(now), now)
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/password-reset/request",
+                json.dumps({"email": "ai3i@example.test"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 202
+            data = json.loads(body.decode("utf-8"))
+            assert data["sent"] is True
+            challenge_id = data["challenge_id"]
+            row = await store.get_mfa_challenge(challenge_id)
+            assert row is not None
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/password-reset/confirm",
+                json.dumps(
+                    {
+                        "email": "ai3i@example.test",
+                        "challenge_id": challenge_id,
+                        "otp": str(row["code"]),
+                        "password": "new-secret",
+                        "password_confirm": "new-secret",
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
+            assert await store.get_user_pref("AI3I", "registration_state") == "verified"
+            assert await store.get_user_pref("AI3I", "failed_password_count") is None
+            assert await store.get_user_pref("AI3I", "failed_password_locked_epoch") is None
+            stored = await store.get_user_pref("AI3I", "password")
+            assert stored is not None
+            assert verify_password("new-secret", str(stored))
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I", "password": "new-secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
+            assert any("password changed" in subject.lower() for _rcpt, subject, _body in sent)
         finally:
             await store.close()
 

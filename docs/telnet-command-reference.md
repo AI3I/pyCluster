@@ -108,7 +108,8 @@ Spotter-based filters match the station that posted the spot. They do not match 
 | `set/homenode <node>` | Set home node. |
 | `set/homebbs <bbs>` | Set home BBS. |
 | `set/node <node>` | Set home-routing node alias. |
-| `set/password <newpass>` | Set or change the local password. |
+| `set/password` | Prompt for and confirm a new local password without echoing it. |
+| `set/password <newpass> <confirm-newpass>` | Set or change the local password from command form when both values match. |
 | `unset/password` | Clear the stored local password. |
 | `mfa` | Show your MFA status, enabled methods, email override, and effective policy. |
 | `set/mfa [email\|authenticator\|default]` | Use email OTP MFA, enroll an authenticator app, or clear the email override back to the node default. |
@@ -177,6 +178,8 @@ Startup commands run after login and before the final prompt. Their output is li
 `show/filter test rbn <freq_khz> <dx_call> <spotter> [info]` previews RBN filter decisions without posting a real spot.
 
 RBN live delivery is off for telnet users by default. Use `set/rbn` to opt in to live RBN/Skimmer reports and `unset/rbn` to stop them. `show/rbn` remains available for recent summarized RBN history.
+
+Logged-in public web spot views use the same database-backed RBN preference and filter state: `unset/rbn` hides RBN/Skimmer spots there as well, while `set/rbn` plus `accept/rbn` or `reject/rbn` controls which RBN spots pass.
 
 RBN display is summarized into compact skimmer-style text such as `CW 8dB Q:9* Z:3,4,5`, where `Q` is the number of contributing skimmer reports and `Z` lists observed CQ zones.
 
@@ -422,7 +425,7 @@ sh/dx 10
 set/name Example Operator
 set/qth Example City
 set/qra FN31PR
-set/password mynewpass
+set/password
 show/station
 show/node
 ```
