@@ -128,7 +128,8 @@ set/qth Example City
 set/qra FN31PR
 set/email john@example.net
 set/homenode N0CALL-1
-set/password mynewpass
+set/password
+set/password mynewpass mynewpass
 mfa
 set/mfa authenticator
 set/mfa email
@@ -148,7 +149,7 @@ In practice:
 - `set/homenode`
   - stores the node that is considered your home
 - `set/password`
-  - changes your local password on this node
+  - prompts for and confirms your local password on this node
 - `set/mfa authenticator`
   - enrolls an authenticator-app secret for login codes
 - `set/mfa email`

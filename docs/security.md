@@ -12,6 +12,8 @@ pyCluster uses layered security controls rather than a single mechanism.
 - per-user posting permissions
 - callsign blocking
 - block reason tracking
+- durable failed-password lock state shared by telnet and public web login
+- verified-email password reset through the public web when SMTP is configured
 
 ### Operator Visibility
 

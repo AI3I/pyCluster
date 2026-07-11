@@ -1081,24 +1081,18 @@ html.light .toast { box-shadow:0 8px 24px rgba(15,23,42,.14); }
   cursor:pointer;
 }
 .profile-save-icon:hover { border-color:#3fb950; background:rgba(63,185,80,.18); }
-#profile-modal-bg {
+#profile-modal-bg,
+#login-modal-bg,
+#register-modal-bg,
+#password-reset-modal-bg {
   display:none; position:fixed; inset:0; z-index:6100;
   background:rgba(0,0,0,.55); backdrop-filter:blur(3px);
   align-items:center; justify-content:center;
 }
-#profile-modal-bg.open { display:flex; }
-#login-modal-bg {
-  display:none; position:fixed; inset:0; z-index:6100;
-  background:rgba(0,0,0,.55); backdrop-filter:blur(3px);
-  align-items:center; justify-content:center;
-}
-#login-modal-bg.open { display:flex; }
-#register-modal-bg {
-  display:none; position:fixed; inset:0; z-index:6100;
-  background:rgba(0,0,0,.55); backdrop-filter:blur(3px);
-  align-items:center; justify-content:center;
-}
-#register-modal-bg.open { display:flex; }
+#profile-modal-bg.open,
+#login-modal-bg.open,
+#register-modal-bg.open,
+#password-reset-modal-bg.open { display:flex; }
 .register-help { font-size:.72rem; color:var(--text-secondary); margin-top:8px; }
 .register-note { min-height:1.4em; font-size:.68rem; color:var(--text-muted); margin-top:6px; }
 
@@ -1942,6 +1936,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
       </div>
     </div>
     <div class="profile-modal-actions">
+      <button id="login-reset-password" type="button">Reset Password</button>
       <button id="login-cancel" type="button">Cancel</button>
       <button id="login-submit" class="primary" type="button">Log In</button>
     </div>
@@ -2005,6 +2000,37 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
   </div>
 </div>
 
+<div id="password-reset-modal-bg">
+  <div id="spot-modal">
+    <button class="sm-close" id="password-reset-close" type="button" title="Close" aria-label="Close password reset">✕</button>
+    <h2>Password Reset</h2>
+    <div class="register-help">Enter the verified email address on your account. If it matches, a reset code will be sent.</div>
+    <div class="profile-modal-grid">
+      <div class="field span-2">
+        <label for="password-reset-email">Email</label>
+        <input id="password-reset-email" type="email" maxlength="120" placeholder="operator@example.org" autocomplete="email">
+      </div>
+      <div class="field span-2" id="password-reset-code-row" style="display:none">
+        <label for="password-reset-code">Verification Code</label>
+        <input id="password-reset-code" type="text" inputmode="numeric" maxlength="12" placeholder="Enter the emailed code" autocomplete="one-time-code">
+      </div>
+      <div class="field password-reset-secret-row" style="display:none">
+        <label for="password-reset-new">New Password</label>
+        <input id="password-reset-new" type="password" maxlength="128" autocomplete="new-password" placeholder="New password">
+      </div>
+      <div class="field password-reset-secret-row" style="display:none">
+        <label for="password-reset-confirm">Confirm Password</label>
+        <input id="password-reset-confirm" type="password" maxlength="128" autocomplete="new-password" placeholder="Confirm password">
+      </div>
+    </div>
+    <div class="profile-modal-actions">
+      <button id="password-reset-cancel" type="button">Cancel</button>
+      <button id="password-reset-submit" class="primary" type="button">Send Code</button>
+    </div>
+    <div id="password-reset-status" class="profile-modal-status"></div>
+  </div>
+</div>
+
 <script>
 // ================================================================ Config
 const API    = '/api/spots';
@@ -2018,6 +2044,8 @@ const TAXONOMY = '/api/public/taxonomy';
 const AUTH_LOGIN = '/api/auth/login';
 const AUTH_LOGOUT = '/api/auth/logout';
 const AUTH_ME = '/api/auth/me';
+const PASSWORD_RESET_REQUEST = '/api/auth/password-reset/request';
+const PASSWORD_RESET_CONFIRM = '/api/auth/password-reset/confirm';
 const FILTER_SPOTS = '/api/filters/spots';
 const REGISTER_REQUEST = '/api/register/request';
 const PROFILE_SAVE = '/api/profile';
@@ -2229,6 +2257,7 @@ let webAccess   = {};
 let webProfile  = {};
 let opBusyCount = 0;
 let registerChallengeId = '';
+let passwordResetChallengeId = '';
 let pendingWebLogin = null;
 let liveStats   = null;
 
@@ -2561,6 +2590,99 @@ function openRegisterModal() {
 
 function closeRegisterModal() {
   document.getElementById('register-modal-bg')?.classList.remove('open');
+}
+
+function setPasswordResetStatus(msg, cls='') {
+  const el = document.getElementById('password-reset-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.className = `profile-modal-status${cls ? ` ${cls}` : ''}`;
+}
+
+function setPasswordResetStep(hasChallenge) {
+  const show = !!hasChallenge;
+  document.getElementById('password-reset-code-row')?.style.setProperty('display', show ? '' : 'none');
+  document.querySelectorAll('.password-reset-secret-row').forEach(el => {
+    el.style.display = show ? '' : 'none';
+  });
+  const submit = document.getElementById('password-reset-submit');
+  if (submit) submit.textContent = show ? 'Reset Password' : 'Send Code';
+}
+
+function openPasswordResetModal(email='') {
+  passwordResetChallengeId = '';
+  ['password-reset-code','password-reset-new','password-reset-confirm'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  const emailEl = document.getElementById('password-reset-email');
+  if (emailEl) emailEl.value = email;
+  setPasswordResetStep(false);
+  setPasswordResetStatus('');
+  document.getElementById('password-reset-modal-bg')?.classList.add('open');
+  (emailEl || document.getElementById('password-reset-email'))?.focus();
+}
+
+function closePasswordResetModal() {
+  document.getElementById('password-reset-modal-bg')?.classList.remove('open');
+}
+
+async function submitPasswordReset() {
+  const email = (document.getElementById('password-reset-email')?.value || '').trim();
+  if (!email) {
+    setPasswordResetStatus(uiText('password_reset_email_required'), 'err');
+    return;
+  }
+  const submit = document.getElementById('password-reset-submit');
+  try {
+    if (submit) submit.disabled = true;
+    if (!passwordResetChallengeId) {
+      setPasswordResetStatus(uiText('password_reset_sending'), 'warn');
+      const body = await webJson(PASSWORD_RESET_REQUEST, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email}),
+        authOptional:true,
+      });
+      if (body && body.challenge_id) {
+        passwordResetChallengeId = body.challenge_id;
+        setPasswordResetStep(true);
+        setPasswordResetStatus(uiText('password_reset_code_sent'), 'warn');
+        document.getElementById('password-reset-code')?.focus();
+      } else {
+        setPasswordResetStatus(uiText('password_reset_no_match'), 'warn');
+      }
+      return;
+    }
+    const payload = {
+      email,
+      challenge_id: passwordResetChallengeId,
+      otp: (document.getElementById('password-reset-code')?.value || '').trim(),
+      password: document.getElementById('password-reset-new')?.value || '',
+      password_confirm: document.getElementById('password-reset-confirm')?.value || '',
+    };
+    if (!payload.password || !payload.password_confirm) {
+      setPasswordResetStatus(uiText('password_reset_password_required'), 'err');
+      return;
+    }
+    if (payload.password !== payload.password_confirm) {
+      setPasswordResetStatus(uiText('password_reset_password_mismatch'), 'err');
+      return;
+    }
+    setPasswordResetStatus(uiText('password_reset_submitting'), 'warn');
+    await webJson(PASSWORD_RESET_CONFIRM, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload),
+      authOptional:true,
+    });
+    setPasswordResetStatus(uiText('password_reset_done'), 'ok');
+    setTimeout(closePasswordResetModal, 900);
+  } catch (err) {
+    setPasswordResetStatus(err.message || uiText('password_reset_failed'), 'err');
+  } finally {
+    if (submit) submit.disabled = false;
+  }
 }
 
 async function submitRegisterRequest() {
@@ -4977,16 +5099,34 @@ document.getElementById('profile-modal-bg').addEventListener('click', e => {
 document.getElementById('login-modal-bg').addEventListener('click', e => {
   if (e.target.id==='login-modal-bg') closeLoginModal();
 });
+document.getElementById('login-reset-password').addEventListener('click', () => {
+  const email = '';
+  closeLoginModal();
+  openPasswordResetModal(email);
+});
 document.getElementById('register-close').addEventListener('click', closeRegisterModal);
 document.getElementById('register-cancel').addEventListener('click', closeRegisterModal);
 document.getElementById('register-submit').addEventListener('click', submitRegisterRequest);
 document.getElementById('register-modal-bg').addEventListener('click', e => {
   if (e.target.id==='register-modal-bg') closeRegisterModal();
 });
+document.getElementById('password-reset-close').addEventListener('click', closePasswordResetModal);
+document.getElementById('password-reset-cancel').addEventListener('click', closePasswordResetModal);
+document.getElementById('password-reset-submit').addEventListener('click', submitPasswordReset);
+document.getElementById('password-reset-modal-bg').addEventListener('click', e => {
+  if (e.target.id==='password-reset-modal-bg') closePasswordResetModal();
+});
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeSpotModal(); });
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeProfileModal(); });
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeLoginModal(); });
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeRegisterModal(); });
+document.addEventListener('keydown', e => { if(e.key==='Escape') closePasswordResetModal(); });
+
+['password-reset-email','password-reset-code','password-reset-new','password-reset-confirm'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('keydown', e => { if(e.key==='Enter') submitPasswordReset(); });
+});
 
 ['qth-call','qth-grid'].forEach(id => {
   const el = document.getElementById(id);
@@ -5404,6 +5544,9 @@ document.getElementById('post-text')?.addEventListener('keydown', e => {
   loadSolar();
   loadHistory();
   loadNodes();
+  if (location.hash === '#password-reset') {
+    setTimeout(() => openPasswordResetModal(), 0);
+  }
   connectWS();
   setInterval(loadStats, 120000);
   setInterval(loadLeaderboard, 120000);

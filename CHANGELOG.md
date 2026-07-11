@@ -10,6 +10,7 @@ All notable changes to pyCluster should be recorded here.
 - `show/rbn [call] [limit]` shows summarized RBN/Skimmer reports for a callsign.
 - Optional direct RBN-enabled telnet feed ingestion can log in, send startup commands, and store DX-style Skimmer spots.
 - Public web spot filters now persist common filter combinations into database-backed `accept/spots` rules shared with telnet.
+- Public web users can request a self-service password reset by verified email address; a successful reset updates the password and clears failed-password account locks.
 
 ### Changed
 
@@ -18,9 +19,12 @@ All notable changes to pyCluster should be recorded here.
 - Telnet self-registration verifies the user's email before creating the sysop review request when SMTP is configured.
 - Public web filtering no longer exposes ITU-zone filter controls; CQ zone, continent, band, mode, activity, and spotter filters remain available.
 - The public web map seeds the QTH marker from the logged-in user's stored profile grid when no local map override exists.
+- Public web failed-password attempts now use the same durable failed-password lock state as telnet and send an account-lock notice when SMTP and a verified email are available.
 
 ### Fixed
 
+- Public web RBN/Skimmer spot visibility now honors the user's database-backed `set/rbn` preference and `accept/rbn`/`reject/rbn` filters.
+- Telnet `set/password` now requires password confirmation and the bare interactive form prompts without echoing the password.
 - DXSpider-profile peers receive legacy PC11 spot relay frames even when configured over a normal TCP DSN.
 - Telnet keepalive prompts are line-terminated and freshly rendered during idle waits.
 - Telnet startup command output is separated from the final login prompt so configured startup displays do not run into the prompt line.

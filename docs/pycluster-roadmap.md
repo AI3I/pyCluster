@@ -88,7 +88,7 @@ Prefer human-readable responses such as:
 
 Examples:
 - first telnet login with no password should force password creation
-- `set/password <newpass>`
+- `set/password`
 - `unset/password`
 - future SSH onboarding:
   - `set/sshkey <publickey>`

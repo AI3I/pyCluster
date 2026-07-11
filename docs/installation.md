@@ -287,6 +287,11 @@ Normal operator recovery paths:
   - `Send Verification`
   - `Mark Verified`
   - `Unlock Account`
+- Public web password reset:
+  - available from the login popup
+  - requires SMTP delivery to be configured
+  - requires the account to already have a verified email address
+  - sends a reset code, accepts a confirmed replacement password, and clears failed-password lock state
 
 If an account is locked or stuck pending verification and you need to recover it locally on the host:
 

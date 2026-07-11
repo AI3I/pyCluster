@@ -33,6 +33,7 @@ from .models import Spot, display_call, is_valid_call, is_valid_registration_cal
 from .pathmeta import describe_session_path
 from .propagation import latest_wwv_snapshot, merge_solar_snapshots, parse_hamqsl_solar_xml, snapshot_payload
 from .registration import has_valid_email, mark_email_verified, registration_state
+from .spot_filters import SpotFilterEntry, evaluate_spot_entries
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
 
@@ -364,6 +365,74 @@ class PublicWebServer:
                 return email
         return ""
 
+    async def _verified_call_for_email(self, email: str) -> tuple[str, str] | None:
+        wanted = str(email or "").strip().lower()
+        if not has_valid_email(wanted):
+            return None
+        rows = await self.store.list_user_registry(limit=1000, search=wanted)
+        for row in rows:
+            row_email = str(row["email"] or "").strip()
+            if row_email.lower() != wanted:
+                continue
+            call = str(row["call"] or "").strip().upper()
+            _state, verified_epoch, _remaining = await registration_state(self.store, call)
+            if verified_epoch > 0:
+                return call, row_email
+        return None
+
+    def _public_base_url(self, headers: dict[str, str]) -> str:
+        host = (headers.get("x-forwarded-host") or headers.get("host") or "").strip()
+        if not host:
+            return ""
+        proto = (headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+        if proto not in {"http", "https"}:
+            proto = "https" if headers.get("x-forwarded-ssl", "").lower() in {"on", "1", "true"} else "http"
+        return f"{proto}://{host}"
+
+    async def _send_account_locked_notice(self, call: str, email: str, headers: dict[str, str]) -> None:
+        if not self._smtp.enabled() or not has_valid_email(email):
+            return
+        issuer = self.config.mfa.issuer.strip() or self.config.node.branding_name.strip() or "pyCluster"
+        reset_url = self._public_base_url(headers)
+        if reset_url:
+            reset_url = reset_url.rstrip("/") + "/#password-reset"
+        body = (
+            f"Your {issuer} account {call.upper()} has been locked because of repeated failed password attempts.\n\n"
+            "Use the public web password reset option to verify your email address and set a new password."
+        )
+        if reset_url:
+            body += f"\n\nPassword reset: {reset_url}"
+        body += "\n\nIf you did not try to log in, contact a system operator.\n"
+        try:
+            self._smtp.send_code(email, f"{issuer} account locked for {call.upper()}", body)
+        except Exception:
+            LOG.exception("public web account lock notice failed call=%s email=%s", call, email)
+
+    async def _record_public_password_failure(self, call: str, headers: dict[str, str]) -> int:
+        base_call = call.split("-", 1)[0].upper()
+        now = int(time.time())
+        raw_count = await self.store.get_user_pref(base_call, "failed_password_count")
+        try:
+            count = int(str(raw_count or "0").strip() or "0") + 1
+        except ValueError:
+            count = 1
+        await self.store.set_user_pref(base_call, "failed_password_count", str(count), now)
+        if count >= 5:
+            await self.store.upsert_user_registry(base_call, now)
+            already_locked = str(await self.store.get_user_pref(base_call, "registration_state") or "").strip().lower() == "locked"
+            await self.store.set_user_pref(base_call, "registration_state", "locked", now)
+            await self.store.set_user_pref(base_call, "failed_password_locked_epoch", str(now), now)
+            if not already_locked:
+                await self._send_account_locked_notice(base_call, await self._email_for_call(base_call), headers)
+        return count
+
+    async def _clear_password_lock(self, call: str) -> None:
+        target = call.upper()
+        now = int(time.time())
+        await mark_email_verified(self.store, target, now_epoch=now)
+        await self.store.delete_user_pref(target, "failed_password_count")
+        await self.store.delete_user_pref(target, "failed_password_locked_epoch")
+
     async def _sysop_notification_emails(self) -> list[str]:
         rows = await self.store.list_user_registry(limit=200, privilege="sysop")
         out: list[str] = []
@@ -587,6 +656,7 @@ class PublicWebServer:
         defaults = {
             "login_mfa_email": "Enter the code sent to your email.",
             "login_mfa_authenticator": "Enter the code from your authenticator app.",
+            "login_mfa_enter_code": "Enter the MFA code first.",
             "profile_saving": "Saving...",
             "profile_updated": "Profile updated.",
             "profile_update_failed": "Profile update failed.",
@@ -605,6 +675,15 @@ class PublicWebServer:
             "profile_mfa_enter_code": "Enter the MFA code first.",
             "register_required_fields": "Callsign, email, and password are required.",
             "register_password_mismatch": "Passwords do not match.",
+            "password_reset_email_required": "Enter your verified account email address.",
+            "password_reset_sending": "Sending password reset code...",
+            "password_reset_code_sent": "Password reset code sent. Enter the code and your new password.",
+            "password_reset_no_match": "If that email matches a verified account, a reset code has been sent.",
+            "password_reset_password_required": "Enter and confirm your new password.",
+            "password_reset_password_mismatch": "Passwords do not match.",
+            "password_reset_submitting": "Resetting password...",
+            "password_reset_done": "Password updated. You can log in with the new password.",
+            "password_reset_failed": "Password reset failed.",
             "presets_login_required": "Log in to save presets.",
             "presets_save_failed": "Saving presets failed:",
             "presets_load_failed": "Loading presets failed:",
@@ -727,7 +806,9 @@ class PublicWebServer:
             return None
         return call
 
-    def _is_on_value(self, value: str) -> bool:
+    def _is_on_value(self, value: str | None, default: bool = False) -> bool:
+        if value is None:
+            return default
         return str(value or "").strip().lower() in {"1", "on", "yes", "true"}
 
     def _access_pref_key(self, channel: str, capability: str) -> str:
@@ -819,6 +900,7 @@ class PublicWebServer:
     ) -> None:
         reason = {
             200: "OK",
+            202: "Accepted",
             400: "Bad Request",
             401: "Unauthorized",
             403: "Forbidden",
@@ -1194,28 +1276,20 @@ class PublicWebServer:
         return low in hay
 
     async def _spot_passes_stored_filters(self, call: str, spot: dict[str, object]) -> bool:
-        accept: list[tuple[int, str]] = []
-        reject: list[tuple[int, str]] = []
+        entries: list[SpotFilterEntry] = []
         for row in await self.store.list_filter_rules(call):
-            if str(row["family"] or "").strip().lower() != "spots":
+            family = str(row["family"] or "").strip().lower()
+            if family not in {"spots", "rbn"}:
                 continue
             action = str(row["action"] or "").strip().lower()
-            item = (int(row["slot"] or 0), str(row["expr"] or ""))
-            if action == "accept":
-                accept.append(item)
-            elif action == "reject":
-                reject.append(item)
-        matches: list[tuple[int, str]] = []
-        for slot, expr in accept:
-            if self._spot_payload_matches_expr(spot, expr):
-                matches.append((slot, "accept"))
-        for slot, expr in reject:
-            if self._spot_payload_matches_expr(spot, expr):
-                matches.append((slot, "reject"))
-        if matches:
-            matches.sort(key=lambda item: (item[0], 0 if item[1] == "reject" else 1))
-            return matches[0][1] == "accept"
-        return not accept
+            if action not in {"accept", "reject"}:
+                continue
+            entries.append(SpotFilterEntry(family, action, int(row["slot"] or 0), str(row["expr"] or "")))
+        return evaluate_spot_entries(
+            entries,
+            lambda expr: self._spot_payload_matches_expr(spot, expr),
+            is_rbn=bool(spot.get("is_rbn")),
+        )
 
     @staticmethod
     def _parse_zone_spec(text: str, low: int, high: int) -> set[int]:
@@ -1240,7 +1314,10 @@ class PublicWebServer:
             return True
         if not call:
             return False
-        return await self._access_allowed(call, "web", "rbn")
+        if not await self._access_allowed(call, "web", "rbn"):
+            return False
+        raw = await self.store.get_user_pref(call.upper(), "rbn")
+        return self._is_on_value(str(raw), default=False)
 
     async def _api_spots(self, q: dict[str, list[str]], call: str = "") -> list[dict[str, object]]:
         limit = self._parse_limit(q, "limit", 200, 1, 500)
@@ -1773,6 +1850,80 @@ class PublicWebServer:
                 )
                 await self._write_response(writer, 200, self._json({"ok": True, "call": call, "pending": True}))
                 return
+            if path == "/api/auth/password-reset/request":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._smtp.enabled():
+                    await self._write_response(writer, 503, self._json({"error": "password reset delivery not configured"}))
+                    return
+                payload = self._parse_json_body(body)
+                email = str(payload.get("email", "")).strip()
+                match = await self._verified_call_for_email(email)
+                if not match:
+                    await self._write_response(writer, 202, self._json({"ok": True, "sent": False}))
+                    return
+                call, row_email = match
+                try:
+                    challenge_id, expires_epoch = await self._mfa.issue(call=call, email=row_email, purpose="password-reset")
+                except Exception:
+                    LOG.exception("public password reset delivery failed call=%s", call)
+                    await self._write_response(writer, 503, self._json({"error": "password reset delivery failed"}))
+                    return
+                self._audit("user", f"{call} requested public password reset")
+                await self._write_response(
+                    writer,
+                    202,
+                    self._json({"ok": True, "sent": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
+                )
+                return
+            if path == "/api/auth/password-reset/confirm":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                payload = self._parse_json_body(body)
+                email = str(payload.get("email", "")).strip()
+                challenge_id = str(payload.get("challenge_id", "")).strip()
+                otp = str(payload.get("otp", "")).strip()
+                password = str(payload.get("password", ""))
+                password_confirm = str(payload.get("password_confirm", ""))
+                if not challenge_id or not otp:
+                    await self._write_response(writer, 400, self._json({"error": "verification code required"}))
+                    return
+                if not password.strip():
+                    await self._write_response(writer, 400, self._json({"error": "password is required"}))
+                    return
+                if password != password_confirm:
+                    await self._write_response(writer, 400, self._json({"error": "passwords do not match"}))
+                    return
+                match = await self._verified_call_for_email(email)
+                if not match:
+                    await self._write_response(writer, 401, self._json({"error": "invalid challenge"}))
+                    return
+                call, row_email = match
+                ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="password-reset", otp=otp)
+                if not ok:
+                    await self._write_response(writer, 401, self._json({"error": reason}))
+                    return
+                now = int(time.time())
+                await self.store.set_user_pref(call, "password", hash_password(password), now)
+                await self._clear_password_lock(call)
+                self._audit("user", f"{call} completed public password reset")
+                if self._smtp.enabled():
+                    issuer = self.config.mfa.issuer.strip() or self.config.node.branding_name.strip() or "pyCluster"
+                    try:
+                        self._smtp.send_code(
+                            row_email,
+                            f"{issuer} password changed for {call}",
+                            (
+                                f"Your {issuer} password for {call} was changed through the public web password reset workflow.\n\n"
+                                "If you did not make this change, contact a system operator immediately.\n"
+                            ),
+                        )
+                    except Exception:
+                        LOG.exception("public password reset confirmation email failed call=%s", call)
+                await self._write_response(writer, 200, self._json({"ok": True, "call": call}))
+                return
             if path == "/api/auth/login":
                 if method != "POST":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
@@ -1798,6 +1949,11 @@ class PublicWebServer:
                     self._log_auth_failure(writer, headers, "public-web", call, "registration_required")
                     await self._write_response(writer, 403, self._json({"error": "registration required"}))
                     return
+                lock_state, _lock_verified_epoch, _lock_remaining = await registration_state(self.store, call.split("-", 1)[0].upper())
+                if lock_state == "locked":
+                    self._log_auth_failure(writer, headers, "public-web", call, "account_locked")
+                    await self._write_response(writer, 403, self._json({"error": "account locked; use password reset"}))
+                    return
                 req = await self.store.get_registration_request(call)
                 req_status = str(req["status"] or "").strip().lower() if req is not None else ""
                 if req_status and req_status != "approved":
@@ -1815,10 +1971,16 @@ class PublicWebServer:
                     return
                 if not verify_password(password, str(expected)):
                     self._log_auth_failure(writer, headers, "public-web", call, "invalid_credentials")
+                    count = await self._record_public_password_failure(call, headers)
+                    if count >= 5:
+                        await self._write_response(writer, 403, self._json({"error": "account locked; use password reset"}))
+                        return
                     await self._write_response(writer, 401, self._json({"error": "invalid credentials"}))
                     return
                 if not is_password_hash(str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
+                await self.store.delete_user_pref(call.split("-", 1)[0].upper(), "failed_password_count")
+                await self.store.delete_user_pref(call.split("-", 1)[0].upper(), "failed_password_locked_epoch")
                 is_sysop = str(reg["privilege"] or "").strip().lower() in {"sysop", "admin"} if reg is not None else False
                 email_verification_required = False
                 if self.config.node.verified_email_required_for_web:
