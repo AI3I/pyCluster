@@ -1821,7 +1821,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
   <div class="footer-block" id="footer-user">Web login: <span class="footer-user-off">&nbsp;Offline</span></div>
   <div class="footer-block footer-controls">
     <button id="toast-toggle" class="on" type="button" title="Hide spot popups" aria-label="Hide spot popups"><span class="footer-control-label">Popups</span></button>
-    <button id="sidebar-toggle" class="on" type="button" title="Hide the configuration panel" aria-label="Hide the configuration panel"><span class="footer-control-label">Config</span></button>
+    <button id="sidebar-toggle" class="on" type="button" title="Hide the sidebar" aria-label="Hide the sidebar"><span class="footer-control-label">Sidebar</span></button>
     <button id="greyline-toggle" class="active" title="Toggle grey line overlay" aria-label="Grey line"><span>🌗</span><span class="footer-control-label">Greyline</span></button>
     <button id="audio-toggle" class="off" title="Toggle audio alerts" aria-label="Audio alerts">
       <svg id="audio-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
@@ -2032,7 +2032,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 </div>
 
 <script>
-// ================================================================ Config
+// ================================================================ Sidebar
 const API    = '/api/spots';
 const BULLETINS = '/api/bulletins';
 const STATS  = '/api/stats';
@@ -2093,8 +2093,8 @@ function updateSidebarToggle() {
   if (!btn) return;
   document.body.classList.toggle('sidebar-hidden', sidebarHidden);
   btn.className = sidebarHidden ? 'off' : 'on';
-  btn.innerHTML = '<span class="footer-control-label">Config</span>';
-  btn.title = sidebarHidden ? 'Show the configuration panel' : 'Hide the configuration panel';
+  btn.innerHTML = '<span class="footer-control-label">Sidebar</span>';
+  btn.title = sidebarHidden ? 'Show the sidebar' : 'Hide the sidebar';
   btn.setAttribute('aria-label', btn.title);
 }
 
