@@ -2794,7 +2794,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid compact-controls">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.9" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.10" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>

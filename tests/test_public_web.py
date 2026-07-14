@@ -2010,6 +2010,24 @@ def test_public_web_registration_rejects_invalid_callsign(tmp_path) -> None:
             assert json.loads(body.decode("utf-8"))["error"] == "invalid callsign"
             assert await store.get_user_registry("JOHN") is None
             assert await store.get_registration_request("JOHN") is None
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(
+                    {
+                        "call": "JOHN1A",
+                        "name": "John",
+                        "email": "john@example.test",
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 400
+            assert json.loads(body.decode("utf-8"))["error"] == "invalid callsign"
+            assert await store.get_user_registry("JOHN1A") is None
+            assert await store.get_registration_request("JOHN1A") is None
         finally:
             await store.close()
 

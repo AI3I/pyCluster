@@ -87,9 +87,9 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current development release: `1.0.9`
+Current development release: `1.0.10`
 
-Recent highlights in `1.0.9`:
+Recent highlights in `1.0.10`:
 
 - RBN/Skimmer spots can be identified, filtered, summarized with `show/rbn`, and ingested from an optional direct telnet feed
 - telnet RBN delivery is user opt-in with `set/rbn`, while `show/dx` stays focused on traditional DX spots

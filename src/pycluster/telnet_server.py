@@ -1183,10 +1183,13 @@ class TelnetClusterServer:
                 "spotters": set(),
                 "zones": set(),
                 "db": None,
+                "q_count": 0,
                 "display_spotter": self._rbn_display_spotter(spot.spotter),
                 "peer_profile": session.peer_profile,
+                "updated_monotonic": time.monotonic(),
             },
         )
+        group["updated_monotonic"] = time.monotonic()
         freq = round(float(spot.freq_khz), 1)
         freq_votes = group["freq_votes"] if isinstance(group.get("freq_votes"), dict) else {}
         freq_votes[freq] = int(freq_votes.get(freq, 0)) + 1
@@ -1202,6 +1205,7 @@ class TelnetClusterServer:
         for item in rbn_zones(spot.info):
             zones.add(int(item))
         group["zones"] = zones
+        group["q_count"] = int(group.get("q_count") or 0) + max(1, int(rbn_quality(spot.info) or 1))
         db = rbn_db(spot.info)
         current_db = group.get("db")
         if db is not None and (current_db is None or int(db) < int(current_db)):
@@ -1212,13 +1216,24 @@ class TelnetClusterServer:
 
     async def _rbn_live_flush_later(self) -> None:
         await asyncio.sleep(self._rbn_live_dwell_seconds)
-        await self._flush_rbn_live_queue()
+        self._rbn_live_flush_task = None
+        await self._flush_rbn_live_queue(force=False)
+        if self._rbn_live_groups and self._rbn_live_flush_task is None:
+            self._rbn_live_flush_task = asyncio.create_task(self._rbn_live_flush_later(), name="pycluster-rbn-live-flush")
 
-    async def _flush_rbn_live_queue(self) -> int:
+    async def _flush_rbn_live_queue(self, *, force: bool = True) -> int:
         if not self._rbn_live_groups:
             return 0
-        groups = sorted(self._rbn_live_groups.values(), key=lambda item: (int(item["epoch"]), str(item["dx_call"])))
-        self._rbn_live_groups = {}
+        now_monotonic = time.monotonic()
+        ready_keys = [
+            key for key, group in self._rbn_live_groups.items()
+            if force or now_monotonic - float(group.get("updated_monotonic") or 0.0) >= self._rbn_live_dwell_seconds
+        ]
+        if not ready_keys:
+            if self._rbn_live_flush_task is None or self._rbn_live_flush_task.done():
+                self._rbn_live_flush_task = asyncio.create_task(self._rbn_live_flush_later(), name="pycluster-rbn-live-flush")
+            return 0
+        groups = sorted((self._rbn_live_groups.pop(key) for key in ready_keys), key=lambda item: (int(item["epoch"]), str(item["dx_call"])))
         delivered = 0
         for group in groups:
             session_id = int(group["session_id"])
@@ -1238,7 +1253,7 @@ class TelnetClusterServer:
             info = rbn_summary_info(
                 str(group.get("mode") or "RBN"),
                 int(group["db"]) if group.get("db") is not None else None,
-                max(1, len(spotters)),
+                max(1, int(group.get("q_count") or len(spotters) or 1)),
                 [int(z) for z in zones],
             )
             line = format_live_dx_line_for_profile(
@@ -1254,6 +1269,8 @@ class TelnetClusterServer:
             await self._write(session.writer, f"{prefix}{line}\r\n")
             session.async_line_open = True
             delivered += 1
+        if self._rbn_live_groups and (self._rbn_live_flush_task is None or self._rbn_live_flush_task.done()):
+            self._rbn_live_flush_task = asyncio.create_task(self._rbn_live_flush_later(), name="pycluster-rbn-live-flush")
         return delivered
 
     def _text_matches_expr(self, sender: str, text: str, expr: str) -> bool:
@@ -11051,7 +11068,7 @@ class TelnetClusterServer:
                     if line is None:
                         break
                     if line.strip().lower() == "register":
-                        await self._flush_rbn_live_queue()
+                        await self._flush_rbn_live_queue(force=False)
                         sess = self._sessions.get(session_id)
                         if sess:
                             sess.suppress_async_spots = True
@@ -11062,7 +11079,7 @@ class TelnetClusterServer:
                             if sess:
                                 sess.suppress_async_spots = False
                     elif line.strip().lower() == "set/password":
-                        await self._flush_rbn_live_queue()
+                        await self._flush_rbn_live_queue(force=False)
                         sess = self._sessions.get(session_id)
                         if sess:
                             sess.suppress_async_spots = True
@@ -11074,9 +11091,9 @@ class TelnetClusterServer:
                             if sess:
                                 sess.suppress_async_spots = False
                     else:
-                        await self._flush_rbn_live_queue()
+                        await self._flush_rbn_live_queue(force=False)
                         keep_going, output = await self._execute_command(call, line)
-                    await self._flush_rbn_live_queue()
+                    await self._flush_rbn_live_queue(force=False)
                     if output:
                         await self._write(writer, output)
                     if not keep_going:
