@@ -2,7 +2,7 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## 1.0.9 - Unreleased
+## 1.0.10 - 2026-07-14
 
 ### Added
 
@@ -25,6 +25,9 @@ All notable changes to pyCluster should be recorded here.
 
 - Public web RBN/Skimmer spot visibility now honors the user's database-backed `set/rbn` preference and `accept/rbn`/`reject/rbn` filters.
 - Telnet `set/password` now requires password confirmation and the bare interactive form prompts without echoing the password.
+- Self-registration callsign validation now rejects user-name-shaped values where the first digit appears too late to look like an amateur callsign.
+- Telnet command handling no longer force-flushes still-forming RBN batches around every command, preventing partial RBN summaries from splitting into multiple lines or interleaving with `sh/mydx` replies.
+- Live RBN aggregation now collapses already-summarized upstream `-#` reports for the same call/frequency/time bucket into a single summary line.
 - DXSpider-profile peers receive legacy PC11 spot relay frames even when configured over a normal TCP DSN.
 - Telnet keepalive prompts are line-terminated and freshly rendered during idle waits.
 - Telnet startup command output is separated from the final login prompt so configured startup displays do not run into the prompt line.

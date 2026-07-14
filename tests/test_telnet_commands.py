@@ -1827,6 +1827,39 @@ def test_show_dx_shortcuts_do_not_return_rbn_history(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_show_mydx_repeated_calls_return_same_filtered_history(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_mydx_repeat.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N9JR-10", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime(2026, 7, 7, 22, 16, tzinfo=timezone.utc).timestamp())
+            spots = [
+                Spot(7036.0, "WM3PEN", now, "13 Colonies", "WA4NNA", "N2WQ-1", ""),
+                Spot(14035.5, "WB0RLJ", now - 5, "NE POTA US-4011", "W1SAV", "N2WQ-1", ""),
+                Spot(14288.0, "K2C", now - 10, "", "NP3PR", "N2WQ-1", ""),
+                Spot(14011.2, "N9JR", now - 15, "CW 6dB Q:3 Z:5", "WS3W-#", "RBN", ""),
+            ]
+            for spot in spots:
+                await store.add_spot(spot)
+            await srv._execute_command("N9JR-10", "set/rbn")
+
+            _, first = await srv._execute_command("N9JR-10", "sh/mydx")
+            _, second = await srv._execute_command("N9JR-10", "sh/mydx")
+
+            assert first == second
+            assert "WM3PEN" in first
+            assert "WB0RLJ" in first
+            assert "No spots available" not in second
+            assert "RBN reports" not in first
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_show_mydx_filtering_fills_requested_count_from_deeper_history(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "spot_filter_show_limit.db")
@@ -2711,6 +2744,64 @@ def test_live_rbn_spots_are_grouped_into_dxspider_style_summary(tmp_path) -> Non
     asyncio.run(run())
 
 
+def test_live_rbn_command_flush_waits_for_batch_dwell(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "live_rbn_flush_dwell.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(call="N0CALL", writer=writer, connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime(2026, 5, 6, 18, 16, tzinfo=timezone.utc).timestamp())
+            await srv._execute_command("N0CALL", "set/rbn")
+            await srv.publish_spot(Spot(14011.2, "N9JR", now, "CW 6 dB 21 WPM CQ", "WS3W", "RBN", ""))
+            before = len(writer.buffer)
+
+            assert await srv._flush_rbn_live_queue(force=False) == 0
+            assert len(writer.buffer) == before
+            assert await srv._flush_rbn_live_queue() == 1
+            live = bytes(writer.buffer[before:]).decode("utf-8", "replace")
+            assert "N9JR" in live
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_live_rbn_summarized_upstream_reports_are_collapsed(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "live_rbn_summary_collapse.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(call="N0CALL", writer=writer, connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime(2026, 7, 8, 18, 36, tzinfo=timezone.utc).timestamp())
+            await srv._execute_command("N0CALL", "set/rbn")
+            samples = [
+                Spot(14005.6, "N9JR", now, "CW 8dB Q:6* Z:5", "NU4F-#", "RBN", ""),
+                Spot(14005.6, "N9JR", now + 3, "CW 15dB Q:5* Z:5", "K4PP-#", "RBN", ""),
+                Spot(14005.6, "N9JR", now + 8, "CW 23dB Q:3 Z:5", "K5TR-#", "RBN", ""),
+                Spot(14005.6, "N9JR", now + 10, "CW 6dB Q:1 Z:5", "W1NT-#", "RBN", ""),
+            ]
+            before = len(writer.buffer)
+            for spot in samples:
+                await srv.publish_spot(spot)
+            delivered = await srv._flush_rbn_live_queue()
+            live = bytes(writer.buffer[before:]).decode("utf-8", "replace")
+
+            assert delivered == 1
+            assert live.count("N9JR") == 1
+            assert "21 WPM CQ" not in live
+            assert "Q:15*" in live
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_legacy_rbn_scoped_spot_rules_do_not_open_full_rbn_stream(tmp_path) -> None:
     async def run() -> None:
         store = SpotStore(str(tmp_path / "legacy_rbn_scope.db"))
@@ -2881,6 +2972,11 @@ def test_telnet_register_rejects_invalid_callsign_before_registry_create(tmp_pat
             assert "Invalid callsign for self-registration: JOHN." in out
             assert await store.get_user_registry("JOHN") is None
             assert await store.get_registration_request("JOHN") is None
+            keep, out = await srv._execute_command("JOHN1A", "register")
+            assert keep is True
+            assert "Invalid callsign for self-registration: JOHN1A." in out
+            assert await store.get_user_registry("JOHN1A") is None
+            assert await store.get_registration_request("JOHN1A") is None
         finally:
             await store.close()
 
