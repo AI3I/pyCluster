@@ -514,9 +514,10 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert ".toast { max-width:none; }" in text
     assert ".footer-controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));" in text
     assert '<span class="footer-control-label">Popups</span>' in text
-    assert '<span class="footer-control-label">Config</span>' in text
+    assert '<span class="footer-control-label">Sidebar</span>' in text
     assert "Hide Popups" not in text and "Show Popups" not in text
     assert "Hide Sidebar" not in text and "Show Sidebar" not in text
+    assert "Hide the sidebar" in text and "Show the sidebar" in text
     assert "btn.className = sidebarHidden ? 'off' : 'on';" in text
     assert "@media (max-width:420px)" in text
     assert ".profile-modal-actions { display:grid; grid-template-columns:1fr; }" in text
