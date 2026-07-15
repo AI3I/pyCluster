@@ -14,6 +14,7 @@ pyCluster uses layered security controls rather than a single mechanism.
 - block reason tracking
 - durable failed-password lock state shared by telnet and public web login
 - verified-email password reset through the public web when SMTP is configured
+- authenticator MFA fallback to email OTP after repeated failed TOTP attempts
 
 ### Operator Visibility
 

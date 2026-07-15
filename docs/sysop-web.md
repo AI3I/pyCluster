@@ -102,7 +102,7 @@ Per-user MFA actions:
 - `Enroll Authenticator` creates a Google Authenticator-compatible TOTP secret for the selected principal callsign and displays the setup material.
 - `Reset MFA` disables user-level MFA, clears outstanding email OTP challenges, and removes any authenticator secret.
 
-Users can also manage their own MFA from the public web profile popup or from telnet with `mfa`, `set/mfa`, and `unset/mfa`. Node-wide MFA defaults are applied only after a user has usable MFA material, such as a valid email address or authenticator secret. Web login prompts describe the code source as email or authenticator app without exposing internal method names.
+Users can also manage their own MFA from the public web profile popup or from telnet with `mfa`, `set/mfa`, `set/totp`, `unset/totp`, and `unset/mfa`. Node-wide MFA defaults are applied only after a user has usable MFA material, such as a valid email address or authenticator secret. Web login prompts describe the code source as email or authenticator app without exposing internal method names.
 
 ### Mail (SMTP)
 

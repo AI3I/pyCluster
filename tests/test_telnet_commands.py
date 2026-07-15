@@ -1860,6 +1860,33 @@ def test_show_mydx_repeated_calls_return_same_filtered_history(tmp_path) -> None
     asyncio.run(run())
 
 
+def test_show_mydx_uses_database_history_when_recent_rbn_spots_dominate(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "show_mydx_rbn_saturated_history.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N9JR-10", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime(2026, 7, 14, 16, 50, tzinfo=timezone.utc).timestamp())
+            for idx in range(2500):
+                await store.add_spot(Spot(14011.0 + (idx / 1000), "N9JR", now + idx, "CW 8dB Q:1 Z:5", f"K{idx:03d}-#", "RBN", ""))
+            for idx in range(20):
+                await store.add_spot(Spot(50313.0 + idx, f"K1H{idx:02d}", now - 300 - idx, "FT8 EN33<>FN20", "N0YXO", "N2WQ-1", ""))
+            await srv._execute_command("N9JR-10", "set/rbn")
+
+            _, out = await srv._execute_command("N9JR-10", "sh/mydx/20")
+
+            assert "K1H00" in out
+            assert "K1H19" in out
+            assert "N9JR" not in out
+            assert "No spots available" not in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_show_mydx_filtering_fills_requested_count_from_deeper_history(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "spot_filter_show_limit.db")
@@ -5377,6 +5404,17 @@ def test_user_can_manage_own_mfa_from_telnet(tmp_path) -> None:
             assert "Setup key:" in out
             assert await store.get_user_pref("K1ABC", "mfa_totp_secret")
 
+            await store.delete_user_pref("K1ABC", "mfa_totp_secret")
+            _, out = await srv._execute_command("K1ABC", "set/totp")
+            assert "Authenticator MFA enabled for K1ABC." in out
+            assert "Setup key:" in out
+            assert await store.get_user_pref("K1ABC", "mfa_totp_secret")
+
+            _, out = await srv._execute_command("K1ABC", "unset/totp")
+            assert "Authenticator MFA disabled for K1ABC." in out
+            assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "required"
+            assert await store.get_user_pref("K1ABC", "mfa_totp_secret") is None
+
             _, out = await srv._execute_command("K1ABC", "unset/mfa")
             assert "MFA disabled for K1ABC." in out
             assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "off"
@@ -5419,6 +5457,80 @@ def test_ssid_user_manages_own_mfa_without_touching_base_call(tmp_path) -> None:
             assert await store.get_user_pref("N9JR", "mfa_email_otp") is None
             assert await store.get_user_pref("N9JR", "mfa_totp_secret") is None
         finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_totp_fallbacks_to_email_after_repeated_bad_codes(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_totp_bad_code_fallback.db")
+        cfg = _mk_config(db)
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("K1ABC", now, privilege="user", email="k1abc@example.test")
+            await store.set_user_pref("K1ABC", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+
+            final = b""
+            for _idx in range(3):
+                reader = asyncio.StreamReader()
+                writer = _DummyWriter()
+                reader.feed_data(b"000000\r\n")
+                reader.feed_eof()
+                ok = await srv._prompt_email_otp("K1ABC", reader, writer, is_sysop=False)  # type: ignore[arg-type]
+                assert ok is False
+                final = bytes(writer.buffer)
+
+            assert await store.get_user_pref("K1ABC", "mfa_totp_secret") is None
+            assert await store.get_user_pref("K1ABC", "mfa_totp_failed_count") is None
+            assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "required"
+            assert b"Authenticator MFA has been disabled" in final
+            assert b"run set/totp" in final
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_login_rejects_exact_ssid_locked_account(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_exact_ssid_locked.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-16"),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("N9JR", now, privilege="user", email="n9jr@example.test")
+        await store.upsert_user_registry("N9JR-10", now, privilege="user", email="n9jr10@example.test")
+        await store.set_user_pref("N9JR-10", "registration_state", "locked", now)
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            reader, writer = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(reader.readuntil(b"login: "), timeout=2.0)
+            writer.write(b"N9JR-10\r\n")
+            await writer.drain()
+            output = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+            assert b"Account N9JR-10 is locked" in output
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await srv.stop()
             await store.close()
 
     asyncio.run(run())
@@ -7018,11 +7130,17 @@ def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_pat
             await asyncio.wait_for(r1.readuntil(b"Email address: "), timeout=2.0)
             w1.write(b"alice@example.test\r\n")
             await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"new password: "), timeout=2.0)
+            w1.write(b"pw1\r\n")
+            await w1.drain()
+            await asyncio.wait_for(r1.readuntil(b"confirm password: "), timeout=2.0)
+            w1.write(b"pw1\r\n")
+            await w1.drain()
             tail = await asyncio.wait_for(r1.read(4096), timeout=2.0)
             assert b"Registration interview complete." in tail
             assert b"Registration checklist for N0CALL:" in tail
             assert b"QTH: set/qth" in tail
-            assert b"Password: set/password" in tail
+            assert b"Password: set/password" not in tail
             row = await store.get_user_registry("N0CALL")
             assert row is not None
             assert str(row["display_name"]) == "Alice Example"
@@ -7030,6 +7148,7 @@ def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_pat
             assert str(row["qra"]) == "FN42"
             assert str(row["email"]) == "alice@example.test"
             assert await store.get_user_pref("N0CALL", "homenode") == "W1AW"
+            assert verify_password("pw1", str(await store.get_user_pref("N0CALL", "password")))
             w1.close()
             await w1.wait_closed()
         finally:
@@ -7139,6 +7258,96 @@ def test_first_login_interview_does_not_offer_mfa_before_email_verified(tmp_path
         await store.set_user_pref("N0CALL", "homenode", "W1AW", now)
         await store.set_user_pref("N0CALL", "forward_lat", "43.0389", now)
         await store.set_user_pref("N0CALL", "forward_lon", "-87.9065", now)
+        await store.set_user_pref("N0CALL", "location", "Milwaukee, WI", now)
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        reader.feed_eof()
+        try:
+            ok = await srv._run_first_login_interview(
+                "N0CALL",
+                reader,
+                writer,  # type: ignore[arg-type]
+                node_family="",
+                password_set=True,
+            )
+            assert ok is True
+            assert b"Enable email MFA now?" not in bytes(writer.buffer)
+            assert await store.get_user_pref("N0CALL", "mfa_email_otp") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_first_login_interview_prompts_for_missing_password(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "interview_password_setup.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry(
+            "N0CALL",
+            now,
+            display_name="Alice Example",
+            home_node="W1AW",
+            qth="Milwaukee, WI",
+            qra="EN63AA",
+            email="alice@example.test",
+            privilege="user",
+        )
+        await store.set_user_pref("N0CALL", "homenode", "W1AW", now)
+        await store.set_user_pref("N0CALL", "forward_lat", "43.0389", now)
+        await store.set_user_pref("N0CALL", "forward_lon", "-87.9065", now)
+        await store.set_user_pref("N0CALL", "location", "Milwaukee, WI", now)
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        reader.feed_data(b"pw1\r\npw1\r\n")
+        reader.feed_eof()
+        try:
+            ok = await srv._run_first_login_interview(
+                "N0CALL",
+                reader,
+                writer,  # type: ignore[arg-type]
+                node_family="",
+                password_set=False,
+            )
+            assert ok is True
+            output = bytes(writer.buffer)
+            assert b"new password: " in output
+            assert b"Password setup is still required" not in output
+            assert verify_password("pw1", str(await store.get_user_pref("N0CALL", "password")))
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_first_login_interview_does_not_offer_mfa_when_node_policy_requires_it(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "interview_mfa_node_policy.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry(
+            "N0CALL",
+            now,
+            display_name="Alice Example",
+            home_node="W1AW",
+            qth="Milwaukee, WI",
+            qra="EN63AA",
+            email="alice@example.test",
+            privilege="user",
+        )
+        await store.set_user_pref("N0CALL", "homenode", "W1AW", now)
+        await store.set_user_pref("N0CALL", "forward_lat", "43.0389", now)
+        await store.set_user_pref("N0CALL", "forward_lon", "-87.9065", now)
+        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
         reader = asyncio.StreamReader()
         writer = _DummyWriter()
         reader.feed_eof()

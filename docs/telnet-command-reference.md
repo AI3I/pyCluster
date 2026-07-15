@@ -113,6 +113,8 @@ Spotter-based filters match the station that posted the spot. They do not match 
 | `unset/password` | Clear the stored local password. |
 | `mfa` | Show your MFA status, enabled methods, email override, and effective policy. |
 | `set/mfa [email\|authenticator\|default]` | Use email OTP MFA, enroll an authenticator app, or clear the email override back to the node default. |
+| `set/totp` | Shortcut for enrolling an authenticator-app/TOTP secret from telnet. |
+| `unset/totp` | Remove the authenticator-app/TOTP secret while leaving email MFA policy unchanged. |
 | `unset/mfa` | Disable user-level MFA, remove any authenticator secret, and clear outstanding challenges. |
 | `set/passphrase <text>` | Set a passphrase field. |
 | `unset/passphrase` | Clear passphrase field. |
@@ -133,7 +135,7 @@ Spotter-based filters match the station that posted the spot. They do not match 
 | `show/configuration` | Show node configuration summary. |
 | `show/newconfiguration` | Alias to the current configuration view. |
 
-When MFA is required during telnet login, pyCluster prompts for `authenticator code:` for authenticator-app accounts and `otp:` for email one-time-code accounts. Password and MFA-code prompts suppress local echo.
+When MFA is required during telnet login, pyCluster prompts for `authenticator code:` for authenticator-app accounts and `otp:` for email one-time-code accounts. Password and MFA-code prompts suppress local echo. After three failed authenticator-code attempts, pyCluster removes the authenticator secret, enables email OTP fallback, and tells the user to delete the old authenticator entry and run `set/totp` again.
 
 Self-service MFA commands act on the exact logged-in callsign, including SSIDs such as `N9JR-10`; login-time email lookup can still fall back to the base callsign's email record when the SSID record has no address.
 
@@ -185,7 +187,7 @@ RBN display is summarized into compact skimmer-style text such as `CW 8dB Q:9* Z
 
 ## Registration
 
-`REGISTER` is interactive on a live telnet session. It prompts only for missing required profile fields and password setup. When SMTP is configured, an unverified user must verify their email address before the request is submitted to the sysop queue: the first `REGISTER` sends an email code, and `REGISTER <code>` verifies the email and submits the completed request. Approved and verified users do not receive the registration reminder on later logins.
+`REGISTER` is interactive on a live telnet session. It prompts only for missing required profile fields and password setup. The first-login registration interview also prompts for password setup when a human user record has no local password. When SMTP is configured, an unverified user must verify their email address before the request is submitted to the sysop queue: the first `REGISTER` sends an email code, and `REGISTER <code>` verifies the email and submits the completed request. Approved and verified users do not receive the registration reminder on later logins.
 
 | Command | Purpose |
 |---|---|
