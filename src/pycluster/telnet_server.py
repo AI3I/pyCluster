@@ -76,6 +76,7 @@ def _download_text_url(url: str, *, timeout: float = 30.0, max_bytes: int = 2_00
         raise RuntimeError("downloaded keps file is too large")
     return data.decode("utf-8", errors="replace")
 _AUTH_FAILURE_LOCK_THRESHOLD = 5
+_TOTP_FAILURE_FALLBACK_THRESHOLD = 3
 
 _US_STATE_CQ_ZONE = {
     "CT": 5, "MA": 5, "ME": 5, "NH": 5, "RI": 5, "VT": 5,
@@ -654,6 +655,27 @@ class TelnetClusterServer:
         base_call = call.split("-", 1)[0].upper()
         await self.store.delete_user_pref(base_call, "failed_password_count")
         await self.store.delete_user_pref(base_call, "failed_password_locked_epoch")
+
+    async def _record_totp_failure(self, call: str, *, target: str | None = None) -> bool:
+        target = (target or call).upper()
+        now = int(datetime.now(timezone.utc).timestamp())
+        raw_count = await self.store.get_user_pref(target, "mfa_totp_failed_count")
+        try:
+            count = int(str(raw_count or "0").strip() or "0") + 1
+        except ValueError:
+            count = 1
+        if count < _TOTP_FAILURE_FALLBACK_THRESHOLD:
+            await self.store.set_user_pref(target, "mfa_totp_failed_count", str(count), now)
+            return False
+        await self.store.delete_user_pref(target, "mfa_totp_secret")
+        await self.store.delete_user_pref(target, "mfa_totp_failed_count")
+        await self.store.set_user_pref(target, "mfa_email_otp", "required", now)
+        await self.store.delete_mfa_challenges_for_call(target, include_ssids=False)
+        self._log_event("user", f"{target} totp_disenrolled after failed attempts")
+        return True
+
+    async def _clear_totp_failures(self, call: str, *, target: str | None = None) -> None:
+        await self.store.delete_user_pref((target or call).upper(), "mfa_totp_failed_count")
 
     async def _apply_page_size(self, call: str, lines: list[str], explicit_limit: bool = False) -> list[str]:
         if explicit_limit:
@@ -1914,13 +1936,17 @@ class TelnetClusterServer:
         return has_valid_email(await self._email_for_call(base_call.upper()))
 
     async def _totp_secret_for_call(self, call: str) -> str:
+        _target, secret = await self._totp_secret_record_for_call(call)
+        return secret
+
+    async def _totp_secret_record_for_call(self, call: str) -> tuple[str, str]:
         base_call = call.split("-", 1)[0].upper()
         for candidate in (call.upper(), base_call):
             raw = await self.store.get_user_pref(candidate, "mfa_totp_secret")
             secret = str(raw or "").strip()
             if secret:
-                return secret
-        return ""
+                return candidate, secret
+        return "", ""
 
     async def _require_verified_email_for_login(
         self,
@@ -2125,15 +2151,26 @@ class TelnetClusterServer:
     async def _prompt_email_otp(self, call: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, is_sysop: bool) -> bool:
         if not await self._mfa_required_for_call(call, is_sysop=is_sysop):
             return True
-        totp_secret = await self._totp_secret_for_call(call)
+        totp_target, totp_secret = await self._totp_secret_record_for_call(call)
         if totp_secret:
             await self._write(writer, self._string("mfa.authenticator_prompt", "authenticator code: "))
             supplied_totp = await self._read_password(reader, writer)
             if supplied_totp is None:
                 return False
             if not verify_totp(totp_secret, supplied_totp):
+                disabled = await self._record_totp_failure(call, target=totp_target)
                 await self._write(writer, self._string("mfa.invalid_code", "Login failed (invalid code)") + "\r\n")
+                if disabled:
+                    await self._write(
+                        writer,
+                        self._string(
+                            "mfa.totp_fallback",
+                            "Authenticator MFA has been disabled after repeated failed codes. Delete the old authenticator entry, run set/totp to enroll a new secret, and use email one-time passwords until authenticator MFA is enabled again.",
+                        )
+                        + "\r\n",
+                    )
                 return False
+            await self._clear_totp_failures(call, target=totp_target)
             return True
         email = await self._email_for_call(call)
         if not email:
@@ -2445,7 +2482,9 @@ class TelnetClusterServer:
         raw_mfa = await self.store.get_user_pref(call, "mfa_email_otp")
         mfa_txt = str(raw_mfa or "").strip().lower()
         _reg_state, verified_epoch, _remaining = await registration_state(self.store, call)
+        is_sysop = (await self._privilege_level_for(call)) >= 2
         can_offer_mfa = verified_epoch > 0
+        node_requires_mfa = self._mfa.required_for(is_sysop=is_sysop)
         needs_interview = any(
             (
                 not str(reg_row.get("display_name") or "").strip(),
@@ -2454,7 +2493,12 @@ class TelnetClusterServer:
                 not str(reg_row.get("qra") or "").strip(),
                 not has_coords,
                 not has_valid_email(str(reg_row.get("email") or "").strip()),
-                can_offer_mfa and self._smtp.enabled() and has_valid_email(str(reg_row.get("email") or "").strip()) and mfa_txt not in {"required", "off"},
+                not password_set,
+                can_offer_mfa
+                and not node_requires_mfa
+                and self._smtp.enabled()
+                and has_valid_email(str(reg_row.get("email") or "").strip())
+                and mfa_txt not in {"required", "off"},
             )
         )
         if not needs_interview:
@@ -2626,7 +2670,7 @@ class TelnetClusterServer:
                 )
 
         email = str(reg_row.get("email") or "").strip()
-        if can_offer_mfa and self._smtp.enabled() and has_valid_email(email) and mfa_txt not in {"required", "off"}:
+        if can_offer_mfa and not node_requires_mfa and self._smtp.enabled() and has_valid_email(email) and mfa_txt not in {"required", "off"}:
             answer = await self._prompt_optional_value(
                 reader,
                 writer,
@@ -2643,14 +2687,8 @@ class TelnetClusterServer:
                 await self.store.set_user_pref(call, "mfa_email_otp", "off", now)
 
         if not password_set:
-            await self._write(
-                writer,
-                self._string(
-                    "registration.interview_password_note",
-                    "Password setup is still required before normal login can continue.",
-                )
-                + "\r\n",
-            )
+            if not await self._prompt_new_password(call, reader, writer):
+                return False
         await self._write(writer, self._string("registration.interview_done", "Registration interview complete.") + "\r\n")
         return True
 
@@ -2663,53 +2701,58 @@ class TelnetClusterServer:
     async def _render_show_dx(self, call: str, arg: str | None, *, apply_user_filters: bool) -> str:
         query = parse_sh_dx_args(arg)
         requested_limit = query.limit
-        query.limit = 200
-        rows = await self.store.search_spots(query)
-        if not rows:
-            return self._string("show.dx.empty", "No spots available") + "\r\n"
-
         lines: list[str] = []
         has_rbn_history_filters: bool | None = None
-        for row in rows:
-            is_rbn = self._is_rbn_spot(str(row["dx_call"]), str(row["spotter"]), str(row["info"] or ""))
-            if is_rbn and not apply_user_filters:
-                continue
-            if is_rbn and apply_user_filters:
-                if has_rbn_history_filters is None:
-                    has_rbn_history_filters = await self._has_rbn_history_filters(call)
-                if not has_rbn_history_filters:
-                    continue
-            if is_rbn and not await self._spot_passes_rbn_pref(
-                call,
-                str(row["dx_call"]),
-                str(row["spotter"]),
-                str(row["info"] or ""),
-            ):
-                continue
-            if apply_user_filters and not await self._spot_passes_filters(
-                call,
-                float(row["freq_khz"]),
-                str(row["dx_call"]),
-                str(row["spotter"]),
-                str(row["info"] or ""),
-            ):
-                continue
-            spot_when = datetime.fromtimestamp(row["epoch"], tz=timezone.utc)
-            when = spot_when.strftime("%-d-%b-%Y %H%MZ")
-            sess = self._find_session(call)
-            profile = sess.peer_profile if sess else "dxspider"
-            line = format_dx_line_for_profile(
-                profile=profile,
-                freq_khz=float(row["freq_khz"]),
-                dx_call=str(row["dx_call"]),
-                when=when,
-                info=str(row["info"] or ""),
-                spotter=display_call(str(row["spotter"])),
-            )
-            line += await self._dx_line_suffix_for_call(call, str(row["dx_call"]))
-            lines.append(line)
-            if len(lines) >= requested_limit:
+        page_size = 500
+        scanned = 0
+        max_scan = 10_000
+        while len(lines) < requested_limit and scanned < max_scan:
+            query.limit = min(page_size, max_scan - scanned)
+            query.offset = scanned
+            rows = await self.store.search_spots(query)
+            if not rows:
                 break
+            scanned += len(rows)
+            for row in rows:
+                is_rbn = self._is_rbn_spot(str(row["dx_call"]), str(row["spotter"]), str(row["info"] or ""))
+                if is_rbn and not apply_user_filters:
+                    continue
+                if is_rbn and apply_user_filters:
+                    if has_rbn_history_filters is None:
+                        has_rbn_history_filters = await self._has_rbn_history_filters(call)
+                    if not has_rbn_history_filters:
+                        continue
+                if is_rbn and not await self._spot_passes_rbn_pref(
+                    call,
+                    str(row["dx_call"]),
+                    str(row["spotter"]),
+                    str(row["info"] or ""),
+                ):
+                    continue
+                if apply_user_filters and not await self._spot_passes_filters(
+                    call,
+                    float(row["freq_khz"]),
+                    str(row["dx_call"]),
+                    str(row["spotter"]),
+                    str(row["info"] or ""),
+                ):
+                    continue
+                spot_when = datetime.fromtimestamp(row["epoch"], tz=timezone.utc)
+                when = spot_when.strftime("%-d-%b-%Y %H%MZ")
+                sess = self._find_session(call)
+                profile = sess.peer_profile if sess else "dxspider"
+                line = format_dx_line_for_profile(
+                    profile=profile,
+                    freq_khz=float(row["freq_khz"]),
+                    dx_call=str(row["dx_call"]),
+                    when=when,
+                    info=str(row["info"] or ""),
+                    spotter=display_call(str(row["spotter"])),
+                )
+                line += await self._dx_line_suffix_for_call(call, str(row["dx_call"]))
+                lines.append(line)
+                if len(lines) >= requested_limit:
+                    break
         if not lines:
             return self._string("show.dx.empty", "No spots available") + "\r\n"
         return "\r\n".join(lines) + "\r\n"
@@ -7241,6 +7284,7 @@ class TelnetClusterServer:
             return self._render_string("mfa.email_enabled", "Email MFA enabled for {call}.", call=target) + "\r\n"
         secret = generate_totp_secret()
         await self.store.set_user_pref(target, "mfa_totp_secret", secret, now)
+        await self.store.delete_user_pref(target, "mfa_totp_failed_count")
         await self.store.set_user_pref(target, "mfa_email_otp", "required", now)
         cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
         uri = totp_otpauth_uri(
@@ -7258,11 +7302,15 @@ class TelnetClusterServer:
             ]
         )
 
+    async def _cmd_set_totp(self, call: str, _arg: str | None) -> str:
+        return await self._cmd_set_mfa(call, "authenticator")
+
     async def _cmd_unset_mfa(self, call: str, _arg: str | None) -> str:
         target = call.upper()
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(target, "mfa_email_otp", "off", now)
         await self.store.delete_user_pref(target, "mfa_totp_secret")
+        await self.store.delete_user_pref(target, "mfa_totp_failed_count")
         cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
         self._log_event("user", f"{call} unset/mfa challenges={cleared}")
         return self._render_string(
@@ -7270,6 +7318,18 @@ class TelnetClusterServer:
             "MFA disabled for {call}. Outstanding challenges cleared: {cleared}.",
             call=target,
             cleared=cleared,
+        ) + "\r\n"
+
+    async def _cmd_unset_totp(self, call: str, _arg: str | None) -> str:
+        target = call.upper()
+        await self.store.delete_user_pref(target, "mfa_totp_secret")
+        await self.store.delete_user_pref(target, "mfa_totp_failed_count")
+        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
+        self._log_event("user", f"{call} unset/totp challenges={cleared}")
+        return self._render_string(
+            "mfa.authenticator_disabled",
+            "Authenticator MFA disabled for {call}. Email MFA policy is unchanged.",
+            call=target,
         ) + "\r\n"
 
     async def _cmd_sysop_homenode(self, call: str, arg: str | None) -> str:
@@ -10497,6 +10557,7 @@ class TelnetClusterServer:
             "set/qth": lambda c, a: self._cmd_set_named_var(c, a, "qth", ""),
             "set/location": lambda c, a: self._cmd_set_named_var(c, a, "location", ""),
             "set/mfa": self._cmd_set_mfa,
+            "set/totp": self._cmd_set_totp,
             "set/name": lambda c, a: self._cmd_set_named_var(c, a, "name", ""),
             "set/startup": self._cmd_set_startup,
             "set/usdb": self._cmd_set_usdb,
@@ -10618,6 +10679,7 @@ class TelnetClusterServer:
             "unset/hops": lambda c, a: self._cmd_unset_named_var(c, a, "hops"),
             "unset/logininfo": lambda c, a: self._cmd_unset_named_var(c, a, "logininfo"),
             "unset/mfa": self._cmd_unset_mfa,
+            "unset/totp": self._cmd_unset_totp,
             "unset/passphrase": lambda c, a: self._cmd_unset_named_var(c, a, "passphrase"),
             "unset/password": lambda c, a: self._cmd_unset_named_var(c, a, "password"),
             "unset/privilege": self._cmd_unset_privilege,
@@ -10866,15 +10928,20 @@ class TelnetClusterServer:
                     writer.close()
                     await writer.wait_closed()
                     return
-                lock_state, _lock_verified_epoch, _lock_remaining = await registration_state(self.store, base_call)
-                if lock_state == "locked":
+                locked_call = ""
+                for candidate in (call, base_call):
+                    lock_state, _lock_verified_epoch, _lock_remaining = await registration_state(self.store, candidate)
+                    if lock_state == "locked":
+                        locked_call = candidate
+                        break
+                if locked_call:
                     self._log_auth_failure("telnet", peer, call, "account_locked")
                     await self._write(
                         writer,
                         self._render_string(
                             "account.locked",
                             "Account {call} is locked. Contact a sysop.",
-                            call=base_call,
+                            call=locked_call,
                         )
                         + "\r\n",
                     )
@@ -11036,6 +11103,7 @@ class TelnetClusterServer:
                         writer.close()
                         await writer.wait_closed()
                         return
+                    password_set = bool(str(await self.store.get_user_pref(call, "password") or "").strip())
                     checklist = await self._registration_checklist_block(call, password_set=password_set, node_family=node_family)
                     if checklist:
                         await self._write(writer, checklist)

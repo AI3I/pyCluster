@@ -37,9 +37,9 @@ Welcome to pyCluster on N0CALL-1
 N0CALL-1>
 ```
 
-If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal.
+If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal. After three failed authenticator-code attempts, pyCluster disables that authenticator secret for the account and falls back to email one-time codes until you enroll a new secret.
 
-For SSID logins, self-service MFA commands apply to the exact callsign you used to log in. For example, `set/mfa authenticator` as `N0CALL-2` enrolls MFA for `N0CALL-2`, not for the base `N0CALL` account.
+For SSID logins, self-service MFA commands apply to the exact callsign you used to log in. For example, `set/mfa authenticator` or `set/totp` as `N0CALL-2` enrolls MFA for `N0CALL-2`, not for the base `N0CALL` account.
 
 If this is your first telnet login and no password exists yet, pyCluster will stop and require password creation before continuing.
 
@@ -132,7 +132,9 @@ set/password
 set/password mynewpass mynewpass
 mfa
 set/mfa authenticator
+set/totp
 set/mfa email
+unset/totp
 unset/mfa
 ```
 
@@ -152,8 +154,12 @@ In practice:
   - prompts for and confirms your local password on this node
 - `set/mfa authenticator`
   - enrolls an authenticator-app secret for login codes
+- `set/totp`
+  - shortcut for authenticator-app enrollment on telnet
 - `set/mfa email`
   - uses email one-time codes when SMTP and a profile email are available
+- `unset/totp`
+  - removes only the authenticator-app secret and leaves email MFA policy unchanged
 - `unset/mfa`
   - disables user-level MFA and clears outstanding challenges
 

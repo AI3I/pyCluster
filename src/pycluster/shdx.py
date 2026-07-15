@@ -33,6 +33,7 @@ class ShDxQuery:
     freq_high: float | None = None
     info_contains: str | None = None
     since_epoch: int | None = None
+    offset: int = 0
 
 
 def _is_int(s: str) -> bool:

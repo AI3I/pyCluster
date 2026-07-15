@@ -122,7 +122,7 @@ Important fields:
 
 ### `[mfa]`
 
-Node-wide MFA policy. Authenticator-app/TOTP challenges use per-user secrets. Email OTP challenges use the `[smtp]` settings and require a valid user email address.
+Node-wide MFA policy. Authenticator-app/TOTP challenges use per-user secrets. Email OTP challenges use the `[smtp]` settings and require a valid user email address. Telnet users can enroll TOTP with `set/totp`; after three failed authenticator-code attempts pyCluster removes the TOTP secret and falls back to email OTP until the user enrolls a new secret.
 
 Important fields:
 

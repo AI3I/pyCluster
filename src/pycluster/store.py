@@ -447,15 +447,17 @@ class SpotStore:
             params.append(query.since_epoch)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        limit = max(1, min(query.limit, 200))
+        limit = max(1, min(query.limit, 2000))
+        offset = max(0, int(getattr(query, "offset", 0) or 0))
         params.append(limit)
+        params.append(offset)
 
         sql = (
             "SELECT freq_khz, dx_call, epoch, info, spotter, source_node, raw "
             "FROM spots "
             f"{where} "
             "ORDER BY epoch DESC, freq_khz ASC, id DESC "
-            "LIMIT ?"
+            "LIMIT ? OFFSET ?"
         )
 
         async with self._lock:
