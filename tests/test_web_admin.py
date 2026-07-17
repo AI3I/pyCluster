@@ -118,17 +118,21 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert 'data-user-browser="local"' in text
     assert 'data-user-browser="blocked"' in text
+    assert 'data-user-browser="locked"' in text
     assert 'data-user-browser="clusters"' in text
     assert 'data-user-browser="sysops"' in text
     assert 'data-user-browser="requests"' in text
     assert 'id="user-browser-local"' in text
     assert 'id="user-browser-blocked"' in text
+    assert 'id="user-browser-locked"' in text
     assert 'id="user-browser-clusters"' in text
     assert 'id="user-browser-sysops"' in text
     assert 'id="user-browser-requests"' in text
     assert "exclude_clusters=1" in text
     assert "blocked=1&exclude_clusters=1" in text
+    assert "locked=1&exclude_clusters=1" in text
     assert "setBlockedRows(payload || {})" in text
+    assert "setLockedRows(payload || {})" in text
     assert 'data-telemetry-panel="overview"' in text
     assert 'data-telemetry-panel="audit"' in text
     assert 'data-telemetry-panel="security"' in text
@@ -2993,6 +2997,16 @@ def test_web_users_registry_listing_and_update(tmp_path) -> None:
             assert data["rows"][0]["email_verified"] is False
             assert data["rows"][0]["grace_logins_remaining"] == 0
 
+            await store.set_user_pref("W3XYZ", "registration_state", "locked", now)
+            code, _, body = await _http_request(srv, "GET", "/api/users?locked=1&exclude_clusters=1", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["locked"] is True
+            assert data["exclude_clusters"] is True
+            assert data["total"] == 1
+            assert data["rows"][0]["call"] == "W3XYZ"
+            assert data["rows"][0]["registration_locked"] is True
+
             await store.set_user_pref("K1ABC", "node_family", "pycluster", now)
             code, _, body = await _http_request(srv, "GET", "/api/users?clusters=1", headers={"X-Admin-Token": "adm"})
             assert code == 200
@@ -3469,6 +3483,17 @@ def test_web_admin_registration_queue_can_list_approve_and_deny(tmp_path) -> Non
                 email_verified=True,
                 status="pending",
             )
+            await store.upsert_user_registry("N1DENY", now, display_name="Old Deny", email="old-deny@example.test")
+            await store.set_user_pref("N1DENY", "password", "old-password", now)
+            await store.save_mfa_challenge(
+                challenge_id="deny-code",
+                call="N1DENY",
+                purpose="telnet-register",
+                code="123456",
+                expires_epoch=now + 300,
+                attempts_left=3,
+                issued_epoch=now,
+            )
 
             code, _, body = await _http_request(srv, "GET", "/api/registrations?status=pending", headers={"X-Admin-Token": "adm"})
             assert code == 200
@@ -3513,6 +3538,8 @@ def test_web_admin_registration_queue_can_list_approve_and_deny(tmp_path) -> Non
             assert req is not None
             assert str(req["status"]) == "denied"
             assert await store.get_user_registry("N1DENY") is None
+            assert await store.get_user_pref("N1DENY", "password") is None
+            assert await store.get_mfa_challenge("deny-code") is None
         finally:
             await store.close()
 

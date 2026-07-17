@@ -87,10 +87,15 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current development release: `1.0.10`
+Current development release: `1.0.11`
 
-Recent highlights in `1.0.10`:
+Recent highlights in `1.0.11`:
 
+- RBN feed ingestion has additional burst protection with batched spot storage and bounded live aggregation
+- System Operator user management includes a locked-account view alongside blocked users
+- telnet registration requests stay in the approval queue until a SysOp approves them, avoiding premature account creation
+- deleted/denied user records clean up stale registration and MFA state before a callsign-SSID can be reused
+- filtered `show/mydx` searches deeper durable spot history under high-volume RBN conditions
 - RBN/Skimmer spots can be identified, filtered, summarized with `show/rbn`, and ingested from an optional direct telnet feed
 - telnet RBN delivery is user opt-in with `set/rbn`, while `show/dx` stays focused on traditional DX spots
 - public web filters persist to the shared backend filter table used by telnet

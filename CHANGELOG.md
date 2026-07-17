@@ -2,6 +2,24 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.11 - 2026-07-17
+
+### Added
+
+- System Operator Users now includes a Locked view backed by the same account matrix as the main Users and Blocked views.
+
+### Changed
+
+- Direct RBN feed ingestion now batches accepted spots, yields during burst fanout, and caps live RBN aggregation state to reduce freeze and memory-growth risk on busy feeds.
+- Filtered `show/mydx` scans deeper durable spot history before reporting no matches, improving behavior when recent RBN or nonmatching traffic dominates the latest rows.
+
+### Fixed
+
+- Telnet registration requests no longer create local user accounts before SysOp approval.
+- Denied or deleted accounts now clear stale local user, registration, and MFA challenge state so reused callsign-SSIDs do not inherit old email/MFA data.
+- Telnet idle keepalive prompt refresh no longer adds extra blank lines.
+- Locked exact callsign-SSID accounts are rejected before password or MFA prompts.
+
 ## 1.0.10 - 2026-07-14
 
 ### Added

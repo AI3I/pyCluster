@@ -145,6 +145,28 @@ def test_delete_user_account_removes_registry_and_all_user_data(tmp_path: Path) 
             await store.add_buddy("N0CALL", "K1ABC", now)
             await store.add_startup_command("N0CALL", "show/dx", now)
             await store.set_filter_rule("N0CALL", "spots", "accept", 1, "on 20m", now)
+            await store.upsert_registration_request(
+                "N0CALL",
+                now,
+                display_name="Joe",
+                home_node="W1AW",
+                qth="Milwaukee",
+                qra="EN53",
+                email="old@example.test",
+                note="pending",
+                source="telnet",
+                email_verified=True,
+                status="pending",
+            )
+            await store.save_mfa_challenge(
+                challenge_id="old-code",
+                call="N0CALL",
+                purpose="telnet-register",
+                code="123456",
+                expires_epoch=now + 300,
+                attempts_left=3,
+                issued_epoch=now,
+            )
 
             counts = await store.delete_user_account("N0CALL")
             assert counts["registry"] == 1
@@ -153,8 +175,12 @@ def test_delete_user_account_removes_registry_and_all_user_data(tmp_path: Path) 
             assert counts["buddy"] == 1
             assert counts["startup"] == 1
             assert counts["filters"] == 1
+            assert counts["registration_requests"] == 1
+            assert counts["mfa_challenges"] == 1
 
             assert await store.get_user_registry("N0CALL") is None
+            assert await store.get_registration_request("N0CALL") is None
+            assert await store.get_mfa_challenge("old-code") is None
             assert await store.list_user_prefs("N0CALL") == {}
             assert await store.list_usdb_entries("N0CALL") == {}
             assert await store.list_buddies("N0CALL") == []
@@ -214,6 +240,25 @@ def test_store_spot_dedupe_toggle_and_clear(tmp_path: Path) -> None:
             assert await store.spot_dupe_enabled() is True
             cleared = await store.clear_spot_dupes()
             assert cleared >= 1
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_store_batch_insert_returns_only_inserted_spots(tmp_path: Path) -> None:
+    async def run() -> None:
+        db = tmp_path / "batch_inserted.db"
+        store = SpotStore(str(db))
+        try:
+            first = parse_spot_record("14074.0^K1ABC^1772337000^FT8^N0CALL^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+            duplicate = parse_spot_record("14074.0^K1ABC^1772337000^FT8^N0CALL^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+            second = parse_spot_record("14075.0^K1XYZ^1772337001^FT8^N0CALL^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+
+            inserted = await store.add_spots_returning_inserted([first, duplicate, second])
+
+            assert [spot.dx_call for spot in inserted] == ["K1ABC", "K1XYZ"]
+            assert await store.count_spots() == 2
         finally:
             await store.close()
 
