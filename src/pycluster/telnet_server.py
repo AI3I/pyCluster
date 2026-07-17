@@ -312,6 +312,7 @@ class TelnetClusterServer:
         self._rbn_live_groups: dict[tuple[int, int, int, str, str], dict[str, object]] = {}
         self._rbn_live_flush_task: asyncio.Task[None] | None = None
         self._rbn_live_dwell_seconds = 2.0
+        self._rbn_live_group_limit = 5000
         self._cty_loaded = False
         self._wpx_loaded = False
         self._cty_mtime_ns = 0
@@ -1192,8 +1193,29 @@ class TelnetClusterServer:
         freq_bucket = int(round(float(spot.freq_khz)))
         return (session_id, minute_epoch, freq_bucket, normalize_call(spot.dx_call), rbn_mode(spot.info))
 
+    def _prune_rbn_live_groups(self) -> None:
+        if len(self._rbn_live_groups) < self._rbn_live_group_limit:
+            return
+        active_ids = set(self._sessions)
+        for key in [key for key in self._rbn_live_groups if int(key[0]) not in active_ids]:
+            self._rbn_live_groups.pop(key, None)
+        overflow = len(self._rbn_live_groups) - self._rbn_live_group_limit + 1
+        if overflow <= 0:
+            return
+        stale_keys = sorted(
+            self._rbn_live_groups,
+            key=lambda key: (
+                float(self._rbn_live_groups[key].get("updated_monotonic") or 0.0),
+                int(self._rbn_live_groups[key].get("epoch") or 0),
+            ),
+        )[:overflow]
+        for key in stale_keys:
+            self._rbn_live_groups.pop(key, None)
+
     def _queue_rbn_live_spot(self, session_id: int, session: Session, spot: Spot) -> None:
         key = self._rbn_live_group_key(session_id, spot)
+        if key not in self._rbn_live_groups:
+            self._prune_rbn_live_groups()
         group = self._rbn_live_groups.setdefault(
             key,
             {
@@ -1703,7 +1725,7 @@ class TelnetClusterServer:
         session.async_line_open = False
 
     async def _idle_keepalive_prompt(self, call: str) -> str:
-        return "\r\n" + await self._prompt(call) + "\r\n"
+        return await self._prompt(call)
 
     async def _prompt_template(self) -> str:
         template = str(getattr(self.config.node, "prompt_template", "") or "").strip()
@@ -1859,18 +1881,6 @@ class TelnetClusterServer:
         email_verified: bool,
     ) -> None:
         now = int(datetime.now(timezone.utc).timestamp())
-        await self.store.upsert_user_registry(
-            call,
-            now,
-            display_name=display_name,
-            home_node=home_node,
-            qth=qth,
-            qra=qra,
-            email=email,
-            privilege="",
-        )
-        if email_verified:
-            await mark_email_verified(self.store, call, now_epoch=now)
         await self.store.upsert_registration_request(
             call,
             now,
@@ -2705,7 +2715,7 @@ class TelnetClusterServer:
         has_rbn_history_filters: bool | None = None
         page_size = 500
         scanned = 0
-        max_scan = 10_000
+        max_scan = 100_000 if apply_user_filters else 10_000
         while len(lines) < requested_limit and scanned < max_scan:
             query.limit = min(page_size, max_scan - scanned)
             query.offset = scanned

@@ -1912,6 +1912,30 @@ def test_show_mydx_filtering_fills_requested_count_from_deeper_history(tmp_path)
     asyncio.run(run())
 
 
+def test_show_mydx_filtering_scans_past_high_volume_nonmatches(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "spot_filter_show_deep_history.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            for idx in range(10_500):
+                await store.add_spot(Spot(7050.0 + (idx % 100), f"K3L{idx}", now + idx, "CW", "K1AAA", "N2WQ-1", ""))
+            await store.add_spot(Spot(14074.0, "A71XX", now - 60, "FT8", "K1AAA", "N2WQ-1", ""))
+            await srv._execute_command("N0CALL", "accept/spots 1 on 20m")
+
+            _, out = await srv._execute_command("N0CALL", "show/mydx 1")
+            assert "A71XX" in out
+            assert "K3L" not in out
+            assert "No spots available" not in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_spot_filters_support_call_zone_call_itu_and_call_dxcc(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "spot_filter_zones.db")
@@ -2791,6 +2815,39 @@ def test_live_rbn_command_flush_waits_for_batch_dwell(tmp_path) -> None:
             live = bytes(writer.buffer[before:]).decode("utf-8", "replace")
             assert "N9JR" in live
         finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_live_rbn_group_queue_is_bounded(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "live_rbn_group_cap.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._rbn_live_group_limit = 10
+        writer = _DummyWriter()
+        session = Session(call="N0CALL", writer=writer, connected_at=datetime.now(timezone.utc))
+        srv._sessions[1] = session
+        try:
+            now = int(datetime(2026, 5, 6, 18, 16, tzinfo=timezone.utc).timestamp())
+            for idx in range(25):
+                srv._queue_rbn_live_spot(
+                    1,
+                    session,
+                    Spot(14000.0 + idx, f"K{idx}ABC", now + idx, "CW 10 dB 21 WPM CQ", f"W{idx}XYZ-#", "RBN", ""),
+                )
+
+            assert len(srv._rbn_live_groups) <= srv._rbn_live_group_limit
+            assert all(key[0] == 1 for key in srv._rbn_live_groups)
+        finally:
+            if srv._rbn_live_flush_task:
+                srv._rbn_live_flush_task.cancel()
+                try:
+                    await srv._rbn_live_flush_task
+                except asyncio.CancelledError:
+                    pass
             await store.close()
 
     asyncio.run(run())
@@ -6888,6 +6945,7 @@ def test_telnet_registration_required_can_queue_registration_request(tmp_path) -
             assert req is not None
             assert str(req["status"]) == "pending"
             assert str(req["email"]) == "new@example.test"
+            assert await store.get_user_registry("N1NEW") is None
             w1.close()
             await w1.wait_closed()
         finally:
@@ -7056,7 +7114,8 @@ def test_telnet_idle_timeout_sends_keepalive_after_login(tmp_path) -> None:
             assert line == "show/version"
             assert b"N0CALL" not in bytes(writer.buffer)
             assert b"> " in bytes(writer.buffer)
-            assert bytes(writer.buffer).endswith(b"\r\n")
+            assert bytes(writer.buffer).endswith(b"> ")
+            assert b"\r\n\r\n" not in bytes(writer.buffer)
             assert bytes((srv._TELNET_IAC, srv._TELNET_NOP)) not in bytes(writer.buffer)
         finally:
             await store.close()

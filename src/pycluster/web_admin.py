@@ -2794,7 +2794,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid compact-controls">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.10" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.11" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>
@@ -2915,6 +2915,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <div class="users-browser-tabs" aria-label="User browser panels">
                   <button class="subtab" data-user-browser="local">Users</button>
                   <button class="subtab" data-user-browser="blocked">Blocked</button>
+                  <button class="subtab" data-user-browser="locked">Locked</button>
                   <button class="subtab" data-user-browser="clusters">Clusters</button>
                   <button class="subtab" data-user-browser="sysops">System Operators</button>
                   <button class="subtab" data-user-browser="requests">Requests</button>
@@ -2937,6 +2938,15 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                     <table>
                       <thead><tr><th>Callsign</th><th>Verified</th><th>Locked</th><th>MFA</th><th>Blocked</th><th>Login</th><th>Spots</th><th>RBN</th><th>Chat</th><th>Annc</th><th>WX</th><th>WCY</th><th>WWV</th></tr></thead>
                       <tbody id="blockedRows"><tr><td colspan="13">Loading blocked users...</td></tr></tbody>
+                    </table>
+                  </div>
+                </div>
+                <div class="users-browser-panel" id="user-browser-locked">
+                  <h3>Locked Users</h3>
+                  <div class="tablewrap">
+                    <table>
+                      <thead><tr><th>Callsign</th><th>Verified</th><th>Locked</th><th>MFA</th><th>Blocked</th><th>Login</th><th>Spots</th><th>RBN</th><th>Chat</th><th>Annc</th><th>WX</th><th>WCY</th><th>WWV</th></tr></thead>
+                      <tbody id="lockedRows"><tr><td colspan="13">Loading locked users...</td></tr></tbody>
                     </table>
                   </div>
                 </div>
@@ -3387,7 +3397,7 @@ function setUserBrowserPanel(panel) {
   const pageInfo = byId('userPageInfo');
   const prev = byId('userPrev');
   const next = byId('userNext');
-  const paged = target === 'local' || target === 'blocked';
+  const paged = target === 'local' || target === 'blocked' || target === 'locked';
   if (pageInfo && !paged) pageInfo.textContent = 'Filtered view';
   if (prev) prev.disabled = !paged;
   if (next) next.disabled = !paged;
@@ -3411,6 +3421,15 @@ async function loadUserBrowser(panel = currentUserBrowser) {
       return;
     }
     setBlockedRows(payload || {});
+    return;
+  }
+  if (target === 'locked') {
+    const payload = await j('/api/users?locked=1&exclude_clusters=1&limit=' + USER_PAGE_SIZE + '&offset=' + encodeURIComponent(userOffset) + (userSearch ? '&search=' + userSearch : ''));
+    if (normalizeUserPage(payload || {})) {
+      await loadUserBrowser(target);
+      return;
+    }
+    setLockedRows(payload || {});
     return;
   }
   if (target === 'clusters') {
@@ -4295,6 +4314,9 @@ function setUserRows(payload) {
 }
 function setBlockedRows(payload) {
   setRegistryRows('blockedRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No blocked users match this filter.');
+}
+function setLockedRows(payload) {
+  setRegistryRows('lockedRows', 'userPageInfo', 'userPrev', 'userNext', payload, 'No locked users match this filter.');
 }
 function normalizeUserPage(payload) {
   const total = Number((payload && payload.total) || 0);
@@ -5877,8 +5899,9 @@ if (restoreWebSession()) {
                     exclude_clusters = str(q.get("exclude_clusters", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
                     search = str(q.get("search", [""])[0]).strip()
                     blocked_only = str(q.get("blocked", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
+                    locked_only = str(q.get("locked", [""])[0]).strip().lower() in {"1", "on", "yes", "true"}
                     cluster_families = {"pycluster", "dxspider", "dxnet", "arcluster", "clx"}
-                    if blocked_only or exclude_privilege or exclude_blocked or clusters_only or exclude_clusters:
+                    if blocked_only or locked_only or exclude_privilege or exclude_blocked or clusters_only or exclude_clusters:
                         rows = await self.store.list_user_registry(limit=1000, offset=0, privilege=privilege, search=search)
                         body_all = [await self._user_registry_json(r) for r in rows]
                         if exclude_privilege:
@@ -5887,6 +5910,8 @@ if (restoreWebSession()) {
                             body_all = [r for r in body_all if not bool(r.get("blocked_login"))]
                         if blocked_only:
                             body_all = [r for r in body_all if bool(r.get("blocked_login"))]
+                        if locked_only:
+                            body_all = [r for r in body_all if bool(r.get("registration_locked"))]
                         if clusters_only:
                             body_all = [r for r in body_all if str(r.get("node_family", "")).strip().lower() in cluster_families]
                         if exclude_clusters:
@@ -5917,6 +5942,7 @@ if (restoreWebSession()) {
                                 "clusters": clusters_only,
                                 "exclude_clusters": exclude_clusters,
                                 "blocked": blocked_only,
+                                "locked": locked_only,
                                 "search": search,
                             }
                         ),
@@ -6224,8 +6250,13 @@ if (restoreWebSession()) {
                     reviewer=self._authorized_call(headers),
                     review_note=str(payload.get("note", "")).strip()[:160],
                 )
+                cleanup_counts = await self.store.delete_user_account(call, include_registration_request=False)
                 self._audit("sysop", f"{self._authorized_call(headers)} denied registration request for {call}")
-                await self._write_response(writer, 200, self._json({"ok": True, "call": call}))
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json({"ok": True, "call": call, "cleanup": cleanup_counts}),
+                )
                 return
 
             if path == "/api/users/toggle":

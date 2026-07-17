@@ -304,6 +304,26 @@ class SpotStore:
             self._conn.commit()
         return len(values)
 
+    async def add_spots_returning_inserted(self, spots: Iterable[Spot]) -> list[Spot]:
+        async with self._lock:
+            inserted: list[Spot] = []
+            for s in spots:
+                if self._spot_blocked_nolock(s):
+                    continue
+                if self._spot_dupe_enabled and self._spot_duplicate_nolock(s):
+                    continue
+                self._conn.execute(
+                    """
+                    INSERT INTO spots(freq_khz, dx_call, epoch, info, spotter, source_node, raw)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (s.freq_khz, s.dx_call, s.epoch, s.info, s.spotter, s.source_node, s.raw),
+                )
+                inserted.append(s)
+            if inserted:
+                self._conn.commit()
+        return inserted
+
     def _spot_dupe_key(self, spot: Spot) -> str:
         freq = f"{spot.freq_khz:.1f}"
         info = (spot.info or "").strip().lower()
@@ -1538,9 +1558,25 @@ class SpotStore:
             self._conn.commit()
             return int(cur.rowcount or 0)
 
-    async def delete_user_account(self, call: str, *, include_registry: bool = True) -> dict[str, int]:
+    async def delete_user_account(
+        self,
+        call: str,
+        *,
+        include_registry: bool = True,
+        include_registration_request: bool = True,
+    ) -> dict[str, int]:
         c = call.strip().upper()
-        counts = {"registry": 0, "prefs": 0, "vars": 0, "usdb": 0, "buddy": 0, "startup": 0, "filters": 0}
+        counts = {
+            "registry": 0,
+            "prefs": 0,
+            "vars": 0,
+            "usdb": 0,
+            "buddy": 0,
+            "startup": 0,
+            "filters": 0,
+            "registration_requests": 0,
+            "mfa_challenges": 0,
+        }
         if not c:
             return counts
         async with self._lock:
@@ -1559,6 +1595,15 @@ class SpotStore:
             counts["startup"] = int(cur.rowcount or 0)
             cur = self._conn.execute("DELETE FROM filter_rules WHERE call = ?", (c,))
             counts["filters"] = int(cur.rowcount or 0)
+            if include_registration_request:
+                cur = self._conn.execute("DELETE FROM registration_requests WHERE call = ?", (c,))
+                counts["registration_requests"] = int(cur.rowcount or 0)
+            base = c.split("-", 1)[0]
+            cur = self._conn.execute(
+                "DELETE FROM mfa_challenges WHERE call = ? OR call = ? OR call LIKE ?",
+                (c, base, base + "-%"),
+            )
+            counts["mfa_challenges"] = int(cur.rowcount or 0)
             self._conn.commit()
         return counts
 

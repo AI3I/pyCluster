@@ -44,6 +44,9 @@ _PEER_PREF_PREFIX = "peer.outbound."
 _RECONNECT_BASE_SECS = 5
 _RECONNECT_MAX_SECS = 300
 _PEER_HEARTBEAT_SECS = 60
+_RBN_BATCH_SIZE = 100
+_RBN_IDLE_FLUSH_SECONDS = 1.0
+_RBN_IDLE_DISCONNECT_SECONDS = 300.0
 _PROTO_FLAP_KEYS = {
     "pc18.software",
     "pc18.proto",
@@ -798,6 +801,24 @@ class ClusterApp:
             return None
         return self._strip_telnet_bytes(raw).decode("utf-8", errors="replace").strip()
 
+    async def _flush_rbn_spot_batch(self, feed_key: str, spots: list[Spot]) -> int:
+        if not spots:
+            return 0
+        pending = list(spots)
+        spots.clear()
+        inserted_spots = await self.store.add_spots_returning_inserted(pending)
+        for idx, spot in enumerate(inserted_spots, start=1):
+            self._set_rbn_feed_status(
+                feed_key,
+                last_spot_at=self._utc_status_time(),
+                last_spot=f"{spot.spotter} {spot.freq_khz:.1f} {spot.dx_call} {spot.info}".strip(),
+            )
+            await self.telnet.publish_spot(spot)
+            await self._relay_spot_to_links(spot, exclude_peer=None)
+            if idx % 25 == 0:
+                await asyncio.sleep(0)
+        return len(inserted_spots)
+
     async def _run_rbn_feed_once(self, feed: dict[str, object]) -> None:
         cfg = self.config.rbn
         feed_key = str(feed["key"])
@@ -832,10 +853,20 @@ class ClusterApp:
             self._set_rbn_feed_status(feed_key, state="connected", last_connected_at=self._utc_status_time(), last_error="")
             for command in cfg.startup_commands:
                 await self._write_rbn_line(writer, command)
+            pending_spots: list[Spot] = []
+            last_line_monotonic = asyncio.get_running_loop().time()
             while not self._node_ingest_stop.is_set():
-                line = await self._read_rbn_line(reader, 300.0)
+                try:
+                    line = await self._read_rbn_line(reader, _RBN_IDLE_FLUSH_SECONDS)
+                except asyncio.TimeoutError:
+                    await self._flush_rbn_spot_batch(feed_key, pending_spots)
+                    if asyncio.get_running_loop().time() - last_line_monotonic >= _RBN_IDLE_DISCONNECT_SECONDS:
+                        return
+                    continue
                 if line is None:
+                    await self._flush_rbn_spot_batch(feed_key, pending_spots)
                     return
+                last_line_monotonic = asyncio.get_running_loop().time()
                 self._set_rbn_feed_status(feed_key, last_line_at=self._utc_status_time())
                 spot = parse_rbn_dx_line(line, source_node=cfg.source_node)
                 if spot is None:
@@ -846,15 +877,9 @@ class ClusterApp:
                 if not await self._spot_passes_ingest_filters(call, spot):
                     self._set_rbn_feed_status(feed_key, last_error="RBN spot filtered for login call", last_error_at=self._utc_status_time())
                     continue
-                inserted = await self.store.add_spot(spot)
-                if inserted:
-                    self._set_rbn_feed_status(
-                        feed_key,
-                        last_spot_at=self._utc_status_time(),
-                        last_spot=f"{spot.spotter} {spot.freq_khz:.1f} {spot.dx_call} {spot.info}".strip(),
-                    )
-                    await self.telnet.publish_spot(spot)
-                    await self._relay_spot_to_links(spot, exclude_peer=None)
+                pending_spots.append(spot)
+                if len(pending_spots) >= _RBN_BATCH_SIZE:
+                    await self._flush_rbn_spot_batch(feed_key, pending_spots)
         finally:
             if not self._node_ingest_stop.is_set():
                 self._set_rbn_feed_status(feed_key, state="disconnected")
