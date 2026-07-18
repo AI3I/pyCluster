@@ -19,6 +19,7 @@ All notable changes to pyCluster should be recorded here.
 - Denied or deleted accounts now clear stale local user, registration, and MFA challenge state so reused callsign-SSIDs do not inherit old email/MFA data.
 - Telnet idle keepalive prompt refresh no longer adds extra blank lines.
 - Locked exact callsign-SSID accounts are rejected before password or MFA prompts.
+- Outbound PC92 path sanitization and PC61 spot relay now use detected global interface addresses as a runtime fallback when public IP fields are blank, avoiding `localhost` or private-address protocol payloads on nodes that have not saved explicit public addresses.
 
 ## 1.0.10 - 2026-07-14
 
