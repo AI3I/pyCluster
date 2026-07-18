@@ -1944,6 +1944,48 @@ def test_pycluster_spot_relay_uses_configured_public_ipv6_when_ipv4_blank(tmp_pa
     asyncio.run(run())
 
 
+def test_pycluster_spot_relay_uses_detected_public_ip_when_config_blank(tmp_path, monkeypatch) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "pc61_detected_public_ip.db")
+        cfg = _mk_config(db)
+        monkeypatch.setattr(
+            "pycluster.app.detected_public_ip_addresses",
+            lambda: {"ipv4": "44.9.8.7", "ipv6": "2606:4700:4700::1111"},
+        )
+        app = ClusterApp(cfg)
+        captured = []
+
+        async def _peer_names():
+            return ["peer1"]
+
+        async def _stats():
+            return {"peer1": {"profile": "pycluster"}}
+
+        async def _send(peer, frame):
+            captured.append((peer, frame))
+
+        app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+        app.node_link.stats = _stats  # type: ignore[method-assign]
+        app.node_link.send = _send  # type: ignore[method-assign]
+        try:
+            spot = Spot(
+                freq_khz=14074.0,
+                dx_call="AI3I-90",
+                epoch=int(datetime.now(timezone.utc).timestamp()),
+                info="relay test",
+                spotter="AI3I-91",
+                source_node=app.config.node.node_call,
+                raw="",
+            )
+            await app._relay_spot_to_links(spot)
+            frames = {peer: frame for peer, frame in captured}
+            assert Pc61Message.from_fields(frames["peer1"].payload_fields).ip == "44.9.8.7"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_inbound_pc61_spot_relays_to_other_peers_but_not_origin(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "inbound_pc61_relay.db")

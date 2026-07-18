@@ -76,6 +76,21 @@ def test_node_link_sanitizes_outbound_pc92_private_ips() -> None:
     asyncio.run(run())
 
 
+def test_cluster_app_passes_detected_public_ip_to_node_link_when_config_blank(tmp_path, monkeypatch) -> None:
+    db = str(tmp_path / "detected_public_ip.db")
+    cfg = _mk_config(db)
+    monkeypatch.setattr(
+        "pycluster.app.detected_public_ip_addresses",
+        lambda: {"ipv4": "44.9.8.7", "ipv6": "2606:4700:4700::1111"},
+    )
+    app = ClusterApp(cfg)
+    try:
+        assert app.node_link.public_ip_address == "44.9.8.7"
+        assert app.node_link.public_ipv6_address == "2606:4700:4700::1111"
+    finally:
+        asyncio.run(app.store.close())
+
+
 def test_node_link_loopback() -> None:
     async def run() -> None:
         listener = NodeLinkEngine()

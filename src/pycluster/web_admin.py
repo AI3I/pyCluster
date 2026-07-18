@@ -8,7 +8,6 @@ import logging
 from pathlib import Path
 import re
 import secrets
-import subprocess
 import time
 import tomllib
 from urllib.parse import parse_qs, urlparse
@@ -22,6 +21,7 @@ from .geomag import canonicalize_wwv_text
 from .maidenhead import extract_locator
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
+from .netutil import detected_public_ip_addresses
 from .rbn import is_rbn_spot
 from .ctydat import is_loaded as cty_loaded, load_cty, lookup as cty_lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
@@ -63,53 +63,6 @@ _CONFIG_AUTH_NODE_FIELDS = {
     "prompt_template",
     "telnet_ports",
 }
-
-
-def _detected_public_ip_addresses() -> dict[str, str]:
-    found: dict[int, str] = {}
-
-    def add(raw: object) -> None:
-        text = str(raw or "").strip()
-        if not text:
-            return
-        text = text.split("%", 1)[0]
-        try:
-            ip = ipaddress.ip_address(text)
-        except ValueError:
-            return
-        if ip.is_global and ip.version not in found:
-            found[ip.version] = str(ip)
-
-    try:
-        proc = subprocess.run(
-            ["ip", "-j", "addr", "show", "scope", "global"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            rows = json.loads(proc.stdout)
-            if isinstance(rows, list):
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    for addr in row.get("addr_info", []) or []:
-                        if isinstance(addr, dict):
-                            add(addr.get("local"))
-    except Exception:
-        pass
-
-    if 4 not in found or 6 not in found:
-        try:
-            proc = subprocess.run(["hostname", "-I"], check=False, capture_output=True, text=True, timeout=2)
-            if proc.returncode == 0:
-                for token in proc.stdout.split():
-                    add(token)
-        except Exception:
-            pass
-
-    return {"ipv4": found.get(4, ""), "ipv6": found.get(6, "")}
 
 
 def _is_valid_admin_record_call(call: str) -> bool:
@@ -418,7 +371,7 @@ class WebAdminServer:
                     return str(data.get(key, "")).strip()
             return default
         branding_name = str(data.get("branding_name", "")).strip() or "pyCluster"
-        detected_ips = _detected_public_ip_addresses()
+        detected_ips = detected_public_ip_addresses()
         configured_ipv4 = str(data.get("public_ip_address", "")).strip()
         configured_ipv6 = str(data.get("public_ipv6_address", "")).strip()
         return {

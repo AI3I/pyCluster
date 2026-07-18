@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import fnmatch
-import ipaddress
 import json
 import logging
 from pathlib import Path
@@ -20,6 +19,7 @@ from .datafiles import describe_cty_file, describe_wpxloc_file
 from .geomag import WcyReading, WwvReading, canonicalize_wcy_text, canonicalize_wwv_text, parse_wcy_text, parse_wwv_text
 from .maidenhead import extract_locator
 from .models import Spot, is_plausible_spot_call, is_plausible_spotter_call, is_valid_call, normalize_call
+from .netutil import detected_public_ip_addresses, valid_global_ip
 from .node_link import NodeLinkEngine
 from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
@@ -92,7 +92,10 @@ class ClusterApp:
         self.store = SpotStore(config.store.sqlite_path)
         strings_path = str(Path(config_path).with_name("strings.toml")) if config_path else None
         self._strings = StringCatalog(strings_path)
-        self.node_link = NodeLinkEngine(public_ip_address=config.node.public_ip_address, public_ipv6_address=config.node.public_ipv6_address)
+        self._runtime_public_ip_address = ""
+        self._runtime_public_ipv6_address = ""
+        public_ips = self._runtime_public_ip_addresses()
+        self.node_link = NodeLinkEngine(public_ip_address=public_ips["ipv4"], public_ipv6_address=public_ips["ipv6"])
         self.node_link.set_trace_hook(self._trace_protocol_line)
         self._legacy_dxspider_peers: set[str] = set()
         self._mail_stream_seq = 0
@@ -185,7 +188,18 @@ class ClusterApp:
         self._public_web_started = False
 
     def _apply_runtime_config(self) -> None:
-        self.node_link.set_public_ip_address(self.config.node.public_ip_address, self.config.node.public_ipv6_address)
+        public_ips = self._runtime_public_ip_addresses()
+        self.node_link.set_public_ip_address(public_ips["ipv4"], public_ips["ipv6"])
+
+    def _runtime_public_ip_addresses(self) -> dict[str, str]:
+        configured_v4 = valid_global_ip(self.config.node.public_ip_address, version=4)
+        configured_v6 = valid_global_ip(self.config.node.public_ipv6_address, version=6)
+        detected: dict[str, str] = {"ipv4": "", "ipv6": ""}
+        if not configured_v4 or not configured_v6:
+            detected = detected_public_ip_addresses()
+        self._runtime_public_ip_address = configured_v4 or detected.get("ipv4", "")
+        self._runtime_public_ipv6_address = configured_v6 or detected.get("ipv6", "")
+        return {"ipv4": self._runtime_public_ip_address, "ipv6": self._runtime_public_ipv6_address}
 
     def _string(self, key: str, default: str) -> str:
         return self._strings.get(key, default)
@@ -2331,16 +2345,9 @@ class ClusterApp:
                 LOG.exception("relay send failed peer=%s category=spots", name)
 
     def _public_relay_ip(self) -> str:
-        for raw in (self.config.node.public_ip_address, self.config.node.public_ipv6_address):
-            raw = str(raw or "").strip()
-            if not raw:
-                continue
-            try:
-                ip = ipaddress.ip_address(raw)
-            except ValueError:
-                continue
-            if ip.is_global:
-                return raw
+        for raw in (self._runtime_public_ip_address, self._runtime_public_ipv6_address):
+            if valid_global_ip(raw):
+                return str(raw)
         return "127.0.0.1"
 
     async def _node_ingest_loop(self) -> None:

@@ -69,7 +69,7 @@ This view controls local node identity and welcome-flow presentation.
 - `Public IPv4 Address`
 - `Public IPv6 Address`
 
-`Public IPv4 Address` and `Public IPv6 Address` are used when pyCluster sends outbound PC92 path data. If a PC92 payload would otherwise advertise a private, loopback, link-local, or otherwise non-public IP literal, pyCluster substitutes the same-family configured public address before sending the frame to peers. Blank fields are auto-populated in the SysOp form from detected global interface addresses when available; saving persists the displayed values.
+`Public IPv4 Address` and `Public IPv6 Address` are used when pyCluster sends outbound PC92 path data. If a PC92 payload would otherwise advertise a private, loopback, link-local, `localhost`, or otherwise non-public IP literal, pyCluster substitutes the same-family configured public address before sending the frame to peers. Blank fields are auto-populated in the SysOp form from detected global interface addresses when available; saving persists the displayed values. The core service also uses detected global interface addresses as a runtime fallback for PC92 sanitization and PC61 spot relay when the saved fields are blank.
 
 ### Long-Text Fields
 
