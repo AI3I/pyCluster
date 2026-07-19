@@ -7,6 +7,8 @@ All notable changes to pyCluster should be recorded here.
 ### Added
 
 - System Operator Users now includes a Locked view backed by the same account matrix as the main Users and Blocked views.
+- Public web authenticator-app MFA enrollment shows both a QR code and a manual setup key.
+- System Operator registration requests now call out pending requests older than 24 hours.
 
 ### Changed
 
@@ -20,6 +22,10 @@ All notable changes to pyCluster should be recorded here.
 - Telnet idle keepalive prompt refresh no longer adds extra blank lines.
 - Locked exact callsign-SSID accounts are rejected before password or MFA prompts.
 - Outbound PC92 path sanitization and PC61 spot relay now use detected global interface addresses as a runtime fallback when public IP fields are blank, avoiding `localhost` or private-address protocol payloads on nodes that have not saved explicit public addresses.
+- Telnet async DX/RBN spot output starts on a fresh line after idle keepalive prompt refreshes.
+- Telnet first-login email verification keeps live DX/RBN spot delivery suppressed while the user is entering the verification code.
+- Public web spot visibility treats rows sourced from the RBN source node as RBN traffic so anonymous and non-opted-in users do not see them.
+- DXSpider-facing PC18 handshakes use a DXSpider-compatible software field with a pyCluster marker so DXSpider peers can accept and log the version identity.
 
 ## 1.0.10 - 2026-07-14
 

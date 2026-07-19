@@ -1036,6 +1036,38 @@ html.light .toast { box-shadow:0 8px 24px rgba(15,23,42,.14); }
   color:var(--text-secondary);
   font-size:0.68rem;
 }
+.profile-mfa-key {
+  display:none;
+  margin-top:10px;
+  text-align:left;
+}
+.profile-mfa-key.open { display:block; }
+.profile-mfa-key-label {
+  display:block;
+  color:var(--text-dim);
+  font-size:0.64rem;
+  font-weight:700;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+}
+.profile-mfa-key-value {
+  display:block;
+  margin-top:4px;
+  padding:8px 10px;
+  border:1px solid var(--border-btn);
+  border-radius:10px;
+  background:var(--bg-search);
+  color:var(--text-primary);
+  font:0.78rem/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap:anywhere;
+  user-select:all;
+}
+.profile-mfa-key-help {
+  display:block;
+  margin-top:4px;
+  color:var(--text-secondary);
+  font-size:0.66rem;
+}
 .profile-mfa-verify {
   display:flex;
   justify-content:center;
@@ -1907,7 +1939,12 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
     </div>
     <div id="profile-mfa-qr" class="profile-mfa-qr" aria-live="polite">
       <div id="profile-mfa-qr-code"></div>
-      <div class="profile-mfa-qr-note">Scan this QR code with your authenticator app, then enter the generated code and press Verify.</div>
+      <div id="profile-mfa-qr-note" class="profile-mfa-qr-note"></div>
+      <div id="profile-mfa-key" class="profile-mfa-key">
+        <span id="profile-mfa-key-label" class="profile-mfa-key-label"></span>
+        <span id="profile-mfa-key-value" class="profile-mfa-key-value"></span>
+        <span id="profile-mfa-key-help" class="profile-mfa-key-help"></span>
+      </div>
       <div class="profile-mfa-verify">
         <input id="profile-mfa-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="123456">
       </div>
@@ -2510,20 +2547,36 @@ function setProfileStatus(msg, cls='') {
 function clearProfileMfaQr() {
   const box = document.getElementById('profile-mfa-qr');
   const code = document.getElementById('profile-mfa-qr-code');
+  const note = document.getElementById('profile-mfa-qr-note');
+  const keyBox = document.getElementById('profile-mfa-key');
+  const keyValue = document.getElementById('profile-mfa-key-value');
   const otp = document.getElementById('profile-mfa-code');
   if (box) box.classList.remove('open');
   if (code) code.innerHTML = '';
+  if (note) note.textContent = '';
+  if (keyBox) keyBox.classList.remove('open');
+  if (keyValue) keyValue.textContent = '';
   if (otp) otp.value = '';
 }
 
-function showProfileMfaQr(qrSvg) {
+function showProfileMfaQr(qrSvg, secret='') {
   const box = document.getElementById('profile-mfa-qr');
   const code = document.getElementById('profile-mfa-qr-code');
-  if (!(box && code && qrSvg)) return false;
-  code.innerHTML = qrSvg;
+  const note = document.getElementById('profile-mfa-qr-note');
+  const keyBox = document.getElementById('profile-mfa-key');
+  const keyLabel = document.getElementById('profile-mfa-key-label');
+  const keyValue = document.getElementById('profile-mfa-key-value');
+  const keyHelp = document.getElementById('profile-mfa-key-help');
+  if (!(box && code)) return false;
+  code.innerHTML = qrSvg || '';
+  if (note) note.textContent = uiText('profile_mfa_scan_qr');
+  if (keyLabel) keyLabel.textContent = uiText('profile_mfa_setup_key_label');
+  if (keyValue) keyValue.textContent = secret || '';
+  if (keyHelp) keyHelp.textContent = uiText('profile_mfa_setup_key_help');
+  if (keyBox) keyBox.classList.toggle('open', !!secret);
   box.classList.add('open');
   setTimeout(() => document.getElementById('profile-mfa-code')?.focus(), 0);
-  return true;
+  return !!qrSvg || !!secret;
 }
 
 function renderProfileMfa() {
@@ -2807,9 +2860,9 @@ async function updateProfileMfa(action, extra={}) {
     webProfile.mfa = body.mfa || {};
     saveWebSession();
     renderProfileMfa();
-    if (body.qr_svg) {
-      const shown = showProfileMfaQr(body.qr_svg);
-      setProfileStatus(shown ? uiText('profile_mfa_scan_qr') : uiText('profile_mfa_qr_unavailable'), shown ? 'warn' : 'err');
+    if (body.qr_svg || body.secret) {
+      const shown = showProfileMfaQr(body.qr_svg || '', body.secret || '');
+      setProfileStatus(body.qr_svg ? uiText('profile_mfa_scan_qr') : uiText('profile_mfa_qr_unavailable'), shown ? 'warn' : 'err');
     } else if (body.email_sent) {
       setProfileStatus(uiText('profile_mfa_email_sent'), 'warn');
     } else if (body.verified) {

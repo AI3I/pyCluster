@@ -663,6 +663,8 @@ class PublicWebServer:
             "profile_mfa_updating": "Updating MFA...",
             "profile_mfa_scan_qr": "Scan the QR code, then enter the authenticator code to verify setup.",
             "profile_mfa_qr_unavailable": "Authenticator setup started, but QR setup is unavailable.",
+            "profile_mfa_setup_key_label": "Manual setup key",
+            "profile_mfa_setup_key_help": "Use this key if your authenticator app cannot scan the QR code.",
             "profile_mfa_email_sent": "Email MFA code sent. Check your email, then enter the code.",
             "profile_mfa_email_switched": "MFA method switched to Email. Use Verify to send and validate an email code.",
             "profile_mfa_verified": "MFA code verified.",
@@ -991,6 +993,7 @@ class PublicWebServer:
         comment = str(row["info"] or "")
         dx_call = str(row["dx_call"] or "")
         spotter = display_call(str(row["spotter"] or ""))
+        source_node = str(row["source_node"] or "")
         stamp = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).isoformat()
         dx_ent = lookup(dx_call) if self._cty_loaded else None
         if dx_ent is None and self._wpx_loaded:
@@ -998,12 +1001,13 @@ class PublicWebServer:
         sp_ent = lookup(spotter) if self._cty_loaded else None
         if sp_ent is None and self._wpx_loaded:
             sp_ent = wpx_lookup(spotter)
-        is_rbn = is_rbn_spot(dx_call, spotter, comment)
+        is_rbn = is_rbn_spot(dx_call, spotter, comment) or source_node.strip().upper() == "RBN"
         return {
             "time": stamp,
             "freq": freq,
             "dx_call": dx_call,
             "spotter": spotter,
+            "source_node": source_node,
             "comment": comment,
             "band": freq_to_band(freq),
             "mode": self._detect_mode(comment, freq),
@@ -2283,6 +2287,7 @@ class PublicWebServer:
                             {
                                 "ok": True,
                                 "call": call,
+                                "secret": secret,
                                 "otpauth_uri": uri,
                                 "qr_svg": qr,
                                 "challenges_cleared": cleared,

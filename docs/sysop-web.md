@@ -104,6 +104,8 @@ Per-user MFA actions:
 
 Users can also manage their own MFA from the public web profile popup or from telnet with `mfa`, `set/mfa`, `set/totp`, `unset/totp`, and `unset/mfa`. Node-wide MFA defaults are applied only after a user has usable MFA material, such as a valid email address or authenticator secret. Web login prompts describe the code source as email or authenticator app without exposing internal method names.
 
+Pending registration requests older than 24 hours are highlighted in the Requests view and summarized above the request table. This is a reminder only; approving or denying the request still uses the same explicit System Operator action.
+
 ### Mail (SMTP)
 
 - `SMTP Host`

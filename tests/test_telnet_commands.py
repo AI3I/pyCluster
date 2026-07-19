@@ -307,6 +307,7 @@ def test_write_prompt_for_session_starts_on_new_line_after_async_output(tmp_path
             rendered = writer.buffer.decode("utf-8", errors="replace")
             assert rendered.startswith("\r\n[")
             assert sess.async_line_open is False
+            assert sess.prompt_line_open is True
         finally:
             await store.close()
 
@@ -2145,6 +2146,32 @@ def test_publish_spot_uses_live_dx_format_without_blank_lines(tmp_path) -> None:
             assert "DX de IW1FRU:" in out
             assert "\r\n\r\n" not in out
             assert "Young Ladies WWA FT8" in out
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_publish_spot_starts_new_line_after_keepalive_prompt(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "spot_after_keepalive_prompt.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(
+            call="N0CALL",
+            writer=writer,
+            connected_at=datetime.now(timezone.utc),
+            prompt_line_open=True,
+        )
+        try:
+            await srv.publish_spot(Spot(14074.0, "AI3I-90", int(datetime.now(timezone.utc).timestamp()), "FT8", "AI3I-91", "AI3I-15", ""))
+            out = bytes(writer.buffer).decode("utf-8", "replace")
+            assert out.startswith("\r\nDX de AI3I:")
+            assert "AI3I-90" in out
+            assert srv._sessions[1].prompt_line_open is False
+            assert srv._sessions[1].async_line_open is True
         finally:
             await store.close()
 
