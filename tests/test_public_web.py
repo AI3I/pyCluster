@@ -550,6 +550,11 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert 'id="profile-mfa-default"' not in text
     assert "window.QRCode.toCanvas" not in text
     assert "body.qr_svg" in text
+    assert 'id="profile-mfa-key"' in text
+    assert 'id="profile-mfa-key-value"' in text
+    assert "body.qr_svg || body.secret" in text
+    assert "uiText('profile_mfa_setup_key_label')" in text
+    assert "uiText('profile_mfa_setup_key_help')" in text
     assert "Authenticator setup key:" not in text
     assert "Capabilities</div>" in text
     assert "Greyed-out actions are disabled by local node policy" not in text
@@ -1427,6 +1432,7 @@ def test_public_web_spots_hide_rbn_for_anonymous_and_honor_rbn_access(tmp_path) 
         await store.set_user_pref("AI3I", "email_verified_epoch", str(now), now)
         await store.set_user_pref("AI3I", "access.web.rbn", "off", now)
         await store.add_spot(Spot(14074.0, "K1ABC", now, "CQ TEST 18 dB", "SKIMMER1", "AI3I-15", ""))
+        await store.add_spot(Spot(14074.5, "K1RBN", now - 1, "CW", "W1AW", "RBN", ""))
         await store.add_spot(Spot(14075.0, "K1XYZ", now - 1, "FT8", "W1AW", "AI3I-15", ""))
         srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
         try:
@@ -1475,8 +1481,9 @@ def test_public_web_spots_hide_rbn_for_anonymous_and_honor_rbn_access(tmp_path) 
             )
             assert code == 200
             rows = json.loads(body.decode("utf-8"))
-            assert [row["dx_call"] for row in rows] == ["K1ABC", "K1XYZ"]
+            assert [row["dx_call"] for row in rows] == ["K1ABC", "K1XYZ", "K1RBN"]
             assert rows[0]["is_rbn"] is True
+            assert rows[2]["is_rbn"] is True
         finally:
             await store.close()
 
@@ -1600,9 +1607,11 @@ def test_public_web_user_can_manage_own_mfa(tmp_path) -> None:
             data = json.loads(body.decode("utf-8"))
             assert data["otpauth_uri"].startswith("otpauth://totp/")
             assert data["qr_svg"].startswith("<svg ")
+            assert data["secret"]
             assert data["mfa"]["totp_enabled"] is False
             pending_secret = await store.get_user_pref("AI3I", "mfa_totp_pending_secret")
             assert pending_secret
+            assert data["secret"] == pending_secret
             assert await store.get_user_pref("AI3I", "mfa_totp_secret") is None
 
             code, _, body = await _http_request_ex(

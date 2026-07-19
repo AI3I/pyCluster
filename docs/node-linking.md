@@ -102,6 +102,8 @@ dxspider://example.net:7300?login=LOCALNODE-1&client=PEERNODE-1&password=secret
 
 Peers with the `dxspider`/`spider` cluster family receive legacy PC11 spot relay frames. pyCluster peers continue to receive PC61 relay frames.
 
+DXSpider-facing PC18 handshakes are formatted in a DXSpider-compatible software field and include a `pycluster/<version>` marker in the Git/build descriptor. This keeps DXSpider peers from treating the software field as unknown while still letting pyCluster peers identify the remote as pyCluster-capable.
+
 Outbound PC92 path advertisements are sanitized when `node.public_ip_address`, `node.public_ipv6_address`, or a detected global interface address is available. Private, loopback, link-local, `localhost`, and otherwise non-public IPv4/IPv6 literals in outbound PC92 payload fields are replaced with the same-family public address before transmission. PC61 spot relay uses the same configured-or-detected public address selection for its IP field.
 
 ## Operator Views

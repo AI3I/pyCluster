@@ -29,7 +29,7 @@ class LinkListener(Protocol):
 
 
 def dxspider_compat_pc18(proto: str = "5457") -> str:
-    software = f"pyCluster {__version__}"
+    software = f"DXSpider Version: {DXSPIDER_COMPAT_VERSION} Build: 0 Git: pycluster/{__version__} pc9x"
     return f"PC18^{software}^{proto}^"
 
 

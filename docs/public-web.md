@@ -18,6 +18,7 @@ System Operator console:
 - common spot filter controls write a single compound rule to the same stored spot-filter table used by telnet `accept/spots` and `reject/spots`
 - registration requests validate the callsign before creating registry or review-queue records
 - RBN visibility is controlled through the same access matrix and stored user preferences used elsewhere
+- spots sourced from the configured RBN source node are treated as RBN traffic even when the comment text does not include a Skimmer-style marker
 
 Browser storage is used only as a convenience cache or for anonymous,
 not-yet-authenticated UI state such as display toggles and temporary map/QTH
@@ -158,7 +159,7 @@ MFA controls:
 
 - view current MFA status and effective policy
 - switch between email and authenticator-app MFA when both are available
-- enable authenticator-app MFA with a QR code and manual setup key
+- enable authenticator-app MFA with a QR code plus a manual setup key for authenticator apps that cannot scan the QR code
 - verify the active MFA method with a code
 - disable user-level MFA and clear outstanding challenges
 

@@ -131,6 +131,7 @@ class Session:
     catchup: bool = False
     vars: dict[str, str] = field(default_factory=dict)
     async_line_open: bool = False
+    prompt_line_open: bool = False
     suppress_async_spots: bool = False
 
 
@@ -1309,9 +1310,10 @@ class TelnetClusterServer:
                 spotter=str(group.get("display_spotter") or ""),
                 suffix=await self._dx_line_suffix_for_call(session.call, str(group["dx_call"])),
             )
-            prefix = "\r\n" if not session.async_line_open else ""
+            prefix = "\r\n" if session.prompt_line_open or not session.async_line_open else ""
             await self._write(session.writer, f"{prefix}{line}\r\n")
             session.async_line_open = True
+            session.prompt_line_open = False
             delivered += 1
         if self._rbn_live_groups and (self._rbn_live_flush_task is None or self._rbn_live_flush_task.done()):
             self._rbn_live_flush_task = asyncio.create_task(self._rbn_live_flush_later(), name="pycluster-rbn-live-flush")
@@ -1425,9 +1427,10 @@ class TelnetClusterServer:
                 spotter=display_call(spot.spotter),
                 suffix=await self._dx_line_suffix_for_call(s.call, spot.dx_call),
             )
-            prefix = "\r\n" if not s.async_line_open else ""
+            prefix = "\r\n" if s.prompt_line_open or not s.async_line_open else ""
             await self._write(s.writer, f"{prefix}{line}\r\n")
             s.async_line_open = True
+            s.prompt_line_open = False
             delivered += 1
         return delivered
 
@@ -1436,9 +1439,10 @@ class TelnetClusterServer:
         for s in self._sessions.values():
             if s.call == sender:
                 continue
-            prefix = "\r\n" if not s.async_line_open else ""
+            prefix = "\r\n" if s.prompt_line_open or not s.async_line_open else ""
             await self._write(s.writer, f"{prefix}CHAT {sender}: {text}\r\n")
             s.async_line_open = True
+            s.prompt_line_open = False
             delivered += 1
         return delivered
 
@@ -1446,9 +1450,10 @@ class TelnetClusterServer:
         t = self._find_session(recipient)
         if not t:
             return 0
-        prefix = "\r\n" if not t.async_line_open else ""
+        prefix = "\r\n" if t.prompt_line_open or not t.async_line_open else ""
         await self._write(t.writer, f"{prefix}TALK {sender}: {text}\r\n")
         t.async_line_open = True
+        t.prompt_line_open = False
         return 1
 
     async def publish_bulletin(self, category: str, sender: str, scope: str, text: str) -> int:
@@ -1462,7 +1467,7 @@ class TelnetClusterServer:
             if category.lower() == "announce":
                 if not await self._text_family_passes_filters(s.call, category.lower(), sender, text):
                     continue
-            lead = "\r\n" if not s.async_line_open else ""
+            lead = "\r\n" if s.prompt_line_open or not s.async_line_open else ""
             if category.lower() == "wcy":
                 reading = parse_wcy_text(text)
                 if reading is not None:
@@ -1478,6 +1483,7 @@ class TelnetClusterServer:
                         f"{lead}{self._string('show.wcy.header', 'Date        Hour   SFI   A   K Exp.K   R SA    GMF   Aurora   Logger')}\r\n{row}\r\n",
                     )
                     s.async_line_open = True
+                    s.prompt_line_open = False
                     delivered += 1
                     continue
             if category.lower() == "wwv":
@@ -1494,10 +1500,12 @@ class TelnetClusterServer:
                         f"{lead}{self._string('show.wwv.header', 'Date        Hour   SFI   A   K Forecast                               Logger')}\r\n{row}\r\n",
                     )
                     s.async_line_open = True
+                    s.prompt_line_open = False
                     delivered += 1
                     continue
             await self._write(s.writer, f"{lead}{prefix} {sender}: {text}\r\n")
             s.async_line_open = True
+            s.prompt_line_open = False
             delivered += 1
         return delivered
 
@@ -1505,10 +1513,11 @@ class TelnetClusterServer:
         t = self._find_session(recipient)
         if not t:
             return 0
-        prefix = "\r\n" if not t.async_line_open else ""
+        prefix = "\r\n" if t.prompt_line_open or not t.async_line_open else ""
         trailer = f" (reply {parent_id})" if parent_id is not None else ""
         await self._write(t.writer, f"{prefix}MSG#{msg_id} {sender}{trailer}: {text}\r\n")
         t.async_line_open = True
+        t.prompt_line_open = False
         return 1
 
     async def _readline(
@@ -1723,8 +1732,16 @@ class TelnetClusterServer:
         prefix = "\r\n" if session.async_line_open else ""
         await self._write(session.writer, f"{prefix}{await self._prompt(session.call)}")
         session.async_line_open = False
+        session.prompt_line_open = True
 
     async def _idle_keepalive_prompt(self, call: str) -> str:
+        return await self._prompt(call)
+
+    async def _idle_keepalive_prompt_for_session(self, session_id: int, call: str) -> str:
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.prompt_line_open = True
+            session.async_line_open = False
         return await self._prompt(call)
 
     async def _prompt_template(self) -> str:
@@ -11118,11 +11135,19 @@ class TelnetClusterServer:
                     if checklist:
                         await self._write(writer, checklist)
                     if self.config.node.verified_email_required_for_telnet and not node_family:
-                        if not await self._require_verified_email_for_login(call, reader, writer):
-                            self._log_auth_failure("telnet", peer, call, "email_verification_required")
-                            writer.close()
-                            await writer.wait_closed()
-                            return
+                        sess = self._sessions.get(session_id)
+                        if sess:
+                            sess.suppress_async_spots = True
+                        try:
+                            if not await self._require_verified_email_for_login(call, reader, writer):
+                                self._log_auth_failure("telnet", peer, call, "email_verification_required")
+                                writer.close()
+                                await writer.wait_closed()
+                                return
+                        finally:
+                            sess = self._sessions.get(session_id)
+                            if sess:
+                                sess.suppress_async_spots = False
                 startup_outputs = await self._run_startup_commands(call)
                 for out in startup_outputs:
                     await self._write(writer, out)
@@ -11141,10 +11166,13 @@ class TelnetClusterServer:
                         reader,
                         writer,
                         idle_keepalive=True,
-                        idle_keepalive_text=lambda: self._idle_keepalive_prompt(call),
+                        idle_keepalive_text=lambda: self._idle_keepalive_prompt_for_session(session_id, call),
                     )
                     if line is None:
                         break
+                    sess = self._sessions.get(session_id)
+                    if sess:
+                        sess.prompt_line_open = False
                     if line.strip().lower() == "register":
                         await self._flush_rbn_live_queue(force=False)
                         sess = self._sessions.get(session_id)

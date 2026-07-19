@@ -2923,6 +2923,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 </div>
                 <div class="users-browser-panel" id="user-browser-requests">
                   <h3>Pending Registration Requests</h3>
+                  <div class="statusline hidden" id="registrationStaleNotice"></div>
                   <div class="tablewrap compact">
                   <table>
                       <thead><tr><th>Callsign</th><th>Name</th><th>Email</th><th>Source</th><th>Requested</th><th>Actions</th></tr></thead>
@@ -4292,11 +4293,23 @@ function setClusterRows(payload) {
 function setRegistrationRows(payload) {
   const body = byId('registrationRows');
   const rows = Array.isArray(payload && payload.rows) ? payload.rows : [];
+  const notice = byId('registrationStaleNotice');
+  const staleCount = Number((payload && payload.stale_count) || 0);
+  const oldestHours = Number((payload && payload.oldest_pending_age_hours) || 0);
+  if (notice) {
+    if (staleCount > 0) {
+      notice.className = 'statusline warn';
+      notice.textContent = `${staleCount} pending registration request${staleCount === 1 ? '' : 's'} older than 24 hours. Oldest pending request is ${oldestHours} hour${oldestHours === 1 ? '' : 's'} old.`;
+    } else {
+      notice.className = 'statusline hidden';
+      notice.textContent = '';
+    }
+  }
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="6">No pending registration requests.</td></tr>';
     return;
   }
-  const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}">
+  const rendered = rows.map((row) => `<tr data-call="${esc(row.call || '')}" class="${row.stale ? 'attention' : ''}">
     <td><strong>${esc(row.call || '')}</strong></td>
     <td>${esc(row.display_name || '-')}</td>
     <td title="${esc(row.note || '')}">${esc(row.email || '-')}</td>
@@ -6070,6 +6083,8 @@ if (restoreWebSession()) {
                 status = str(q.get("status", ["pending"])[0]).strip().lower()
                 rows = await self.store.list_registration_requests(status=status, limit=limit, offset=offset)
                 total = len(await self.store.list_registration_requests(status=status, limit=1000, offset=0))
+                now_epoch = int(time.time())
+                stale_after_seconds = 86400
                 body_rows = [
                     {
                         "call": str(row["call"] or ""),
@@ -6083,13 +6098,37 @@ if (restoreWebSession()) {
                         "email_verified": bool(int(row["email_verified"] or 0)),
                         "status": str(row["status"] or ""),
                         "requested_epoch": int(row["requested_epoch"] or 0),
+                        "age_seconds": max(0, now_epoch - int(row["requested_epoch"] or 0)),
+                        "stale": int(row["requested_epoch"] or 0) > 0 and now_epoch - int(row["requested_epoch"] or 0) >= stale_after_seconds,
                         "reviewed_epoch": int(row["reviewed_epoch"] or 0),
                         "reviewer": str(row["reviewer"] or ""),
                         "review_note": str(row["review_note"] or ""),
                     }
                     for row in rows
                 ]
-                await self._write_response(writer, 200, self._json({"rows": body_rows, "total": total, "offset": offset, "limit": limit, "status": status}))
+                all_pending = await self.store.list_registration_requests(status=status, limit=1000, offset=0)
+                pending_ages = [
+                    max(0, now_epoch - int(row["requested_epoch"] or 0))
+                    for row in all_pending
+                    if int(row["requested_epoch"] or 0) > 0
+                ]
+                stale_count = sum(1 for age in pending_ages if age >= stale_after_seconds)
+                oldest_pending_age_hours = int(max(pending_ages, default=0) // 3600)
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json(
+                        {
+                            "rows": body_rows,
+                            "total": total,
+                            "offset": offset,
+                            "limit": limit,
+                            "status": status,
+                            "stale_count": stale_count,
+                            "oldest_pending_age_hours": oldest_pending_age_hours,
+                        }
+                    ),
+                )
                 return
 
             if path == "/api/registrations/approve":

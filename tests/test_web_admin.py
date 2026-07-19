@@ -373,6 +373,8 @@ def test_web_admin_static_shows_registration_state_controls() -> None:
     assert '<h3>Access Matrix</h3>' not in text
     assert 'id="userPathStatus"' in text
     assert "<th>Verified</th><th>Locked</th><th>MFA</th><th>Blocked</th><th>Login</th><th>Spots</th><th>RBN</th><th>Chat</th><th>Annc</th><th>WX</th><th>WCY</th><th>WWV</th>" in text
+    assert 'id="registrationStaleNotice"' in text
+    assert "stale_count" in text
     assert "<th>Inbox</th>" not in text
     assert "<th>Outbox</th>" not in text
     assert '<label>Inbox</label><span>${esc(inboxSummary)}</span>' in text
@@ -3463,7 +3465,7 @@ def test_web_admin_registration_queue_can_list_approve_and_deny(tmp_path) -> Non
         try:
             await store.upsert_registration_request(
                 "N1NEW",
-                now,
+                now - 90000,
                 display_name="New User",
                 home_node="W1AW",
                 qth="Hartford",
@@ -3500,6 +3502,12 @@ def test_web_admin_registration_queue_can_list_approve_and_deny(tmp_path) -> Non
             data = json.loads(body.decode("utf-8"))
             assert data["total"] == 2
             assert {row["call"] for row in data["rows"]} == {"N1NEW", "N1DENY"}
+            assert data["stale_count"] == 1
+            assert data["oldest_pending_age_hours"] >= 25
+            rows_by_call = {row["call"]: row for row in data["rows"]}
+            assert rows_by_call["N1NEW"]["stale"] is True
+            assert rows_by_call["N1DENY"]["stale"] is False
+            assert rows_by_call["N1NEW"]["age_seconds"] >= 90000
 
             code, _, body = await _http_request(
                 srv,
