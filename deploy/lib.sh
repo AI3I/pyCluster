@@ -526,7 +526,7 @@ refresh_cty_best_effort() {
 install_or_refresh_fail2ban() {
   local root
   root="$(repo_root)"
-  install -d -m 0755 "$PYCLUSTER_FAIL2BAN_DIR/filter.d" "$PYCLUSTER_FAIL2BAN_DIR/jail.d"
+  install -d -m 0755 "$PYCLUSTER_FAIL2BAN_DIR/filter.d" "$PYCLUSTER_FAIL2BAN_DIR/jail.d" "$PYCLUSTER_FAIL2BAN_DIR/action.d"
   install -o root -g root -m 0644 \
     "$root/deploy/fail2ban/filter.d/pycluster-auth-core.conf" \
     "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-core.conf"
@@ -536,6 +536,9 @@ install_or_refresh_fail2ban() {
   install -o root -g root -m 0644 \
     "$root/deploy/fail2ban/filter.d/pycluster-auth-scanner.conf" \
     "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-scanner.conf"
+  install -o root -g root -m 0644 \
+    "$root/deploy/fail2ban/action.d/pycluster-lock-account.conf" \
+    "$PYCLUSTER_FAIL2BAN_DIR/action.d/pycluster-lock-account.conf"
   install -o root -g root -m 0644 \
     "$root/deploy/fail2ban/jail.d/pycluster-core.local" \
     "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-core.local"

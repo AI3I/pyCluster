@@ -9,6 +9,8 @@ All notable changes to pyCluster should be recorded here.
 - System Operator Users now includes a Locked view backed by the same account matrix as the main Users and Blocked views.
 - Public web authenticator-app MFA enrollment shows both a QR code and a manual setup key.
 - System Operator registration requests now call out pending requests older than 24 hours.
+- Public web MFA controls now expose email OTP enrollment directly when MFA is disabled.
+- An optional fail2ban account-lock action and host-local lock/unlock helper were added for structured auth-failure callsigns.
 
 ### Changed
 
@@ -26,6 +28,9 @@ All notable changes to pyCluster should be recorded here.
 - Telnet first-login email verification keeps live DX/RBN spot delivery suppressed while the user is entering the verification code.
 - Public web spot visibility treats rows sourced from the RBN source node as RBN traffic so anonymous and non-opted-in users do not see them.
 - DXSpider-facing PC18 handshakes use a DXSpider-compatible software field with a pyCluster marker so DXSpider peers can accept and log the version identity.
+- Public web and telnet MFA state now stays scoped to the exact logged-in callsign or SSID instead of inheriting or modifying base/sibling MFA settings.
+- Disabling authenticator MFA with `unset/totp` now turns off the email OTP fallback for that exact account.
+- Public web authenticator verification keeps email OTP enabled as fallback and reports that state in the System Operator user record.
 
 ## 1.0.10 - 2026-07-14
 

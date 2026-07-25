@@ -1060,6 +1060,35 @@ def test_web_admin_login_can_use_totp_authenticator(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_web_admin_login_mfa_does_not_inherit_base_call_for_ssid(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_admin_mfa_exact_ssid.db")
+        cfg = _mk_config(db, admin_token="")
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_sysop = False
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
+        await store.upsert_user_registry("AI3I-90", now, privilege="sysop", email="")
+        await store.set_user_pref("AI3I", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+        await store.set_user_pref("AI3I", "mfa_email_otp", "required", now)
+        try:
+            assert await srv._mfa_required_for_call("AI3I", is_sysop=True) is True
+            assert await srv._totp_secret_for_call("AI3I") == "JBSWY3DPEHPK3PXP"
+            assert await srv._mfa_required_for_call("AI3I-90", is_sysop=True) is False
+            assert await srv._totp_secret_for_call("AI3I-90") == ""
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_web_admin_login_honors_per_user_mfa_override(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_admin_mfa_override.db")

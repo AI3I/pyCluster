@@ -153,13 +153,13 @@ In practice:
 - `set/password`
   - prompts for and confirms your local password on this node
 - `set/mfa authenticator`
-  - enrolls an authenticator-app secret for login codes
+  - enrolls an authenticator-app secret for login codes and keeps email OTP as fallback
 - `set/totp`
   - shortcut for authenticator-app enrollment on telnet
 - `set/mfa email`
   - uses email one-time codes when SMTP and a profile email are available
 - `unset/totp`
-  - removes only the authenticator-app secret and leaves email MFA policy unchanged
+  - removes the authenticator-app secret and turns off the email MFA fallback for this account
 - `unset/mfa`
   - disables user-level MFA and clears outstanding challenges
 

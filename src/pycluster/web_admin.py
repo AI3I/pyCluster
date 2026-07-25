@@ -701,31 +701,26 @@ class WebAdminServer:
         return ""
 
     async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
-        base_call = call.split("-", 1)[0]
         if await self._totp_secret_for_call(call):
             return True
         override = ""
-        for candidate in (call.upper(), base_call.upper()):
-            raw = await self.store.get_user_pref(candidate, "mfa_email_otp")
-            txt = str(raw or "").strip().lower()
-            if txt:
-                override = txt
-                break
+        raw = await self.store.get_user_pref(call.upper(), "mfa_email_otp")
+        txt = str(raw or "").strip().lower()
+        if txt:
+            override = txt
         if override == "required":
             return True
         if override == "off":
             return False
         if not self._mfa.required_for(is_sysop=is_sysop):
             return False
-        return has_valid_email(await self._email_for_call(base_call.upper()))
+        return has_valid_email(await self._email_for_call(call.upper()))
 
     async def _totp_secret_for_call(self, call: str) -> str:
-        base_call = call.split("-", 1)[0].upper()
-        for candidate in (call.upper(), base_call):
-            raw = await self.store.get_user_pref(candidate, "mfa_totp_secret")
-            secret = str(raw or "").strip()
-            if secret:
-                return secret
+        raw = await self.store.get_user_pref(call.upper(), "mfa_totp_secret")
+        secret = str(raw or "").strip()
+        if secret:
+            return secret
         return ""
 
     def _cleanup_web_sessions(self) -> None:

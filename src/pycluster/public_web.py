@@ -525,39 +525,31 @@ class PublicWebServer:
         return has_valid_email(email)
 
     async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
-        base_call = call.split("-", 1)[0]
         if await self._totp_secret_for_call(call):
             return True
         override = ""
-        for candidate in (call.upper(), base_call.upper()):
-            raw = await self.store.get_user_pref(candidate, "mfa_email_otp")
-            txt = str(raw or "").strip().lower()
-            if txt:
-                override = txt
-                break
+        raw = await self.store.get_user_pref(call.upper(), "mfa_email_otp")
+        txt = str(raw or "").strip().lower()
+        if txt:
+            override = txt
         if override == "required":
             return True
         if override == "off":
             return False
         if not self._mfa.required_for(is_sysop=is_sysop):
             return False
-        return has_valid_email(await self._email_for_call(base_call.upper()))
+        return has_valid_email(await self._email_for_call(call.upper()))
 
     async def _totp_secret_for_call(self, call: str) -> str:
-        base_call = call.split("-", 1)[0].upper()
-        for candidate in (call.upper(), base_call):
-            raw = await self.store.get_user_pref(candidate, "mfa_totp_secret")
-            secret = str(raw or "").strip()
-            if secret:
-                return secret
-        return ""
+        raw = await self.store.get_user_pref(call.upper(), "mfa_totp_secret")
+        return str(raw or "").strip()
 
     async def _mfa_snapshot(self, call: str) -> dict[str, object]:
-        base_call = call.split("-", 1)[0].upper()
-        raw = str(await self.store.get_user_pref(base_call, "mfa_email_otp") or "").strip().lower()
+        target = call.upper()
+        raw = str(await self.store.get_user_pref(target, "mfa_email_otp") or "").strip().lower()
         email_override = raw if raw in {"required", "off"} else "default"
-        totp_enabled = bool(str(await self.store.get_user_pref(base_call, "mfa_totp_secret") or "").strip())
-        reg = await self.store.get_user_registry(base_call)
+        totp_enabled = bool(str(await self.store.get_user_pref(target, "mfa_totp_secret") or "").strip())
+        reg = await self.store.get_user_registry(target)
         is_sysop = str(reg["privilege"] or "").strip().lower() in {"sysop", "admin"} if reg is not None else False
         if email_override == "required":
             email_effective = True
@@ -665,6 +657,9 @@ class PublicWebServer:
             "profile_mfa_qr_unavailable": "Authenticator setup started, but QR setup is unavailable.",
             "profile_mfa_setup_key_label": "Manual setup key",
             "profile_mfa_setup_key_help": "Use this key if your authenticator app cannot scan the QR code.",
+            "profile_mfa_totp_notice": "Authenticator MFA is enabled. If authenticator verification is blocked after repeated failed codes, pyCluster falls back to email one-time codes when your profile email is valid. Disable removes both authenticator and email MFA for this account.",
+            "profile_mfa_email_notice": "Email MFA is enabled. Login prompts ask for the MFA code sent to your profile email address. Use TOTP to switch to an authenticator app with email fallback.",
+            "profile_mfa_disabled_notice": "MFA is disabled for this account unless node policy requires it. Use TOTP for an authenticator app or Use Email for email one-time codes.",
             "profile_mfa_email_sent": "Email MFA code sent. Check your email, then enter the code.",
             "profile_mfa_email_switched": "MFA method switched to Email. Use Verify to send and validate an email code.",
             "profile_mfa_verified": "MFA code verified.",
@@ -2187,7 +2182,7 @@ class PublicWebServer:
                 if not call:
                     await self._write_response(writer, 401, self._json({"error": "web login required"}))
                     return
-                base_call = call.split("-", 1)[0].upper()
+                target_call = call.upper()
                 now = int(time.time())
                 if method == "GET":
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "mfa": await self._mfa_snapshot(call)}))
@@ -2198,48 +2193,48 @@ class PublicWebServer:
                 payload = self._parse_json_body(body)
                 action = str(payload.get("action", "")).strip().lower()
                 if action in {"email", "required", "on"}:
-                    email = await self._email_for_call(base_call)
+                    email = await self._email_for_call(target_call)
                     if not has_valid_email(email):
                         await self._write_response(writer, 400, self._json({"error": "valid email required"}))
                         return
-                    await self.store.set_user_pref(base_call, "mfa_email_otp", "required", now)
-                    await self.store.delete_user_pref(base_call, "mfa_totp_secret")
-                    await self.store.delete_user_pref(base_call, "mfa_totp_pending_secret")
-                    await self.store.delete_user_pref(base_call, "mfa_totp_verified_epoch")
-                    await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                    await self.store.set_user_pref(target_call, "mfa_email_otp", "required", now)
+                    await self.store.delete_user_pref(target_call, "mfa_totp_secret")
+                    await self.store.delete_user_pref(target_call, "mfa_totp_pending_secret")
+                    await self.store.delete_user_pref(target_call, "mfa_totp_verified_epoch")
+                    await self.store.delete_mfa_challenges_for_call(target_call, include_ssids=False)
                     self._audit("user", f"{call} enabled email MFA")
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "mfa": await self._mfa_snapshot(call)}))
                     return
                 if action in {"default"}:
-                    await self.store.delete_user_pref(base_call, "mfa_email_otp")
+                    await self.store.delete_user_pref(target_call, "mfa_email_otp")
                     self._audit("user", f"{call} reset email MFA to default")
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "mfa": await self._mfa_snapshot(call)}))
                     return
                 if action in {"off", "reset", "disable"}:
-                    await self.store.set_user_pref(base_call, "mfa_email_otp", "off", now)
-                    await self.store.delete_user_pref(base_call, "mfa_totp_secret")
-                    await self.store.delete_user_pref(base_call, "mfa_totp_pending_secret")
-                    await self.store.delete_user_pref(base_call, "mfa_totp_verified_epoch")
-                    cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                    await self.store.set_user_pref(target_call, "mfa_email_otp", "off", now)
+                    await self.store.delete_user_pref(target_call, "mfa_totp_secret")
+                    await self.store.delete_user_pref(target_call, "mfa_totp_pending_secret")
+                    await self.store.delete_user_pref(target_call, "mfa_totp_verified_epoch")
+                    cleared = await self.store.delete_mfa_challenges_for_call(target_call, include_ssids=False)
                     self._audit("user", f"{call} disabled MFA challenges={cleared}")
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "challenges_cleared": cleared, "mfa": await self._mfa_snapshot(call)}))
                     return
                 if action in {"verify", "confirm"}:
                     otp = str(payload.get("otp") or payload.get("code") or "").strip()
-                    pending_secret = str(await self.store.get_user_pref(base_call, "mfa_totp_pending_secret") or "").strip()
+                    pending_secret = str(await self.store.get_user_pref(target_call, "mfa_totp_pending_secret") or "").strip()
                     if not pending_secret:
-                        email_required = str(await self.store.get_user_pref(base_call, "mfa_email_otp") or "").strip().lower() == "required"
+                        email_required = str(await self.store.get_user_pref(target_call, "mfa_email_otp") or "").strip().lower() == "required"
                         if not email_required:
                             await self._write_response(writer, 400, self._json({"error": "authenticator setup not pending"}))
                             return
-                        email = await self._email_for_call(base_call)
+                        email = await self._email_for_call(target_call)
                         if not has_valid_email(email):
                             await self._write_response(writer, 400, self._json({"error": "valid email required"}))
                             return
                         challenge_id = str(payload.get("challenge_id") or "").strip()
                         if not challenge_id or not otp:
                             try:
-                                challenge_id, expires_epoch = await self._mfa.issue(call=base_call, email=email, purpose="public-web-mfa-verify")
+                                challenge_id, expires_epoch = await self._mfa.issue(call=target_call, email=email, purpose="public-web-mfa-verify")
                             except Exception:
                                 LOG.exception("public web email mfa verification delivery failed call=%s", call)
                                 await self._write_response(writer, 503, self._json({"error": "mfa delivery failed"}))
@@ -2247,32 +2242,32 @@ class PublicWebServer:
                             self._audit("user", f"{call} requested email MFA verification")
                             await self._write_response(writer, 200, self._json({"ok": True, "call": call, "email_sent": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch, "mfa": await self._mfa_snapshot(call)}))
                             return
-                        ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=base_call, purpose="public-web-mfa-verify", otp=otp)
+                        ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=target_call, purpose="public-web-mfa-verify", otp=otp)
                         if not ok:
                             await self._write_response(writer, 400, self._json({"error": reason}))
                             return
-                        await mark_email_verified(self.store, base_call, now_epoch=now)
+                        await mark_email_verified(self.store, target_call, now_epoch=now)
                         self._audit("user", f"{call} verified email MFA")
                         await self._write_response(writer, 200, self._json({"ok": True, "call": call, "verified": True, "mfa": await self._mfa_snapshot(call)}))
                         return
                     if not verify_totp(pending_secret, otp):
                         await self._write_response(writer, 400, self._json({"error": "invalid authenticator code"}))
                         return
-                    await self.store.set_user_pref(base_call, "mfa_totp_secret", pending_secret, now)
-                    await self.store.set_user_pref(base_call, "mfa_totp_verified_epoch", str(now), now)
-                    await self.store.delete_user_pref(base_call, "mfa_email_otp")
-                    await self.store.delete_user_pref(base_call, "mfa_totp_pending_secret")
-                    cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                    await self.store.set_user_pref(target_call, "mfa_totp_secret", pending_secret, now)
+                    await self.store.set_user_pref(target_call, "mfa_totp_verified_epoch", str(now), now)
+                    await self.store.set_user_pref(target_call, "mfa_email_otp", "required", now)
+                    await self.store.delete_user_pref(target_call, "mfa_totp_pending_secret")
+                    cleared = await self.store.delete_mfa_challenges_for_call(target_call, include_ssids=False)
                     self._audit("user", f"{call} verified authenticator MFA challenges={cleared}")
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "verified": True, "challenges_cleared": cleared, "mfa": await self._mfa_snapshot(call)}))
                     return
                 if action in {"totp", "authenticator"}:
                     secret = generate_totp_secret()
-                    await self.store.set_user_pref(base_call, "mfa_totp_pending_secret", secret, now)
-                    cleared = await self.store.delete_mfa_challenges_for_call(base_call, include_ssids=True)
+                    await self.store.set_user_pref(target_call, "mfa_totp_pending_secret", secret, now)
+                    cleared = await self.store.delete_mfa_challenges_for_call(target_call, include_ssids=False)
                     uri = totp_otpauth_uri(
                         issuer=self.config.mfa.issuer.strip() or self.config.node.node_call,
-                        account=base_call,
+                        account=target_call,
                         secret=secret,
                     )
                     self._audit("user", f"{call} enrolled authenticator MFA challenges={cleared}")

@@ -1944,35 +1944,31 @@ class TelnetClusterServer:
             LOG.exception("telnet registration acknowledgement failed call=%s email=%s", call, email)
 
     async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
-        base_call = call.split("-", 1)[0]
         if await self._totp_secret_for_call(call):
             return True
         override = ""
-        for candidate in (call.upper(), base_call.upper()):
-            raw = await self.store.get_user_pref(candidate, "mfa_email_otp")
-            txt = str(raw or "").strip().lower()
-            if txt:
-                override = txt
-                break
+        raw = await self.store.get_user_pref(call.upper(), "mfa_email_otp")
+        txt = str(raw or "").strip().lower()
+        if txt:
+            override = txt
         if override == "required":
             return True
         if override == "off":
             return False
         if not self._mfa.required_for(is_sysop=is_sysop):
             return False
-        return has_valid_email(await self._email_for_call(base_call.upper()))
+        return has_valid_email(await self._email_for_call(call.upper()))
 
     async def _totp_secret_for_call(self, call: str) -> str:
         _target, secret = await self._totp_secret_record_for_call(call)
         return secret
 
     async def _totp_secret_record_for_call(self, call: str) -> tuple[str, str]:
-        base_call = call.split("-", 1)[0].upper()
-        for candidate in (call.upper(), base_call):
-            raw = await self.store.get_user_pref(candidate, "mfa_totp_secret")
-            secret = str(raw or "").strip()
-            if secret:
-                return candidate, secret
+        candidate = call.upper()
+        raw = await self.store.get_user_pref(candidate, "mfa_totp_secret")
+        secret = str(raw or "").strip()
+        if secret:
+            return candidate, secret
         return "", ""
 
     async def _require_verified_email_for_login(
@@ -7349,13 +7345,15 @@ class TelnetClusterServer:
 
     async def _cmd_unset_totp(self, call: str, _arg: str | None) -> str:
         target = call.upper()
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.set_user_pref(target, "mfa_email_otp", "off", now)
         await self.store.delete_user_pref(target, "mfa_totp_secret")
         await self.store.delete_user_pref(target, "mfa_totp_failed_count")
-        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
+        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=False)
         self._log_event("user", f"{call} unset/totp challenges={cleared}")
         return self._render_string(
             "mfa.authenticator_disabled",
-            "Authenticator MFA disabled for {call}. Email MFA policy is unchanged.",
+            "Authenticator MFA disabled for {call}. Email MFA fallback is now off.",
             call=target,
         ) + "\r\n"
 

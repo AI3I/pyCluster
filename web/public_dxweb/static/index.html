@@ -993,6 +993,12 @@ html.light .toast { box-shadow:0 8px 24px rgba(15,23,42,.14); }
   margin-top:0;
   justify-content:flex-start;
 }
+.profile-mfa-summary {
+  margin-top:8px;
+  color:var(--text-dim);
+  font-size:0.68rem;
+  line-height:1.4;
+}
 .profile-modal-actions button {
   flex:0 1 auto;
   max-width:100%;
@@ -1937,6 +1943,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
       <button id="profile-mfa-test" type="button">Verify</button>
       </div>
     </div>
+    <div id="profile-mfa-summary" class="profile-mfa-summary"></div>
     <div id="profile-mfa-qr" class="profile-mfa-qr" aria-live="polite">
       <div id="profile-mfa-qr-code"></div>
       <div id="profile-mfa-qr-note" class="profile-mfa-qr-note"></div>
@@ -2581,11 +2588,16 @@ function showProfileMfaQr(qrSvg, secret='') {
 
 function renderProfileMfa() {
   const el = document.getElementById('profile-mfa-summary');
-  if (el) el.textContent = '';
   const method = document.getElementById('profile-mfa-authenticator');
   const disable = document.getElementById('profile-mfa-email');
   const mfa = webProfile?.mfa || {};
   const usingTotp = !!mfa.totp_enabled;
+  const emailEnabled = mfa.email_otp === 'required' || (Array.isArray(mfa.methods) && mfa.methods.includes('Email OTP'));
+  if (el) {
+    el.textContent = usingTotp
+      ? uiText('profile_mfa_totp_notice')
+      : (emailEnabled ? uiText('profile_mfa_email_notice') : uiText('profile_mfa_disabled_notice'));
+  }
   if (method) {
     method.textContent = usingTotp ? 'Use Email' : 'Use TOTP';
     method.dataset.action = usingTotp ? 'email' : 'authenticator';
@@ -2593,8 +2605,10 @@ function renderProfileMfa() {
     method.setAttribute('aria-label', method.title);
   }
   if (disable) {
-    disable.textContent = 'Disable';
-    disable.title = 'Disable MFA';
+    const active = usingTotp || emailEnabled;
+    disable.textContent = active ? 'Disable' : 'Use Email';
+    disable.dataset.action = active ? 'off' : 'email';
+    disable.title = active ? 'Disable MFA' : 'Use email one-time codes';
     disable.setAttribute('aria-label', disable.title);
   }
 }
@@ -5141,7 +5155,7 @@ document.getElementById('spot-modal-bg').addEventListener('click', e => {
 document.getElementById('profile-close').addEventListener('click', closeProfileModal);
 document.getElementById('profile-save').addEventListener('click', saveProfile);
 document.getElementById('profile-mfa-authenticator').addEventListener('click', e => updateProfileMfa(e.currentTarget.dataset.action || 'authenticator'));
-document.getElementById('profile-mfa-email').addEventListener('click', () => updateProfileMfa('off'));
+document.getElementById('profile-mfa-email').addEventListener('click', e => updateProfileMfa(e.currentTarget.dataset.action || 'email'));
 document.getElementById('profile-mfa-test').addEventListener('click', verifyProfileMfa);
 document.getElementById('profile-mfa-code').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('profile-mfa-test')?.click();

@@ -113,8 +113,8 @@ Spotter-based filters match the station that posted the spot. They do not match 
 | `unset/password` | Clear the stored local password. |
 | `mfa` | Show your MFA status, enabled methods, email override, and effective policy. |
 | `set/mfa [email\|authenticator\|default]` | Use email OTP MFA, enroll an authenticator app, or clear the email override back to the node default. |
-| `set/totp` | Shortcut for enrolling an authenticator-app/TOTP secret from telnet. |
-| `unset/totp` | Remove the authenticator-app/TOTP secret while leaving email MFA policy unchanged. |
+| `set/totp` | Shortcut for enrolling an authenticator-app/TOTP secret from telnet with email OTP fallback. |
+| `unset/totp` | Remove the authenticator-app/TOTP secret and turn off the email MFA fallback for this account. |
 | `unset/mfa` | Disable user-level MFA, remove any authenticator secret, and clear outstanding challenges. |
 | `set/passphrase <text>` | Set a passphrase field. |
 | `unset/passphrase` | Clear passphrase field. |
