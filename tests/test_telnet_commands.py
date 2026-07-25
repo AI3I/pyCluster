@@ -5496,7 +5496,7 @@ def test_user_can_manage_own_mfa_from_telnet(tmp_path) -> None:
 
             _, out = await srv._execute_command("K1ABC", "unset/totp")
             assert "Authenticator MFA disabled for K1ABC." in out
-            assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "required"
+            assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "off"
             assert await store.get_user_pref("K1ABC", "mfa_totp_secret") is None
 
             _, out = await srv._execute_command("K1ABC", "unset/mfa")
@@ -5540,6 +5540,11 @@ def test_ssid_user_manages_own_mfa_without_touching_base_call(tmp_path) -> None:
             assert await store.get_user_pref("N9JR-10", "mfa_totp_secret") is None
             assert await store.get_user_pref("N9JR", "mfa_email_otp") is None
             assert await store.get_user_pref("N9JR", "mfa_totp_secret") is None
+
+            await store.set_user_pref("N9JR", "mfa_totp_secret", "BASESECRET", now)
+            await store.set_user_pref("N9JR", "mfa_email_otp", "required", now)
+            assert await srv._mfa_required_for_call("N9JR", is_sysop=True) is True
+            assert await srv._mfa_required_for_call("N9JR-10", is_sysop=False) is False
         finally:
             await store.close()
 

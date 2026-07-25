@@ -32,6 +32,10 @@ Included filters:
 - `deploy/fail2ban/filter.d/pycluster-auth-web.conf`
 - `deploy/fail2ban/filter.d/pycluster-auth-scanner.conf`
 
+Included optional actions:
+
+- `deploy/fail2ban/action.d/pycluster-lock-account.conf`
+
 Included jails:
 
 - `deploy/fail2ban/jail.d/pycluster-core.local`
@@ -71,6 +75,13 @@ sudo fail2ban-client status pycluster-core-auth
 sudo fail2ban-client status pycluster-web-auth
 sudo fail2ban-client status pycluster-telnet-scanner
 sudo tail -n 50 /var/log/pycluster/authfail.log
+```
+
+The default jails ban IP addresses. To also lock the user account named in a structured auth-failure line, enable the optional `pycluster-lock-account` action in a local jail override and point `pycluster_db` at the active SQLite database. The action writes the same durable lock keys that the SysOp `Unlock Account` control clears. The helper can also be run directly on the host:
+
+```bash
+sudo /opt/pycluster/current/scripts/lock_user_account.py --db /opt/pycluster/data/pycluster.db --call AI3I-90
+sudo /opt/pycluster/current/scripts/lock_user_account.py --db /opt/pycluster/data/pycluster.db --call AI3I-90 --unlock
 ```
 
 ## Recommended Deployment Posture

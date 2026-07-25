@@ -162,8 +162,9 @@ MFA controls:
 - enable authenticator-app MFA with a QR code plus a manual setup key for authenticator apps that cannot scan the QR code
 - verify the active MFA method with a code
 - disable user-level MFA and clear outstanding challenges
+- read the profile-modal MFA notice explaining whether login codes come from email or an authenticator app and how fallback/recovery works
 
-When email MFA is selected, `Verify` sends a code to the profile email address and asks for that code. When authenticator-app MFA is selected, `Verify` asks for the current app code. Login prompts say whether the code came from email or from the authenticator app.
+When email MFA is selected, `Verify` sends a code to the profile email address and asks for that code. When authenticator-app MFA is selected, `Verify` asks for the current app code. Authenticator enrollment keeps email OTP as a fallback for the exact logged-in callsign or SSID. `Disable` turns off both authenticator and email MFA for that exact account. Login prompts say whether the code came from email or from the authenticator app.
 
 Password reset:
 

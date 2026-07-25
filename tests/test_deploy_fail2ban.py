@@ -1,13 +1,20 @@
 from pathlib import Path
+import sqlite3
+import subprocess
+import sys
 
 
 def test_fail2ban_scanner_jail_and_install_hooks_exist() -> None:
     lib = Path("/home/jdlewis/GitHub/pyCluster/deploy/lib.sh").read_text(encoding="utf-8")
     scanner_filter = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/filter.d/pycluster-auth-scanner.conf").read_text(encoding="utf-8")
+    core_filter = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/filter.d/pycluster-auth-core.conf").read_text(encoding="utf-8")
+    web_filter = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/filter.d/pycluster-auth-web.conf").read_text(encoding="utf-8")
+    account_action = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/action.d/pycluster-lock-account.conf").read_text(encoding="utf-8")
     scanner_jail = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/jail.d/pycluster-scanner.local").read_text(encoding="utf-8")
     core_jail = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/jail.d/pycluster-core.local").read_text(encoding="utf-8")
 
     assert "pycluster-auth-scanner.conf" in lib
+    assert "pycluster-lock-account.conf" in lib
     assert "pycluster-scanner.local" in lib
     assert "pycluster-telnet-scanner" in lib
 
@@ -24,6 +31,54 @@ def test_fail2ban_scanner_jail_and_install_hooks_exist() -> None:
     assert "maxretry = 4" in core_jail
     assert "findtime = 5m" in core_jail
     assert "bantime = 2h" in core_jail
+    assert "<F-USER>" in core_filter
+    assert "<F-USER>" in web_filter
+    assert "lock_user_account.py" in account_action
+    assert "--call <F-USER>" in account_action
+
+
+def test_fail2ban_account_lock_helper_updates_user_prefs(tmp_path) -> None:
+    db = tmp_path / "pycluster.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE user_prefs (
+                call TEXT NOT NULL,
+                pref_key TEXT NOT NULL,
+                pref_value TEXT NOT NULL,
+                updated_epoch INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(call, pref_key)
+            )
+            """
+        )
+        conn.commit()
+
+    script = Path("/home/jdlewis/GitHub/pyCluster/scripts/lock_user_account.py")
+    result = subprocess.run(
+        [sys.executable, str(script), "--db", str(db), "--call", "AI3I-90", "--reason", "test lock"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "Locked AI3I-90" in result.stdout
+    with sqlite3.connect(db) as conn:
+        rows = dict(conn.execute("SELECT pref_key, pref_value FROM user_prefs WHERE call = 'AI3I-90'"))
+    assert rows["registration_state"] == "locked"
+    assert rows["failed_password_locked_epoch"]
+    assert rows["failed_password_count"] == "0"
+    assert rows["blocked_reason"] == "test lock"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--db", str(db), "--call", "AI3I-90", "--unlock"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "Unlocked AI3I-90" in result.stdout
+    with sqlite3.connect(db) as conn:
+        rows = dict(conn.execute("SELECT pref_key, pref_value FROM user_prefs WHERE call = 'AI3I-90'"))
+    assert rows["registration_state"] == "verified"
+    assert "failed_password_locked_epoch" not in rows
 
 
 def test_setup_nginx_disables_distribution_default_site() -> None:

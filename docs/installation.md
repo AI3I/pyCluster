@@ -263,6 +263,12 @@ systemctl restart pycluster.service pyclusterweb.service
 
 Replace `AI3I` with the principal/base sysop callsign you are recovering. If needed, also reset the password through the existing bootstrap or direct SQLite recovery path.
 
+You can also use the host-local helper:
+
+```bash
+sudo /opt/pycluster/current/scripts/lock_user_account.py --db /opt/pycluster/data/pycluster.db --call AI3I --unlock
+```
+
 ## Registration Recovery
 
 Ordinary-user registration now tracks:

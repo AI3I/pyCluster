@@ -537,7 +537,9 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert 'id="profile-mfa-off"' not in text
     assert "method.textContent = usingTotp ? 'Use Email' : 'Use TOTP';" in text
     assert "method.dataset.action = usingTotp ? 'email' : 'authenticator';" in text
-    assert "document.getElementById('profile-mfa-email').addEventListener('click', () => updateProfileMfa('off'));" in text
+    assert "disable.textContent = active ? 'Disable' : 'Use Email';" in text
+    assert "disable.dataset.action = active ? 'off' : 'email';" in text
+    assert "document.getElementById('profile-mfa-email').addEventListener('click', e => updateProfileMfa(e.currentTarget.dataset.action || 'email'));" in text
     assert ">Verify</button>" in text
     assert "Enable/Setup MFA" not in text
     assert ">Enable/Setup</button>" not in text
@@ -555,6 +557,10 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "body.qr_svg || body.secret" in text
     assert "uiText('profile_mfa_setup_key_label')" in text
     assert "uiText('profile_mfa_setup_key_help')" in text
+    assert 'id="profile-mfa-summary"' in text
+    assert "uiText('profile_mfa_totp_notice')" in text
+    assert "uiText('profile_mfa_email_notice')" in text
+    assert "uiText('profile_mfa_disabled_notice')" in text
     assert "Authenticator setup key:" not in text
     assert "Capabilities</div>" in text
     assert "Greyed-out actions are disabled by local node policy" not in text
@@ -1637,7 +1643,7 @@ def test_public_web_user_can_manage_own_mfa(tmp_path) -> None:
             assert data["mfa"]["totp_enabled"] is True
             assert await store.get_user_pref("AI3I", "mfa_totp_secret") == pending_secret
             assert await store.get_user_pref("AI3I", "mfa_totp_pending_secret") is None
-            assert await store.get_user_pref("AI3I", "mfa_email_otp") is None
+            assert await store.get_user_pref("AI3I", "mfa_email_otp") == "required"
 
             code, _, body = await _http_request_ex(
                 srv,
@@ -1651,6 +1657,113 @@ def test_public_web_user_can_manage_own_mfa(tmp_path) -> None:
             assert data["mfa"]["enabled"] is False
             assert await store.get_user_pref("AI3I", "mfa_email_otp") == "off"
             assert await store.get_user_pref("AI3I", "mfa_totp_secret") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_profile_mfa_is_exact_ssid_scope(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_profile_mfa_exact_ssid.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="sysop", email="ai3i@example.test")
+        await store.upsert_user_registry("AI3I-90", now, privilege="user", email="ai3i90@example.test")
+        await store.upsert_user_registry("AI3I-91", now, privilege="user", email="ai3i91@example.test")
+        await store.set_user_pref("AI3I-90", "password", "secret", now)
+        await store.set_user_pref("AI3I-90", "email_verified_epoch", str(now), now)
+        await store.set_user_pref("AI3I", "mfa_totp_secret", "BASESECRET", now)
+        await store.set_user_pref("AI3I", "mfa_email_otp", "required", now)
+        await store.set_user_pref("AI3I-91", "mfa_totp_secret", "SIBLINGSECRET", now)
+        await store.save_mfa_challenge(
+            challenge_id="base-challenge",
+            call="AI3I",
+            purpose="public-web-mfa-verify",
+            code="111111",
+            expires_epoch=now + 300,
+            attempts_left=3,
+            issued_epoch=now,
+        )
+        await store.save_mfa_challenge(
+            challenge_id="sibling-challenge",
+            call="AI3I-91",
+            purpose="public-web-mfa-verify",
+            code="222222",
+            expires_epoch=now + 300,
+            attempts_left=3,
+            issued_epoch=now,
+        )
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I-90", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            token = json.loads(body.decode("utf-8"))["token"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
+                json.dumps({"action": "authenticator"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            pending_secret = data["secret"]
+            assert await store.get_user_pref("AI3I-90", "mfa_totp_pending_secret") == pending_secret
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == "BASESECRET"
+            assert await store.get_user_pref("AI3I", "mfa_email_otp") == "required"
+            assert await store.get_user_pref("AI3I-91", "mfa_totp_secret") == "SIBLINGSECRET"
+            assert await store.get_mfa_challenge("base-challenge") is not None
+            assert await store.get_mfa_challenge("sibling-challenge") is not None
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
+                json.dumps({"action": "verify", "otp": totp_code(pending_secret)}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            data = json.loads(body.decode("utf-8"))
+            assert data["mfa"]["totp_enabled"] is True
+            assert data["mfa"]["email_otp"] == "required"
+            assert await store.get_user_pref("AI3I-90", "mfa_totp_secret") == pending_secret
+            assert await store.get_user_pref("AI3I-90", "mfa_email_otp") == "required"
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == "BASESECRET"
+            assert await store.get_user_pref("AI3I-91", "mfa_totp_secret") == "SIBLINGSECRET"
+
+            row = await store.get_user_registry("AI3I-90")
+            assert row is not None
+            from pycluster.web_admin import WebAdminServer
+
+            admin = WebAdminServer(config=cfg, store=store, started_at=datetime.now(timezone.utc), session_count_fn=lambda: 0)
+            snapshot = await admin._user_registry_json(row)
+            assert snapshot["mfa_totp_enabled"] is True
+            assert snapshot["mfa_email_otp"] == "required"
+            assert set(snapshot["mfa_methods"]) == {"Authenticator", "Email OTP"}
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile/mfa",
+                json.dumps({"action": "off"}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            assert await store.get_user_pref("AI3I-90", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("AI3I-90", "mfa_totp_secret") is None
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == "BASESECRET"
+            assert await store.get_user_pref("AI3I-91", "mfa_totp_secret") == "SIBLINGSECRET"
         finally:
             await store.close()
 
