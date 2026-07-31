@@ -31,8 +31,10 @@ All notable changes to pyCluster should be recorded here.
 - Telnet first-login email verification keeps live DX/RBN spot delivery suppressed while the user is entering the verification code.
 - Public web spot visibility treats rows sourced from the RBN source node as RBN traffic so anonymous and non-opted-in users do not see them.
 - Public web websocket, spot history, statistics, and leaderboard paths apply the same database-backed RBN preference and filters, including raw PC11/PC61 RBN markers outside the visible comment.
-- DXSpider-facing PC18 handshakes use a DXSpider-compatible software field with a pyCluster marker so DXSpider peers can accept and log the version identity.
-- Outbound `dxspider://` startup no longer sends a duplicate application PC18 after the transport handshake has already supplied the compatible identity response.
+- PC18 handshakes identify the software as pyCluster with its own version instead of presenting a synthetic DXSpider version string; the protocol field remains DX-compatible.
+- Outbound `dxspider://` startup no longer sends a duplicate application PC18.
+- Outbound `dxspider://` startup records DXSpider's PC18 banner without returning a PC18 that DXSpider intentionally ignores, and sends exactly one startup PC20.
+- DXSpider-family links use PC51 ping/reply traffic for steady-state liveness instead of periodic PC20 frames that cause DXSpider to retransmit PC19/PC22 startup configuration.
 - Public web and telnet MFA state now stays scoped to the exact logged-in callsign or SSID instead of inheriting or modifying base/sibling MFA settings.
 - Fresh callsign-SSIDs without an exact registry record no longer inherit a base account's email merely because global MFA is enabled.
 - Failed-password counters and account locks apply to the exact callsign-SSID being authenticated and are cleared consistently after successful login or reset.
