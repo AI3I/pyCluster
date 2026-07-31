@@ -5,7 +5,6 @@ import pytest
 import re
 
 from pycluster import __version__
-from pycluster.transports import DXSPIDER_COMPAT_VERSION
 from pycluster.app import ClusterApp
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, RBNFeedConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.models import Spot
@@ -137,11 +136,10 @@ def test_connect_peer_sends_legacy_dxspider_init_frames(tmp_path) -> None:
             assert str(row["last_login_peer"]) == "node-link outbound dxspider host dxspider.ai3i.net:7300"
             assert await app.store.get_user_pref("AI3I-15", "node_family") == "dxspider"
             node_call = app.config.node.node_call.upper()
-            assert [frame.pc_type for _, frame in sent] == ["PC20", "PC19", "PC16", "PC22"]
-            assert sent[0][1].payload_fields == [""]
-            assert sent[1][1].payload_fields == ["1", node_call, "0", "5457", "H1", ""]
-            assert sent[2][1].payload_fields == [node_call, "AI3I - 1", "H1", ""]
-            assert sent[3][1].payload_fields == [""]
+            assert [frame.pc_type for _, frame in sent] == ["PC19", "PC16", "PC22"]
+            assert sent[0][1].payload_fields == ["1", node_call, "0", "5457", "H1", ""]
+            assert sent[1][1].payload_fields == [node_call, "AI3I - 1", "H1", ""]
+            assert sent[2][1].payload_fields == [""]
         finally:
             await app.store.close()
 
@@ -174,7 +172,7 @@ def test_accept_inbound_node_login_uses_authenticated_login_as_peer_identity(tmp
             assert ok is True
             assert accepted == [("AI3I-16", "dxspider")]
             assert legacy_init == ["AI3I-16"]
-            assert f"PC18^DXSpider Version: {DXSPIDER_COMPAT_VERSION} Build: 0 Git: pycluster/{__version__} pc9x^" in text
+            assert f"PC18^pyCluster Version: {__version__}^5457^" in text
             assert "PC20^" in text
         finally:
             await app.store.close()
@@ -207,37 +205,6 @@ def test_accept_inbound_node_login_records_initial_pc18_version(tmp_path) -> Non
             prefs = await app.store.list_user_prefs(app.config.node.node_call)
             assert prefs["proto.peer.w3lpl-2.pc18.summary"] == "pyCluster 1.0.9"
             assert prefs["proto.peer.w3lpl-2.pc18.family"] == "pycluster"
-        finally:
-            await app.store.close()
-
-    asyncio.run(run())
-
-
-def test_accept_inbound_node_login_recognizes_pycluster_dxspider_compat_pc18(tmp_path) -> None:
-    async def run() -> None:
-        db = str(tmp_path / "accept_inbound_pc18_compat_version.db")
-        app = ClusterApp(_mk_config(db))
-        try:
-            now = int(datetime.now(timezone.utc).timestamp())
-            await app.store.set_user_pref("W3LPL-2", "node_family", "pycluster", now)
-
-            async def _accept(_name: str, _conn, profile: str = "dxspider") -> None:
-                return
-
-            app.node_link.accept_inbound = _accept  # type: ignore[method-assign]
-
-            writer = _DummyWriter()
-            ok = await app.accept_inbound_node_login(
-                "W3LPL-2",
-                "W3LPL-2",
-                asyncio.StreamReader(),
-                writer,  # type: ignore[arg-type]
-                [f"PC18^DXSpider Version: {DXSPIDER_COMPAT_VERSION} Build: 0 Git: pycluster/1.0.11 pc9x^5457^"],
-            )
-            assert ok is True
-            prefs = await app.store.list_user_prefs(app.config.node.node_call)
-            assert prefs["proto.peer.w3lpl-2.pc18.family"] == "pycluster"
-            assert prefs["proto.peer.w3lpl-2.pc18.summary"].startswith("DXSpider Version:")
         finally:
             await app.store.close()
 
@@ -377,7 +344,7 @@ def test_reconnect_once_reattaches_persisted_peer_and_tracks_backoff(tmp_path) -
                     "spider",
                 )
             ]
-            assert [frame.pc_type for _, frame in sent] == ["PC20", "PC19", "PC16", "PC22"]
+            assert [frame.pc_type for _, frame in sent] == ["PC19", "PC16", "PC22"]
 
             async def _fail(_name: str, _dsn: str, profile: str = "spider") -> None:
                 raise RuntimeError("boom")
@@ -499,7 +466,7 @@ def test_peer_password_is_stored_separately_from_dsn_and_injected_on_connect(tmp
                     "spider",
                 )
             ]
-            assert [frame.pc_type for _, frame in sent[:2]] == ["PC20", "PC19"]
+            assert [frame.pc_type for _, frame in sent[:2]] == ["PC19", "PC16"]
         finally:
             await app.store.close()
 
@@ -1804,7 +1771,7 @@ def test_legacy_pc16_sync_drops_dead_peer_without_traceback(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_node_link_heartbeat_sends_pc20_to_dxspider_and_pycluster_peers(tmp_path) -> None:
+def test_node_link_heartbeat_sends_pc20_only_to_pycluster_peers(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "dxspider_heartbeat.db")
         app = ClusterApp(_mk_config(db))
@@ -1829,8 +1796,8 @@ def test_node_link_heartbeat_sends_pc20_to_dxspider_and_pycluster_peers(tmp_path
 
             count = await app.heartbeat_once()
 
-            assert count == 3
-            assert sent == [("peer1", "PC20", [""]), ("peer2", "PC20", [""]), ("peer4", "PC20", [""])]
+            assert count == 1
+            assert sent == [("peer2", "PC20", [""])]
         finally:
             await app.store.close()
 

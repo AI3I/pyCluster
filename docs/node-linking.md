@@ -102,7 +102,9 @@ dxspider://example.net:7300?login=LOCALNODE-1&client=PEERNODE-1&password=secret
 
 Peers with the `dxspider`/`spider` cluster family receive legacy PC11 spot relay frames. pyCluster peers continue to receive PC61 relay frames.
 
-DXSpider-facing PC18 handshakes are formatted in a DXSpider-compatible software field and include a `pycluster/<version>` marker in the Git/build descriptor. This keeps DXSpider peers from treating the software field as unknown while still letting pyCluster peers identify the remote as pyCluster-capable. For `dxspider://` connections, the transport handshake sends that response once; the application startup sequence continues with PC20 and legacy initialization frames without sending a duplicate PC18.
+When pyCluster sends PC18, its software field identifies `pyCluster Version: <version>` rather than claiming to be DXSpider. The `5457` protocol field remains for wire-protocol compatibility. For outbound `dxspider://` connections, pyCluster records DXSpider's PC18 banner but does not answer with PC18 because DXSpider deliberately ignores that frame on inbound non-CC-Cluster links. The transport sends one PC20 to complete startup, followed by the legacy initialization frames.
+
+Steady-state DXSpider liveness uses PC51 ping requests and replies. pyCluster does not send periodic PC20 frames to DXSpider peers because DXSpider interprets PC20 as completion of startup configuration and retransmits PC19/PC22 configuration in response. Native pyCluster links continue to use their existing PC20 heartbeat.
 
 Outbound PC92 path advertisements are sanitized when `node.public_ip_address`, `node.public_ipv6_address`, or a detected global interface address is available. Private, loopback, link-local, `localhost`, and otherwise non-public IPv4/IPv6 literals in outbound PC92 payload fields are replaced with the same-family public address before transmission. PC61 spot relay uses the same configured-or-detected public address selection for its IP field.
 

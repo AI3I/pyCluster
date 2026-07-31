@@ -10,7 +10,6 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__
 from .pathmeta import describe_socket_path
 
-DXSPIDER_COMPAT_VERSION = "1.57"
 
 class LinkConnection(Protocol):
     name: str
@@ -28,9 +27,8 @@ class LinkListener(Protocol):
     async def close(self) -> None: ...
 
 
-def dxspider_compat_pc18(proto: str = "5457") -> str:
-    software = f"DXSpider Version: {DXSPIDER_COMPAT_VERSION} Build: 0 Git: pycluster/{__version__} pc9x"
-    return f"PC18^{software}^{proto}^"
+def pycluster_pc18(proto: str = "5457") -> str:
+    return f"PC18^pyCluster Version: {__version__}^{proto}^"
 
 
 @dataclass(slots=True)
@@ -259,34 +257,17 @@ class _DxSpiderTelnetConnection:
             start = nl + 1
         return out
 
-    @staticmethod
-    def _reply_pc18(buf: bytes) -> str:
-        proto = "5457"
-        for raw in _DxSpiderTelnetConnection._complete_lines(buf):
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line.startswith("PC18^"):
-                continue
-            fields = [part for part in line.split("^") if part]
-            if len(fields) >= 3 and fields[2].isdigit():
-                proto = fields[2]
-                break
-        return dxspider_compat_pc18(proto)
-
     async def handshake(self, login: str, client: str, password: str = "", timeout: float = 10.0) -> None:
         deadline = asyncio.get_running_loop().time() + max(1.0, timeout)
         sent_login = False
         sent_password = False
         sent_client = False
-        sent_pc18 = False
         sent_pc20 = False
         while asyncio.get_running_loop().time() < deadline:
             text = bytes(self._buf)
             complete_lines = self._complete_lines(text)
             if sent_login and any(raw.lstrip().startswith(b"PC") for raw in complete_lines):
                 if any(raw.lstrip().startswith(b"PC18") for raw in complete_lines):
-                    if not sent_pc18:
-                        await self.send_line(self._reply_pc18(text))
-                        sent_pc18 = True
                     if not sent_pc20:
                         await self.send_line("PC20^")
                         sent_pc20 = True

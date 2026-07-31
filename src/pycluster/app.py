@@ -30,7 +30,7 @@ from .spot_filters import SpotFilterEntry, evaluate_spot_entries
 from .store import SpotStore
 from .strings import StringCatalog
 from .telnet_server import TelnetClusterServer
-from .transports import DxSpiderInboundConnection, dxspider_compat_pc18
+from .transports import DxSpiderInboundConnection, pycluster_pc18
 from .public_web import PublicWebServer
 from .web_admin import WebAdminServer
 
@@ -573,14 +573,15 @@ class ClusterApp:
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "next_retry_epoch"), "0", now)
         await self.store.delete_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_error"))
         await self._record_outbound_peer_login(name, clean_dsn, profile, now)
-        send_app_pc18 = wire_profile in {"spider", "dxspider", "pycluster"} and not clean_dsn.strip().lower().startswith("dxspider://")
+        is_dxspider_dsn = clean_dsn.strip().lower().startswith("dxspider://")
+        send_app_pc18 = wire_profile in {"spider", "dxspider", "pycluster"} and not is_dxspider_dsn
         if send_app_pc18:
-            pc18 = parse_wire_pc_frame(dxspider_compat_pc18())
+            pc18 = parse_wire_pc_frame(pycluster_pc18())
             if pc18 is not None:
                 await self.node_link.send(name, pc18)
-        if wire_profile in {"spider", "dxspider", "pycluster"}:
+        if wire_profile in {"spider", "dxspider", "pycluster"} and not is_dxspider_dsn:
             await self.node_link.send(name, WirePcFrame("PC20", [""]))
-        if dsn.strip().lower().startswith("dxspider://"):
+        if is_dxspider_dsn:
             try:
                 await self._send_legacy_init_config(name)
             except KeyError:
@@ -711,7 +712,7 @@ class ClusterApp:
                 )
         conn = DxSpiderInboundConnection(peer_key, reader, writer, initial_lines=initial_lines)
         await self.node_link.accept_inbound(peer_key, conn, profile=profile)
-        await conn.send_line(dxspider_compat_pc18())
+        await conn.send_line(pycluster_pc18())
         await conn.send_line("PC20^")
         if profile == "dxspider":
             self._legacy_dxspider_peers.add(peer_key)
@@ -999,7 +1000,7 @@ class ClusterApp:
         stats = await self.node_link.stats()
         for name, row in stats.items():
             profile = str(row.get("profile", "dxspider")).strip().lower()
-            if profile not in {"dxspider", "pycluster"}:
+            if profile != "pycluster":
                 continue
             try:
                 await self.node_link.send(name, WirePcFrame("PC20", [""]))
@@ -1255,13 +1256,13 @@ class ClusterApp:
         low = text.lower()
         family = ""
         summary = text
-        if "pycluster" in low:
-            family = "pycluster"
-        elif "dxspider" in low or "dx spider" in low:
+        if "dxspider" in low or "dx spider" in low:
             family = "dxspider"
             m = re.search(r"version:\s*([^\s]+)\s+build:\s*([^\s]+)", text, re.IGNORECASE)
             if m:
                 summary = f"DXSpider {m.group(1)} build {m.group(2)}"
+        elif "pycluster" in low:
+            family = "pycluster"
         elif "ar-cluster" in low:
             family = "arcluster"
         elif re.search(r"\bclx\b", low):

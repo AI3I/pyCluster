@@ -1,5 +1,3 @@
-from pycluster import __version__
-from pycluster.transports import DXSPIDER_COMPAT_VERSION
 from pycluster.transports import (
     connect_from_dsn,
     kiss_encode_data_frame,
@@ -132,8 +130,6 @@ def test_dxspider_connect_accepts_direct_pc_banner_without_client_command() -> N
             seen.append(login)
             writer.write(b"PC18^DXSpider Version: 1.55 Build: 0.203 Git: 448838ed[r] pc9x^5455^\r\n")
             await writer.drain()
-            reply_pc18 = (await reader.readline()).decode("utf-8", errors="replace").strip()
-            seen.append(reply_pc18)
             pc20 = (await reader.readline()).decode("utf-8", errors="replace").strip()
             seen.append(pc20)
             await asyncio.sleep(0.05)
@@ -155,7 +151,6 @@ def test_dxspider_connect_accepts_direct_pc_banner_without_client_command() -> N
                 await asyncio.sleep(0.1)
                 assert seen == [
                     "AI3I-16",
-                    f"PC18^DXSpider Version: {DXSPIDER_COMPAT_VERSION} Build: 0 Git: pycluster/{__version__} pc9x^5455^",
                     "PC20^",
                 ]
             finally:
@@ -178,8 +173,6 @@ def test_dxspider_connect_direct_pc18_keeps_followup_init_frames() -> None:
             seen.append(login)
             writer.write(b"PC18^DXSpider Version: 1.57 Build: 46 Git: mojo/63d4718 pc9x^5455^\r\n")
             await writer.drain()
-            reply_pc18 = (await reader.readline()).decode("utf-8", errors="replace").strip()
-            seen.append(reply_pc18)
             pc20 = (await reader.readline()).decode("utf-8", errors="replace").strip()
             seen.append(pc20)
             writer.write(b"PC19^1^AI3I-15^0^1057^H96^\r\n")
@@ -202,7 +195,6 @@ def test_dxspider_connect_direct_pc18_keeps_followup_init_frames() -> None:
                 assert await conn.readline() == "PC19^1^AI3I-15^0^1057^H96^"
                 assert seen == [
                     "AI3I-16",
-                    f"PC18^DXSpider Version: {DXSPIDER_COMPAT_VERSION} Build: 0 Git: pycluster/{__version__} pc9x^5455^",
                     "PC20^",
                 ]
             finally:
