@@ -6498,11 +6498,17 @@ if (restoreWebSession()) {
                 limit = self._parse_limit(q, "limit", default=20, low=1, high=200)
                 source_filter = str(q.get("source", ["all"])[0] or "all").strip().lower()
                 rows = await self.store.latest_spots(limit=200 if source_filter in {"rbn", "cluster"} else limit)
+                def _row_is_rbn(r) -> bool:
+                    return is_rbn_spot(
+                        str(r["dx_call"] or ""),
+                        str(r["spotter"] or ""),
+                        f"{str(r['info'] or '')} {str(r['raw'] or '')}",
+                    ) or str(r["source_node"] or "").strip().upper() == "RBN"
                 if source_filter in {"rbn", "cluster"}:
                     rows = [
                         r
                         for r in rows
-                        if (is_rbn_spot(str(r["dx_call"] or ""), str(r["spotter"] or ""), str(r["info"] or "")) == (source_filter == "rbn"))
+                        if (_row_is_rbn(r) == (source_filter == "rbn"))
                     ][:limit]
                 dataset_status = self._dataset_status().get("cty", {})
                 body = [
@@ -6513,7 +6519,7 @@ if (restoreWebSession()) {
                         "info": r["info"],
                         "spotter": r["spotter"],
                         "source_node": r["source_node"],
-                        "is_rbn": is_rbn_spot(str(r["dx_call"] or ""), str(r["spotter"] or ""), str(r["info"] or "")),
+                        "is_rbn": _row_is_rbn(r),
                         "dx_review": _spot_call_review(str(r["dx_call"] or ""), dataset_status),
                         "spotter_review": _spot_call_review(str(r["spotter"] or ""), dataset_status),
                     }

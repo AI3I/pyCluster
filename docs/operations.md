@@ -173,6 +173,8 @@ Installed jail names:
 - `pycluster-web-auth`
 - `pycluster-telnet-scanner`
 
+The core jail and pyCluster account state both use a five-failure threshold. Account failure state is scoped to the exact callsign-SSID supplied at login.
+
 Useful checks:
 
 ```bash

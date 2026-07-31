@@ -28,7 +28,7 @@ def test_fail2ban_scanner_jail_and_install_hooks_exist() -> None:
     assert "findtime = 2m" in scanner_jail
     assert "bantime = 24h" in scanner_jail
 
-    assert "maxretry = 4" in core_jail
+    assert "maxretry = 5" in core_jail
     assert "findtime = 5m" in core_jail
     assert "bantime = 2h" in core_jail
     assert "<F-USER>" in core_filter

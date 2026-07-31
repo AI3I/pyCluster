@@ -48,6 +48,8 @@ Installed jail names:
 - `pycluster-web-auth`
 - `pycluster-telnet-scanner`
 
+The core authentication jail uses five failed attempts, matching pyCluster's durable account-lock threshold. Failed-password counters and locks are recorded against the exact callsign-SSID being authenticated; a failure for one SSID does not lock its base call or sibling SSIDs.
+
 ## Auth Failure Logging
 
 pyCluster emits structured auth-failure lines suitable for `fail2ban`.

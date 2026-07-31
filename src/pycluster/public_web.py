@@ -409,29 +409,32 @@ class PublicWebServer:
             LOG.exception("public web account lock notice failed call=%s email=%s", call, email)
 
     async def _record_public_password_failure(self, call: str, headers: dict[str, str]) -> int:
-        base_call = call.split("-", 1)[0].upper()
+        target = call.upper()
         now = int(time.time())
-        raw_count = await self.store.get_user_pref(base_call, "failed_password_count")
+        raw_count = await self.store.get_user_pref(target, "failed_password_count")
         try:
             count = int(str(raw_count or "0").strip() or "0") + 1
         except ValueError:
             count = 1
-        await self.store.set_user_pref(base_call, "failed_password_count", str(count), now)
+        await self.store.set_user_pref(target, "failed_password_count", str(count), now)
         if count >= 5:
-            await self.store.upsert_user_registry(base_call, now)
-            already_locked = str(await self.store.get_user_pref(base_call, "registration_state") or "").strip().lower() == "locked"
-            await self.store.set_user_pref(base_call, "registration_state", "locked", now)
-            await self.store.set_user_pref(base_call, "failed_password_locked_epoch", str(now), now)
+            await self.store.upsert_user_registry(target, now)
+            already_locked = str(await self.store.get_user_pref(target, "registration_state") or "").strip().lower() == "locked"
+            await self.store.set_user_pref(target, "registration_state", "locked", now)
+            await self.store.set_user_pref(target, "failed_password_locked_epoch", str(now), now)
             if not already_locked:
-                await self._send_account_locked_notice(base_call, await self._email_for_call(base_call), headers)
+                await self._send_account_locked_notice(target, await self._email_for_call(target), headers)
         return count
 
     async def _clear_password_lock(self, call: str) -> None:
         target = call.upper()
+        base = target.split("-", 1)[0]
         now = int(time.time())
         await mark_email_verified(self.store, target, now_epoch=now)
         await self.store.delete_user_pref(target, "failed_password_count")
         await self.store.delete_user_pref(target, "failed_password_locked_epoch")
+        await self.store.delete_user_pref(base, "failed_password_count")
+        await self.store.delete_user_pref(base, "failed_password_locked_epoch")
 
     async def _sysop_notification_emails(self) -> list[str]:
         rows = await self.store.list_user_registry(limit=200, privilege="sysop")
@@ -792,6 +795,11 @@ class PublicWebServer:
         auth = headers.get("authorization", "").strip()
         if not tok and auth.lower().startswith("bearer "):
             tok = auth[7:].strip()
+        return self._web_call_from_token(tok)
+
+    def _web_call_from_token(self, tok: str) -> str | None:
+        self._cleanup_web_sessions()
+        tok = str(tok or "").strip()
         if not tok:
             return None
         row = self._web_sessions.get(tok)
@@ -931,7 +939,7 @@ class PublicWebServer:
         writer.write(bytes(header) + payload)
         await writer.drain()
 
-    async def _handle_ws(self, headers: dict[str, str], writer: asyncio.StreamWriter) -> None:
+    async def _handle_ws(self, headers: dict[str, str], writer: asyncio.StreamWriter, *, call: str = "") -> None:
         key = headers.get("sec-websocket-key", "").strip()
         if not key:
             await self._write_response(writer, 400, self._json({"error": "missing websocket key"}))
@@ -960,7 +968,9 @@ class PublicWebServer:
                         marker = (int(row["epoch"]), str(row["raw"] or ""))
                         if marker != last_seen:
                             last_seen = marker
-                            await self._write_ws_text(writer, json.dumps(self._spot_payload(row), separators=(",", ":")))
+                            spot = self._spot_payload(row)
+                            if await self._spot_visible_for_public_call(call, spot):
+                                await self._write_ws_text(writer, json.dumps(spot, separators=(",", ":")))
                     await asyncio.sleep(2.0)
             finally:
                 await self._close_writer(writer)
@@ -989,6 +999,7 @@ class PublicWebServer:
         dx_call = str(row["dx_call"] or "")
         spotter = display_call(str(row["spotter"] or ""))
         source_node = str(row["source_node"] or "")
+        raw = str(row["raw"] or "")
         stamp = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).isoformat()
         dx_ent = lookup(dx_call) if self._cty_loaded else None
         if dx_ent is None and self._wpx_loaded:
@@ -996,7 +1007,7 @@ class PublicWebServer:
         sp_ent = lookup(spotter) if self._cty_loaded else None
         if sp_ent is None and self._wpx_loaded:
             sp_ent = wpx_lookup(spotter)
-        is_rbn = is_rbn_spot(dx_call, spotter, comment) or source_node.strip().upper() == "RBN"
+        is_rbn = is_rbn_spot(dx_call, spotter, f"{comment} {raw}") or source_node.strip().upper() == "RBN"
         return {
             "time": stamp,
             "freq": freq,
@@ -1290,6 +1301,13 @@ class PublicWebServer:
             is_rbn=bool(spot.get("is_rbn")),
         )
 
+    async def _spot_visible_for_public_call(self, call: str, spot: dict[str, object]) -> bool:
+        if not await self._spot_passes_public_policy(call, spot):
+            return False
+        if call and not await self._spot_passes_stored_filters(call, spot):
+            return False
+        return True
+
     @staticmethod
     def _parse_zone_spec(text: str, low: int, high: int) -> set[int]:
         zones: set[int] = set()
@@ -1339,17 +1357,7 @@ class PublicWebServer:
                 or search in str(r["spotter"]).lower()
                 or search in str(r["comment"]).lower()
             ]
-        filtered_policy = []
-        for spot in payload:
-            if await self._spot_passes_public_policy(call, spot):
-                filtered_policy.append(spot)
-        payload = filtered_policy
-        if call:
-            filtered = []
-            for spot in payload:
-                if await self._spot_passes_stored_filters(call, spot):
-                    filtered.append(spot)
-            payload = filtered
+        payload = [spot for spot in payload if await self._spot_visible_for_public_call(call, spot)]
         return payload[:limit]
 
     async def _api_bulletins(self, q: dict[str, list[str]]) -> list[dict[str, object]]:
@@ -1377,11 +1385,17 @@ class PublicWebServer:
             )
         return out
 
-    async def _api_stats(self, q: dict[str, list[str]]) -> dict[str, object]:
+    async def _api_stats(self, q: dict[str, list[str]], call: str = "") -> dict[str, object]:
         hours = self._parse_limit(q, "hours", 24, 1, 24)
         cutoff = int((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
         rows = await self.store.spots_since_epoch(cutoff)
-        payload = [self._spot_payload(r) for r in rows if int(r["epoch"]) >= cutoff]
+        payload = [
+            spot
+            for row in rows
+            if int(row["epoch"]) >= cutoff
+            for spot in [self._spot_payload(row)]
+            if await self._spot_visible_for_public_call(call, spot)
+        ]
         bands: dict[str, int] = {}
         modes: dict[str, int] = {}
         entities: set[str] = set()
@@ -1400,7 +1414,7 @@ class PublicWebServer:
         band_rows = [{"band": k, "count": v} for k, v in sorted(bands.items(), key=lambda kv: (-kv[1], kv[0]))]
         mode_rows = [
             {"mode": k, "count": v}
-            for k, v in sorted(modes.items(), key=lambda kv: (mode_rank.get(kv[0], len(self._mode_order)), -kv[1], kv[0]))
+            for k, v in sorted(modes.items(), key=lambda kv: (-kv[1], mode_rank.get(kv[0], len(self._mode_order)), kv[0]))
         ]
         return {
             "hours": hours,
@@ -1412,11 +1426,17 @@ class PublicWebServer:
             "top_mode": mode_rows[0]["mode"] if mode_rows else "",
         }
 
-    async def _api_leaderboard(self, q: dict[str, list[str]]) -> dict[str, object]:
+    async def _api_leaderboard(self, q: dict[str, list[str]], call: str = "") -> dict[str, object]:
         hours = self._parse_limit(q, "hours", 24, 1, 24)
         cutoff = int((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
         rows = await self.store.spots_since_epoch(cutoff)
-        payload = [self._spot_payload(r) for r in rows if int(r["epoch"]) >= cutoff]
+        payload = [
+            spot
+            for row in rows
+            if int(row["epoch"]) >= cutoff
+            for spot in [self._spot_payload(row)]
+            if await self._spot_visible_for_public_call(call, spot)
+        ]
         spotters: dict[str, int] = {}
         dx: dict[str, dict[str, object]] = {}
         entities: dict[str, int] = {}
@@ -1772,7 +1792,8 @@ class PublicWebServer:
                 if method != "GET":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
-                await self._handle_ws(headers, writer)
+                call = self._web_call_from_headers(headers) or self._web_call_from_token((q.get("token") or [""])[0])
+                await self._handle_ws(headers, writer, call=call or "")
                 return
 
             if path == "/health":
@@ -1948,11 +1969,12 @@ class PublicWebServer:
                     self._log_auth_failure(writer, headers, "public-web", call, "registration_required")
                     await self._write_response(writer, 403, self._json({"error": "registration required"}))
                     return
-                lock_state, _lock_verified_epoch, _lock_remaining = await registration_state(self.store, call.split("-", 1)[0].upper())
-                if lock_state == "locked":
-                    self._log_auth_failure(writer, headers, "public-web", call, "account_locked")
-                    await self._write_response(writer, 403, self._json({"error": "account locked; use password reset"}))
-                    return
+                for lock_candidate in (call, call.split("-", 1)[0].upper()):
+                    lock_state, _lock_verified_epoch, _lock_remaining = await registration_state(self.store, lock_candidate)
+                    if lock_state == "locked":
+                        self._log_auth_failure(writer, headers, "public-web", call, "account_locked")
+                        await self._write_response(writer, 403, self._json({"error": "account locked; use password reset"}))
+                        return
                 req = await self.store.get_registration_request(call)
                 req_status = str(req["status"] or "").strip().lower() if req is not None else ""
                 if req_status and req_status != "approved":
@@ -1978,6 +2000,8 @@ class PublicWebServer:
                     return
                 if not is_password_hash(str(expected)):
                     await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
+                await self.store.delete_user_pref(call, "failed_password_count")
+                await self.store.delete_user_pref(call, "failed_password_locked_epoch")
                 await self.store.delete_user_pref(call.split("-", 1)[0].upper(), "failed_password_count")
                 await self.store.delete_user_pref(call.split("-", 1)[0].upper(), "failed_password_locked_epoch")
                 is_sysop = str(reg["privilege"] or "").strip().lower() in {"sysop", "admin"} if reg is not None else False
@@ -2368,13 +2392,13 @@ class PublicWebServer:
                 if method != "GET":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
-                await self._write_response(writer, 200, self._json(await self._api_stats(q)))
+                await self._write_response(writer, 200, self._json(await self._api_stats(q, self._web_call_from_headers(headers) or "")))
                 return
             if path == "/api/leaderboard":
                 if method != "GET":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
-                await self._write_response(writer, 200, self._json(await self._api_leaderboard(q)))
+                await self._write_response(writer, 200, self._json(await self._api_leaderboard(q, self._web_call_from_headers(headers) or "")))
                 return
             if path == "/api/history":
                 if method != "GET":

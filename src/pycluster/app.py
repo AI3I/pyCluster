@@ -351,7 +351,7 @@ class ClusterApp:
         if first in {"all", "*"}:
             return True
         if first == "rbn":
-            if not is_rbn_spot(dx_call, spotter, info):
+            if not self._is_rbn_spot_obj(spot):
                 return False
             return True if not rest else self._spot_matches_filter_expr(spot, rest)
         if first == "on" and rest:
@@ -423,8 +423,17 @@ class ClusterApp:
         return evaluate_spot_entries(
             entries,
             lambda expr: self._spot_matches_filter_expr(spot, expr),
-            is_rbn=is_rbn_spot(spot.dx_call, spot.spotter, spot.info),
+            is_rbn=self._is_rbn_spot_obj(spot),
         )
+
+    @staticmethod
+    def _is_rbn_spot_obj(spot: Spot) -> bool:
+        return is_rbn_spot(spot.dx_call, spot.spotter, f"{spot.info or ''} {spot.raw or ''}")
+
+    @staticmethod
+    def _is_rbn_peer_spot(dx_call: str, spotter: str, info: str, raw_fields: list[str] | None = None) -> bool:
+        raw = "^".join(raw_fields or [])
+        return is_rbn_spot(dx_call, spotter, f"{info or ''} {raw}")
 
     def _peer_pref_key(self, name: str, field: str) -> str:
         slug = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
@@ -564,10 +573,12 @@ class ClusterApp:
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "next_retry_epoch"), "0", now)
         await self.store.delete_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_error"))
         await self._record_outbound_peer_login(name, clean_dsn, profile, now)
-        if wire_profile in {"spider", "dxspider", "pycluster"}:
+        send_app_pc18 = wire_profile in {"spider", "dxspider", "pycluster"} and not clean_dsn.strip().lower().startswith("dxspider://")
+        if send_app_pc18:
             pc18 = parse_wire_pc_frame(dxspider_compat_pc18())
             if pc18 is not None:
                 await self.node_link.send(name, pc18)
+        if wire_profile in {"spider", "dxspider", "pycluster"}:
             await self.node_link.send(name, WirePcFrame("PC20", [""]))
         if dsn.strip().lower().startswith("dxspider://"):
             try:
@@ -1380,7 +1391,7 @@ class ClusterApp:
             if source_node == normalize_call(self.config.node.node_call):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_loop")
                 return
-            if is_rbn_spot(dx_call, spotter, msg.info) and not await self._rbn_ingest_allowed_for_call(peer_name):
+            if self._is_rbn_peer_spot(dx_call, spotter, msg.info, msg.raw_fields) and not await self._rbn_ingest_allowed_for_call(peer_name):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_rbn_disabled")
                 return
             review_reasons = self._spot_review_reasons(dx_call, spotter)
@@ -1453,7 +1464,7 @@ class ClusterApp:
             if source_node == normalize_call(self.config.node.node_call):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_loop")
                 return
-            if is_rbn_spot(dx_call, spotter, msg.info) and not await self._rbn_ingest_allowed_for_call(peer_name):
+            if self._is_rbn_peer_spot(dx_call, spotter, msg.info, msg.raw_fields) and not await self._rbn_ingest_allowed_for_call(peer_name):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_rbn_disabled")
                 return
             review_reasons = self._spot_review_reasons(dx_call, spotter)

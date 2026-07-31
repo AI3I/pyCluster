@@ -2,7 +2,7 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## 1.0.11 - 2026-07-17
+## 1.0.11 - 2026-07-31
 
 ### Added
 
@@ -15,7 +15,9 @@ All notable changes to pyCluster should be recorded here.
 ### Changed
 
 - Direct RBN feed ingestion now batches accepted spots, yields during burst fanout, and caps live RBN aggregation state to reduce freeze and memory-growth risk on busy feeds.
+- Live telnet RBN summaries collect reports for ten seconds, combine frequencies within 0.5 kHz, cap quality at `Q:9`, merge CQ zones, and suppress the same call/frequency/mode respot for three minutes.
 - Filtered `show/mydx` scans deeper durable spot history before reporting no matches, improving behavior when recent RBN or nonmatching traffic dominates the latest rows.
+- Core authentication and the shipped fail2ban core jail now use the same five-failure account-lock threshold.
 
 ### Fixed
 
@@ -25,10 +27,15 @@ All notable changes to pyCluster should be recorded here.
 - Locked exact callsign-SSID accounts are rejected before password or MFA prompts.
 - Outbound PC92 path sanitization and PC61 spot relay now use detected global interface addresses as a runtime fallback when public IP fields are blank, avoiding `localhost` or private-address protocol payloads on nodes that have not saved explicit public addresses.
 - Telnet async DX/RBN spot output starts on a fresh line after idle keepalive prompt refreshes.
+- Telnet keepalive writes mark the receiving session's prompt line directly, including callback paths where session-id lookup is unavailable.
 - Telnet first-login email verification keeps live DX/RBN spot delivery suppressed while the user is entering the verification code.
 - Public web spot visibility treats rows sourced from the RBN source node as RBN traffic so anonymous and non-opted-in users do not see them.
+- Public web websocket, spot history, statistics, and leaderboard paths apply the same database-backed RBN preference and filters, including raw PC11/PC61 RBN markers outside the visible comment.
 - DXSpider-facing PC18 handshakes use a DXSpider-compatible software field with a pyCluster marker so DXSpider peers can accept and log the version identity.
+- Outbound `dxspider://` startup no longer sends a duplicate application PC18 after the transport handshake has already supplied the compatible identity response.
 - Public web and telnet MFA state now stays scoped to the exact logged-in callsign or SSID instead of inheriting or modifying base/sibling MFA settings.
+- Fresh callsign-SSIDs without an exact registry record no longer inherit a base account's email merely because global MFA is enabled.
+- Failed-password counters and account locks apply to the exact callsign-SSID being authenticated and are cleared consistently after successful login or reset.
 - Disabling authenticator MFA with `unset/totp` now turns off the email OTP fallback for that exact account.
 - Public web authenticator verification keeps email OTP enabled as fallback and reports that state in the System Operator user record.
 

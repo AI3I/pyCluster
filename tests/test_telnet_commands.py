@@ -2178,6 +2178,43 @@ def test_publish_spot_starts_new_line_after_keepalive_prompt(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_readline_keepalive_marks_prompt_open_for_writer(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "readline_keepalive_prompt_writer.db")
+        cfg = _mk_config(db)
+        cfg.telnet.keepalive_interval_seconds = 0.01  # type: ignore[assignment]
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        reader = asyncio.StreamReader()
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(call="N0CALL", writer=writer, connected_at=datetime.now(timezone.utc))
+        try:
+            task = asyncio.create_task(
+                srv._readline(
+                    reader,
+                    writer,
+                    idle_keepalive=True,
+                    idle_keepalive_text=lambda: srv._prompt("N0CALL"),
+                )
+            )
+            await asyncio.sleep(0.03)
+            assert srv._sessions[1].prompt_line_open is True
+
+            await srv.publish_spot(
+                Spot(14074.0, "AI3I-90", int(datetime.now(timezone.utc).timestamp()), "FT8", "AI3I-91", "AI3I-15", "")
+            )
+            out = bytes(writer.buffer).decode("utf-8", "replace")
+            assert "> \r\nDX de AI3I:" in out
+            reader.feed_data(b"\r")
+            assert await asyncio.wait_for(task, timeout=1.0) == ""
+        finally:
+            if not task.done():
+                task.cancel()
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_publish_spot_suppressed_during_registration_interview(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "publish_spot_registration_suppressed.db")
@@ -2880,6 +2917,27 @@ def test_live_rbn_group_queue_is_bounded(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_live_rbn_recent_summary_cache_is_bounded(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "live_rbn_recent_cap.db")
+        store = SpotStore(db)
+        srv = TelnetClusterServer(_mk_config(db), store, datetime.now(timezone.utc))
+        srv._rbn_live_group_limit = 10
+        try:
+            srv._rbn_live_recent = {
+                (1, 140000 + idx, f"AI3I-{90 + (idx % 10)}", "CW"): float(idx)
+                for idx in range(25)
+            }
+            srv._prune_rbn_live_recent(25.0)
+
+            assert len(srv._rbn_live_recent) == 10
+            assert min(srv._rbn_live_recent.values()) == 15.0
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_live_rbn_summarized_upstream_reports_are_collapsed(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "live_rbn_summary_collapse.db")
@@ -2906,8 +2964,55 @@ def test_live_rbn_summarized_upstream_reports_are_collapsed(tmp_path) -> None:
             assert delivered == 1
             assert live.count("N9JR") == 1
             assert "21 WPM CQ" not in live
-            assert "Q:15*" in live
+            assert "Q:9*" in live
         finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_live_rbn_waits_for_full_dwell_and_suppresses_late_respot(tmp_path, monkeypatch) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "live_rbn_staggered.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(call="AI3I-99", writer=writer, connected_at=datetime.now(timezone.utc))
+        clock = [100.0]
+        monkeypatch.setattr("pycluster.telnet_server.time.monotonic", lambda: clock[0])
+        try:
+            now = int(datetime(2026, 7, 8, 18, 36, tzinfo=timezone.utc).timestamp())
+            await srv._execute_command("AI3I-99", "set/rbn")
+            before = len(writer.buffer)
+
+            await srv.publish_spot(Spot(14005.4, "N9JR", now, "CW 8dB Q:6* Z:5", "NU4F-#", "RBN", ""))
+            clock[0] = 104.0
+            await srv.publish_spot(Spot(14005.6, "N9JR", now + 4, "CW 15dB Q:5* Z:4", "K4PP-#", "RBN", ""))
+            assert await srv._flush_rbn_live_queue(force=False) == 0
+
+            clock[0] = 110.0
+            assert await srv._flush_rbn_live_queue(force=False) == 1
+            live = bytes(writer.buffer[before:]).decode("utf-8", "replace")
+            assert live.count("N9JR") == 1
+            assert "Q:9*" in live
+            assert "Z:4,5" in live
+
+            clock[0] = 111.0
+            await srv.publish_spot(Spot(14005.5, "N9JR", now + 11, "CW 23dB Q:3 Z:3", "K5TR-#", "RBN", ""))
+            assert await srv._flush_rbn_live_queue() == 0
+            assert bytes(writer.buffer[before:]).decode("utf-8", "replace").count("N9JR") == 1
+            assert srv._rbn_live_recent
+            srv._clear_rbn_live_session(1)
+            assert not srv._rbn_live_recent
+            assert not srv._rbn_live_groups
+        finally:
+            if srv._rbn_live_flush_task:
+                srv._rbn_live_flush_task.cancel()
+                try:
+                    await srv._rbn_live_flush_task
+                except asyncio.CancelledError:
+                    pass
             await store.close()
 
     asyncio.run(run())
@@ -5646,6 +5751,29 @@ def test_global_mfa_default_waits_for_user_mfa_material(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_global_mfa_default_does_not_treat_fresh_ssid_as_base_account(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_mfa_fresh_ssid_no_base_email.db")
+        cfg = _mk_config(db)
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("N9JR", now, privilege="user", email="n9jr@example.test")
+
+            assert await srv._mfa_required_for_call("N9JR", is_sysop=False) is True
+            assert await srv._mfa_required_for_call("N9JR-13", is_sysop=False) is False
+
+            await store.upsert_user_registry("N9JR-13", now, privilege="user", email="")
+            assert await srv._mfa_required_for_call("N9JR-13", is_sysop=False) is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_sysop_peer_commands_cover_accounts_and_saved_peers(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "sysop_peer_commands.db")
@@ -6677,14 +6805,15 @@ def test_telnet_failed_password_counter_sets_locked_state(tmp_path) -> None:
             for _idx in range(5):
                 await srv._record_telnet_password_failure("N0CALL-1", ("203.0.113.10", 50000))
 
-            assert await store.get_user_pref("N0CALL", "registration_state") == "locked"
-            assert await store.get_user_pref("N0CALL", "failed_password_count") == "5"
-            row = await store.get_user_registry("N0CALL")
+            assert await store.get_user_pref("N0CALL-1", "registration_state") == "locked"
+            assert await store.get_user_pref("N0CALL-1", "failed_password_count") == "5"
+            assert await store.get_user_pref("N0CALL", "registration_state") is None
+            row = await store.get_user_registry("N0CALL-1")
             assert row is not None
 
             await srv._clear_telnet_password_failures("N0CALL-1")
-            assert await store.get_user_pref("N0CALL", "failed_password_count") is None
-            assert await store.get_user_pref("N0CALL", "failed_password_locked_epoch") is None
+            assert await store.get_user_pref("N0CALL-1", "failed_password_count") is None
+            assert await store.get_user_pref("N0CALL-1", "failed_password_locked_epoch") is None
         finally:
             await store.close()
 

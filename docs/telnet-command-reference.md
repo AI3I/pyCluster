@@ -183,7 +183,7 @@ RBN live delivery is off for telnet users by default. Use `set/rbn` to opt in to
 
 Logged-in public web spot views use the same database-backed RBN preference and filter state: `unset/rbn` hides RBN/Skimmer spots there as well, while `set/rbn` plus `accept/rbn` or `reject/rbn` controls which RBN spots pass.
 
-RBN display is summarized into compact skimmer-style text such as `CW 8dB Q:9* Z:3,4,5`, where `Q` is the number of contributing skimmer reports and `Z` lists observed CQ zones.
+RBN display is summarized into compact skimmer-style text such as `CW 8dB Q:9* Z:3,4,5`, where `Q` is the bounded report quality and `Z` lists observed CQ zones. Live reports collect for ten seconds, combine the same call and mode within 0.5 kHz, and suppress equivalent respots for three minutes.
 
 ## Registration
 

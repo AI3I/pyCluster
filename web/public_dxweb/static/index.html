@@ -2100,7 +2100,7 @@ const POST_CHAT = '/api/chat';
 const POST_ANNOUNCE = '/api/announce';
 const POST_WX = '/api/wx';
 const POST_WWV = '/api/wwv';
-const WS_URL = `${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
+const WS_BASE_URL = `${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
 const WEB_SESSION_KEY = 'pycluster-public-session';
 
 const BAND_COLORS = {
@@ -4156,7 +4156,7 @@ function showToast(spot) {
 // ================================================================ Stats
 async function loadStats() {
   try {
-    liveStats = await fetch(`${STATS}?hours=${timeRangeHrs}`).then(r=>r.json());
+    liveStats = await webJson(`${STATS}?hours=${timeRangeHrs}`, {authOptional:true});
   } catch {
     liveStats = null;
   }
@@ -4166,7 +4166,7 @@ async function loadStats() {
 // ================================================================ Leaderboard
 async function loadLeaderboard() {
   try {
-    leaderboardData = await fetch(`${LEADER}?hours=${statsHrs}`).then(r=>r.json());
+    leaderboardData = await webJson(`${LEADER}?hours=${statsHrs}`, {authOptional:true});
     renderSidebar();
     drawHdrSparkline();
     renderBandOpenings(leaderboardData.band_hour);
@@ -4904,7 +4904,8 @@ function mergeSpotBatch(batch) {
 
 // ================================================================ WebSocket
 function connectWS() {
-  const ws = new WebSocket(WS_URL);
+  const wsUrl = webToken ? `${WS_BASE_URL}?token=${encodeURIComponent(webToken)}` : WS_BASE_URL;
+  const ws = new WebSocket(wsUrl);
   ws.addEventListener('open', () => {
     document.getElementById('live-dot').classList.remove('dead');
     const ping = setInterval(() => { if (ws.readyState===WebSocket.OPEN) ws.send('ping'); else clearInterval(ping); }, 30000);

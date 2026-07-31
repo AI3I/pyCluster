@@ -137,16 +137,11 @@ def test_connect_peer_sends_legacy_dxspider_init_frames(tmp_path) -> None:
             assert str(row["last_login_peer"]) == "node-link outbound dxspider host dxspider.ai3i.net:7300"
             assert await app.store.get_user_pref("AI3I-15", "node_family") == "dxspider"
             node_call = app.config.node.node_call.upper()
-            assert [frame.pc_type for _, frame in sent] == ["PC18", "PC20", "PC19", "PC16", "PC22"]
-            assert sent[0][1].payload_fields == [
-                f"DXSpider Version: {DXSPIDER_COMPAT_VERSION} Build: 0 Git: pycluster/{__version__} pc9x",
-                "5457",
-                "",
-            ]
-            assert sent[1][1].payload_fields == [""]
-            assert sent[2][1].payload_fields == ["1", node_call, "0", "5457", "H1", ""]
-            assert sent[3][1].payload_fields == [node_call, "AI3I - 1", "H1", ""]
-            assert sent[4][1].payload_fields == [""]
+            assert [frame.pc_type for _, frame in sent] == ["PC20", "PC19", "PC16", "PC22"]
+            assert sent[0][1].payload_fields == [""]
+            assert sent[1][1].payload_fields == ["1", node_call, "0", "5457", "H1", ""]
+            assert sent[2][1].payload_fields == [node_call, "AI3I - 1", "H1", ""]
+            assert sent[3][1].payload_fields == [""]
         finally:
             await app.store.close()
 
@@ -382,7 +377,7 @@ def test_reconnect_once_reattaches_persisted_peer_and_tracks_backoff(tmp_path) -
                     "spider",
                 )
             ]
-            assert [frame.pc_type for _, frame in sent] == ["PC18", "PC20", "PC19", "PC16", "PC22"]
+            assert [frame.pc_type for _, frame in sent] == ["PC20", "PC19", "PC16", "PC22"]
 
             async def _fail(_name: str, _dsn: str, profile: str = "spider") -> None:
                 raise RuntimeError("boom")
@@ -504,7 +499,7 @@ def test_peer_password_is_stored_separately_from_dsn_and_injected_on_connect(tmp
                     "spider",
                 )
             ]
-            assert [frame.pc_type for _, frame in sent[:2]] == ["PC18", "PC20"]
+            assert [frame.pc_type for _, frame in sent[:2]] == ["PC20", "PC19"]
         finally:
             await app.store.close()
 
@@ -616,6 +611,29 @@ def test_ingest_pc61_drops_rbn_spots_when_peer_rbn_access_disabled(tmp_path) -> 
             await app.store.set_user_pref("PEER1", "access.telnet.rbn", "on", now)
             await app._handle_node_link_item("PEER1", WirePcFrame("PC61", rbn_msg.to_fields()), rbn_msg)
             assert await app.store.count_spots() == 1
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_pc61_drops_rbn_spots_when_rbn_flag_is_in_trailer(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc61_rbn_trailer_access.db")
+        cfg = _mk_config(db)
+        cfg.rbn.enabled = True
+        app = ClusterApp(cfg)
+        try:
+            app.node_link._peers["PEER1"] = LinkPeer(name="PEER1", conn=_DummyConn(), inbound=False)
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref("PEER1", "access.telnet.rbn", "off", now)
+            rbn_msg = Pc61Message.from_fields(
+                ["50313.0", "AI3I-90", "26-Jul-2026", "2018Z", "FT8", "AI3I-91", "AI3I-15", "127.0.0.1", "H1", "RBN"]
+            )
+            await app._handle_node_link_item("PEER1", WirePcFrame("PC61", rbn_msg.to_fields()), rbn_msg)
+            stats = await app.node_link.stats()
+            assert await app.store.count_spots() == 0
+            assert stats["PEER1"]["policy_reasons"]["ingest_rbn_disabled"] == 1
         finally:
             await app.store.close()
 
