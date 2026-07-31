@@ -294,7 +294,7 @@ RBN live delivery is opt-in for telnet users. Run `set/rbn` when you want RBN/Sk
 
 Legacy rules such as `accept/spots 1 rbn call N9JR` are interpreted as RBN-scoped rules. When any RBN-scoped rule exists, ordinary `accept/spots ... by ...` rules do not open the full automated RBN stream; general reject rules still apply to both sources.
 
-RBN output is summarized before display. Instead of listing every raw Skimmer line, pyCluster shows mode, signal level, skimmer count, and CQ-zone summary in a compact form such as `CW 8dB Q:9* Z:3,4,5`.
+RBN output is summarized before display. Instead of listing every raw Skimmer line, pyCluster collects matching live reports for ten seconds and shows mode, signal level, skimmer count, and CQ-zone summary in a compact form such as `CW 8dB Q:9* Z:3,4,5`. Reports for the same call and mode within 0.5 kHz are combined, quality is capped at `Q:9`, and the same summarized call/frequency/mode is not emitted again for three minutes. Aggregation state is bounded and discarded when the telnet session closes.
 
 When the node operator configures a direct RBN-enabled telnet feed, pyCluster can also ingest those Skimmer reports locally. The public RBN relays are `telnet.reversebeacon.net:7000` for CW/RTTY and `telnet.reversebeacon.net:7001` for FT8; configure both with named feeds such as `CW/RTTY,telnet.reversebeacon.net,7000` and `FT8,telnet.reversebeacon.net,7001` in SysOp, or with `feeds` in config. If no direct feed is configured, RBN spots can still arrive through linked cluster peers that relay them.
 

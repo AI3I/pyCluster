@@ -91,18 +91,19 @@ Current development release: `1.0.11`
 
 Recent highlights in `1.0.11`:
 
-- RBN feed ingestion has additional burst protection with batched spot storage and bounded live aggregation
+- RBN feed ingestion has burst protection with batched storage and bounded ten-second live aggregation, nearby-frequency grouping, and respot suppression
 - System Operator user management includes a locked-account view alongside blocked users
 - telnet registration requests stay in the approval queue until a SysOp approves them, avoiding premature account creation
 - deleted/denied user records clean up stale registration and MFA state before a callsign-SSID can be reused
 - filtered `show/mydx` searches deeper durable spot history under high-volume RBN conditions
 - RBN/Skimmer spots can be identified, filtered, summarized with `show/rbn`, and ingested from an optional direct telnet feed
 - telnet RBN delivery is user opt-in with `set/rbn`, while `show/dx` stays focused on traditional DX spots
+- public websocket, spot, statistics, and leaderboard views apply the same database-backed RBN preference and filters
 - public web filters persist to the shared backend filter table used by telnet
 - Skimmer spotter suffixes such as `-#` are accepted when storing received RBN-style spots
 - public web and telnet self-registration validate ham-style callsigns before creating registration records
 - telnet self-registration verifies email before sysop approval when SMTP is configured, and expired verification codes tell the user to rerun `REGISTER`
-- node-link peers receive fresh PC18 identity advertisements on outbound reconnects
+- node-link peers receive fresh PC18 identity advertisements on outbound reconnects without duplicating the DXSpider transport handshake
 - upgrade and repair paths protect runtime string catalogs by backing up invalid `strings.toml` files and restoring bundled defaults
 
 ## 🖥️ Interfaces

@@ -19,6 +19,8 @@ System Operator console:
 - registration requests validate the callsign before creating registry or review-queue records
 - RBN visibility is controlled through the same access matrix and stored user preferences used elsewhere
 - spots sourced from the configured RBN source node are treated as RBN traffic even when the comment text does not include a Skimmer-style marker
+- raw PC11/PC61 RBN markers are honored even when the visible spot comment contains only a mode such as FT8
+- authenticated websocket updates, spot history, statistics, and leaderboards all apply the same stored RBN preference and accept/reject filters
 
 Browser storage is used only as a convenience cache or for anonymous,
 not-yet-authenticated UI state such as display toggles and temporary map/QTH

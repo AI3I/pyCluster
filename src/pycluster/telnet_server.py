@@ -310,9 +310,12 @@ class TelnetClusterServer:
         self._smtp = SMTPMailer(self.config.smtp)
         self._mfa = EmailOtpManager(self.config.mfa, self._smtp.send_code, store)
         self._telnet_option_seen: set[int] = set()
-        self._rbn_live_groups: dict[tuple[int, int, int, str, str], dict[str, object]] = {}
+        self._rbn_live_groups: dict[tuple[int, int, str, str], dict[str, object]] = {}
+        self._rbn_live_recent: dict[tuple[int, int, str, str], float] = {}
         self._rbn_live_flush_task: asyncio.Task[None] | None = None
-        self._rbn_live_dwell_seconds = 2.0
+        self._rbn_live_dwell_seconds = 10.0
+        self._rbn_live_respot_seconds = 180.0
+        self._rbn_live_freq_tolerance_tenths = 5
         self._rbn_live_group_limit = 5000
         self._cty_loaded = False
         self._wpx_loaded = False
@@ -639,22 +642,25 @@ class TelnetClusterServer:
         log_auth_failure(LOG, channel, self._peer_host(peer), self._auth_log_call(call), reason)
 
     async def _record_telnet_password_failure(self, call: str, peer) -> None:
-        base_call = call.split("-", 1)[0].upper()
+        target = call.upper()
         now = int(datetime.now(timezone.utc).timestamp())
-        raw_count = await self.store.get_user_pref(base_call, "failed_password_count")
+        raw_count = await self.store.get_user_pref(target, "failed_password_count")
         try:
             count = int(str(raw_count or "0").strip() or "0") + 1
         except ValueError:
             count = 1
-        await self.store.set_user_pref(base_call, "failed_password_count", str(count), now)
+        await self.store.set_user_pref(target, "failed_password_count", str(count), now)
         if count >= _AUTH_FAILURE_LOCK_THRESHOLD:
-            await self.store.upsert_user_registry(base_call, now)
-            await self.store.set_user_pref(base_call, "registration_state", "locked", now)
-            await self.store.set_user_pref(base_call, "failed_password_locked_epoch", str(now), now)
+            await self.store.upsert_user_registry(target, now)
+            await self.store.set_user_pref(target, "registration_state", "locked", now)
+            await self.store.set_user_pref(target, "failed_password_locked_epoch", str(now), now)
             self._log_auth_failure("telnet", peer, call, "account_locked_failed_password")
 
     async def _clear_telnet_password_failures(self, call: str) -> None:
+        target = call.upper()
         base_call = call.split("-", 1)[0].upper()
+        await self.store.delete_user_pref(target, "failed_password_count")
+        await self.store.delete_user_pref(target, "failed_password_locked_epoch")
         await self.store.delete_user_pref(base_call, "failed_password_count")
         await self.store.delete_user_pref(base_call, "failed_password_locked_epoch")
 
@@ -962,6 +968,7 @@ class TelnetClusterServer:
             except Exception:
                 pass
             self._sessions.pop(sid, None)
+            self._clear_rbn_live_session(sid)
             closed += 1
         return closed
 
@@ -1189,10 +1196,49 @@ class TelnetClusterServer:
         zones = [zone] if zone is not None else rbn_zones(info)
         return rbn_summary_info(rbn_mode(info), rbn_db(info), rbn_quality(info) or 1, zones)
 
-    def _rbn_live_group_key(self, session_id: int, spot: Spot) -> tuple[int, int, int, str, str]:
-        minute_epoch = int(spot.epoch) - (int(spot.epoch) % 300)
-        freq_bucket = int(round(float(spot.freq_khz)))
-        return (session_id, minute_epoch, freq_bucket, normalize_call(spot.dx_call), rbn_mode(spot.info))
+    def _matching_rbn_live_key(
+        self,
+        keys,
+        session_id: int,
+        spot: Spot,
+    ) -> tuple[int, int, str, str] | None:
+        freq_tenths = int(round(float(spot.freq_khz) * 10))
+        dx_call = normalize_call(spot.dx_call)
+        mode = rbn_mode(spot.info)
+        matches = [
+            key
+            for key in keys
+            if key[0] == session_id
+            and key[2] == dx_call
+            and key[3] == mode
+            and abs(key[1] - freq_tenths) <= self._rbn_live_freq_tolerance_tenths
+        ]
+        return min(matches, key=lambda key: abs(key[1] - freq_tenths)) if matches else None
+
+    def _rbn_live_group_key(self, session_id: int, spot: Spot) -> tuple[int, int, str, str]:
+        matching = self._matching_rbn_live_key(self._rbn_live_groups, session_id, spot)
+        if matching is not None:
+            return matching
+        return (
+            session_id,
+            int(round(float(spot.freq_khz) * 10)),
+            normalize_call(spot.dx_call),
+            rbn_mode(spot.info),
+        )
+
+    def _prune_rbn_live_recent(self, now_monotonic: float) -> None:
+        cutoff = now_monotonic - self._rbn_live_respot_seconds
+        for key in [key for key, emitted_at in self._rbn_live_recent.items() if emitted_at < cutoff]:
+            self._rbn_live_recent.pop(key, None)
+        overflow = len(self._rbn_live_recent) - self._rbn_live_group_limit
+        if overflow > 0:
+            for key in sorted(self._rbn_live_recent, key=self._rbn_live_recent.get)[:overflow]:
+                self._rbn_live_recent.pop(key, None)
+
+    def _clear_rbn_live_session(self, session_id: int) -> None:
+        for groups in (self._rbn_live_groups, self._rbn_live_recent):
+            for key in [key for key in groups if key[0] == session_id]:
+                groups.pop(key, None)
 
     def _prune_rbn_live_groups(self) -> None:
         if len(self._rbn_live_groups) < self._rbn_live_group_limit:
@@ -1206,7 +1252,7 @@ class TelnetClusterServer:
         stale_keys = sorted(
             self._rbn_live_groups,
             key=lambda key: (
-                float(self._rbn_live_groups[key].get("updated_monotonic") or 0.0),
+                float(self._rbn_live_groups[key].get("first_monotonic") or 0.0),
                 int(self._rbn_live_groups[key].get("epoch") or 0),
             ),
         )[:overflow]
@@ -1214,6 +1260,10 @@ class TelnetClusterServer:
             self._rbn_live_groups.pop(key, None)
 
     def _queue_rbn_live_spot(self, session_id: int, session: Session, spot: Spot) -> None:
+        now_monotonic = time.monotonic()
+        self._prune_rbn_live_recent(now_monotonic)
+        if self._matching_rbn_live_key(self._rbn_live_recent, session_id, spot) is not None:
+            return
         key = self._rbn_live_group_key(session_id, spot)
         if key not in self._rbn_live_groups:
             self._prune_rbn_live_groups()
@@ -1226,15 +1276,17 @@ class TelnetClusterServer:
                 "mode": rbn_mode(spot.info),
                 "freq_votes": {},
                 "spotters": set(),
+                "quality_by_spotter": {},
                 "zones": set(),
                 "db": None,
                 "q_count": 0,
                 "display_spotter": self._rbn_display_spotter(spot.spotter),
                 "peer_profile": session.peer_profile,
-                "updated_monotonic": time.monotonic(),
+                "first_monotonic": now_monotonic,
+                "updated_monotonic": now_monotonic,
             },
         )
-        group["updated_monotonic"] = time.monotonic()
+        group["updated_monotonic"] = now_monotonic
         freq = round(float(spot.freq_khz), 1)
         freq_votes = group["freq_votes"] if isinstance(group.get("freq_votes"), dict) else {}
         freq_votes[freq] = int(freq_votes.get(freq, 0)) + 1
@@ -1250,7 +1302,14 @@ class TelnetClusterServer:
         for item in rbn_zones(spot.info):
             zones.add(int(item))
         group["zones"] = zones
-        group["q_count"] = int(group.get("q_count") or 0) + max(1, int(rbn_quality(spot.info) or 1))
+        quality_by_spotter = group["quality_by_spotter"] if isinstance(group.get("quality_by_spotter"), dict) else {}
+        normalized_spotter = normalize_call(spot.spotter)
+        quality_by_spotter[normalized_spotter] = max(
+            int(quality_by_spotter.get(normalized_spotter) or 0),
+            max(1, int(rbn_quality(spot.info) or 1)),
+        )
+        group["quality_by_spotter"] = quality_by_spotter
+        group["q_count"] = min(9, sum(int(value) for value in quality_by_spotter.values()))
         db = rbn_db(spot.info)
         current_db = group.get("db")
         if db is not None and (current_db is None or int(db) < int(current_db)):
@@ -1272,7 +1331,7 @@ class TelnetClusterServer:
         now_monotonic = time.monotonic()
         ready_keys = [
             key for key, group in self._rbn_live_groups.items()
-            if force or now_monotonic - float(group.get("updated_monotonic") or 0.0) >= self._rbn_live_dwell_seconds
+            if force or now_monotonic - float(group.get("first_monotonic") or 0.0) >= self._rbn_live_dwell_seconds
         ]
         if not ready_keys:
             if self._rbn_live_flush_task is None or self._rbn_live_flush_task.done():
@@ -1314,6 +1373,14 @@ class TelnetClusterServer:
             await self._write(session.writer, f"{prefix}{line}\r\n")
             session.async_line_open = True
             session.prompt_line_open = False
+            recent_key = (
+                session_id,
+                int(round(float(freq) * 10)),
+                str(group["dx_call"]),
+                str(group.get("mode") or "RBN"),
+            )
+            self._rbn_live_recent[recent_key] = now_monotonic
+            self._prune_rbn_live_recent(now_monotonic)
             delivered += 1
         if self._rbn_live_groups and (self._rbn_live_flush_task is None or self._rbn_live_flush_task.done()):
             self._rbn_live_flush_task = asyncio.create_task(self._rbn_live_flush_later(), name="pycluster-rbn-live-flush")
@@ -1548,6 +1615,7 @@ class TelnetClusterServer:
                                 if inspect.isawaitable(text):
                                     text = await text
                                 await self._write(writer, text)
+                                self._mark_prompt_open_for_writer(writer)
                             else:
                                 writer.write(bytes((self._TELNET_IAC, self._TELNET_NOP)))
                                 await writer.drain()
@@ -1733,6 +1801,13 @@ class TelnetClusterServer:
         await self._write(session.writer, f"{prefix}{await self._prompt(session.call)}")
         session.async_line_open = False
         session.prompt_line_open = True
+
+    def _mark_prompt_open_for_writer(self, writer: asyncio.StreamWriter) -> None:
+        for session in self._sessions.values():
+            if session.writer is writer:
+                session.async_line_open = False
+                session.prompt_line_open = True
+                return
 
     async def _idle_keepalive_prompt(self, call: str) -> str:
         return await self._prompt(call)
@@ -1944,10 +2019,12 @@ class TelnetClusterServer:
             LOG.exception("telnet registration acknowledgement failed call=%s email=%s", call, email)
 
     async def _mfa_required_for_call(self, call: str, *, is_sysop: bool) -> bool:
+        exact = call.upper()
+        exact_row = await self.store.get_user_registry(exact)
         if await self._totp_secret_for_call(call):
             return True
         override = ""
-        raw = await self.store.get_user_pref(call.upper(), "mfa_email_otp")
+        raw = await self.store.get_user_pref(exact, "mfa_email_otp")
         txt = str(raw or "").strip().lower()
         if txt:
             override = txt
@@ -1957,7 +2034,9 @@ class TelnetClusterServer:
             return False
         if not self._mfa.required_for(is_sysop=is_sysop):
             return False
-        return has_valid_email(await self._email_for_call(call.upper()))
+        if "-" in exact and exact_row is None:
+            return False
+        return has_valid_email(await self._email_for_call(exact))
 
     async def _totp_secret_for_call(self, call: str) -> str:
         _target, secret = await self._totp_secret_record_for_call(call)
@@ -11214,6 +11293,7 @@ class TelnetClusterServer:
             finally:
                 self._telnet_option_seen.discard(id(reader))
                 self._sessions.pop(session_id, None)
+                self._clear_rbn_live_session(session_id)
                 if self._on_sessions_changed_fn:
                     await self._on_sessions_changed_fn()
                 if not handoff:

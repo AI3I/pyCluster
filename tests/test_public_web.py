@@ -47,6 +47,14 @@ def test_public_web_static_uses_backend_kp_endpoint() -> None:
     assert "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json" not in text
 
 
+def test_public_web_static_uses_authenticated_live_data_channels() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert "const WS_BASE_URL" in text
+    assert "token=${encodeURIComponent(webToken)}" in text
+    assert "webJson(`${STATS}?hours=${timeRangeHrs}`, {authOptional:true})" in text
+    assert "webJson(`${LEADER}?hours=${statsHrs}`, {authOptional:true})" in text
+
+
 def test_public_web_kp_endpoint_normalizes_seven_day_values(tmp_path, monkeypatch) -> None:
     class _Resp:
         def __enter__(self):
@@ -350,6 +358,29 @@ def test_public_web_stats_and_history_are_not_capped_by_recent_spot_limit(tmp_pa
             assert code == 200
             hist = json.loads(body.decode("utf-8"))
             assert sum(int(day["spots"]) for day in hist) == 250
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_stats_top_mode_uses_count_before_display_order(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_top_mode_count.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            await store.add_spot(Spot(7005.0, "W1AW", now - 10, "CW", "AI3I", "AI3I-15", ""))
+            await store.add_spot(Spot(14074.0, "K1ABC", now - 5, "FT8", "AI3I", "AI3I-15", ""))
+            await store.add_spot(Spot(21074.0, "K1ABD", now - 2, "FT8", "AI3I", "AI3I-15", ""))
+
+            code, _, body = await _http_request(srv, "/api/stats")
+            assert code == 200
+            stats = json.loads(body.decode("utf-8"))
+            assert stats["modes"][:2] == [{"mode": "FT8", "count": 2}, {"mode": "CW", "count": 1}]
+            assert stats["top_mode"] == "FT8"
         finally:
             await store.close()
 
@@ -1539,6 +1570,70 @@ def test_public_web_spots_honor_rbn_filter_family(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_public_web_rbn_detection_uses_raw_protocol_flags(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_rbn_raw_flag.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.add_spot(
+            Spot(
+                50313.0,
+                "AI3I-90",
+                now,
+                "FT8",
+                "AI3I-91",
+                "AI3I-15",
+                "PC61^50313.0^AI3I-90^26-Jul-2026^2018Z^FT8^AI3I-91^AI3I-15^127.0.0.1^H1^RBN",
+            )
+        )
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            rows = await srv._api_spots({"limit": ["10"]})
+            assert rows == []
+
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+            await store.set_user_pref("AI3I", "access.web.rbn", "on", now)
+            await store.set_user_pref("AI3I", "rbn", "on", now)
+            rows = await srv._api_spots({"limit": ["10"]}, "AI3I")
+            assert len(rows) == 1
+            assert rows[0]["dx_call"] == "AI3I-90"
+            assert rows[0]["is_rbn"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_stats_and_leaderboard_hide_rbn_without_public_access(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_stats_rbn_policy.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.add_spot(Spot(14074.0, "AI3I-90", now, "FT8", "AI3I-91", "AI3I-15", ""))
+        await store.add_spot(Spot(7007.0, "AI3I-92", now - 1, "CW 18 dB Q:2 Z:5", "AI3I-93", "AI3I-15", ""))
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            stats = await srv._api_stats({"hours": ["24"]})
+            assert stats["total"] == 1
+            assert stats["top_mode"] == "FT8"
+
+            board = await srv._api_leaderboard({"hours": ["24"]})
+            assert [row["call"] for row in board["dx"]] == ["AI3I-90"]
+
+            await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+            await store.set_user_pref("AI3I", "access.web.rbn", "on", now)
+            await store.set_user_pref("AI3I", "rbn", "on", now)
+            stats = await srv._api_stats({"hours": ["24"]}, "AI3I")
+            assert stats["total"] == 2
+            assert {row["mode"] for row in stats["modes"]} == {"FT8", "CW"}
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_user_can_manage_own_mfa(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_user_mfa_self_service.db")
@@ -2362,6 +2457,51 @@ def test_public_web_bad_passwords_lock_account_and_send_notice(tmp_path) -> None
                 "POST",
                 "/api/auth/login",
                 json.dumps({"call": "AI3I", "password": "secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "account locked; use password reset"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_bad_passwords_lock_exact_ssid_account(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_bad_password_locks_ssid.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.upsert_user_registry("AI3I-90", now, privilege="user", email="ai3i-90@example.test")
+        await store.set_user_pref("AI3I-90", "password", "secret", now)
+        await store.set_user_pref("AI3I-90", "email_verified_epoch", str(now), now)
+        try:
+            for idx in range(5):
+                code, _, _body = await _http_request_ex(
+                    srv,
+                    "POST",
+                    "/api/auth/login",
+                    json.dumps({"call": "AI3I-90", "password": "wrong"}).encode("utf-8"),
+                    {"Content-Type": "application/json", "Host": "cluster.example.test", "X-Forwarded-Proto": "https"},
+                )
+                assert code == (403 if idx == 4 else 401)
+            assert await store.get_user_pref("AI3I-90", "registration_state") == "locked"
+            assert await store.get_user_pref("AI3I-90", "failed_password_count") == "5"
+            assert await store.get_user_pref("AI3I", "registration_state") is None
+            assert sent and sent[0][0] == "ai3i-90@example.test"
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I-90", "password": "secret"}).encode("utf-8"),
                 {"Content-Type": "application/json"},
             )
             assert code == 403

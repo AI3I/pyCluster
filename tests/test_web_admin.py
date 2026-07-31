@@ -867,13 +867,24 @@ def test_api_spots_can_filter_cluster_vs_rbn_sources(tmp_path) -> None:
         try:
             now = int(datetime.now(timezone.utc).timestamp())
             await store.add_spot(Spot(14074.0, "K1ABC", now, "CQ TEST 18 dB", "SKIMMER1", "RBN", ""))
+            await store.add_spot(
+                Spot(
+                    50313.0,
+                    "AI3I-90",
+                    now - 1,
+                    "FT8",
+                    "AI3I-91",
+                    "PEER1",
+                    "PC61^50313.0^AI3I-90^26-Jul-2026^2018Z^FT8^AI3I-91^PEER1^127.0.0.1^H1^RBN",
+                )
+            )
             await store.add_spot(Spot(14075.0, "K1XYZ", now - 1, "FT8", "W1AW", "PEER1", ""))
 
             code, _, body = await _http_request(srv, "GET", "/api/spots?limit=10&source=rbn", headers={"X-Admin-Token": "adm"})
             assert code == 200
             rows = json.loads(body.decode("utf-8"))
-            assert [row["dx_call"] for row in rows] == ["K1ABC"]
-            assert rows[0]["is_rbn"] is True
+            assert [row["dx_call"] for row in rows] == ["K1ABC", "AI3I-90"]
+            assert all(row["is_rbn"] is True for row in rows)
 
             code, _, body = await _http_request(srv, "GET", "/api/spots?limit=10&source=cluster", headers={"X-Admin-Token": "adm"})
             assert code == 200
