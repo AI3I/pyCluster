@@ -9,6 +9,8 @@ require_root
 ensure_base_packages
 ensure_supported_python
 log "repairing pyCluster deployment in $PYCLUSTER_APP_DIR"
+arm_maintenance_failure_recovery
+stop_service
 backup_runtime_snapshot repair-preflight
 ensure_group
 ensure_user
@@ -36,4 +38,5 @@ enable_fail2ban_service
 apply_imported_fail2ban_badips
 wait_for_systemd_active "$PYCLUSTER_SERVICE_NAME" 45 || die "service failed to recover"
 wait_for_systemd_active "$PYCLUSTER_WEB_SERVICE_NAME" 45 || die "web service failed to recover"
+disarm_maintenance_failure_recovery
 log "repair complete"

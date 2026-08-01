@@ -7,7 +7,7 @@ import pytest
 from pycluster.app import ClusterApp
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.node_link import LinkPeer, NodeLinkEngine
-from pycluster.protocol import WirePcFrame, parse_wire_pc_frame, serialize_wire_pc_frame
+from pycluster.protocol import WirePcFrame, parse_wire_pc_frame, parse_wire_protocol_frame, serialize_wire_pc_frame
 
 
 class _ClosedInboundConnection:
@@ -59,6 +59,16 @@ def test_wire_frame_parse_serialize() -> None:
     assert frame is not None
     assert frame.pc_type == "PC92"
     assert frame.payload_fields[0] == "UF3K-1"
+    assert serialize_wire_pc_frame(frame) == raw
+
+
+def test_py_frame_requires_generic_wire_parser() -> None:
+    raw = "PY00^1^HELLO^AI3I-90^1.0.12^py99-error^1785456000"
+    assert parse_wire_pc_frame(raw) is None
+    frame = parse_wire_protocol_frame(raw)
+    assert frame is not None
+    assert frame.pc_type == "PY00"
+    assert frame.payload_fields[2] == "AI3I-90"
     assert serialize_wire_pc_frame(frame) == raw
 
 
@@ -259,7 +269,7 @@ def test_node_link_broadcast_multi_peer_respects_profile_tx_policy() -> None:
             assert await listener.set_peer_profile("peer2", "dxnet") is True
 
             sent = await listener.broadcast(WirePcFrame("PC24", ["OH8X", "1", "H29", ""]))
-            assert sent == 2
+            assert sent == 1
 
             msg1 = await remote1.recv(timeout=1.0)
             assert msg1 is not None

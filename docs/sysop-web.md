@@ -31,6 +31,7 @@ The console is organized into these main views:
 - `Protocol Health`
 - `Operator Tools`
 - `Telemetry`
+- `Taxonomy`
 
 The left sidebar also includes:
 
@@ -53,6 +54,17 @@ breakpoints:
 ## Node Settings
 
 This view controls local node identity and welcome-flow presentation.
+
+Tabs:
+
+- `General`
+- `Authentication`
+- `SMTP`
+- `QRZ Lookup`
+- `Satellite`
+- `RBN`
+- `pyCluster Protocol`
+- `Maintenance`
 
 ### Main Fields
 
@@ -106,7 +118,7 @@ Users can also manage their own MFA from the public web profile popup or from te
 
 Pending registration requests older than 24 hours are highlighted in the Requests view and summarized above the request table. This is a reminder only; approving or denying the request still uses the same explicit System Operator action.
 
-### Mail (SMTP)
+### SMTP
 
 - `SMTP Host`
 - `SMTP Port`
@@ -131,7 +143,7 @@ This section controls:
 - node presentation shown to users
 - branding and contact metadata used by the public-facing web experience
 
-### Reverse Beacon Network
+### RBN
 
 - `Enable RBN Feed`
 - public feed toggles for `CW/RTTY` and `FT8`
@@ -142,6 +154,27 @@ Direct RBN ingestion is disabled by default. When enabled from the disabled stat
 
 RBN spots still respect the per-user and peer access matrix. Telnet users do not receive live RBN spots by default; they opt in with `set/rbn`. `show/rbn` remains available for summarized RBN history.
 
+### QRZ Lookup
+
+This tab configures the optional QRZ XML credentials, API endpoint, and agent string used by `show/qrz`.
+
+### pyCluster Protocol
+
+This tab controls the optional private PY protocol used only between authenticated peers that identify as pyCluster and negotiate compatible capabilities. It contains:
+
+- the global PY enable switch
+- node information and known-node topology sharing
+- health, dataset, RBN, access-policy, clock, and uptime sharing
+- explicit public URL, locator, QTH, and System Operator contact privacy controls
+- the shared metadata preview
+- structured network-notice sharing
+
+The controls are local policy settings. Existing pyCluster links must reconnect to negotiate newly enabled capabilities. Live negotiation state, alerts, and the Known pyCluster Nodes catalog remain under `Protocol Health`.
+
+### Maintenance
+
+The Maintenance action row contains `Save Node Settings`, `Run Cleanup Now`, `Check for Upgrade`, and `Run Upgrade`. Upgrade and repair stop live writers before taking a consistent runtime backup and restore previously active services if maintenance fails.
+
 ## Users
 
 The `Users` view is a browser-first workspace. Click on a user to edit account details. Existing users open in a modal editor, and `New User` opens the same modal for a new account.
@@ -149,6 +182,8 @@ The `Users` view is a browser-first workspace. Click on a user to edit account d
 Browser tabs:
 
 - `Users`
+- `Blocked`
+- `Locked`
 - `Clusters`
 - `System Operators`
 - `Requests`
@@ -333,7 +368,7 @@ This view is intended to make peer operations understandable without dropping in
 
 ## Protocol Health
 
-This view focuses on peer state, alerting, and protocol history.
+This view focuses on live peer state, negotiated protocol metadata, alerting, and protocol history. PY sharing policy and notices are configured under `Node Settings > pyCluster Protocol`.
 
 ### Threshold Fields
 
@@ -357,6 +392,14 @@ This view focuses on peer state, alerting, and protocol history.
 - `Alerts`
 
 ### Main Tables
+
+#### Peer State
+
+Shows link state, health, activity, and negotiated protocol detail for each peer.
+
+#### Known pyCluster Nodes
+
+Lists local, directly observed, and relayed pyCluster node records with version, location, provenance, services, and freshness. These records are reported topology observations, not a central registry.
 
 #### Protocol Alerts
 

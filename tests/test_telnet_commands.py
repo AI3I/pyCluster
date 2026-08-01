@@ -5614,6 +5614,68 @@ def test_user_can_manage_own_mfa_from_telnet(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_mfa_commands_only_mutate_the_exact_ssid(tmp_path) -> None:
+    async def run() -> None:
+        store = SpotStore(str(tmp_path / "telnet_mfa_command_ssid_scope.db"))
+        cfg = _mk_config(str(tmp_path / "telnet_mfa_command_ssid_scope.db"))
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv._sessions[1] = Session(
+            call="AI3I-90",
+            writer=_DummyWriter(),
+            connected_at=datetime.now(timezone.utc),
+            vars={"privilege": "sysop"},
+        )
+        try:
+            await store.upsert_user_registry("AI3I-90", now, privilege="sysop")
+            for call, secret in (
+                ("AI3I", "BASESECRET"),
+                ("AI3I-94", "EXACTSECRET"),
+                ("AI3I-95", "SIBLINGSECRET"),
+            ):
+                await store.upsert_user_registry(call, now, privilege="user", email=f"{call.lower()}@example.test")
+                await store.set_user_pref(call, "mfa_totp_secret", secret, now)
+                await store.set_user_pref(call, "mfa_email_otp", "required", now)
+                await store.save_mfa_challenge(
+                    challenge_id=f"command-{call}",
+                    call=call,
+                    purpose="telnet",
+                    code="123456",
+                    expires_epoch=now + 300,
+                    attempts_left=3,
+                    issued_epoch=now,
+                )
+
+            _, output = await srv._execute_command("AI3I-90", "sysop/clearmfa AI3I-94")
+            assert "MFA reset for AI3I-94" in output
+            assert await store.get_user_pref("AI3I-94", "mfa_totp_secret") is None
+            assert await store.get_user_pref("AI3I-94", "mfa_email_otp") == "off"
+            assert await store.get_mfa_challenge("command-AI3I-94") is None
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == "BASESECRET"
+            assert await store.get_mfa_challenge("command-AI3I") is not None
+            assert await store.get_user_pref("AI3I-95", "mfa_totp_secret") == "SIBLINGSECRET"
+            assert await store.get_mfa_challenge("command-AI3I-95") is not None
+
+            _, output = await srv._execute_command("AI3I-94", "set/mfa authenticator")
+            assert "Authenticator MFA enabled for AI3I-94" in output
+            assert await store.get_user_pref("AI3I-94", "mfa_totp_secret")
+            assert await store.get_mfa_challenge("command-AI3I") is not None
+            assert await store.get_mfa_challenge("command-AI3I-95") is not None
+
+            _, output = await srv._execute_command("AI3I-94", "unset/mfa")
+            assert "MFA disabled for AI3I-94" in output
+            assert await store.get_user_pref("AI3I-94", "mfa_totp_secret") is None
+            assert await store.get_user_pref("AI3I-94", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == "BASESECRET"
+            assert await store.get_mfa_challenge("command-AI3I") is not None
+            assert await store.get_user_pref("AI3I-95", "mfa_totp_secret") == "SIBLINGSECRET"
+            assert await store.get_mfa_challenge("command-AI3I-95") is not None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_ssid_user_manages_own_mfa_without_touching_base_call(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "telnet_ssid_user_mfa_self_service.db")
@@ -5656,7 +5718,7 @@ def test_ssid_user_manages_own_mfa_without_touching_base_call(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_telnet_totp_fallbacks_to_email_after_repeated_bad_codes(tmp_path) -> None:
+def test_telnet_totp_fallback_preserves_authenticator_without_smtp(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "telnet_totp_bad_code_fallback.db")
         cfg = _mk_config(db)
@@ -5679,12 +5741,141 @@ def test_telnet_totp_fallbacks_to_email_after_repeated_bad_codes(tmp_path) -> No
                 assert ok is False
                 final = bytes(writer.buffer)
 
-            assert await store.get_user_pref("K1ABC", "mfa_totp_secret") is None
-            assert await store.get_user_pref("K1ABC", "mfa_totp_failed_count") is None
-            assert await store.get_user_pref("K1ABC", "mfa_email_otp") == "required"
-            assert b"Authenticator MFA has been disabled" in final
-            assert b"run set/totp" in final
+            assert await store.get_user_pref("K1ABC", "mfa_totp_secret") == "JBSWY3DPEHPK3PXP"
+            assert await store.get_user_pref("K1ABC", "mfa_totp_failed_count") == "3"
+            assert await store.get_user_pref("K1ABC", "mfa_email_otp") is None
+            assert b"Authenticator MFA remains enabled" in final
         finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_totp_fallback_preserves_authenticator_when_email_delivery_fails(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_totp_delivery_failure.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+
+        def _delivery_failure(_recipient: str, _subject: str, _body: str) -> None:
+            raise OSError("SMTP unavailable")
+
+        srv._mfa._sender = _delivery_failure
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await store.upsert_user_registry("K1ABC", now, privilege="user", email="k1abc@example.test")
+            await store.set_user_pref("K1ABC", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+            final = b""
+            for _idx in range(3):
+                reader = asyncio.StreamReader()
+                writer = _DummyWriter()
+                reader.feed_data(b"000000\r\n")
+                reader.feed_eof()
+                assert await srv._prompt_email_otp("K1ABC", reader, writer, is_sysop=False) is False  # type: ignore[arg-type]
+                final = bytes(writer.buffer)
+
+            assert await store.get_user_pref("K1ABC", "mfa_totp_secret") == "JBSWY3DPEHPK3PXP"
+            assert await store.get_user_pref("K1ABC", "mfa_email_otp") is None
+            assert b"fallback code could not be delivered" in final
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_totp_fallback_stays_on_exact_ssid_and_challenges_email(
+    tmp_path, monkeypatch
+) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_totp_ssid_fallback.db")
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-90"),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        sent: list[tuple[str, str, str]] = []
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        for call, email, secret in (
+            ("AI3I", "base@example.test", "BASESECRET"),
+            ("AI3I-94", "exact@example.test", "EXACTSECRET"),
+            ("AI3I-95", "sibling@example.test", "SIBLINGSECRET"),
+        ):
+            await store.upsert_user_registry(call, now, privilege="user", email=email)
+            await store.set_user_pref(call, "password", "pw1", now)
+            await store.set_user_pref(call, "mfa_totp_secret", secret, now)
+            await store.set_user_pref(call, "mfa_email_otp", "off", now)
+
+        monkeypatch.setattr(telnet_server_mod, "verify_totp", lambda _secret, _code: False)
+        try:
+            await srv.start()
+        except OSError:
+            await store.close()
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+
+            async def submit_bad_totp(*, expect_fallback: bool) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+                reader, writer = await asyncio.open_connection(host, port)
+                await asyncio.wait_for(reader.readuntil(b"login: "), timeout=2.0)
+                writer.write(b"AI3I-94\r\n")
+                await writer.drain()
+                await asyncio.wait_for(reader.readuntil(b"password: "), timeout=2.0)
+                writer.write(b"pw1\r\n")
+                await writer.drain()
+                await asyncio.wait_for(reader.readuntil(b"authenticator code: "), timeout=2.0)
+                writer.write(b"000000\r\n")
+                await writer.drain()
+                if expect_fallback:
+                    output = await asyncio.wait_for(reader.readuntil(b"otp: "), timeout=2.0)
+                    assert b"Authenticator MFA has been disabled" in output
+                else:
+                    output = await asyncio.wait_for(reader.readuntil(b"Login failed (invalid code)"), timeout=2.0)
+                    assert b"Login failed" in output
+                return reader, writer
+
+            for _ in range(2):
+                reader, writer = await submit_bad_totp(expect_fallback=False)
+                writer.close()
+                await writer.wait_closed()
+
+            reader, writer = await submit_bad_totp(expect_fallback=True)
+            assert sent and sent[-1][0] == "exact@example.test"
+            challenge = next(
+                item for item in srv._mfa._challenges.values()
+                if item.call == "AI3I-94" and item.purpose == "telnet"
+            )
+            writer.write((challenge.code + "\r\n").encode("ascii"))
+            await writer.drain()
+            welcome = await asyncio.wait_for(reader.readuntil(b"Welcome"), timeout=2.0)
+            assert b"Welcome" in welcome
+            writer.close()
+            await writer.wait_closed()
+
+            assert await store.get_user_pref("AI3I-94", "mfa_totp_secret") is None
+            assert await store.get_user_pref("AI3I-94", "mfa_totp_failed_count") is None
+            assert await store.get_user_pref("AI3I-94", "mfa_email_otp") == "required"
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == "BASESECRET"
+            assert await store.get_user_pref("AI3I", "mfa_email_otp") == "off"
+            assert await store.get_user_pref("AI3I-95", "mfa_totp_secret") == "SIBLINGSECRET"
+            assert await store.get_user_pref("AI3I-95", "mfa_email_otp") == "off"
+        finally:
+            await srv.stop()
             await store.close()
 
     asyncio.run(run())

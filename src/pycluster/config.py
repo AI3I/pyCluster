@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import ipaddress
-from pathlib import Path
 import json
+import os
+from pathlib import Path
+import tempfile
 import tomllib
 
 
@@ -128,6 +130,46 @@ class MFAConfig:
 
 
 @dataclass(slots=True)
+class PyProtocolConfig:
+    enabled: bool = False
+    public_web_url: str = ""
+    share_node_info: bool = True
+    share_public_web_url: bool = True
+    share_locator: bool = False
+    share_qth: bool = False
+    share_sysop_contact: bool = False
+    share_topology: bool = False
+    share_health: bool = False
+    share_datasets: bool = False
+    share_rbn_status: bool = False
+    share_policy: bool = False
+    share_clock: bool = False
+    share_notices: bool = False
+    notice_severity: str = "normal"
+    notice_message: str = ""
+    notice_expires_epoch: int = 0
+    max_hops: int = 8
+    max_records_per_frame: int = 25
+    max_frame_bytes: int = 2048
+    max_bytes_per_minute: int = 65536
+    refresh_seconds: int = 900
+    record_ttl_seconds: int = 86400
+
+    def __post_init__(self) -> None:
+        self.notice_severity = str(self.notice_severity or "normal").strip().lower()
+        if self.notice_severity not in {"normal", "maintenance", "upgrading", "degraded", "testing"}:
+            self.notice_severity = "normal"
+        self.notice_message = " ".join(str(self.notice_message or "").split())[:240]
+        self.notice_expires_epoch = max(0, int(self.notice_expires_epoch or 0))
+        self.max_hops = max(1, min(32, int(self.max_hops)))
+        self.max_records_per_frame = max(1, min(100, int(self.max_records_per_frame)))
+        self.max_frame_bytes = max(256, min(65536, int(self.max_frame_bytes)))
+        self.max_bytes_per_minute = max(self.max_frame_bytes, min(10 * 1024 * 1024, int(self.max_bytes_per_minute)))
+        self.refresh_seconds = max(60, min(86400, int(self.refresh_seconds)))
+        self.record_ttl_seconds = max(self.refresh_seconds * 2, min(30 * 86400, int(self.record_ttl_seconds)))
+
+
+@dataclass(slots=True)
 class AppConfig:
     node: NodeConfig
     telnet: TelnetConfig
@@ -139,6 +181,7 @@ class AppConfig:
     satellite: SatelliteConfig = field(default_factory=SatelliteConfig)
     rbn: RBNConfig = field(default_factory=RBNConfig)
     mfa: MFAConfig = field(default_factory=MFAConfig)
+    py_protocol: PyProtocolConfig = field(default_factory=PyProtocolConfig)
 
 
 def node_presentation_defaults(node: NodeConfig) -> dict[str, str]:
@@ -293,8 +336,9 @@ def load_config(path: str | Path) -> AppConfig:
         rbn_raw["feeds"] = tuple(feeds)
     rbn = RBNConfig(**rbn_raw)
     mfa = MFAConfig(**_load_section(data, "mfa")) if "mfa" in data else MFAConfig()
+    py_protocol = PyProtocolConfig(**_load_section(data, "py_protocol")) if "py_protocol" in data else PyProtocolConfig()
 
-    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store, qrz=qrz, smtp=smtp, satellite=satellite, rbn=rbn, mfa=mfa)
+    return AppConfig(node=node, telnet=telnet, web=web, public_web=public_web, store=store, qrz=qrz, smtp=smtp, satellite=satellite, rbn=rbn, mfa=mfa, py_protocol=py_protocol)
 
 
 def _toml_value(value: object) -> str:
@@ -325,9 +369,10 @@ def dump_config(config: AppConfig) -> str:
         "satellite": asdict(config.satellite),
         "rbn": asdict(config.rbn),
         "mfa": asdict(config.mfa),
+        "py_protocol": asdict(config.py_protocol),
     }
     lines: list[str] = []
-    for section in ("node", "telnet", "web", "public_web", "store", "qrz", "smtp", "satellite", "rbn", "mfa"):
+    for section in ("node", "telnet", "web", "public_web", "store", "qrz", "smtp", "satellite", "rbn", "mfa", "py_protocol"):
         lines.append(f"[{section}]")
         for key, value in data[section].items():
             lines.append(f"{key} = {_toml_value(value)}")
@@ -335,7 +380,35 @@ def dump_config(config: AppConfig) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def save_config(path: str | Path, config: AppConfig) -> None:
+def config_save_path(path: str | Path) -> Path:
+    """Keep generated runtime settings out of the tracked/base configuration."""
     p = Path(path)
+    if p.stem.endswith(".local"):
+        return p
+    overrides = config_override_paths(path)
+    return overrides[0] if overrides else p
+
+
+def save_config(path: str | Path, config: AppConfig) -> None:
+    p = config_save_path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(dump_config(config), encoding="utf-8")
+    mode = (p.stat().st_mode & 0o777) if p.exists() else 0o640
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{p.name}.", suffix=".tmp", dir=p.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(dump_config(config))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, p)
+        dir_fd = os.open(p.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise

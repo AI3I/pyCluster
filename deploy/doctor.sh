@@ -39,6 +39,18 @@ elif systemctl list-unit-files "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/
   data_timer_state="$data_timer_state (legacy $PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME)"
 fi
 
+retention_timer_state="missing"
+if systemctl list-unit-files "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1; then
+  retention_timer_state="$(systemctl is-active "$PYCLUSTER_RETENTION_TIMER_NAME" 2>/dev/null || true)"
+  [ -n "$retention_timer_state" ] || retention_timer_state="inactive"
+fi
+
+upgrade_path_state="missing"
+if systemctl list-unit-files "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null 2>&1; then
+  upgrade_path_state="$(systemctl is-active "$PYCLUSTER_UPGRADE_PATH_NAME" 2>/dev/null || true)"
+  [ -n "$upgrade_path_state" ] || upgrade_path_state="inactive"
+fi
+
 fail2ban_state="missing"
 if systemctl list-unit-files fail2ban.service >/dev/null 2>&1; then
   fail2ban_state="$(systemctl is-active fail2ban.service 2>/dev/null || true)"
@@ -53,22 +65,30 @@ cty_path=""
 wpx_path=""
 wpx_note=""
 keps_path=""
+public_web_port="8081"
 if [ -f "$PYCLUSTER_CONFIG_DEST" ]; then
-  readarray -t cfg_values < <("${PYCLUSTER_PYTHON_LINK:-/usr/bin/python3}" - <<PY
-import tomllib
-from pathlib import Path
-p = Path("$PYCLUSTER_CONFIG_DEST")
-cfg = tomllib.loads(p.read_text(encoding="utf-8"))
-print(cfg.get("store", {}).get("sqlite_path", ""))
-print(cfg.get("public_web", {}).get("cty_dat_path", ""))
-print(cfg.get("public_web", {}).get("wpxloc_raw_path", ""))
-print(cfg.get("satellite", {}).get("keps_path", ""))
+  cfg_output="$(
+    cd "$PYCLUSTER_APP_DIR" &&
+    PYTHONPATH=src "${PYCLUSTER_PYTHON_LINK:-/usr/bin/python3}" - "$PYCLUSTER_CONFIG_DEST" <<'PY'
+import sys
+from pycluster.config import load_config
+
+cfg = load_config(sys.argv[1])
+print(cfg.store.sqlite_path)
+print(cfg.public_web.cty_dat_path)
+print(cfg.public_web.wpxloc_raw_path)
+print(cfg.satellite.keps_path)
+print(cfg.public_web.port)
 PY
-)
-  db_path="${cfg_values[0]:-}"
-  cty_path="${cfg_values[1]:-}"
-  wpx_path="${cfg_values[2]:-}"
-  keps_path="${cfg_values[3]:-}"
+  )" || config_ok="invalid"
+  if [ "$config_ok" = "yes" ]; then
+    readarray -t cfg_values <<<"$cfg_output"
+    db_path="${cfg_values[0]:-}"
+    cty_path="${cfg_values[1]:-}"
+    wpx_path="${cfg_values[2]:-}"
+    keps_path="${cfg_values[3]:-}"
+    public_web_port="${cfg_values[4]:-8081}"
+  fi
 fi
 
 if [ -n "$db_path" ] && [ "${db_path#/}" = "$db_path" ]; then
@@ -112,13 +132,13 @@ sysop_bootstrap="no"
 [ -f "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE" ] && sysop_bootstrap="yes"
 
 api_stats="unavailable"
-if [ "$service_state" = "active" ]; then
-  api_stats="$(curl -fsS http://127.0.0.1:8081/api/stats?hours=24 2>/dev/null || printf 'unavailable')"
+if [ "$web_service_state" = "active" ]; then
+  api_stats="$(curl -fsS "http://127.0.0.1:${public_web_port}/api/stats?hours=24" 2>/dev/null || printf 'unavailable')"
 fi
 
 public_branding="unavailable"
 if [ "$web_service_state" = "active" ]; then
-  public_branding="$(curl -fsS http://127.0.0.1:8081/api/public/branding 2>/dev/null || printf 'unavailable')"
+  public_branding="$(curl -fsS "http://127.0.0.1:${public_web_port}/api/public/branding" 2>/dev/null || printf 'unavailable')"
 fi
 
 status "user" "$PYCLUSTER_USER ($app_user_ok)"
@@ -131,6 +151,8 @@ status "keps" "${keps_path:-unset} ($keps_ok, $keps_age)"
 status "core service" "$PYCLUSTER_SERVICE_NAME ($service_state)"
 status "web service" "$PYCLUSTER_WEB_SERVICE_NAME ($web_service_state)"
 status "data refresh timer" "$PYCLUSTER_DATA_REFRESH_TIMER_NAME ($data_timer_state)"
+status "retention timer" "$PYCLUSTER_RETENTION_TIMER_NAME ($retention_timer_state)"
+status "upgrade watcher" "$PYCLUSTER_UPGRADE_PATH_NAME ($upgrade_path_state)"
 status "fail2ban" "fail2ban.service ($fail2ban_state)"
 status "selinux" "$selinux_state"
 status "sysop bootstrap" "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE ($sysop_bootstrap)"

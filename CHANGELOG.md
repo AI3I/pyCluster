@@ -2,6 +2,25 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.12 - 2026-08-01
+
+- Fixed telnet authenticator failure fallback so TOTP is retired only after an email challenge is successfully delivered; unavailable SMTP or delivery failure leaves the working authenticator configuration intact.
+- Scoped telnet MFA enrollment, disable, and System Operator reset challenge cleanup to the exact callsign/SSID.
+- Made web configuration saves atomic and directed them to `pycluster.local.toml`, preserving the tracked/base configuration and ensuring local overrides remain the effective persisted state.
+- Fixed PY topology lease renewal, terminal snapshot pagination, delivery accounting, and bounded rolling rate-window memory.
+- Upgrade, repair, and uninstall now stop live writers before taking runtime backups so SQLite/WAL snapshots are consistent; failed maintenance restores services that were active before shutdown. Upgrade and repair then use graceful systemd restarts instead of forced process kills.
+- Install no longer disables the host SSH fail2ban jail; the scanner jail is limited to malformed callsigns, and uninstall removes the complete on-demand upgrade watcher.
+- nginx setup validates hostnames and restores every configuration file it changed when validation, restart, or certificate provisioning fails.
+
+### Added
+
+- The opt-in, versioned pyCluster-only `PY00` hello negotiates direct-peer capabilities after authenticated PC18 identification; per-link size/rate controls and negotiated `PY99` errors keep private-protocol traffic bounded and isolated from other cluster families.
+- Negotiated `PY01` NODEINFO records expose bounded, expiring direct-peer metadata with stable installation identity, monotonic content sequencing, explicit public URLs, provenance, and conflict checks without forwarding records.
+- Opt-in `PY02`/`PY10`/`PY03` topology reconciliation adds a persistent known-node catalog, digest-first selective requests, bounded record batches, direct-over-reported precedence, hop limits, source-loop prevention, periodic jittered refresh, expiry pruning, and an authenticated SysOp catalog API.
+- Opt-in `PY04`, `PY05`, `PY06`, `PY08`, and `PY09` frames add strictly validated direct-peer health, dataset freshness, aggregate RBN status, access-policy, and clock summaries. Latest values are persisted in peer protocol state and exposed through the authenticated SysOp peers API; secrets, paths, endpoints, logs, users, and spot records are excluded.
+- Structured `PY07` notices add sequenced active/cancel records with severity and bounded expiry, while snapshot IDs and ordered pages prevent partial topology inventories from appearing complete.
+- The System Operator Node Settings view now includes a dedicated pyCluster Protocol tab for sharing/privacy controls, metadata preview, and network-notice management; Protocol Health retains live state and the Known pyCluster Nodes catalog.
+
 ## 1.0.11 - 2026-07-31
 
 ### Added

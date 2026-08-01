@@ -115,7 +115,7 @@ Spotter-based filters match the station that posted the spot. They do not match 
 | `set/mfa [email\|authenticator\|default]` | Use email OTP MFA, enroll an authenticator app, or clear the email override back to the node default. |
 | `set/totp` | Shortcut for enrolling an authenticator-app/TOTP secret from telnet with email OTP fallback. |
 | `unset/totp` | Remove the authenticator-app/TOTP secret and turn off the email MFA fallback for this account. |
-| `unset/mfa` | Disable user-level MFA, remove any authenticator secret, and clear outstanding challenges. |
+| `unset/mfa` | Disable user-level MFA for the exact callsign/SSID, remove its authenticator secret, and clear only its outstanding challenges. |
 | `set/passphrase <text>` | Set a passphrase field. |
 | `unset/passphrase` | Clear passphrase field. |
 | `set/page <n>` | Set pagination length. |
@@ -135,7 +135,7 @@ Spotter-based filters match the station that posted the spot. They do not match 
 | `show/configuration` | Show node configuration summary. |
 | `show/newconfiguration` | Alias to the current configuration view. |
 
-When MFA is required during telnet login, pyCluster prompts for `authenticator code:` for authenticator-app accounts and `otp:` for email one-time-code accounts. Password and MFA-code prompts suppress local echo. After three failed authenticator-code attempts, pyCluster removes the authenticator secret, enables email OTP fallback, and tells the user to delete the old authenticator entry and run `set/totp` again.
+When MFA is required during telnet login, pyCluster prompts for `authenticator code:` for authenticator-app accounts and `otp:` for email one-time-code accounts. Password and MFA-code prompts suppress local echo. After three failed authenticator-code attempts, pyCluster first sends an email OTP challenge. Only successful delivery retires the old authenticator secret and transitions the exact account to email OTP. Missing email, unavailable SMTP, or delivery failure leaves authenticator MFA enabled for sysop recovery.
 
 Self-service MFA commands act on the exact logged-in callsign, including SSIDs such as `N9JR-10`; login-time email lookup can still fall back to the base callsign's email record when the SSID record has no address.
 
@@ -369,7 +369,7 @@ These commands require sysop privilege and are hidden from ordinary command list
 |---|---|
 | `sysop/password <call> <newpass>` | Set another user’s password. |
 | `sysop/clearpassword <call>` | Clear another user’s password. |
-| `sysop/clearmfa <call>` | Force MFA off for a principal, clear outstanding email OTP challenges, and remove any authenticator secret. |
+| `sysop/clearmfa <call>` | Force MFA off for the exact callsign/SSID, clear only that account's email OTP challenges, and remove its authenticator secret. |
 
 ## Spot Review Notes
 

@@ -68,7 +68,7 @@ Supported operational scripts:
 
 The System Operator console upgrade button queues a request under the live runtime tree, then the `pycluster-upgrade.path` unit runs the worker from `/usr/src/pyCluster`. The worker advances that source checkout before running `deploy/upgrade.sh`, which syncs the updated tree into `/home/pycluster/pyCluster`. The console shows the target release separately from migration hooks; hooks such as `run_upgrade_1_0_6` are data migrations, not the maximum available release.
 
-Upgrade, repair, and uninstall operations preserve the runtime `config/`, `data/`, and `logs/` directories and create timestamped archives under `/root/pycluster-backups/` before making destructive changes. If an older installed checkout does not yet include automatic preflight backups, create one manually first:
+Upgrade, repair, and uninstall operations preserve the runtime `config/`, `data/`, and `logs/` directories and create timestamped archives under `/root/pycluster-backups/` before making destructive changes. They stop live writers before archiving so SQLite and its WAL are captured consistently; a failed preflight or maintenance run restores services that were active before shutdown. Upgrade and repair then restart gracefully through systemd. If an older installed checkout does not yet include automatic preflight backups, create one manually first:
 
 ```bash
 sudo install -d -m 0700 /root/pycluster-backups
@@ -88,6 +88,7 @@ Install, upgrade, and repair runs keep the current `pycluster-data-refresh.*` un
 - SQLite database path
 - CTY file path
 - data refresh timer state
+- retention timer and on-demand upgrade watcher state
 - wpxloc.raw path
 - whether the reported `wpxloc.raw` path is explicitly configured or derived from the `cty.dat` sibling path
 - loaded dataset version/date shown in the System Operator Console and telnet `show/configuration`
@@ -95,6 +96,7 @@ Install, upgrade, and repair runs keep the current `pycluster-data-refresh.*` un
 - SELinux state, when available
 - SYSOP bootstrap note presence
 - public branding response
+- effective base-plus-local configuration paths and public web port
 
 ## Retention Operations
 
@@ -173,7 +175,7 @@ Installed jail names:
 - `pycluster-web-auth`
 - `pycluster-telnet-scanner`
 
-The core jail and pyCluster account state both use a five-failure threshold. Account failure state is scoped to the exact callsign-SSID supplied at login.
+The core jail and pyCluster account state both use a five-failure threshold. Account failure state is scoped to the exact callsign-SSID supplied at login. The aggressive scanner jail matches malformed callsigns only; normal registration requests and policy-denied logins do not count as scanner traffic. Installation does not alter the host's SSH jail policy.
 
 Useful checks:
 

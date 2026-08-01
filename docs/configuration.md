@@ -122,7 +122,7 @@ Important fields:
 
 ### `[mfa]`
 
-Node-wide MFA policy. Authenticator-app/TOTP challenges use per-user secrets. Email OTP challenges use the `[smtp]` settings and require a valid user email address. Telnet users can enroll TOTP with `set/totp`; enrollment keeps email OTP as fallback for the exact logged-in callsign or SSID. After three failed authenticator-code attempts pyCluster removes the TOTP secret and falls back to email OTP until the user enrolls a new secret.
+Node-wide MFA policy. Authenticator-app/TOTP challenges use per-user secrets. Email OTP challenges use the `[smtp]` settings and require a valid user email address. Telnet users can enroll TOTP with `set/totp`; enrollment keeps email OTP as fallback for the exact logged-in callsign or SSID. After three failed authenticator-code attempts pyCluster transitions to email OTP only after delivering a challenge successfully. Missing email, unavailable SMTP, or delivery failure preserves the TOTP secret for operator recovery.
 
 Important fields:
 
@@ -179,6 +179,48 @@ Notes:
 - `accept/rbn` and `reject/rbn` are first-class RBN filter-family commands. `accept/rbn 1 call N9JR` allows only matching RBN/Skimmer spots, while ordinary spot filters remain in the `spots` family.
 - use `config/pycluster.local.toml` for host-specific feed credentials
 
+### `[py_protocol]`
+
+Optional decentralized metadata exchange between authenticated pyCluster peers. It is disabled by default and never requires a central registry or phone-home service.
+
+Important fields:
+
+- `enabled` - permits `PY00` negotiation after the remote peer identifies as pyCluster
+- `public_web_url` - optional externally reachable public-node URL; pyCluster does not infer this from bind addresses or the general project website field
+- `share_node_info`
+- `share_public_web_url`, `share_locator`, `share_qth`, and `share_sysop_contact` - field-level NODEINFO privacy controls; locator, QTH, and contact default to private
+- `share_topology` - enables bounded `PY02` digest, `PY10` selective request, and `PY03` record reconciliation
+- `share_health` - enables direct `PY04` node, service, and link-health summaries
+- `share_datasets` - enables direct `PY05` CTY.DAT, wpxloc.raw, and KEPS freshness summaries
+- `share_rbn_status` - enables direct `PY06` RBN mode, connection, activity-rate, and queue summaries
+- `share_policy` - enables direct `PY08` registration, verification, MFA, and public-access booleans
+- `share_clock` - enables direct `PY09` UTC, uptime, and boot-time summaries
+- `share_notices` - enables structured `PY07` operator notices
+- `notice_severity`, `notice_message`, and `notice_expires_epoch` - dedicated notice content and explicit expiry; an empty message creates an inactive/cancel record
+- `max_hops`
+- `max_records_per_frame`
+- `max_frame_bytes`
+- `max_bytes_per_minute`
+- `refresh_seconds`
+- `record_ttl_seconds`
+
+Safety behavior:
+
+- `PY00` is the only pre-negotiation bootstrap frame.
+- Every other PY family requires a capability advertised by both peers.
+- PY traffic is rejected on DXSpider, DXNet, AR-Cluster, CLX, unknown, or unauthenticated links.
+- Frame-size and per-minute byte limits apply independently in each direction and reset on reconnect.
+- `share_node_info` enables direct `PY01` records; `share_topology` independently enables the persistent known-node catalog and anti-entropy exchange. Both remain explicit opt-ins.
+- Topology exchanges send digests before details, request only missing or newer records, enforce record/frame/hop limits, avoid returning learned records to their source peer, and expire stale reports.
+- The authenticated SysOp endpoint `GET /api/py-nodes` returns this node's current local catalog and provenance.
+- Health, datasets, RBN status, policy, and clock are direct-peer summaries refreshed at a bounded interval and persisted in peer protocol state. Each requires its explicit `share_*` setting and bilateral capability negotiation.
+- `PY06` shares named modes and aggregate activity only; feed endpoints, ports, passwords, startup commands, and individual RBN spots remain local.
+- `PY07` notices are limited to 240 characters and 30 days, carry an explicit cancellation state, and are not derived from the MOTD.
+- The SysOp Node Settings > pyCluster Protocol page edits sharing policy and notices and previews shareable NODEINFO values. Protocol Health lists the durable known-node catalog and live protocol state.
+- PY metadata never infers private/internal addresses and rejects private, loopback, or local-only literal public URLs. It must not include secrets, users, mail, registration records, logs, full RBN spot streams, or remote configuration mutations.
+
+Use `config/pycluster.local.toml` to enable this per host without modifying the tracked default configuration. System Console configuration saves atomically replace this local override rather than rewriting the base file, so the saved effective configuration and the next-start configuration are identical.
+
 ## Example Paths
 
 Default deployed layout:
@@ -198,6 +240,7 @@ Default deployed layout:
 - back up the base config, local override, and SQLite DB together
 - do not hand-edit the live CTY file unless you need an emergency local override
 - keep SMTP credentials in `config/pycluster.local.toml`, not the tracked base config
+- treat `pycluster.local.toml` as generated runtime configuration when using System Console settings; back it up with the base config and database
 - keep local satellite keps data under `data/` and point `[satellite].keps_path` at that file
 - the installed `pycluster-data-refresh.timer` validates and refreshes CTY, WPXLOC, and Keps every six hours; `deploy/doctor.sh` reports the configured Keps path and file age
 - CTY data is used for enrichment and review cues such as suspicious spot-prefix flags in the sysop web UI; it is not treated as a complete worldwide legal callsign authority

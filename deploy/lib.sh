@@ -470,19 +470,11 @@ wait_for_systemd_active() {
 }
 
 restart_service_hard() {
-  if service_is_active; then
-    systemctl kill -s SIGKILL "$PYCLUSTER_SERVICE_NAME" || true
-    sleep 1
-  fi
-  systemctl start "$PYCLUSTER_SERVICE_NAME"
+  systemctl restart "$PYCLUSTER_SERVICE_NAME"
 }
 
 restart_web_service_hard() {
-  if web_service_is_active; then
-    systemctl kill -s SIGKILL "$PYCLUSTER_WEB_SERVICE_NAME" || true
-    sleep 1
-  fi
-  systemctl start "$PYCLUSTER_WEB_SERVICE_NAME"
+  systemctl restart "$PYCLUSTER_WEB_SERVICE_NAME"
 }
 
 enable_service() {
@@ -499,6 +491,7 @@ disable_service() {
   systemctl disable --now "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl disable --now "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl disable --now "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl disable --now "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null 2>&1 || true
 }
 
 stop_service() {
@@ -507,6 +500,41 @@ stop_service() {
   systemctl stop "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
+}
+
+capture_maintenance_service_state() {
+  PYCLUSTER_CORE_WAS_ACTIVE=0
+  PYCLUSTER_WEB_WAS_ACTIVE=0
+  PYCLUSTER_DATA_TIMER_WAS_ACTIVE=0
+  PYCLUSTER_RETENTION_TIMER_WAS_ACTIVE=0
+  systemctl is-active --quiet "$PYCLUSTER_SERVICE_NAME" && PYCLUSTER_CORE_WAS_ACTIVE=1 || true
+  systemctl is-active --quiet "$PYCLUSTER_WEB_SERVICE_NAME" && PYCLUSTER_WEB_WAS_ACTIVE=1 || true
+  systemctl is-active --quiet "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" && PYCLUSTER_DATA_TIMER_WAS_ACTIVE=1 || true
+  systemctl is-active --quiet "$PYCLUSTER_RETENTION_TIMER_NAME" && PYCLUSTER_RETENTION_TIMER_WAS_ACTIVE=1 || true
+}
+
+restore_maintenance_service_state() {
+  local rc=$?
+  trap - EXIT INT TERM
+  if [ "$rc" -ne 0 ]; then
+    warn "maintenance failed; restoring services that were active before shutdown"
+    [ "${PYCLUSTER_CORE_WAS_ACTIVE:-0}" = "1" ] && systemctl start "$PYCLUSTER_SERVICE_NAME" >/dev/null 2>&1 || true
+    [ "${PYCLUSTER_WEB_WAS_ACTIVE:-0}" = "1" ] && systemctl start "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null 2>&1 || true
+    [ "${PYCLUSTER_DATA_TIMER_WAS_ACTIVE:-0}" = "1" ] && systemctl start "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+    [ "${PYCLUSTER_RETENTION_TIMER_WAS_ACTIVE:-0}" = "1" ] && systemctl start "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
+  fi
+  exit "$rc"
+}
+
+arm_maintenance_failure_recovery() {
+  capture_maintenance_service_state
+  trap restore_maintenance_service_state EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+disarm_maintenance_failure_recovery() {
+  trap - EXIT INT TERM
 }
 
 refresh_runtime_data_best_effort() {
@@ -548,10 +576,8 @@ install_or_refresh_fail2ban() {
   install -o root -g root -m 0644 \
     "$root/deploy/fail2ban/jail.d/pycluster-scanner.local" \
     "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-scanner.local"
-  cat >"$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-disable-defaults.local" <<'EOF'
-[sshd]
-enabled = false
-EOF
+  # Clean up the legacy override without changing the host's SSH jail policy.
+  rm -f "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-disable-defaults.local"
 }
 
 install_or_refresh_logrotate() {
@@ -644,14 +670,10 @@ bootstrap_sysop_account() {
 }
 
 run_upgrade_1_0_1() {
-  local root strings_template
-  root="$(repo_root)"
-  strings_template="$root/config/strings.toml"
   (
     cd "$PYCLUSTER_APP_DIR" &&
     PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/upgrade_1_0_1.py \
-      --config "$PYCLUSTER_CONFIG_DEST" \
-      --strings-template "$strings_template"
+      --config "$PYCLUSTER_CONFIG_DEST"
   )
   ensure_runtime_ownership
 }

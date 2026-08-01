@@ -10,6 +10,22 @@ from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, RBNFeedConf
 from pycluster.models import Spot
 from pycluster.node_link import LinkPeer, NodeLinkEngine
 from pycluster.protocol import Pc10Message, Pc11Message, Pc12Message, Pc23Message, Pc24Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame
+from pycluster.py_protocol import (
+    PyErrorMessage,
+    PyClockMessage,
+    PyDatasetsMessage,
+    PyHealthMessage,
+    PyHelloMessage,
+    PyNodeInfoMessage,
+    PyNoticeMessage,
+    PyPolicyMessage,
+    PyRbnStatusMessage,
+    PyTopologyDigestEntry,
+    PyTopologyDigestMessage,
+    PyTopologyRecord,
+    PyTopologyRecordsMessage,
+    PyTopologyRequestMessage,
+)
 from pycluster.telnet_server import Session
 
 
@@ -146,6 +162,39 @@ def test_connect_peer_sends_legacy_dxspider_init_frames(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_connect_pycluster_peer_waits_for_remote_pc18_before_py_hello(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "connect_pycluster_identity.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            async def _connect(_name: str, _dsn: str, profile: str = "pycluster") -> None:
+                assert profile == "pycluster"
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.connect_dsn = _connect  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+
+            await app.connect_peer(
+                "AI3I-90",
+                "pycluster://example.invalid:7300?login=AI3I-91&client=AI3I-90",
+                profile="pycluster",
+                persist=False,
+            )
+
+            assert [frame.pc_type for frame in sent] == ["PC18", "PC20"]
+            assert "AI3I-90" not in app._pycluster_identified_peers
+            assert "AI3I-90" not in app._py_hello_sent
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_accept_inbound_node_login_uses_authenticated_login_as_peer_identity(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "accept_inbound.db")
@@ -172,7 +221,7 @@ def test_accept_inbound_node_login_uses_authenticated_login_as_peer_identity(tmp
             assert ok is True
             assert accepted == [("AI3I-16", "dxspider")]
             assert legacy_init == ["AI3I-16"]
-            assert f"PC18^pyCluster Version: {__version__}^5457^" in text
+            assert f"PC18^pyCluster {__version__}^5457^" in text
             assert "PC20^" in text
         finally:
             await app.store.close()
@@ -211,6 +260,49 @@ def test_accept_inbound_node_login_records_initial_pc18_version(tmp_path) -> Non
     asyncio.run(run())
 
 
+def test_inbound_pycluster_identity_is_registered_before_queued_py_frames(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "inbound_py_order.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref("AI3I-90", "node_family", "pycluster", now)
+
+            async def _accept(name: str, _conn, profile: str = "dxspider") -> None:
+                assert name == "AI3I-90"
+                assert profile == "pycluster"
+                assert "AI3I-90" in app._pycluster_identified_peers
+
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.accept_inbound = _accept  # type: ignore[method-assign]
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            writer = _DummyWriter()
+            ok = await app.accept_inbound_node_login(
+                "AI3I-90",
+                "AI3I-91",
+                asyncio.StreamReader(),
+                writer,  # type: ignore[arg-type]
+                ["PC18^pyCluster 1.0.12^5457^"],
+            )
+
+            assert ok is True
+            assert [frame.pc_type for frame in sent] == ["PY00"]
+            assert "PC18^pyCluster 1.0.12^5457^" in writer.buffer.decode()
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_accept_inbound_node_login_records_protocol_under_login_identity(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "accept_inbound_peer_name.db")
@@ -241,6 +333,774 @@ def test_accept_inbound_node_login_records_protocol_under_login_identity(tmp_pat
             prefs = await app.store.list_user_prefs(app.config.node.node_call)
             assert prefs["proto.peer.login-1.pc18.summary"] == "pyCluster 1.0.9"
             assert "proto.peer.w3lpl-2.pc18.summary" not in prefs
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_pycluster_pc18_negotiates_one_py_hello_and_persists_remote_hello(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "py_hello.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        app = ClusterApp(cfg)
+        sent: list[tuple[str, WirePcFrame]] = []
+        try:
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(peer: str, frame: WirePcFrame) -> None:
+                sent.append((peer, frame))
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+
+            pc18 = WirePcFrame("PC18", ["pyCluster 1.0.12", "5457", ""])
+            await app._handle_node_link_item("AI3I-90", pc18, None)
+            await app._handle_node_link_item("AI3I-90", pc18, None)
+
+            assert len(sent) == 1
+            assert sent[0][0] == "AI3I-90"
+            assert sent[0][1].pc_type == "PY00"
+            local_hello = PyHelloMessage.from_fields(sent[0][1].payload_fields)
+            assert local_hello.node_call == app.config.node.node_call
+            assert local_hello.capabilities == ("node-info", "py99-error")
+
+            remote_hello = PyHelloMessage(
+                node_call="AI3I-90",
+                software_version="1.0.12",
+                capabilities=("py99-error", "future-capability"),
+                epoch=1785456000,
+            )
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY00", remote_hello.to_fields()), None)
+
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            assert prefs["proto.peer.ai3i-90.py.protocol_version"] == "1"
+            assert prefs["proto.peer.ai3i-90.py.node"] == "AI3I-90"
+            assert prefs["proto.peer.ai3i-90.py.software_version"] == "1.0.12"
+            assert prefs["proto.peer.ai3i-90.py.capabilities"] == "future-capability,py99-error"
+            assert prefs["proto.peer.ai3i-90.py.negotiated_capabilities"] == "py99-error"
+            assert prefs["proto.peer.ai3i-90.last_pc_type"] == "PY00"
+            assert len(sent) == 1
+
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY42", ["unknown"]), None)
+            assert len(sent) == 2
+            assert sent[1][1].pc_type == "PY99"
+            error = PyErrorMessage.from_fields(sent[1][1].payload_fields)
+            assert error.code == "unsupported-type"
+            assert error.offending_type == "PY42"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_negotiated_py_node_info_is_direct_and_sequence_tracks_local_changes(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "py_nodeinfo.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_node_info = True
+        cfg.py_protocol.share_qth = True
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            await app._handle_node_link_item(
+                "AI3I-90",
+                WirePcFrame("PC18", ["pyCluster 1.0.12", "5457", ""]),
+                None,
+            )
+            hello = PyHelloMessage("AI3I-90", "1.0.12", ("node-info", "py99-error"), 1785456000)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY00", hello.to_fields()), None)
+
+            assert [frame.pc_type for frame in sent] == ["PY00", "PY01"]
+            local_info = PyNodeInfoMessage.from_fields(sent[1].payload_fields)
+            assert local_info.node_call == app.config.node.node_call
+            assert local_info.sequence == 1
+            assert local_info.services == ("sysop-web", "telnet")
+            first_id = local_info.node_id
+
+            unchanged = await app._build_py_node_info()
+            assert unchanged.node_id == first_id
+            assert unchanged.sequence == 1
+            app.config.node.qth = "Updated QTH"
+            changed = await app._build_py_node_info()
+            assert changed.node_id == first_id
+            assert changed.sequence == 2
+
+            now = int(datetime.now(timezone.utc).timestamp())
+            remote_info = PyNodeInfoMessage(
+                node_call="AI3I-90",
+                node_id="12345678-1234-5678-9234-567812345678",
+                sequence=7,
+                software_version="1.0.12",
+                public_web_url="https://node.example.net/",
+                locator="FN00FS",
+                qth="Test Node",
+                sysop_contact="sysop@example.net",
+                services=("public-web", "telnet"),
+                capabilities=("node-info", "py99-error"),
+                updated_epoch=now,
+                expires_epoch=now + 3600,
+            )
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY01", remote_info.to_fields()), None)
+
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            assert prefs["proto.peer.ai3i-90.py.nodeinfo.node_id"] == remote_info.node_id
+            assert prefs["proto.peer.ai3i-90.py.nodeinfo.sequence"] == "7"
+            assert prefs["proto.peer.ai3i-90.py.nodeinfo.locator"] == "FN00FS"
+            assert prefs["proto.peer.ai3i-90.py.nodeinfo.services"] == "public-web,telnet"
+            assert prefs["proto.peer.ai3i-90.py.nodeinfo.learned_from"] == "AI3I-90"
+            assert prefs["proto.peer.ai3i-90.py.nodeinfo.confidence"] == "direct"
+            assert [frame.pc_type for frame in sent] == ["PY00", "PY01"]
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_node_info_is_not_advertised_when_operator_disables_sharing(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "py_nodeinfo_disabled.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_node_info = False
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            await app._handle_node_link_item(
+                "AI3I-90",
+                WirePcFrame("PC18", ["pyCluster 1.0.12", "5457", ""]),
+                None,
+            )
+            local_hello = PyHelloMessage.from_fields(sent[0].payload_fields)
+            assert local_hello.capabilities == ("py99-error",)
+            remote_hello = PyHelloMessage("AI3I-90", "1.0.12", ("node-info", "py99-error"), 1785456000)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY00", remote_hello.to_fields()), None)
+
+            assert [frame.pc_type for frame in sent] == ["PY00"]
+            assert app._py_negotiated_capabilities["AI3I-90"] == frozenset({"py99-error"})
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_invalid_local_py_node_info_does_not_break_negotiation(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "py_invalid_local_nodeinfo.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.public_web_url = "file:///private/path"
+        cfg.public_web.enabled = True
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            await app._handle_node_link_item(
+                "AI3I-90", WirePcFrame("PC18", ["pyCluster 1.0.12", "5457", ""]), None
+            )
+            hello = PyHelloMessage("AI3I-90", "1.0.12", ("node-info", "py99-error"), 1785456000)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY00", hello.to_fields()), None)
+
+            assert [frame.pc_type for frame in sent] == ["PY00"]
+            assert app._py_negotiated_capabilities["AI3I-90"] == frozenset({"node-info", "py99-error"})
+            assert "AI3I-90" not in app._py_nodeinfo_sent
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_node_info_rejects_stale_and_conflicting_sequences(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "py_nodeinfo_sequence.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        drops: list[str] = []
+        try:
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            async def _drop(_peer: str, reason: str) -> None:
+                drops.append(reason)
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            app.node_link.mark_policy_drop = _drop  # type: ignore[method-assign]
+            app._pycluster_identified_peers.add("AI3I-90")
+            app._py_remote_capabilities["AI3I-90"] = frozenset({"node-info", "py99-error"})
+            app._py_negotiated_capabilities["AI3I-90"] = frozenset({"node-info", "py99-error"})
+            now = int(datetime.now(timezone.utc).timestamp())
+
+            def info(sequence: int, qth: str) -> PyNodeInfoMessage:
+                return PyNodeInfoMessage(
+                    "AI3I-90",
+                    "12345678-1234-5678-9234-567812345678",
+                    sequence,
+                    "1.0.12",
+                    "",
+                    "FN00FS",
+                    qth,
+                    "",
+                    ("telnet",),
+                    ("node-info", "py99-error"),
+                    now,
+                    now + 3600,
+                )
+
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY01", info(5, "Original").to_fields()), None)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY01", info(4, "Older").to_fields()), None)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY01", info(5, "Conflicting").to_fields()), None)
+
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            assert prefs["proto.peer.ai3i-90.py.nodeinfo.sequence"] == "5"
+            assert prefs["proto.peer.ai3i-90.py.nodeinfo.qth"] == "Original"
+            assert drops == ["stale_py_nodeinfo_sequence", "conflicting_py_nodeinfo_sequence"]
+            errors = [frame for frame in sent if frame.pc_type == "PY99"]
+            assert [PyErrorMessage.from_fields(frame.payload_fields).code for frame in errors] == [
+                "stale-record",
+                "sequence-conflict",
+            ]
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_topology_selectively_requests_and_does_not_echo_to_source(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py_topology.db"))
+        cfg.node.node_call = "AI3I-91"
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_topology = True
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            await app._handle_node_link_item(
+                "AI3I-90", WirePcFrame("PC18", ["pyCluster 1.0.12", "5457", ""]), None
+            )
+            capabilities = (
+                "node-info", "py99-error", "request", "topology-digest", "topology-records"
+            )
+            hello = PyHelloMessage("AI3I-90", "1.0.12", capabilities, 1785456000)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY00", hello.to_fields()), None)
+            assert [frame.pc_type for frame in sent] == ["PY00", "PY01", "PY02"]
+
+            now = int(datetime.now(timezone.utc).timestamp())
+            remote_info = PyNodeInfoMessage(
+                "AI3I-92",
+                "22345678-1234-5678-9234-567812345678",
+                3,
+                "1.0.12",
+                "",
+                "FN00FS",
+                "Reported Node",
+                "",
+                ("telnet",),
+                capabilities,
+                now,
+                now + 3600,
+            )
+            entry = PyTopologyDigestEntry(
+                remote_info.node_call,
+                remote_info.node_id,
+                remote_info.sequence,
+                remote_info.content_digest(),
+                remote_info.expires_epoch,
+            )
+            digest = PyTopologyDigestMessage(
+                (entry,), "AI3I-92", False, now,
+                "42345678-1234-5678-9234-567812345678", 1,
+            )
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY02", digest.to_fields()), None)
+            request = PyTopologyRequestMessage.from_fields(sent[-1].payload_fields)
+            assert sent[-1].pc_type == "PY10"
+            assert request.node_calls == ("AI3I-92",)
+
+            record = PyTopologyRecord(remote_info, "AI3I-92", 0, remote_info.content_digest())
+            records = PyTopologyRecordsMessage((record,), now)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY03", records.to_fields()), None)
+            stored = await app.store.get_py_node_record("AI3I-92")
+            assert stored is not None
+            assert stored["confidence"] == "reported"
+            assert stored["learned_from"] == "AI3I-90"
+            assert stored["hop_count"] == 1
+
+            before = len(sent)
+            source_request = PyTopologyRequestMessage(("AI3I-92",), now)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY10", source_request.to_fields()), None)
+            assert len(sent) == before
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_topology_drops_records_over_hop_limit(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py_topology_hops.db"))
+        cfg.node.node_call = "AI3I-91"
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_topology = True
+        cfg.py_protocol.max_hops = 2
+        app = ClusterApp(cfg)
+        drops: list[str] = []
+        try:
+            app._pycluster_identified_peers.add("AI3I-90")
+            capabilities = frozenset({"py99-error", "request", "topology-digest", "topology-records"})
+            app._py_remote_capabilities["AI3I-90"] = capabilities
+            app._py_negotiated_capabilities["AI3I-90"] = capabilities
+
+            async def _drop(_peer: str, reason: str) -> None:
+                drops.append(reason)
+
+            app.node_link.mark_policy_drop = _drop  # type: ignore[method-assign]
+            now = int(datetime.now(timezone.utc).timestamp())
+            info = PyNodeInfoMessage(
+                "AI3I-93", "32345678-1234-5678-9234-567812345678", 1, "1.0.12", "",
+                "FN00FS", "Distant Node", "", ("telnet",), tuple(capabilities), now, now + 3600,
+            )
+            record = PyTopologyRecord(info, "AI3I-93", 2, info.content_digest())
+            message = PyTopologyRecordsMessage((record,), now)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY03", message.to_fields()), None)
+
+            assert await app.store.get_py_node_record("AI3I-93") is None
+            assert "py_topology_hop_limit" in drops
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_topology_snapshot_defers_requests_until_final_page(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py_topology_snapshot.db"))
+        cfg.node.node_call = "AI3I-91"
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_topology = True
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            capabilities = frozenset({"py99-error", "request", "topology-digest", "topology-records"})
+            app._pycluster_identified_peers.add("AI3I-90")
+            app._py_remote_capabilities["AI3I-90"] = capabilities
+            app._py_negotiated_capabilities["AI3I-90"] = capabilities
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.send = _send  # type: ignore[method-assign]
+            now = int(datetime.now(timezone.utc).timestamp())
+            snapshot_id = "72345678-1234-5678-9234-567812345678"
+
+            def entry(call: str, node_id: str) -> PyTopologyDigestEntry:
+                return PyTopologyDigestEntry(call, node_id, 1, "a" * 64, now + 3600)
+
+            first = PyTopologyDigestMessage(
+                (entry("AI3I-92", "22345678-1234-5678-9234-567812345678"),),
+                "AI3I-92", True, now, snapshot_id, 1,
+            )
+            second = PyTopologyDigestMessage(
+                (entry("AI3I-93", "32345678-1234-5678-9234-567812345678"),),
+                "AI3I-93", False, now, snapshot_id, 2,
+            )
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY02", first.to_fields()), None)
+            assert sent == []
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY02", second.to_fields()), None)
+            requests = [PyTopologyRequestMessage.from_fields(frame.payload_fields) for frame in sent]
+            assert tuple(call for request in requests for call in request.node_calls) == ("AI3I-92", "AI3I-93")
+            assert "AI3I-90" not in app._py_topology_snapshots
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_topology_digest_sends_terminal_empty_snapshot_when_entry_is_too_large(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py_topology_bounded.db"))
+        cfg.node.node_call = "AI3I-91"
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_topology = True
+        cfg.py_protocol.max_frame_bytes = 256
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        capabilities = frozenset({"request", "topology-digest", "topology-records"})
+        app._py_negotiated_capabilities["AI3I-90"] = capabilities
+
+        async def _send(_peer: str, frame: WirePcFrame) -> bool:
+            sent.append(frame)
+            return True
+
+        app.node_link.send = _send  # type: ignore[method-assign]
+        try:
+            assert await app._send_py_topology_digest("AI3I-90", force=True) is True
+            assert len(sent) == 1
+            message = PyTopologyDigestMessage.from_fields(sent[0].payload_fields)
+            assert message.entries == ()
+            assert message.more is False
+            assert message.page_number == 1
+            assert "AI3I-90" in app._py_topology_digest_sent
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_topology_snapshot_rejects_out_of_order_page(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py_topology_snapshot_order.db"))
+        cfg.node.node_call = "AI3I-91"
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_topology = True
+        app = ClusterApp(cfg)
+        drops: list[str] = []
+        try:
+            capabilities = frozenset({"py99-error", "request", "topology-digest", "topology-records"})
+            app._pycluster_identified_peers.add("AI3I-90")
+            app._py_remote_capabilities["AI3I-90"] = capabilities
+            app._py_negotiated_capabilities["AI3I-90"] = capabilities
+
+            async def _drop(_peer: str, reason: str) -> None:
+                drops.append(reason)
+
+            async def _send(_peer: str, _frame: WirePcFrame) -> None:
+                return
+
+            app.node_link.mark_policy_drop = _drop  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            now = int(datetime.now(timezone.utc).timestamp())
+            message = PyTopologyDigestMessage(
+                (PyTopologyDigestEntry(
+                    "AI3I-92", "22345678-1234-5678-9234-567812345678", 1, "a" * 64, now + 3600,
+                ),),
+                "AI3I-92", False, now, "72345678-1234-5678-9234-567812345678", 2,
+            )
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY02", message.to_fields()), None)
+            assert "py_topology_snapshot_order" in drops
+            assert "AI3I-90" not in app._py_topology_snapshots
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_topology_converges_across_three_nodes_without_network_io(tmp_path) -> None:
+    async def run() -> None:
+        def app_for(call: str) -> ClusterApp:
+            cfg = _mk_config(str(tmp_path / f"{call.lower()}.db"))
+            cfg.node.node_call = call
+            cfg.py_protocol.enabled = True
+            cfg.py_protocol.share_topology = True
+            return ClusterApp(cfg)
+
+        app_a = app_for("AI3I-91")
+        app_b = app_for("AI3I-93")
+        app_c = app_for("AI3I-94")
+        apps = (app_a, app_b, app_c)
+        capabilities = frozenset({"py99-error", "request", "topology-digest", "topology-records"})
+        queues: dict[tuple[str, str], list[WirePcFrame]] = {}
+
+        def negotiate(app: ClusterApp, peer: str) -> None:
+            app._pycluster_identified_peers.add(peer)
+            app._py_remote_capabilities[peer] = capabilities
+            app._py_negotiated_capabilities[peer] = capabilities
+
+        negotiate(app_a, "AI3I-93")
+        negotiate(app_b, "AI3I-91")
+        negotiate(app_b, "AI3I-94")
+        negotiate(app_c, "AI3I-93")
+
+        async def sender(source: str, peer: str, frame: WirePcFrame) -> None:
+            queues.setdefault((source, peer), []).append(frame)
+
+        app_a.node_link.send = lambda peer, frame: sender("AI3I-91", peer, frame)  # type: ignore[method-assign]
+        app_b.node_link.send = lambda peer, frame: sender("AI3I-93", peer, frame)  # type: ignore[method-assign]
+        app_c.node_link.send = lambda peer, frame: sender("AI3I-94", peer, frame)  # type: ignore[method-assign]
+
+        async def transfer(source: ClusterApp, source_call: str, target: ClusterApp, target_call: str) -> None:
+            frames = queues.pop((source_call, target_call), [])
+            for frame in frames:
+                await target._handle_node_link_item(source_call, frame, None)
+
+        now = int(datetime.now(timezone.utc).timestamp())
+        info = PyNodeInfoMessage(
+            "AI3I-92", "22345678-1234-5678-9234-567812345678", 1, "1.0.12", "",
+            "FN00FS", "Test Origin", "", ("telnet",), tuple(capabilities), now, now + 3600,
+        )
+        try:
+            await app_a.store.upsert_py_node_record(
+                app_a._py_record_from_info(
+                    info, source_node="AI3I-92", learned_from="AI3I-92", hop_count=0, confidence="direct"
+                ),
+                now,
+            )
+            await app_a._send_py_topology_digest("AI3I-93", force=True)
+            await transfer(app_a, "AI3I-91", app_b, "AI3I-93")
+            await transfer(app_b, "AI3I-93", app_a, "AI3I-91")
+            await transfer(app_a, "AI3I-91", app_b, "AI3I-93")
+            b_record = await app_b.store.get_py_node_record("AI3I-92")
+            assert b_record is not None
+            assert b_record["confidence"] == "reported"
+            assert b_record["hop_count"] == 1
+
+            await app_b._send_py_topology_digest("AI3I-94", force=True)
+            await transfer(app_b, "AI3I-93", app_c, "AI3I-94")
+            await transfer(app_c, "AI3I-94", app_b, "AI3I-93")
+            await transfer(app_b, "AI3I-93", app_c, "AI3I-94")
+            c_record = await app_c.store.get_py_node_record("AI3I-92")
+            assert c_record is not None
+            assert c_record["confidence"] == "reported"
+            assert c_record["hop_count"] == 2
+
+            before = len(queues.get(("AI3I-93", "AI3I-91"), []))
+            await app_b._send_py_topology_records("AI3I-91", ("AI3I-92",))
+            assert len(queues.get(("AI3I-93", "AI3I-91"), [])) == before
+        finally:
+            for app in apps:
+                await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_operational_families_are_opt_in_sent_and_persisted(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py_operational.db"))
+        cfg.node.node_call = "AI3I-91"
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_health = True
+        cfg.py_protocol.share_datasets = True
+        cfg.py_protocol.share_rbn_status = True
+        cfg.py_protocol.share_notices = True
+        cfg.py_protocol.share_policy = True
+        cfg.py_protocol.share_clock = True
+        notice_now = int(datetime.now(timezone.utc).timestamp())
+        cfg.py_protocol.notice_severity = "testing"
+        cfg.py_protocol.notice_message = "Protocol staging"
+        cfg.py_protocol.notice_expires_epoch = notice_now + 3600
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster", "last_rx_epoch": 1785455990, "last_tx_epoch": 1785455995}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            await app._handle_node_link_item(
+                "AI3I-90", WirePcFrame("PC18", ["pyCluster 1.0.12", "5457", ""]), None
+            )
+            capabilities = (
+                "clock", "datasets", "health", "node-info", "notice", "policy", "py99-error", "rbn-status"
+            )
+            hello = PyHelloMessage("AI3I-90", "1.0.12", capabilities, 1785456000)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY00", hello.to_fields()), None)
+
+            assert [frame.pc_type for frame in sent] == ["PY00", "PY01", "PY04", "PY05", "PY06", "PY07", "PY08", "PY09"]
+            assert PyHealthMessage.from_fields(sent[2].payload_fields).node_call == "AI3I-91"
+            assert PyDatasetsMessage.from_fields(sent[3].payload_fields).node_call == "AI3I-91"
+            assert PyRbnStatusMessage.from_fields(sent[4].payload_fields).enabled is False
+            assert PyNoticeMessage.from_fields(sent[5].payload_fields).message == "Protocol staging"
+            assert PyPolicyMessage.from_fields(sent[6].payload_fields).node_call == "AI3I-91"
+            assert PyClockMessage.from_fields(sent[7].payload_fields).node_call == "AI3I-91"
+
+            now = int(datetime.now(timezone.utc).timestamp())
+            health = PyHealthMessage(
+                "AI3I-90", "healthy", (("telnet", "up"),), "connected", now - 2, now - 1,
+                False, True, False, False, "", now, now + 600,
+            )
+            policy = PyPolicyMessage(
+                "AI3I-90", True, True, True, True, False, True, True, True, now, now + 600,
+            )
+            clock = PyClockMessage("AI3I-90", now, 3600, now - 3600, now, now + 600)
+            notice = PyNoticeMessage(
+                "AI3I-90", "52345678-1234-5678-9234-567812345678", 3, True, "degraded",
+                "Link maintenance", now, now, now + 600,
+            )
+            for frame_type, message in (("PY04", health), ("PY07", notice), ("PY08", policy), ("PY09", clock)):
+                await app._handle_node_link_item("AI3I-90", WirePcFrame(frame_type, message.to_fields()), None)
+
+            prefs = await app.store.list_user_prefs(cfg.node.node_call)
+            assert prefs["proto.peer.ai3i-90.py.health.state"] == "healthy"
+            assert prefs["proto.peer.ai3i-90.py.policy.registration_required"] == "1"
+            assert prefs["proto.peer.ai3i-90.py.notice.message"] == "Link maintenance"
+            assert abs(int(prefs["proto.peer.ai3i-90.py.clock.offset_seconds"])) <= 1
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_operational_families_are_not_advertised_when_disabled(tmp_path) -> None:
+    cfg = _mk_config(str(tmp_path / "py_operational_disabled.db"))
+    cfg.py_protocol.enabled = True
+    app = ClusterApp(cfg)
+    try:
+        capabilities = app._local_py_capabilities()
+        assert "health" not in capabilities
+        assert "datasets" not in capabilities
+        assert "rbn-status" not in capabilities
+        assert "notice" not in capabilities
+        assert "policy" not in capabilities
+        assert "clock" not in capabilities
+    finally:
+        asyncio.run(app.store.close())
+
+
+def test_disabling_py_protocol_at_runtime_clears_negotiation_state(tmp_path) -> None:
+    db = str(tmp_path / "py_runtime_disable.db")
+    cfg = _mk_config(db)
+    cfg.py_protocol.enabled = True
+    app = ClusterApp(cfg)
+    try:
+        app._pycluster_identified_peers.add("AI3I-90")
+        app._py_hello_sent.add("AI3I-90")
+        app._py_remote_capabilities["AI3I-90"] = frozenset({"node-info"})
+        app._py_negotiated_capabilities["AI3I-90"] = frozenset({"node-info"})
+        app._py_nodeinfo_sent.add("AI3I-90")
+
+        app.config.py_protocol.enabled = False
+        app._apply_runtime_config()
+
+        assert app._pycluster_identified_peers == set()
+        assert app._py_hello_sent == set()
+        assert app._py_remote_capabilities == {}
+        assert app._py_negotiated_capabilities == {}
+        assert app._py_nodeinfo_sent == set()
+        assert app.node_link.py_protocol_enabled is False
+    finally:
+        asyncio.run(app.store.close())
+
+
+def test_py_hello_is_rejected_before_pc18_identity_and_on_call_mismatch(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "py_hello_policy.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        app = ClusterApp(cfg)
+        drops: list[tuple[str, str]] = []
+        try:
+            async def _drop(peer: str, reason: str) -> None:
+                drops.append((peer, reason))
+
+            app.node_link.mark_policy_drop = _drop  # type: ignore[method-assign]
+            hello = PyHelloMessage("AI3I-90", "1.0.12", ("node-discovery",), 1785456000)
+            frame = WirePcFrame("PY00", hello.to_fields())
+
+            await app._handle_node_link_item("AI3I-90", frame, None)
+            app._pycluster_identified_peers.add("AI3I-91")
+            await app._handle_node_link_item("AI3I-91", frame, None)
+
+            assert drops == [
+                ("AI3I-90", "py_before_pc18_identity"),
+                ("AI3I-91", "py_identity_mismatch"),
+            ]
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_protocol_disabled_does_not_negotiate_after_pycluster_pc18(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "py_disabled.db")
+        app = ClusterApp(_mk_config(db))
+        sent: list[WirePcFrame] = []
+        try:
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+
+            await app._handle_node_link_item(
+                "AI3I-90",
+                WirePcFrame("PC18", ["pyCluster 1.0.12", "5457", ""]),
+                None,
+            )
+
+            assert sent == []
+            assert app._py_hello_sent == set()
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_negotiated_py99_error_is_persisted_without_response_loop(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "py_error.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+            await app._handle_node_link_item(
+                "AI3I-90",
+                WirePcFrame("PC18", ["pyCluster 1.0.12", "5457", ""]),
+                None,
+            )
+            hello = PyHelloMessage("AI3I-90", "1.0.12", ("py99-error",), 1785456000)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY00", hello.to_fields()), None)
+            error = PyErrorMessage("malformed", "PY01", "Bad node information", 1785456001)
+            await app._handle_node_link_item("AI3I-90", WirePcFrame("PY99", error.to_fields()), None)
+
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            assert prefs["proto.peer.ai3i-90.py.last_error.code"] == "malformed"
+            assert prefs["proto.peer.ai3i-90.py.last_error.offending_type"] == "PY01"
+            assert prefs["proto.peer.ai3i-90.py.last_error.detail"] == "Bad node information"
+            assert [frame.pc_type for frame in sent] == ["PY00"]
         finally:
             await app.store.close()
 

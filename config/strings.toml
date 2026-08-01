@@ -1182,6 +1182,8 @@ authenticator_secret = "Setup key: {secret}"
 authenticator_uri = "Setup URI: {uri}"
 authenticator_disabled = "Authenticator MFA disabled for {call}. Email MFA fallback is now off."
 totp_fallback = "Authenticator MFA has been disabled after repeated failed codes. Delete the old authenticator entry, run set/totp to enroll a new secret, and use email one-time passwords until authenticator MFA is enabled again."
+totp_fallback_unavailable = "Authenticator MFA remains enabled because email fallback is unavailable. Contact a sysop if you need MFA reset."
+totp_fallback_delivery_failed = "Authenticator MFA remains enabled because the fallback code could not be delivered."
 disabled = "MFA disabled for {call}. Outstanding challenges cleared: {cleared}."
 
 [show.station]

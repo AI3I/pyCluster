@@ -11,9 +11,11 @@ KEEP_DATA="${KEEP_DATA:-1}"
 KEEP_CONFIG="${KEEP_CONFIG:-1}"
 
 log "uninstalling pyCluster from $PYCLUSTER_APP_DIR"
-backup_runtime_snapshot uninstall-preflight
-disable_service
+arm_maintenance_failure_recovery
 stop_service
+backup_runtime_snapshot uninstall-preflight
+disarm_maintenance_failure_recovery
+disable_service
 rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_SERVICE_NAME"
 rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_WEB_SERVICE_NAME"
 rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_DATA_REFRESH_SERVICE_NAME"
@@ -22,6 +24,8 @@ rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_LEGACY_CTY_REFRESH_SERVICE_NAME"
 rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME"
 rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_RETENTION_SERVICE_NAME"
 rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_RETENTION_TIMER_NAME"
+rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_SERVICE_NAME"
+rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_PATH_NAME"
 rm -f "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-core.conf"
 rm -f "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-web.conf"
 rm -f "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-scanner.conf"

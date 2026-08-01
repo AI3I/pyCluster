@@ -87,9 +87,9 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current development release: `1.0.11`
+Current development release: `1.0.12`
 
-Recent highlights in `1.0.11`:
+Recent highlights in `1.0.12`:
 
 - RBN feed ingestion has burst protection with batched storage and bounded ten-second live aggregation, nearby-frequency grouping, and respot suppression
 - System Operator user management includes a locked-account view alongside blocked users
@@ -104,6 +104,8 @@ Recent highlights in `1.0.11`:
 - public web and telnet self-registration validate ham-style callsigns before creating registration records
 - telnet self-registration verifies email before sysop approval when SMTP is configured, and expired verification codes tell the user to rerun `REGISTER`
 - node-link peers receive fresh PC18 identity advertisements on outbound reconnects without duplicating the DXSpider transport handshake
+- optional pyCluster-only capability negotiation, decentralized topology, and read-only health/dataset/RBN/policy/clock summaries are isolated to authenticated pyCluster peers and disabled by default
+- the System Operator protocol view manages field-level sharing privacy, structured expiring network notices, and direct/reported known-node visibility without a central registry
 - upgrade and repair paths protect runtime string catalogs by backing up invalid `strings.toml` files and restoring bundled defaults
 
 ## 🖥️ Interfaces

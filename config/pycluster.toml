@@ -71,3 +71,30 @@ password = ""
 source_node = "RBN"
 startup_commands = []
 reconnect_seconds = 60
+
+[py_protocol]
+# Decentralized pyCluster metadata exchange is opt-in. PY00 negotiation occurs
+# only on authenticated links whose peer identifies as pyCluster.
+enabled = false
+public_web_url = ""
+share_node_info = true
+share_public_web_url = true
+share_locator = false
+share_qth = false
+share_sysop_contact = false
+share_topology = false
+share_health = false
+share_datasets = false
+share_rbn_status = false
+share_policy = false
+share_clock = false
+share_notices = false
+notice_severity = "normal"
+notice_message = ""
+notice_expires_epoch = 0
+max_hops = 8
+max_records_per_frame = 25
+max_frame_bytes = 2048
+max_bytes_per_minute = 65536
+refresh_seconds = 900
+record_ttl_seconds = 86400

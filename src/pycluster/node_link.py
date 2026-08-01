@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
+import time
 from typing import Awaitable, Callable
 
 from .pathmeta import describe_transport_dsn
-from .peer_profiles import allowed_types_for_profile, normalize_profile, profile_allows_pc
-from .protocol import WirePcFrame, decode_typed, parse_wire_pc_frame, sanitize_pc92_private_ips, serialize_wire_pc_frame
+from .peer_profiles import allowed_types_for_profile, normalize_profile, profile_allows_frame
+from .protocol import WirePcFrame, decode_typed, parse_wire_protocol_frame, sanitize_pc92_private_ips, serialize_wire_protocol_frame
 from .transports import LinkConnection, LinkListener, connect_from_dsn, listen_from_dsn
 
 
@@ -35,15 +36,26 @@ class LinkPeer:
     last_pc_type: str | None = None
     rx_by_type: Counter[str] = field(default_factory=Counter)
     tx_by_type: Counter[str] = field(default_factory=Counter)
+    py_rx_window: deque[tuple[float, int]] = field(default_factory=deque)
+    py_tx_window: deque[tuple[float, int]] = field(default_factory=deque)
+    py_rx_window_bytes: int = 0
+    py_tx_window_bytes: int = 0
 
 
 class NodeLinkEngine:
     """Lightweight node-link engine for controlled compatibility testing.
 
-    Wire format is line-delimited `PCxx^field^field...` frames.
+    Wire format is line-delimited `PCxx^field...` or pyCluster-only `PYxx^field...` frames.
     """
 
-    def __init__(self, public_ip_address: str = "", public_ipv6_address: str = "") -> None:
+    def __init__(
+        self,
+        public_ip_address: str = "",
+        public_ipv6_address: str = "",
+        py_protocol_enabled: bool = False,
+        max_py_frame_bytes: int = 2048,
+        max_py_bytes_per_minute: int = 65536,
+    ) -> None:
         self._listener: LinkListener | None = None
         self._peers: dict[str, LinkPeer] = {}
         self._lock = asyncio.Lock()
@@ -52,10 +64,35 @@ class NodeLinkEngine:
         self._reader_tasks: set[asyncio.Task[None]] = set()
         self.public_ip_address = str(public_ip_address or "").strip()
         self.public_ipv6_address = str(public_ipv6_address or "").strip()
+        self.set_py_protocol_policy(py_protocol_enabled, max_py_frame_bytes, max_py_bytes_per_minute)
 
     def set_public_ip_address(self, public_ip_address: str, public_ipv6_address: str = "") -> None:
         self.public_ip_address = str(public_ip_address or "").strip()
         self.public_ipv6_address = str(public_ipv6_address or "").strip()
+
+    def set_py_protocol_policy(self, enabled: bool, max_frame_bytes: int, max_bytes_per_minute: int) -> None:
+        self.py_protocol_enabled = bool(enabled)
+        self.max_py_frame_bytes = max(256, min(65536, int(max_frame_bytes)))
+        self.max_py_bytes_per_minute = max(
+            self.max_py_frame_bytes,
+            min(10 * 1024 * 1024, int(max_bytes_per_minute)),
+        )
+
+    @staticmethod
+    def _window_allows(peer: LinkPeer, direction: str, size: int, limit: int) -> bool:
+        window = peer.py_rx_window if direction == "rx" else peer.py_tx_window
+        total_attr = "py_rx_window_bytes" if direction == "rx" else "py_tx_window_bytes"
+        total = int(getattr(peer, total_attr))
+        now = time.monotonic()
+        while window and now - window[0][0] >= 60.0:
+            _epoch, expired_size = window.popleft()
+            total -= expired_size
+        if len(window) >= 10000 or total + size > limit:
+            setattr(peer, total_attr, max(0, total))
+            return False
+        window.append((now, size))
+        setattr(peer, total_attr, total + size)
+        return True
 
     def set_trace_hook(self, hook: Callable[[str, str, str], Awaitable[None]] | None) -> None:
         self._trace_hook = hook
@@ -164,7 +201,7 @@ class NodeLinkEngine:
             pass
         return True
 
-    async def send(self, peer_name: str, frame: WirePcFrame) -> None:
+    async def send(self, peer_name: str, frame: WirePcFrame) -> bool:
         async with self._lock:
             peer = self._peers.get(peer_name)
         if peer is None:
@@ -172,13 +209,31 @@ class NodeLinkEngine:
 
         frame = sanitize_pc92_private_ips(frame, self.public_ip_address, self.public_ipv6_address)
 
-        if not profile_allows_pc(peer.profile, frame.pc_type):
+        is_py = frame.pc_type.upper().startswith("PY")
+        text = serialize_wire_protocol_frame(frame)
+        frame_size = len(text.encode("utf-8", errors="replace"))
+        if is_py and not self.py_protocol_enabled:
+            peer.policy_dropped += 1
+            peer.policy_by_reason["py_disabled"] += 1
+            await self._trace(peer_name, "drop", "py_disabled")
+            return False
+        if is_py and frame_size > self.max_py_frame_bytes:
+            peer.policy_dropped += 1
+            peer.policy_by_reason["py_frame_oversize"] += 1
+            await self._trace(peer_name, "drop", "py_frame_oversize")
+            return False
+        if is_py and not self._window_allows(peer, "tx", frame_size, self.max_py_bytes_per_minute):
+            peer.policy_dropped += 1
+            peer.policy_by_reason["py_rate_limit"] += 1
+            await self._trace(peer_name, "drop", "py_rate_limit")
+            return False
+
+        if not profile_allows_frame(peer.profile, frame.pc_type):
             peer.policy_dropped += 1
             peer.policy_by_reason["profile_tx_block"] += 1
-            await self._trace(peer_name, "drop", f"profile_tx_block {serialize_wire_pc_frame(frame)}")
-            return
+            await self._trace(peer_name, "drop", f"profile_tx_block {serialize_wire_protocol_frame(frame)}")
+            return False
 
-        text = serialize_wire_pc_frame(frame)
         await self._trace(peer_name, "tx", text)
         try:
             await peer.conn.send_line(text)
@@ -197,6 +252,7 @@ class NodeLinkEngine:
         peer.last_tx_epoch = int(datetime.now(timezone.utc).timestamp())
         peer.last_pc_type = frame.pc_type
         peer.tx_by_type[frame.pc_type] += 1
+        return True
 
     async def peer_names(self) -> list[str]:
         async with self._lock:
@@ -207,8 +263,8 @@ class NodeLinkEngine:
         sent = 0
         for name in names:
             try:
-                await self.send(name, frame)
-                sent += 1
+                if await self.send(name, frame):
+                    sent += 1
             except Exception:
                 LOG.exception("node-link broadcast failed peer=%s pc=%s", name, frame.pc_type)
         return sent
@@ -299,13 +355,31 @@ class NodeLinkEngine:
                 if text == "":
                     continue
                 await self._trace(peer.name, "rx", text)
-                frame = parse_wire_pc_frame(text)
+                frame = parse_wire_protocol_frame(text)
                 if frame is None:
                     peer.dropped_frames += 1
                     await self._trace(peer.name, "drop", "parse_error")
                     continue
 
-                if not profile_allows_pc(peer.profile, frame.pc_type):
+                if frame.pc_type.startswith("PY"):
+                    frame_size = len(text.encode("utf-8", errors="replace"))
+                    if not self.py_protocol_enabled:
+                        peer.policy_dropped += 1
+                        peer.policy_by_reason["py_disabled"] += 1
+                        await self._trace(peer.name, "drop", "py_disabled")
+                        continue
+                    if frame_size > self.max_py_frame_bytes:
+                        peer.policy_dropped += 1
+                        peer.policy_by_reason["py_frame_oversize"] += 1
+                        await self._trace(peer.name, "drop", "py_frame_oversize")
+                        continue
+                    if not self._window_allows(peer, "rx", frame_size, self.max_py_bytes_per_minute):
+                        peer.policy_dropped += 1
+                        peer.policy_by_reason["py_rate_limit"] += 1
+                        await self._trace(peer.name, "drop", "py_rate_limit")
+                        continue
+
+                if not profile_allows_frame(peer.profile, frame.pc_type):
                     peer.policy_dropped += 1
                     peer.policy_by_reason["profile_rx_block"] += 1
                     await self._trace(peer.name, "drop", f"profile_rx_block {text}")

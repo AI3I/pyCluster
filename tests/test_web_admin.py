@@ -924,6 +924,44 @@ def test_proto_state_counts_pc18_handshake_as_known(tmp_path) -> None:
         asyncio.run(store.close())
 
 
+def test_proto_state_exposes_py_operational_metadata(tmp_path) -> None:
+    db = str(tmp_path / "web_proto_py_metadata.db")
+    cfg = _mk_config(db, admin_token="adm")
+    cfg.node.node_call = "AI3I-91"
+    store = SpotStore(db)
+    srv = WebAdminServer(
+        config=cfg,
+        store=store,
+        started_at=datetime.now(timezone.utc),
+        session_count_fn=lambda: 0,
+    )
+    now = int(datetime.now(timezone.utc).timestamp())
+    pfx = "proto.peer.ai3i-90."
+    node_cfg = {
+        pfx + "py.protocol_version": "1",
+        pfx + "py.node": "AI3I-90",
+        pfx + "py.health.state": "healthy",
+        pfx + "py.health.services": '{"telnet":"up"}',
+        pfx + "py.datasets.records": '[{"name":"cty.dat","stale":false}]',
+        pfx + "py.rbn.enabled": "1",
+        pfx + "py.rbn.modes": "CW,FT8,RTTY",
+        pfx + "py.rbn.recent_spots_per_minute": "42",
+        pfx + "py.policy.mfa_available": "1",
+        pfx + "py.clock.offset_seconds": "-2",
+        pfx + "last_epoch": str(now),
+    }
+    try:
+        state = srv._proto_state_for_peer(node_cfg, "AI3I-90", now)["py"]
+        assert state["health"]["services"] == {"telnet": "up"}
+        assert state["datasets"]["records"][0]["name"] == "cty.dat"
+        assert state["rbn_status"]["modes"] == ["CW", "FT8", "RTTY"]
+        assert state["rbn_status"]["recent_spots_per_minute"] == 42
+        assert state["policy"]["mfa_available"] is True
+        assert state["clock"]["offset_seconds"] == -2
+    finally:
+        asyncio.run(store.close())
+
+
 def test_api_spots_uses_advisory_when_cty_data_is_unavailable(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_spot_review_advisory.db")
@@ -2259,7 +2297,9 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert await store.get_user_pref("AI3I-15", "welcome_title") is None
             assert await store.get_user_pref("AI3I-15", "require_password") is None
             assert await store.get_user_pref("AI3I-15", "prompt_template") is None
-            saved = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+            assert tomllib.loads(cfg_path.read_text(encoding="utf-8"))["node"]["node_call"] == "AI3I-15"
+            saved_path = cfg_path.with_name("pycluster.local.toml")
+            saved = tomllib.loads(saved_path.read_text(encoding="utf-8"))
             assert saved["node"]["node_call"] == "AI3I-7"
             assert saved["node"]["node_locator"] == "FN00FS"
             assert saved["node"]["welcome_title"] == "Welcome back"
@@ -2792,11 +2832,45 @@ def test_web_peers_reports_transmit_active_receive_quiet_link(tmp_path) -> None:
         await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.pc18.summary", "pyCluster 1.0.6", now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.last_epoch", str(now - 86400), now)
         await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.last_pc_type", "PC18", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.py.protocol_version", "1", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.py.node", "KC9GWK-1", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.py.software_version", "1.0.12", now)
+        await store.set_user_pref(
+            cfg.node.node_call,
+            "proto.peer.kc9gwk-1.py.capabilities",
+            "py99-error",
+            now,
+        )
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.py.negotiated_capabilities", "py99-error", now)
+        await store.set_user_pref(
+            cfg.node.node_call,
+            "proto.peer.kc9gwk-1.py.nodeinfo.node_id",
+            "12345678-1234-5678-9234-567812345678",
+            now,
+        )
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.py.nodeinfo.sequence", "4", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.py.nodeinfo.locator", "FN00FS", now)
+        await store.set_user_pref(
+            cfg.node.node_call, "proto.peer.kc9gwk-1.py.nodeinfo.services", "public-web,telnet", now
+        )
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.py.nodeinfo.learned_from", "KC9GWK-1", now)
+        await store.set_user_pref(cfg.node.node_call, "proto.peer.kc9gwk-1.py.nodeinfo.confidence", "direct", now)
         try:
             code, _, body = await _http_request(srv, "GET", "/api/peers", headers={"X-Admin-Token": "adm"})
             assert code == 200
             row = json.loads(body.decode("utf-8"))[0]
             assert row["peer"] == "KC9GWK-1"
+            py_state = row["proto"]["py"]
+            assert py_state["protocol_version"] == "1"
+            assert py_state["node"] == "KC9GWK-1"
+            assert py_state["software_version"] == "1.0.12"
+            assert py_state["capabilities"] == ["py99-error"]
+            assert py_state["node_info"]["node_id"] == "12345678-1234-5678-9234-567812345678"
+            assert py_state["node_info"]["locator"] == "FN00FS"
+            assert py_state["node_info"]["services"] == ["public-web", "telnet"]
+            assert py_state["health"]["state"] == ""
+            assert py_state["datasets"]["records"] == []
+            assert py_state["rbn_status"]["modes"] == []
             assert row["connected"] is True
             assert row["proto"]["health"] == "stale"
             assert row["link"]["health"] == "connected"
@@ -2855,6 +2929,181 @@ def test_web_proto_history_endpoint(tmp_path) -> None:
             await store.close()
 
     asyncio.run(run())
+
+
+def test_web_py_nodes_endpoint_is_authorized_and_prunes_expired_records(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_py_nodes.db")
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.node.node_call = "AI3I-91"
+        store = SpotStore(db)
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+
+        def record(call: str, expires_at: int) -> dict[str, object]:
+            return {
+                "node_call": call,
+                "node_id": "22345678-1234-5678-9234-567812345678",
+                "origin_node": call,
+                "sequence": 1,
+                "software_version": "1.0.12",
+                "protocol_version": "1",
+                "public_web_url": "",
+                "locator": "FN00FS",
+                "qth": "Test",
+                "sysop_contact": "",
+                "services": ["telnet"],
+                "capabilities": ["topology-records"],
+                "source_node": call,
+                "learned_from": call,
+                "hop_count": 0,
+                "confidence": "direct",
+                "updated_epoch": now - 60,
+                "expires_at": expires_at,
+                "raw_digest": "a" * 64,
+            }
+
+        try:
+            await store.upsert_py_node_record(record("AI3I-92", now + 3600), now)
+            await store.upsert_py_node_record(record("AI3I-93", now - 1), now - 3600)
+            code, _, _ = await _http_request(srv, "GET", "/api/py-nodes")
+            assert code == 401
+            code, _, body = await _http_request(
+                srv, "GET", "/api/py-nodes", headers={"X-Admin-Token": "adm"}
+            )
+            assert code == 200
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["count"] == 1
+            assert payload["nodes"][0]["node_call"] == "AI3I-92"
+            assert payload["nodes"][0]["services"] == ["telnet"]
+            assert await store.get_py_node_record("AI3I-93") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_py_notice_and_sharing_policy_endpoints(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_py_policy.db")
+        config_path = str(tmp_path / "pycluster.toml")
+        cfg = _mk_config(db, admin_token="adm")
+        cfg.node.node_call = "AI3I-91"
+        cfg.node.node_locator = "FN00FS"
+        cfg.node.qth = "Western Pennsylvania"
+        cfg.node.support_contact = "ai3i@example.net"
+        store = SpotStore(db)
+        updated: list[bool] = []
+        srv = WebAdminServer(
+            config=cfg,
+            store=store,
+            started_at=datetime.now(timezone.utc),
+            session_count_fn=lambda: 0,
+            config_updated_fn=lambda: updated.append(True),
+            config_path=config_path,
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        headers = {"X-Admin-Token": "adm", "Content-Type": "application/json"}
+        try:
+            code, _, _ = await _http_request(srv, "GET", "/api/py-notice")
+            assert code == 401
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/py-notice",
+                headers=headers,
+                body=json.dumps({
+                    "share_notices": True,
+                    "severity": "maintenance",
+                    "message": "Antenna maintenance",
+                    "expires_epoch": now + 3600,
+                }).encode("utf-8"),
+            )
+            assert code == 200
+            notice = json.loads(body.decode("utf-8"))
+            assert notice["active"] is True
+            assert cfg.py_protocol.notice_message == "Antenna maintenance"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/py-sharing",
+                headers=headers,
+                body=json.dumps({
+                    "enabled": True,
+                    "share_node_info": True,
+                    "share_topology": True,
+                    "share_locator": True,
+                    "share_qth": False,
+                    "share_sysop_contact": False,
+                    "share_public_web_url": True,
+                    "public_web_url": "https://cluster.example.net/",
+                }).encode("utf-8"),
+            )
+            assert code == 200
+            sharing = json.loads(body.decode("utf-8"))
+            assert sharing["preview"] == {
+                "public_web_url": "https://cluster.example.net/",
+                "locator": "FN00FS",
+                "qth": "",
+                "sysop_contact": "",
+            }
+            assert Path(config_path).with_name("pycluster.local.toml").exists()
+            assert updated == [True, True]
+
+            code, _, _ = await _http_request(
+                srv,
+                "POST",
+                "/api/py-sharing",
+                headers=headers,
+                body=json.dumps({
+                    "share_topology": False,
+                    "public_web_url": "http://127.0.0.1/",
+                }).encode("utf-8"),
+            )
+            assert code == 400
+            assert cfg.py_protocol.share_topology is True
+            assert cfg.py_protocol.public_web_url == "https://cluster.example.net/"
+
+            code, _, body = await _http_request(
+                srv,
+                "POST",
+                "/api/py-notice",
+                headers=headers,
+                body=json.dumps({
+                    "share_notices": True, "severity": "normal", "message": "", "expires_epoch": 0,
+                }).encode("utf-8"),
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["active"] is False
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_web_admin_contains_py_topology_and_notice_controls() -> None:
+    text = Path(web_admin_mod.__file__).read_text(encoding="utf-8")
+    for element_id in (
+        "knownNodeRows", "knownNodesReload", "pyEnabled", "pySharingSave", "pySharingPreview",
+        "pyNoticeShare", "pyNoticeSeverity", "pyNoticeExpires", "pyNoticeMessage", "pyNoticeSave",
+        "pyNoticeClear", "pyNoticeStatus",
+    ):
+        assert f'id="{element_id}"' in text
+    node_settings = text.index('id="node-group-pyprotocol"')
+    maintenance = text.index('id="node-group-maintenance"')
+    protocol_health = text.index('id="protocol"')
+    assert node_settings < text.index('id="pyEnabled"') < maintenance
+    assert node_settings < text.index('id="pyNoticeShare"') < maintenance
+    assert protocol_health < text.index('id="knownNodeRows"')
+    assert 'id="pyShareNotices"' not in text
+    assert text.index('id="saveNodeMaintenance"') < text.index('id="runCleanup"')
+    assert "target === 'pyprotocol' || target === 'maintenance'" in text
 
 
 def test_web_peers_displays_saved_inbound_peer_without_live_session(tmp_path) -> None:

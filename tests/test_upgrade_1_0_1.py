@@ -49,8 +49,6 @@ def test_upgrade_1_0_1_migrates_legacy_state_and_old_config_remains_loadable(tmp
     config_dir.mkdir()
     config_path = config_dir / "pycluster.toml"
     db_path = tmp_path / "pycluster.db"
-    strings_template = tmp_path / "strings-template.toml"
-    strings_template.write_text('show_qrz = "Show QRZ lookup."\n', encoding="utf-8")
     _write_legacy_config(config_path, db_path)
 
     conn = sqlite3.connect(db_path)
@@ -66,9 +64,7 @@ def test_upgrade_1_0_1_migrates_legacy_state_and_old_config_remains_loadable(tmp
     finally:
         conn.close()
 
-    args = upgrade_1_0_1._build_parser().parse_args(
-        ["--config", str(config_path), "--strings-template", str(strings_template)]
-    )
+    args = upgrade_1_0_1._build_parser().parse_args(["--config", str(config_path)])
     rc = upgrade_1_0_1.main if False else None
     result_code = __import__("asyncio").run(upgrade_1_0_1._run(args))
     assert result_code == 0
@@ -85,10 +81,6 @@ def test_upgrade_1_0_1_migrates_legacy_state_and_old_config_remains_loadable(tmp
     stored = str(row[0])
     assert is_password_hash(stored)
     assert verify_password("plain-text-secret", stored)
-
-    strings_path = config_dir / "strings.toml"
-    assert strings_path.exists()
-    assert "show_qrz" in strings_path.read_text(encoding="utf-8")
 
     cfg = load_config(config_path)
     assert cfg.qrz.username == ""
