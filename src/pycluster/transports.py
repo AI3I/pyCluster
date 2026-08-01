@@ -28,7 +28,7 @@ class LinkListener(Protocol):
 
 
 def pycluster_pc18(proto: str = "5457") -> str:
-    return f"PC18^pyCluster Version: {__version__}^{proto}^"
+    return f"PC18^pyCluster {__version__}^{proto}^"
 
 
 @dataclass(slots=True)

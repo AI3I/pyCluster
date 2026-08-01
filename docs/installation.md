@@ -147,11 +147,10 @@ The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh
 
 - `run_upgrade_1_0_1`
   - hash legacy plaintext user passwords
-  - seed `config/strings.toml` when it is missing
 - `run_upgrade_1_0_6`
   - move any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
 
-The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. The source tree is synced into the runtime directory with those paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy.
+The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. Upgrade and repair first record which services are active, stop live writers, and take a consistent preflight backup before synchronizing code or running migrations. A failed maintenance run attempts to restore the previously active services. Successful runs restart through systemd's normal graceful stop/start behavior. The source tree is synced with runtime paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy.
 
 Current install, upgrade, and repair runs install `pycluster-data-refresh.timer` and remove the older CTY-only `pycluster-cty-refresh.*` units if they exist from an earlier deployment.
 
@@ -187,6 +186,8 @@ Keep config and data:
 ```bash
 sudo ./deploy/uninstall.sh
 ```
+
+Uninstall disables and removes the on-demand upgrade path/service along with the core, web, refresh, and retention units. The default keep-data behavior does not leave an active watcher behind.
 
 ## DXSpider Migration
 
@@ -266,7 +267,7 @@ Replace `AI3I` with the principal/base sysop callsign you are recovering. If nee
 You can also use the host-local helper:
 
 ```bash
-sudo /opt/pycluster/current/scripts/lock_user_account.py --db /opt/pycluster/data/pycluster.db --call AI3I --unlock
+sudo /home/pycluster/pyCluster/scripts/lock_user_account.py --db /home/pycluster/pyCluster/data/pycluster.db --call AI3I --unlock
 ```
 
 ## Registration Recovery
@@ -378,7 +379,7 @@ Typical nginx setup choices:
 - `--tls-mode self-signed`
 - `--tls-mode letsencrypt --email admin@example.net`
 
-The helper writes pyCluster-owned nginx `server` blocks under `/etc/nginx/conf.d` by default. It does not edit the distribution default site in place; it disables the packaged default listener and installs pyCluster reverse-proxy files instead.
+The helper validates all supplied hostnames before writing nginx syntax. It writes pyCluster-owned nginx `server` blocks under `/etc/nginx/conf.d` by default. It does not edit the distribution default site in place; it disables the packaged default listener and installs pyCluster reverse-proxy files instead. Existing default and pyCluster configuration files are backed up for the duration of setup and restored automatically if `nginx -t`, restart, or certificate provisioning fails.
 
 Expected files:
 

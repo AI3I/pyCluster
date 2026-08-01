@@ -48,7 +48,7 @@ Installed jail names:
 - `pycluster-web-auth`
 - `pycluster-telnet-scanner`
 
-The core authentication jail uses five failed attempts, matching pyCluster's durable account-lock threshold. Failed-password counters and locks are recorded against the exact callsign-SSID being authenticated; a failure for one SSID does not lock its base call or sibling SSIDs.
+The core authentication jail uses five failed attempts, matching pyCluster's durable account-lock threshold. Failed-password counters and locks are recorded against the exact callsign-SSID being authenticated; a failure for one SSID does not lock its base call or sibling SSIDs. The scanner jail matches malformed callsigns only, and pyCluster installation leaves any existing SSH jail enabled.
 
 ## Auth Failure Logging
 
@@ -82,8 +82,8 @@ sudo tail -n 50 /var/log/pycluster/authfail.log
 The default jails ban IP addresses. To also lock the user account named in a structured auth-failure line, enable the optional `pycluster-lock-account` action in a local jail override and point `pycluster_db` at the active SQLite database. The action writes the same durable lock keys that the SysOp `Unlock Account` control clears. The helper can also be run directly on the host:
 
 ```bash
-sudo /opt/pycluster/current/scripts/lock_user_account.py --db /opt/pycluster/data/pycluster.db --call AI3I-90
-sudo /opt/pycluster/current/scripts/lock_user_account.py --db /opt/pycluster/data/pycluster.db --call AI3I-90 --unlock
+sudo /home/pycluster/pyCluster/scripts/lock_user_account.py --db /home/pycluster/pyCluster/data/pycluster.db --call AI3I-90
+sudo /home/pycluster/pyCluster/scripts/lock_user_account.py --db /home/pycluster/pyCluster/data/pycluster.db --call AI3I-90 --unlock
 ```
 
 ## Recommended Deployment Posture

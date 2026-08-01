@@ -31,8 +31,8 @@ def test_policy_drop_on_send_for_profile() -> None:
         conn = _DummyConn()
         eng._peers["p1"] = LinkPeer(name="p1", conn=conn, inbound=False, profile="dxnet")
 
-        await eng.send("p1", WirePcFrame("PC24", ["x"]))
-        await eng.send("p1", WirePcFrame("PC61", ["a", "b"]))
+        assert await eng.send("p1", WirePcFrame("PC24", ["x"])) is False
+        assert await eng.send("p1", WirePcFrame("PC61", ["a", "b"])) is True
 
         st = await eng.stats()
         assert st["p1"]["policy_dropped"] == 1
@@ -41,6 +41,61 @@ def test_policy_drop_on_send_for_profile() -> None:
         assert st["p1"]["sent_frames"] == 1
         assert len(conn.sent) == 1
         assert conn.sent[0].startswith("PC61^")
+
+    asyncio.run(run())
+
+
+def test_py_frames_are_limited_to_pycluster_profile() -> None:
+    async def run() -> None:
+        eng = NodeLinkEngine(py_protocol_enabled=True)
+        spider_conn = _DummyConn()
+        pycluster_conn = _DummyConn()
+        eng._peers["spider"] = LinkPeer(name="spider", conn=spider_conn, inbound=False, profile="dxspider")
+        eng._peers["pycluster"] = LinkPeer(name="pycluster", conn=pycluster_conn, inbound=False, profile="pycluster")
+        frame = WirePcFrame("PY00", ["1", "HELLO", "AI3I-90", "1.0.12", "py99-error", "1785456000"])
+
+        assert await eng.send("spider", frame) is False
+        assert await eng.send("pycluster", frame) is True
+
+        assert spider_conn.sent == []
+        assert pycluster_conn.sent == ["PY00^1^HELLO^AI3I-90^1.0.12^py99-error^1785456000"]
+        stats = await eng.stats()
+        assert stats["spider"]["policy_reasons"] == {"profile_tx_block": 1}
+
+    asyncio.run(run())
+
+
+def test_py_frames_are_disabled_by_default_and_rate_limited_when_enabled() -> None:
+    async def run() -> None:
+        disabled = NodeLinkEngine()
+        disabled_conn = _DummyConn()
+        disabled._peers["pycluster"] = LinkPeer(
+            name="pycluster", conn=disabled_conn, inbound=False, profile="pycluster"
+        )
+        frame = WirePcFrame("PY00", ["1", "HELLO", "AI3I-90", "1.0.12", "py99-error", "1785456000"])
+        assert await disabled.send("pycluster", frame) is False
+        assert disabled_conn.sent == []
+        assert (await disabled.stats())["pycluster"]["policy_reasons"] == {"py_disabled": 1}
+
+        limited = NodeLinkEngine(
+            py_protocol_enabled=True,
+            max_py_frame_bytes=256,
+            max_py_bytes_per_minute=256,
+        )
+        limited_conn = _DummyConn()
+        limited._peers["pycluster"] = LinkPeer(
+            name="pycluster", conn=limited_conn, inbound=False, profile="pycluster"
+        )
+        small = WirePcFrame("PY99", ["x" * 100])
+        oversized = WirePcFrame("PY99", ["x" * 300])
+        await limited.send("pycluster", small)
+        await limited.send("pycluster", small)
+        await limited.send("pycluster", small)
+        await limited.send("pycluster", oversized)
+        assert len(limited_conn.sent) == 2
+        reasons = (await limited.stats())["pycluster"]["policy_reasons"]
+        assert reasons["py_rate_limit"] == 1
+        assert reasons["py_frame_oversize"] == 1
 
     asyncio.run(run())
 

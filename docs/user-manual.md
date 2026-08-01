@@ -37,7 +37,7 @@ Welcome to pyCluster on N0CALL-1
 N0CALL-1>
 ```
 
-If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal. After three failed authenticator-code attempts, pyCluster disables that authenticator secret for the account and falls back to email one-time codes until you enroll a new secret.
+If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal. After three failed authenticator-code attempts, pyCluster sends an email challenge first. It disables the old authenticator secret only when delivery succeeds; otherwise the authenticator remains enabled for sysop recovery.
 
 For SSID logins, self-service MFA commands apply to the exact callsign you used to log in. For example, `set/mfa authenticator` or `set/totp` as `N0CALL-2` enrolls MFA for `N0CALL-2`, not for the base `N0CALL` account.
 

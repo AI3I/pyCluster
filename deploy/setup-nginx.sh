@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eEuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=deploy/lib.sh
@@ -125,6 +125,33 @@ normalize_aliases() {
 PUBLIC_ALIASES="$(normalize_aliases "$PUBLIC_ALIASES")"
 SYSOP_ALIASES="$(normalize_aliases "$SYSOP_ALIASES")"
 
+validate_hostname() {
+  local host="$1"
+  [ "$host" = "_" ] && return 0
+  [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || return 1
+  [[ "$host" != *..* ]] || return 1
+  [[ "$host" != *.-* && "$host" != *-. ]] || return 1
+}
+
+validate_host_set() {
+  local primary="$1"
+  local aliases="$2"
+  local part
+  validate_hostname "$primary" || die "invalid hostname: $primary"
+  if [ -n "$aliases" ]; then
+    IFS=',' read -r -a parts <<<"$aliases"
+    for part in "${parts[@]}"; do
+      validate_hostname "$part" || die "invalid hostname: $part"
+    done
+  fi
+}
+
+validate_host_set "$PUBLIC_HOST" "$PUBLIC_ALIASES"
+if [ -n "$SYSOP_HOST" ]; then
+  [ "$SYSOP_HOST" != "_" ] || die "the sysop hostname cannot be a catch-all"
+  validate_host_set "$SYSOP_HOST" "$SYSOP_ALIASES"
+fi
+
 build_server_names() {
   local primary="$1"
   local aliases="$2"
@@ -191,6 +218,51 @@ esac
 
 install -d -m 0755 "$NGINX_CONFIG_DIR"
 install -d -m 0755 "$SSL_DIR"
+
+NGINX_ROLLBACK_DIR="$(mktemp -d)"
+declare -a NGINX_ROLLBACK_TARGETS=()
+declare -a NGINX_ROLLBACK_PRESENT=()
+
+backup_nginx_target() {
+  local target="$1"
+  local index="${#NGINX_ROLLBACK_TARGETS[@]}"
+  NGINX_ROLLBACK_TARGETS+=("$target")
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    NGINX_ROLLBACK_PRESENT+=("1")
+    cp -a "$target" "$NGINX_ROLLBACK_DIR/$index"
+  else
+    NGINX_ROLLBACK_PRESENT+=("0")
+  fi
+}
+
+rollback_nginx_setup() {
+  local rc=$?
+  local index target
+  trap - ERR EXIT INT TERM
+  for ((index=0; index<${#NGINX_ROLLBACK_TARGETS[@]}; index++)); do
+    target="${NGINX_ROLLBACK_TARGETS[$index]}"
+    rm -f "$target"
+    if [ "${NGINX_ROLLBACK_PRESENT[$index]}" = "1" ]; then
+      cp -a "$NGINX_ROLLBACK_DIR/$index" "$target"
+    fi
+  done
+  if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx >/dev/null 2>&1 || true
+  fi
+  rm -rf "$NGINX_ROLLBACK_DIR"
+  exit "$rc"
+}
+
+for target in \
+  "$NGINX_CONFIG_DIR/default.conf" \
+  /etc/nginx/sites-enabled/default \
+  "$NGINX_CONFIG_DIR/pycluster-public.conf" \
+  "$NGINX_CONFIG_DIR/pycluster-sysop.conf"
+do
+  backup_nginx_target "$target"
+done
+trap rollback_nginx_setup ERR EXIT INT TERM
+
 rm -f "$NGINX_CONFIG_DIR/default.conf"
 rm -f /etc/nginx/sites-enabled/default
 
@@ -428,3 +500,6 @@ if [ "$TLS_MODE" = "none" ]; then
 else
   log "nginx reverse proxy configured on ports 80/443 (tls_mode=$TLS_MODE public_host=$PUBLIC_HOST public_aliases=${PUBLIC_ALIASES:-none} sysop_host=${SYSOP_HOST:-none} sysop_aliases=${SYSOP_ALIASES:-none})"
 fi
+
+trap - ERR EXIT INT TERM
+rm -rf "$NGINX_ROLLBACK_DIR"

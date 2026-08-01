@@ -102,9 +102,56 @@ dxspider://example.net:7300?login=LOCALNODE-1&client=PEERNODE-1&password=secret
 
 Peers with the `dxspider`/`spider` cluster family receive legacy PC11 spot relay frames. pyCluster peers continue to receive PC61 relay frames.
 
-When pyCluster sends PC18, its software field identifies `pyCluster Version: <version>` rather than claiming to be DXSpider. The `5457` protocol field remains for wire-protocol compatibility. For outbound `dxspider://` connections, pyCluster records DXSpider's PC18 banner but does not answer with PC18 because DXSpider deliberately ignores that frame on inbound non-CC-Cluster links. The transport sends one PC20 to complete startup, followed by the legacy initialization frames.
+When pyCluster sends PC18, its software field identifies `pyCluster <version>` rather than claiming to be DXSpider or borrowing DXSpider's presentation wording. The `5457` protocol field remains for wire-protocol compatibility. For outbound `dxspider://` connections, pyCluster records DXSpider's PC18 banner but does not answer with PC18 because DXSpider deliberately ignores that frame on inbound non-CC-Cluster links. The transport sends one PC20 to complete startup, followed by the legacy initialization frames.
 
 Steady-state DXSpider liveness uses PC51 ping requests and replies. pyCluster does not send periodic PC20 frames to DXSpider peers because DXSpider interprets PC20 as completion of startup configuration and retransmits PC19/PC22 configuration in response. Native pyCluster links continue to use their existing PC20 heartbeat.
+
+## pyCluster Protocol Discovery
+
+pyCluster reserves the `PY` frame family for pyCluster-to-pyCluster extensions. The feature is disabled by default through `[py_protocol].enabled`. A node never sends a `PY` frame merely because a peer is configured as pyCluster. The remote peer must first identify itself with a pyCluster PC18 software string on an authenticated node link, and the local operator must enable the protocol. Link policy rejects `PY` traffic on every non-pyCluster peer profile.
+
+Protocol version 1 begins with a direct-peer hello:
+
+```text
+PY00^1^HELLO^NODE-CALL^SOFTWARE-VERSION^CAPABILITY-LIST^EPOCH
+```
+
+`PY00` is the only bootstrap frame and is sent at most once per connection in each direction. It advertises the authenticated node callsign, pyCluster software version, capabilities actually implemented by that build, and UTC epoch. The receiving node validates the advertised callsign against the authenticated peer and stores the direct-peer metadata in the database. Both sides calculate the intersection of their advertised capabilities; every other `PY` family is rejected until that reciprocal negotiation completes. `PY00` is never relayed.
+
+`PY99` carries bounded errors for unsupported or malformed post-negotiation frames when both sides advertise `py99-error`. A node does not answer malformed `PY00` or `PY99` with another error, preventing error loops.
+
+`PY01` carries a direct peer's NODEINFO record when both sides negotiate `node-info` and the sending operator enables `share_node_info`. The structured record contains the authenticated node callsign, stable installation UUID, monotonic content sequence, pyCluster version, explicitly configured public web URL, locator/QTH, configured contact, enabled-service names, capabilities, update time, and expiry. It contains no bind address or inferred URL. Lower sequences, changed content at the same sequence, expired records, excessive future timestamps, and callsign mismatches are rejected. A changed installation UUID is retained as a direct identity transition for operator review.
+
+When `share_topology` is enabled and both peers negotiate `topology-digest`, `topology-records`, and `request`, topology reconciliation uses three additional frames:
+
+- `PY02 TOPOLOGY_DIGEST` sends paged identity, sequence, content-digest, and expiry summaries rather than full records. Each exchange has a unique snapshot ID and ordered page numbers; receivers wait for the final page before requesting details and reject missing, reordered, or duplicate pages.
+- `PY10 REQUEST` asks only for missing, changed-identity, newer-sequence, or conflicting-digest records.
+- `PY03 TOPOLOGY_RECORDS` returns only requested records in batches bounded by both `max_records_per_frame` and `max_frame_bytes`.
+
+Each node persists its own known-node catalog. Direct observations outrank relayed reports while the direct record remains valid, origin sequences cannot move backward, and changed content at the same sequence is rejected. A received relayed record increments its hop count and is dropped above `max_hops`. Records expire at their origin-provided time and are pruned locally. A node does not advertise a learned record back to the peer it came from. Digests are exchanged on connection, after learned changes, and periodically at `refresh_seconds` with per-peer jitter; unchanged full records are never flooded. This provides eventual reported visibility without claiming a central or perfectly authoritative network view.
+
+The remaining implemented version 1 metadata families are direct-peer, read-only summaries:
+
+- `PY04 HEALTH` reports aggregate node/service state and the health of the link carrying the frame. It includes bounded receive/transmit times, quiet/flapping indicators, reconnect state, and an error category, never raw errors or logs.
+- `PY05 DATASETS` reports CTY.DAT, wpxloc.raw, and KEPS version/date, modification time, stale state, and availability status. It does not transfer dataset contents or local file paths.
+- `PY06 RBN_STATUS` reports whether RBN is enabled, explicitly named modes, feed/connection counts, last spot time, recent one-minute ingest rate, and queue state. It never carries feed credentials, hosts, ports, commands, or spot records.
+- `PY07 NOTICE` reports a dedicated operator-controlled normal, maintenance, upgrading, degraded, or testing notice with monotonic sequence, explicit active/cancel state, creation time, and expiry. It is separate from the MOTD and never forwards arbitrary local text implicitly.
+- `PY08 POLICY` reports boolean registration, email-verification, MFA, and public/anonymous web availability. It contains no user-specific policy, account, or registration data.
+- `PY09 CLOCK` reports UTC epoch, process uptime, and process boot time. The receiver records an observed offset; it does not adjust either node's clock.
+
+Each family has its own bilateral capability and local `share_*` control. These records are sent after negotiation and refreshed no more often than five minutes (or the lower configured `refresh_seconds`). Receivers enforce the authenticated callsign, future-time tolerance, bounded expiry, strict fields and enums, and frame/rate limits. The latest direct-peer records are persisted and exposed under the peer's `proto.py` object in the authenticated SysOp `/api/peers` response.
+
+Inbound and outbound `PY` frames are capped by `max_frame_bytes` and `max_bytes_per_minute`. Negotiation state and rate windows reset on reconnect. Oversized, excessive, unauthenticated, disabled, profile-mismatched, and unnegotiated frames are dropped and counted in peer policy diagnostics.
+
+The `[py_protocol]` controls provide conservative boundaries for implemented and later frame families:
+
+- `share_node_info`, `share_topology`, `share_health`, `share_datasets`, `share_rbn_status`, `share_policy`, `share_clock`, and `share_notices` govern what this node may advertise.
+- `max_hops`, `max_records_per_frame`, `refresh_seconds`, and `record_ttl_seconds` constrain topology reconciliation.
+- No PY frame contains passwords, tokens, private keys, users, mail, registration records, logs, private addresses, full RBN spot streams, or remote configuration mutations.
+
+Authenticated SysOps can inspect the durable local catalog through `GET /api/py-nodes`. The response labels each record as `local`, `direct`, or `reported` and includes its source, learned-from peer, hop count, first/last seen times, and expiry.
+
+The SysOp Node Settings > pyCluster Protocol view provides PY sharing controls, field-level NODEINFO privacy, a shared-metadata preview, and the structured network-notice editor. Protocol Health provides the Known pyCluster Nodes catalog and live protocol diagnostics. Sharing-policy changes apply locally immediately; existing links renegotiate newly enabled capabilities after reconnect.
 
 Outbound PC92 path advertisements are sanitized when `node.public_ip_address`, `node.public_ipv6_address`, or a detected global interface address is available. Private, loopback, link-local, `localhost`, and otherwise non-public IPv4/IPv6 literals in outbound PC92 payload fields are replaced with the same-family public address before transmission. PC61 spot relay uses the same configured-or-detected public address selection for its IP field.
 

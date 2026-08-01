@@ -26,7 +26,6 @@ from pycluster.config import load_config  # noqa: E402
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Upgrade pyCluster state for the 1.0.1 release.")
     p.add_argument("--config", required=True, help="Path to pycluster.toml")
-    p.add_argument("--strings-template", default="", help="Optional path to a default strings.toml to seed if missing")
     return p
 
 
@@ -63,32 +62,13 @@ def _migrate_passwords(sqlite_path: str) -> int:
         conn.close()
 
 
-def _seed_strings(template_path: str, config_path: str) -> bool:
-    if not template_path:
-        return False
-    template = Path(template_path)
-    if not template.exists():
-        return False
-    target = Path(config_path).resolve().with_name("strings.toml")
-    if target.exists():
-        return False
-    target.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
-    try:
-        target.chmod(0o640)
-    except OSError:
-        pass
-    return True
-
-
 async def _run(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     password_updates = _migrate_passwords(cfg.store.sqlite_path)
-    seeded_strings = _seed_strings(args.strings_template, args.config)
     print(
         json.dumps(
             {
                 "password_hash_upgrades": password_updates,
-                "seeded_strings_toml": seeded_strings,
             },
             separators=(",", ":"),
         )

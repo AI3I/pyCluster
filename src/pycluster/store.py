@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Iterable
 import asyncio
 import fnmatch
+import json
 
 from .models import Spot
 from .shdx import ShDxQuery
@@ -168,6 +169,32 @@ CREATE TABLE IF NOT EXISTS registration_requests (
     updated_epoch INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_registration_requests_status_epoch ON registration_requests(status, requested_epoch DESC);
+
+CREATE TABLE IF NOT EXISTS py_nodes (
+    node_call TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    origin_node TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    software_version TEXT NOT NULL,
+    protocol_version TEXT NOT NULL,
+    public_web_url TEXT NOT NULL DEFAULT '',
+    locator TEXT NOT NULL DEFAULT '',
+    qth TEXT NOT NULL DEFAULT '',
+    sysop_contact TEXT NOT NULL DEFAULT '',
+    services_json TEXT NOT NULL DEFAULT '[]',
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    source_node TEXT NOT NULL,
+    learned_from TEXT NOT NULL,
+    hop_count INTEGER NOT NULL DEFAULT 0,
+    confidence TEXT NOT NULL,
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL,
+    updated_epoch INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    raw_digest TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_py_nodes_expires ON py_nodes(expires_at);
+CREATE INDEX IF NOT EXISTS idx_py_nodes_learned_from ON py_nodes(learned_from);
 """
 
 
@@ -234,7 +261,7 @@ class SpotStore:
             # Keep this lightweight for small Pi-class systems.
             self._conn.execute("PRAGMA optimize")
             counts: dict[str, int] = {}
-            for table in ("spots", "messages", "bulletins", "user_prefs"):
+            for table in ("spots", "messages", "bulletins", "user_prefs", "py_nodes"):
                 row = self._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
                 counts[table] = int(row["n"] if row is not None else 0)
             self._conn.commit()
@@ -266,6 +293,180 @@ class SpotStore:
             self._conn.execute("PRAGMA optimize")
             self._conn.commit()
         return removed
+
+    async def upsert_py_node_record(self, record: dict[str, object], now_epoch: int) -> str:
+        """Store a validated PY node record and report accepted, refreshed, or rejected."""
+        node_call = str(record["node_call"]).strip().upper()
+        confidence = str(record["confidence"]).strip().lower()
+        if confidence not in {"direct", "reported", "local"}:
+            raise ValueError("invalid PY node confidence")
+        values = {
+            "node_call": node_call,
+            "node_id": str(record["node_id"]),
+            "origin_node": str(record.get("origin_node") or node_call).strip().upper(),
+            "sequence": int(record["sequence"]),
+            "software_version": str(record["software_version"]),
+            "protocol_version": str(record["protocol_version"]),
+            "public_web_url": str(record.get("public_web_url") or ""),
+            "locator": str(record.get("locator") or ""),
+            "qth": str(record.get("qth") or ""),
+            "sysop_contact": str(record.get("sysop_contact") or ""),
+            "services_json": json.dumps(sorted(set(record.get("services") or [])), separators=(",", ":")),
+            "capabilities_json": json.dumps(sorted(set(record.get("capabilities") or [])), separators=(",", ":")),
+            "source_node": str(record.get("source_node") or "").strip().upper(),
+            "learned_from": str(record.get("learned_from") or "").strip().upper(),
+            "hop_count": int(record.get("hop_count") or 0),
+            "confidence": confidence,
+            "last_seen": int(now_epoch),
+            "updated_epoch": int(record["updated_epoch"]),
+            "expires_at": int(record["expires_at"]),
+            "raw_digest": str(record["raw_digest"]).strip().lower(),
+        }
+        async with self._lock:
+            existing = self._conn.execute(
+                "SELECT * FROM py_nodes WHERE node_call = ? LIMIT 1", (node_call,)
+            ).fetchone()
+            if existing is not None:
+                existing_rank = {"reported": 1, "direct": 2, "local": 3}.get(
+                    str(existing["confidence"]), 0
+                )
+                incoming_rank = {"reported": 1, "direct": 2, "local": 3}[confidence]
+                existing_valid = int(existing["expires_at"] or 0) > int(now_epoch)
+                same_identity = str(existing["node_id"]) == values["node_id"]
+                if existing_valid and incoming_rank < existing_rank:
+                    return "rejected-confidence"
+                authoritative_upgrade = incoming_rank > existing_rank
+                if (
+                    existing_valid
+                    and not authoritative_upgrade
+                    and same_identity
+                    and values["sequence"] < int(existing["sequence"])
+                ):
+                    return "rejected-stale"
+                if (
+                    existing_valid
+                    and not authoritative_upgrade
+                    and same_identity
+                    and values["sequence"] == int(existing["sequence"])
+                    and values["raw_digest"] != str(existing["raw_digest"])
+                ):
+                    return "rejected-conflict"
+                if (
+                    existing_valid
+                    and not authoritative_upgrade
+                    and same_identity
+                    and values["sequence"] == int(existing["sequence"])
+                    and values["raw_digest"] == str(existing["raw_digest"])
+                ):
+                    self._conn.execute(
+                        """
+                        UPDATE py_nodes
+                        SET last_seen = ?,
+                            updated_epoch = MAX(updated_epoch, ?),
+                            expires_at = MAX(expires_at, ?)
+                        WHERE node_call = ?
+                        """,
+                        (int(now_epoch), values["updated_epoch"], values["expires_at"], node_call),
+                    )
+                    self._conn.commit()
+                    return "refreshed"
+                first_seen = int(existing["first_seen"] or now_epoch)
+            else:
+                first_seen = int(now_epoch)
+            self._conn.execute(
+                """
+                INSERT INTO py_nodes(
+                    node_call, node_id, origin_node, sequence, software_version, protocol_version,
+                    public_web_url, locator, qth, sysop_contact, services_json, capabilities_json,
+                    source_node, learned_from, hop_count, confidence, first_seen, last_seen,
+                    updated_epoch, expires_at, raw_digest
+                ) VALUES (
+                    :node_call, :node_id, :origin_node, :sequence, :software_version, :protocol_version,
+                    :public_web_url, :locator, :qth, :sysop_contact, :services_json, :capabilities_json,
+                    :source_node, :learned_from, :hop_count, :confidence, :first_seen, :last_seen,
+                    :updated_epoch, :expires_at, :raw_digest
+                )
+                ON CONFLICT(node_call) DO UPDATE SET
+                    node_id=excluded.node_id, origin_node=excluded.origin_node,
+                    sequence=excluded.sequence, software_version=excluded.software_version,
+                    protocol_version=excluded.protocol_version, public_web_url=excluded.public_web_url,
+                    locator=excluded.locator, qth=excluded.qth, sysop_contact=excluded.sysop_contact,
+                    services_json=excluded.services_json, capabilities_json=excluded.capabilities_json,
+                    source_node=excluded.source_node, learned_from=excluded.learned_from,
+                    hop_count=excluded.hop_count, confidence=excluded.confidence,
+                    first_seen=excluded.first_seen, last_seen=excluded.last_seen,
+                    updated_epoch=excluded.updated_epoch, expires_at=excluded.expires_at,
+                    raw_digest=excluded.raw_digest
+                """,
+                {**values, "first_seen": first_seen},
+            )
+            self._conn.commit()
+        return "accepted"
+
+    @staticmethod
+    def _py_node_row(row: sqlite3.Row) -> dict[str, object]:
+        out = dict(row)
+        for source, target in (("services_json", "services"), ("capabilities_json", "capabilities")):
+            try:
+                out[target] = json.loads(str(out.pop(source)))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                out[target] = []
+        return out
+
+    async def get_py_node_record(self, node_call: str) -> dict[str, object] | None:
+        call = str(node_call or "").strip().upper()
+        async with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM py_nodes WHERE node_call = ? LIMIT 1", (call,)
+            ).fetchone()
+        return self._py_node_row(row) if row is not None else None
+
+    async def refresh_py_node_lease(
+        self,
+        node_call: str,
+        node_id: str,
+        sequence: int,
+        raw_digest: str,
+        expires_at: int,
+        now_epoch: int,
+    ) -> bool:
+        """Refresh expiry only when a digest exactly identifies the stored origin record."""
+        call = str(node_call or "").strip().upper()
+        expiry = int(expires_at)
+        now = int(now_epoch)
+        if expiry <= now or expiry > now + 30 * 86400:
+            return False
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE py_nodes
+                SET updated_epoch = MAX(
+                        updated_epoch,
+                        ? - MIN(2592000, MAX(1, expires_at - updated_epoch))
+                    ),
+                    expires_at = MAX(expires_at, ?),
+                    last_seen = ?
+                WHERE node_call = ? AND node_id = ? AND sequence = ? AND raw_digest = ?
+                """,
+                (expiry, expiry, now, call, str(node_id), int(sequence), str(raw_digest).strip().lower()),
+            )
+            self._conn.commit()
+            return bool(cur.rowcount)
+
+    async def list_py_node_records(self, now_epoch: int, *, include_expired: bool = False) -> list[dict[str, object]]:
+        where = "" if include_expired else "WHERE expires_at > ?"
+        params: tuple[object, ...] = () if include_expired else (int(now_epoch),)
+        async with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM py_nodes {where} ORDER BY node_call", params
+            ).fetchall()
+        return [self._py_node_row(row) for row in rows]
+
+    async def prune_expired_py_nodes(self, now_epoch: int) -> int:
+        async with self._lock:
+            cur = self._conn.execute("DELETE FROM py_nodes WHERE expires_at <= ?", (int(now_epoch),))
+            self._conn.commit()
+            return int(cur.rowcount or 0)
 
     async def add_spot(self, spot: Spot) -> bool:
         async with self._lock:
@@ -923,6 +1124,46 @@ class SpotStore:
                 cur = self._conn.execute("DELETE FROM mfa_challenges WHERE call = ?", (target,))
             self._conn.commit()
             return int(cur.rowcount or 0)
+
+    async def fallback_totp_to_email(
+        self,
+        call: str,
+        epoch: int,
+        *,
+        keep_challenge_id: str = "",
+    ) -> None:
+        """Atomically replace TOTP with required email MFA for one exact account."""
+        target = str(call or "").strip().upper()
+        if not target:
+            raise ValueError("callsign is required")
+        async with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                self._conn.execute(
+                    "DELETE FROM user_prefs WHERE call = ? AND pref_key IN (?, ?)",
+                    (target, "mfa_totp_secret", "mfa_totp_failed_count"),
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO user_prefs(call, pref_key, pref_value, updated_epoch)
+                    VALUES(?, 'mfa_email_otp', 'required', ?)
+                    ON CONFLICT(call, pref_key) DO UPDATE SET
+                        pref_value = excluded.pref_value,
+                        updated_epoch = excluded.updated_epoch
+                    """,
+                    (target, int(epoch)),
+                )
+                if keep_challenge_id:
+                    self._conn.execute(
+                        "DELETE FROM mfa_challenges WHERE call = ? AND challenge_id <> ?",
+                        (target, keep_challenge_id),
+                    )
+                else:
+                    self._conn.execute("DELETE FROM mfa_challenges WHERE call = ?", (target,))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     async def delete_expired_mfa_challenges(self, now_epoch: int) -> int:
         async with self._lock:

@@ -29,11 +29,17 @@ def allowed_types_for_profile(profile: str) -> set[str]:
     return set(_ALLOWED_BY_PROFILE[p])
 
 
-def profile_allows_pc(profile: str, pc_type: str) -> bool:
+def profile_allows_frame(profile: str, frame_type: str) -> bool:
+    if frame_type.upper().startswith("PY"):
+        return normalize_profile(profile) == "pycluster"
     allowed = allowed_types_for_profile(profile)
     if not allowed:
         return True
-    return pc_type.upper() in allowed
+    return frame_type.upper() in allowed
+
+
+def profile_allows_pc(profile: str, pc_type: str) -> bool:
+    return profile_allows_frame(profile, pc_type)
 
 
 def _normalize_dx_info(info: str) -> str:

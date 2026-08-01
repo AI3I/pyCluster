@@ -20,8 +20,9 @@ def test_fail2ban_scanner_jail_and_install_hooks_exist() -> None:
 
     assert "channel=telnet" in scanner_filter
     assert "invalid_callsign" in scanner_filter
-    assert "registration_request_required" in scanner_filter
-    assert "telnet_login_not_allowed" in scanner_filter
+    assert "registration_request_required" not in scanner_filter
+    assert "telnet_login_not_allowed" not in scanner_filter
+    assert "[sshd]" not in lib
 
     assert "[pycluster-telnet-scanner]" in scanner_jail
     assert "maxretry = 2" in scanner_jail
@@ -114,6 +115,9 @@ def test_data_refresh_service_uses_generic_names_and_migrates_legacy_timer() -> 
     assert "runtime data refresh" in service
     assert "systemctl disable --now \"$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME\"" in lib
     assert "data refresh timer" in doctor
+    assert "retention timer" in doctor
+    assert "upgrade watcher" in doctor
+    assert "from pycluster.config import load_config" in doctor
     assert "PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" in uninstall
     assert "pycluster-auth-scanner.conf" in uninstall
     assert "pycluster-scanner.local" in uninstall
@@ -131,3 +135,31 @@ def test_upgrade_and_repair_refresh_invalid_strings_catalog() -> None:
     assert "install -o \"$PYCLUSTER_USER\" -g \"$PYCLUSTER_GROUP\" -m 0640 \"$src\" \"$dest\"" in lib
     assert "validate_or_refresh_strings_toml" in upgrade
     assert "validate_or_refresh_strings_toml" in repair
+
+
+def test_deploy_lifecycle_stops_live_services_and_removes_upgrade_units() -> None:
+    lib = Path("/home/jdlewis/GitHub/pyCluster/deploy/lib.sh").read_text(encoding="utf-8")
+    upgrade = Path("/home/jdlewis/GitHub/pyCluster/deploy/upgrade.sh").read_text(encoding="utf-8")
+    repair = Path("/home/jdlewis/GitHub/pyCluster/deploy/repair.sh").read_text(encoding="utf-8")
+    uninstall = Path("/home/jdlewis/GitHub/pyCluster/deploy/uninstall.sh").read_text(encoding="utf-8")
+
+    assert upgrade.index("stop_service") < upgrade.index("backup_runtime_snapshot") < upgrade.index("sync_tree")
+    assert repair.index("stop_service") < repair.index("backup_runtime_snapshot") < repair.index("sync_tree")
+    assert uninstall.index("stop_service") < uninstall.index("backup_runtime_snapshot") < uninstall.index("disable_service")
+    assert "arm_maintenance_failure_recovery" in upgrade
+    assert "disarm_maintenance_failure_recovery" in upgrade
+    assert "restore_maintenance_service_state" in lib
+    assert "systemctl kill -s SIGKILL" not in lib
+    assert 'systemctl disable --now "$PYCLUSTER_UPGRADE_PATH_NAME"' in lib
+    assert 'rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_SERVICE_NAME"' in uninstall
+    assert 'rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_PATH_NAME"' in uninstall
+
+
+def test_nginx_setup_validates_hosts_and_rolls_back_failed_changes() -> None:
+    setup = Path("/home/jdlewis/GitHub/pyCluster/deploy/setup-nginx.sh").read_text(encoding="utf-8")
+
+    assert "validate_host_set" in setup
+    assert "rollback_nginx_setup" in setup
+    assert "trap rollback_nginx_setup ERR EXIT INT TERM" in setup
+    assert setup.index("backup_nginx_target") < setup.index('rm -f "$NGINX_CONFIG_DIR/default.conf"')
+    assert setup.rindex("nginx -t") < setup.rindex("trap - ERR EXIT INT TERM")

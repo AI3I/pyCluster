@@ -104,6 +104,45 @@ def test_store_user_prefs_round_trip(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_store_totp_email_fallback_is_exact_account_and_atomic(tmp_path: Path) -> None:
+    async def run() -> None:
+        store = SpotStore(str(tmp_path / "mfa-fallback.db"))
+        now = 1785456000
+        try:
+            for call, secret in (
+                ("AI3I", "BASESECRET"),
+                ("AI3I-94", "EXACTSECRET"),
+                ("AI3I-95", "SIBLINGSECRET"),
+            ):
+                await store.set_user_pref(call, "mfa_totp_secret", secret, now)
+                await store.set_user_pref(call, "mfa_email_otp", "off", now)
+                await store.save_mfa_challenge(
+                    challenge_id=f"challenge-{call}",
+                    call=call,
+                    purpose="telnet",
+                    code="123456",
+                    expires_epoch=now + 300,
+                    attempts_left=3,
+                    issued_epoch=now,
+                )
+
+            await store.fallback_totp_to_email("AI3I-94", now + 1)
+
+            assert await store.get_user_pref("AI3I-94", "mfa_totp_secret") is None
+            assert await store.get_user_pref("AI3I-94", "mfa_email_otp") == "required"
+            assert await store.get_mfa_challenge("challenge-AI3I-94") is None
+            assert await store.get_user_pref("AI3I", "mfa_totp_secret") == "BASESECRET"
+            assert await store.get_user_pref("AI3I", "mfa_email_otp") == "off"
+            assert await store.get_mfa_challenge("challenge-AI3I") is not None
+            assert await store.get_user_pref("AI3I-95", "mfa_totp_secret") == "SIBLINGSECRET"
+            assert await store.get_user_pref("AI3I-95", "mfa_email_otp") == "off"
+            assert await store.get_mfa_challenge("challenge-AI3I-95") is not None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_store_filter_rules_round_trip(tmp_path: Path) -> None:
     async def run() -> None:
         db = tmp_path / "test.db"
@@ -472,6 +511,96 @@ def test_store_startup_commands_round_trip(tmp_path: Path) -> None:
             assert cleared == 1
             rows = await store.list_startup_commands("N0CALL")
             assert rows == []
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_py_node_catalog_enforces_confidence_sequence_and_expiry(tmp_path: Path) -> None:
+    async def run() -> None:
+        store = SpotStore(str(tmp_path / "py_nodes.db"))
+        base = {
+            "node_call": "AI3I-92",
+            "node_id": "22345678-1234-5678-9234-567812345678",
+            "origin_node": "AI3I-92",
+            "sequence": 2,
+            "software_version": "1.0.12",
+            "protocol_version": "1",
+            "public_web_url": "",
+            "locator": "FN00FS",
+            "qth": "Test",
+            "sysop_contact": "",
+            "services": ["telnet"],
+            "capabilities": ["topology-records"],
+            "source_node": "AI3I-92",
+            "learned_from": "AI3I-92",
+            "hop_count": 0,
+            "confidence": "direct",
+            "updated_epoch": 1785456000,
+            "expires_at": 1785459600,
+            "raw_digest": "a" * 64,
+        }
+        try:
+            assert await store.upsert_py_node_record(base, 1785456000) == "accepted"
+            assert await store.upsert_py_node_record({**base, "sequence": 1}, 1785456001) == "rejected-stale"
+            assert await store.upsert_py_node_record(
+                {**base, "raw_digest": "b" * 64}, 1785456002
+            ) == "rejected-conflict"
+            relayed = {
+                **base,
+                "sequence": 3,
+                "raw_digest": "c" * 64,
+                "confidence": "reported",
+                "learned_from": "AI3I-93",
+            }
+            assert await store.upsert_py_node_record(relayed, 1785456003) == "rejected-confidence"
+            row = await store.get_py_node_record("AI3I-92")
+            assert row is not None
+            assert row["confidence"] == "direct"
+            assert row["services"] == ["telnet"]
+            assert await store.prune_expired_py_nodes(1785459600) == 1
+            assert await store.list_py_node_records(1785459600) == []
+
+            reported_first = {
+                **base,
+                "node_call": "AI3I-93",
+                "origin_node": "AI3I-93",
+                "node_id": "32345678-1234-5678-9234-567812345678",
+                "confidence": "reported",
+                "source_node": "AI3I-94",
+                "learned_from": "AI3I-94",
+                "hop_count": 2,
+            }
+            assert await store.upsert_py_node_record(reported_first, 1785456000) == "accepted"
+            direct = {
+                **reported_first,
+                "confidence": "direct",
+                "source_node": "AI3I-93",
+                "learned_from": "AI3I-93",
+                "hop_count": 0,
+            }
+            assert await store.upsert_py_node_record(direct, 1785456001) == "accepted"
+            upgraded = await store.get_py_node_record("AI3I-93")
+            assert upgraded is not None
+            assert upgraded["confidence"] == "direct"
+            assert upgraded["learned_from"] == "AI3I-93"
+            assert await store.refresh_py_node_lease(
+                "AI3I-93",
+                str(direct["node_id"]),
+                int(direct["sequence"]),
+                str(direct["raw_digest"]),
+                1785463200,
+                1785456002,
+            )
+            renewed = await store.get_py_node_record("AI3I-93")
+            assert renewed is not None
+            assert renewed["expires_at"] == 1785463200
+            assert renewed["updated_epoch"] == 1785459600
+            assert int(renewed["expires_at"]) - int(renewed["updated_epoch"]) == 3600
+            assert not await store.refresh_py_node_lease(
+                "AI3I-93", str(direct["node_id"]), 999, str(direct["raw_digest"]), 1785466800, 1785456003
+            )
         finally:
             await store.close()
 

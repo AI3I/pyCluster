@@ -365,6 +365,7 @@ class WebAdminServer:
                 return int(str(v or "").strip())
             except Exception:
                 return default
+
         def _pref(*keys: str, default: str = "") -> str:
             for key in keys:
                 if key in data:
@@ -1108,6 +1109,29 @@ class WebAdminServer:
             "pc51_to": node_cfg.get(pfx + "pc51.to", ""),
             "pc51_from": node_cfg.get(pfx + "pc51.from", ""),
             "pc51_value": node_cfg.get(pfx + "pc51.value", ""),
+            "py_protocol_version": node_cfg.get(pfx + "py.protocol_version", ""),
+            "py_node": node_cfg.get(pfx + "py.node", ""),
+            "py_software_version": node_cfg.get(pfx + "py.software_version", ""),
+            "py_capabilities": node_cfg.get(pfx + "py.capabilities", ""),
+            "py_negotiated_capabilities": node_cfg.get(pfx + "py.negotiated_capabilities", ""),
+            "py_announced_epoch": node_cfg.get(pfx + "py.announced_epoch", ""),
+            "py_last_error_code": node_cfg.get(pfx + "py.last_error.code", ""),
+            "py_last_error_type": node_cfg.get(pfx + "py.last_error.offending_type", ""),
+            "py_last_error_detail": node_cfg.get(pfx + "py.last_error.detail", ""),
+            "py_last_error_epoch": node_cfg.get(pfx + "py.last_error.announced_epoch", ""),
+            "py_nodeinfo_node_id": node_cfg.get(pfx + "py.nodeinfo.node_id", ""),
+            "py_nodeinfo_sequence": node_cfg.get(pfx + "py.nodeinfo.sequence", ""),
+            "py_nodeinfo_software_version": node_cfg.get(pfx + "py.nodeinfo.software_version", ""),
+            "py_nodeinfo_public_web_url": node_cfg.get(pfx + "py.nodeinfo.public_web_url", ""),
+            "py_nodeinfo_locator": node_cfg.get(pfx + "py.nodeinfo.locator", ""),
+            "py_nodeinfo_qth": node_cfg.get(pfx + "py.nodeinfo.qth", ""),
+            "py_nodeinfo_sysop_contact": node_cfg.get(pfx + "py.nodeinfo.sysop_contact", ""),
+            "py_nodeinfo_services": node_cfg.get(pfx + "py.nodeinfo.services", ""),
+            "py_nodeinfo_capabilities": node_cfg.get(pfx + "py.nodeinfo.capabilities", ""),
+            "py_nodeinfo_updated_epoch": node_cfg.get(pfx + "py.nodeinfo.updated_epoch", ""),
+            "py_nodeinfo_expires_epoch": node_cfg.get(pfx + "py.nodeinfo.expires_epoch", ""),
+            "py_nodeinfo_learned_from": node_cfg.get(pfx + "py.nodeinfo.learned_from", ""),
+            "py_nodeinfo_confidence": node_cfg.get(pfx + "py.nodeinfo.confidence", ""),
             "last_epoch": node_cfg.get(pfx + "last_epoch", ""),
             "last_pc_type": node_cfg.get(pfx + "last_pc_type", ""),
             "change_count": node_cfg.get(pfx + "change_count", ""),
@@ -1120,6 +1144,15 @@ class WebAdminServer:
             try:
                 return int(str(v))
             except (TypeError, ValueError):
+                return default
+
+        def _to_bool(v: str | object) -> bool:
+            return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+        def _json_value(key: str, default: object) -> object:
+            try:
+                return json.loads(str(node_cfg.get(pfx + key, "")))
+            except (TypeError, ValueError, json.JSONDecodeError):
                 return default
 
         thresholds = self._proto_thresholds(node_cfg)
@@ -1139,6 +1172,9 @@ class WebAdminServer:
                 "pc51_to",
                 "pc51_from",
                 "pc51_value",
+                "py_protocol_version",
+                "py_node",
+                "py_software_version",
             )
         )
         health = "unknown"
@@ -1195,6 +1231,100 @@ class WebAdminServer:
             "pc24": {"call": state["pc24_call"], "flag": state["pc24_flag"]},
             "pc50": {"call": state["pc50_call"], "count": state["pc50_count"]},
             "pc51": {"to": state["pc51_to"], "from": state["pc51_from"], "value": state["pc51_value"]},
+            "py": {
+                "protocol_version": state["py_protocol_version"],
+                "node": state["py_node"],
+                "software_version": state["py_software_version"],
+                "capabilities": [item for item in str(state["py_capabilities"]).split(",") if item],
+                "negotiated_capabilities": [
+                    item for item in str(state["py_negotiated_capabilities"]).split(",") if item
+                ],
+                "announced_epoch": state["py_announced_epoch"],
+                "last_error": {
+                    "code": state["py_last_error_code"],
+                    "offending_type": state["py_last_error_type"],
+                    "detail": state["py_last_error_detail"],
+                    "announced_epoch": state["py_last_error_epoch"],
+                },
+                "node_info": {
+                    "node_id": state["py_nodeinfo_node_id"],
+                    "sequence": _to_int(state["py_nodeinfo_sequence"], 0),
+                    "software_version": state["py_nodeinfo_software_version"],
+                    "public_web_url": state["py_nodeinfo_public_web_url"],
+                    "locator": state["py_nodeinfo_locator"],
+                    "qth": state["py_nodeinfo_qth"],
+                    "sysop_contact": state["py_nodeinfo_sysop_contact"],
+                    "services": [item for item in str(state["py_nodeinfo_services"]).split(",") if item],
+                    "capabilities": [
+                        item for item in str(state["py_nodeinfo_capabilities"]).split(",") if item
+                    ],
+                    "updated_epoch": _to_int(state["py_nodeinfo_updated_epoch"], 0),
+                    "expires_epoch": _to_int(state["py_nodeinfo_expires_epoch"], 0),
+                    "learned_from": state["py_nodeinfo_learned_from"],
+                    "confidence": state["py_nodeinfo_confidence"],
+                },
+                "health": {
+                    "state": node_cfg.get(pfx + "py.health.state", ""),
+                    "services": _json_value("py.health.services", {}),
+                    "link_state": node_cfg.get(pfx + "py.health.link_state", ""),
+                    "last_rx_epoch": _to_int(node_cfg.get(pfx + "py.health.last_rx_epoch", "0")),
+                    "last_tx_epoch": _to_int(node_cfg.get(pfx + "py.health.last_tx_epoch", "0")),
+                    "receive_quiet": _to_bool(node_cfg.get(pfx + "py.health.receive_quiet", "0")),
+                    "transmit_active": _to_bool(node_cfg.get(pfx + "py.health.transmit_active", "0")),
+                    "flapping": _to_bool(node_cfg.get(pfx + "py.health.flapping", "0")),
+                    "reconnecting": _to_bool(node_cfg.get(pfx + "py.health.reconnecting", "0")),
+                    "last_error_category": node_cfg.get(pfx + "py.health.last_error_category", ""),
+                    "generated_epoch": _to_int(node_cfg.get(pfx + "py.health.generated_epoch", "0")),
+                    "expires_epoch": _to_int(node_cfg.get(pfx + "py.health.expires_epoch", "0")),
+                },
+                "datasets": {
+                    "records": _json_value("py.datasets.records", []),
+                    "generated_epoch": _to_int(node_cfg.get(pfx + "py.datasets.generated_epoch", "0")),
+                    "expires_epoch": _to_int(node_cfg.get(pfx + "py.datasets.expires_epoch", "0")),
+                },
+                "rbn_status": {
+                    "enabled": _to_bool(node_cfg.get(pfx + "py.rbn.enabled", "0")),
+                    "modes": [item for item in node_cfg.get(pfx + "py.rbn.modes", "").split(",") if item],
+                    "feed_count": _to_int(node_cfg.get(pfx + "py.rbn.feed_count", "0")),
+                    "connected_count": _to_int(node_cfg.get(pfx + "py.rbn.connected_count", "0")),
+                    "state": node_cfg.get(pfx + "py.rbn.state", ""),
+                    "last_spot_epoch": _to_int(node_cfg.get(pfx + "py.rbn.last_spot_epoch", "0")),
+                    "recent_spots_per_minute": _to_int(node_cfg.get(pfx + "py.rbn.recent_spots_per_minute", "0")),
+                    "queue_state": node_cfg.get(pfx + "py.rbn.queue_state", ""),
+                    "generated_epoch": _to_int(node_cfg.get(pfx + "py.rbn.generated_epoch", "0")),
+                    "expires_epoch": _to_int(node_cfg.get(pfx + "py.rbn.expires_epoch", "0")),
+                },
+                "notice": {
+                    "notice_id": node_cfg.get(pfx + "py.notice.notice_id", ""),
+                    "sequence": _to_int(node_cfg.get(pfx + "py.notice.sequence", "0")),
+                    "active": _to_bool(node_cfg.get(pfx + "py.notice.active", "0")),
+                    "severity": node_cfg.get(pfx + "py.notice.severity", ""),
+                    "message": node_cfg.get(pfx + "py.notice.message", ""),
+                    "created_epoch": _to_int(node_cfg.get(pfx + "py.notice.created_epoch", "0")),
+                    "generated_epoch": _to_int(node_cfg.get(pfx + "py.notice.generated_epoch", "0")),
+                    "expires_epoch": _to_int(node_cfg.get(pfx + "py.notice.expires_epoch", "0")),
+                },
+                "policy": {
+                    "registration_required": _to_bool(node_cfg.get(pfx + "py.policy.registration_required", "0")),
+                    "email_verification_web": _to_bool(node_cfg.get(pfx + "py.policy.email_verification_web", "0")),
+                    "email_verification_telnet": _to_bool(node_cfg.get(pfx + "py.policy.email_verification_telnet", "0")),
+                    "mfa_available": _to_bool(node_cfg.get(pfx + "py.policy.mfa_available", "0")),
+                    "mfa_required_users": _to_bool(node_cfg.get(pfx + "py.policy.mfa_required_users", "0")),
+                    "mfa_required_sysops": _to_bool(node_cfg.get(pfx + "py.policy.mfa_required_sysops", "0")),
+                    "public_web_enabled": _to_bool(node_cfg.get(pfx + "py.policy.public_web_enabled", "0")),
+                    "anonymous_web_enabled": _to_bool(node_cfg.get(pfx + "py.policy.anonymous_web_enabled", "0")),
+                    "generated_epoch": _to_int(node_cfg.get(pfx + "py.policy.generated_epoch", "0")),
+                    "expires_epoch": _to_int(node_cfg.get(pfx + "py.policy.expires_epoch", "0")),
+                },
+                "clock": {
+                    "utc_epoch": _to_int(node_cfg.get(pfx + "py.clock.utc_epoch", "0")),
+                    "offset_seconds": _to_int(node_cfg.get(pfx + "py.clock.offset_seconds", "0")),
+                    "uptime_seconds": _to_int(node_cfg.get(pfx + "py.clock.uptime_seconds", "0")),
+                    "boot_epoch": _to_int(node_cfg.get(pfx + "py.clock.boot_epoch", "0")),
+                    "generated_epoch": _to_int(node_cfg.get(pfx + "py.clock.generated_epoch", "0")),
+                    "expires_epoch": _to_int(node_cfg.get(pfx + "py.clock.expires_epoch", "0")),
+                },
+            },
         }
 
     def _link_activity_for_peer(self, st: dict[str, object], now_epoch: int) -> dict[str, object]:
@@ -2392,6 +2522,19 @@ table{
 .proto-peer-table td:nth-child(5){
   white-space:normal;
 }
+.known-node-table{
+  width:max-content;
+  min-width:100%;
+}
+.known-node-table th,
+.known-node-table td{
+  white-space:nowrap;
+}
+.known-node-table td:nth-child(4),
+.known-node-table td:nth-child(6),
+.known-node-table td:nth-child(7){
+  white-space:normal;
+}
 th,td{
   padding:10px 11px;
   border-bottom:1px solid var(--table-border);
@@ -2634,10 +2777,11 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <div class="node-tabs" role="tablist" aria-label="Node Settings groups">
             <button class="node-tab active" type="button" data-node-group="general">General</button>
             <button class="node-tab" type="button" data-node-group="auth">Authentication</button>
-            <button class="node-tab" type="button" data-node-group="smtp">Mail (SMTP)</button>
-            <button class="node-tab" type="button" data-node-group="qrz">Lookup (QRZ)</button>
+            <button class="node-tab" type="button" data-node-group="smtp">SMTP</button>
+            <button class="node-tab" type="button" data-node-group="qrz">QRZ Lookup</button>
             <button class="node-tab" type="button" data-node-group="satellite">Satellite</button>
-            <button class="node-tab" type="button" data-node-group="rbn">Reverse Beacon Network (RBN)</button>
+            <button class="node-tab" type="button" data-node-group="rbn">RBN</button>
+            <button class="node-tab" type="button" data-node-group="pyprotocol">pyCluster Protocol</button>
             <button class="node-tab" type="button" data-node-group="maintenance">Maintenance</button>
           </div>
           <div class="node-group active" id="node-group-general">
@@ -2742,7 +2886,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid compact-controls">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.11" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.12" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>
@@ -2810,6 +2954,48 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               </div>
             </div>
           </div>
+          <div class="node-group" id="node-group-pyprotocol">
+            <section>
+              <h3>PY Sharing Policy</h3>
+              <div class="subtle">Controls decentralized metadata shared only with authenticated, negotiated pyCluster peers.</div>
+              <div class="checkgrid" style="margin-top:12px">
+                <div class="checkrow attention"><input id="pyEnabled" type="checkbox"><label for="pyEnabled">Enable private pyCluster protocol</label></div>
+                <div class="checkrow"><input id="pyShareNodeInfo" type="checkbox"><label for="pyShareNodeInfo">Node information</label></div>
+                <div class="checkrow"><input id="pyShareTopology" type="checkbox"><label for="pyShareTopology">Known-node topology</label></div>
+                <div class="checkrow"><input id="pyShareHealth" type="checkbox"><label for="pyShareHealth">Health</label></div>
+                <div class="checkrow"><input id="pyShareDatasets" type="checkbox"><label for="pyShareDatasets">Dataset freshness</label></div>
+                <div class="checkrow"><input id="pyShareRbn" type="checkbox"><label for="pyShareRbn">RBN status</label></div>
+                <div class="checkrow"><input id="pySharePolicy" type="checkbox"><label for="pySharePolicy">Access policy</label></div>
+                <div class="checkrow"><input id="pyShareClock" type="checkbox"><label for="pyShareClock">Clock and uptime</label></div>
+                <div class="checkrow"><input id="pySharePublicUrl" type="checkbox"><label for="pySharePublicUrl">Public web URL</label></div>
+                <div class="checkrow"><input id="pyShareLocator" type="checkbox"><label for="pyShareLocator">Grid locator</label></div>
+                <div class="checkrow"><input id="pyShareQth" type="checkbox"><label for="pyShareQth">QTH</label></div>
+                <div class="checkrow"><input id="pyShareContact" type="checkbox"><label for="pyShareContact">System Operator contact</label></div>
+              </div>
+              <div class="form-grid" style="margin-top:12px">
+                <div class="field wide"><label for="pyPublicUrl">Shared Public Web URL</label><input id="pyPublicUrl" type="url" placeholder="https://cluster.example.net/"></div>
+              </div>
+              <div class="actions" style="margin-top:12px"><button class="good" id="pySharingSave" type="button">Save Sharing Policy</button></div>
+              <div class="user-status-detail" id="pySharingPreview" style="margin-top:12px"><div class="status-cell wide"><label>Shared Metadata Preview</label><span>No metadata preview loaded.</span></div></div>
+            </section>
+            <section style="margin-top:14px">
+              <h3>Network Notice</h3>
+              <div class="form-grid compact-controls">
+                <div class="field">
+                  <label for="pyNoticeShare">Notice Sharing</label>
+                  <div class="checkrow attention"><input id="pyNoticeShare" type="checkbox"><label for="pyNoticeShare">Advertise on negotiated pyCluster links</label></div>
+                </div>
+                <div class="field"><label for="pyNoticeSeverity">Severity</label><div class="select-shell"><select id="pyNoticeSeverity"><option value="normal">Normal</option><option value="maintenance">Maintenance</option><option value="upgrading">Upgrading</option><option value="degraded">Degraded</option><option value="testing">Testing</option></select></div></div>
+                <div class="field"><label for="pyNoticeExpires">Expires</label><input id="pyNoticeExpires" type="datetime-local"></div>
+                <div class="field wide"><label for="pyNoticeMessage">Operator Message</label><input id="pyNoticeMessage" maxlength="240" placeholder="Short operational notice"></div>
+              </div>
+              <div class="actions" style="margin-top:12px">
+                <button class="good" id="pyNoticeSave" type="button">Save Notice</button>
+                <button class="warn" id="pyNoticeClear" type="button">Clear Notice</button>
+              </div>
+              <div class="user-status-detail" id="pyNoticeStatus" style="margin-top:12px"><div class="status-cell wide"><label>Status</label><span>No active network notice.</span></div></div>
+            </section>
+          </div>
           <div class="node-group" id="node-group-maintenance">
             <div class="checkgrid maintenance-toggle-row">
               <div class="checkrow attention" title="Enable daily retention cleanup for spots, messages, and bulletins.">
@@ -2838,12 +3024,13 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="status-cell wide"><label>Remote Check</label><span id="upgradeMetaRemote">-</span></div>
             </div>
             <div class="actions" style="margin-top:12px">
+            <button class="good" id="saveNodeMaintenance" title="Persist the current Node Settings configuration.">Save Node Settings</button>
             <button class="attention" id="runCleanup" title="Run the current age-based cleanup settings immediately.">Run Cleanup Now</button>
             <button class="attention" id="checkUpgrade" title="Check whether a newer pyCluster version is available from the configured git remote.">Check for Upgrade</button>
             <button class="warn" id="runUpgrade" title="Queue a root-owned upgrade job that survives restarting this console.">Run Upgrade</button>
             </div>
           </div>
-          <div class="actions" style="margin-top:12px">
+          <div class="actions" id="nodeSettingsSaveActions" style="margin-top:12px">
             <button class="good" id="saveNode" title="Persist these telnet presentation settings for this node.">Save Node Settings</button>
           </div>
         </div>
@@ -3066,6 +3253,21 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <table class="proto-peer-table">
                 <thead><tr><th>Peer</th><th>Link</th><th>Health</th><th>Activity</th><th>Protocol Detail</th></tr></thead>
                 <tbody id="protoPeerRows"><tr><td colspan="5">Loading peer state...</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+          <section style="margin-top:14px">
+            <div class="users-browser-topbar">
+              <div>
+                <h3>Known pyCluster Nodes</h3>
+                <div class="subtle">Nodes known directly or reported through negotiated pyCluster topology exchange.</div>
+              </div>
+              <button class="secondary" id="knownNodesReload" type="button" title="Reload the local known-node catalog">Reload</button>
+            </div>
+            <div class="tablewrap">
+              <table class="known-node-table">
+                <thead><tr><th>Node</th><th>Reach</th><th>Version</th><th>Location</th><th>Learned</th><th>Services</th><th>Freshness</th></tr></thead>
+                <tbody id="knownNodeRows"><tr><td colspan="7">Loading known pyCluster nodes...</td></tr></tbody>
               </table>
             </div>
           </section>
@@ -3324,6 +3526,7 @@ function setNodeGroup(group) {
   document.querySelectorAll('.node-tab').forEach((el) => {
     el.classList.toggle('active', el.dataset.nodeGroup === target);
   });
+  byId('nodeSettingsSaveActions').classList.toggle('hidden', target === 'pyprotocol' || target === 'maintenance');
 }
 function setTelemetryPanel(panel) {
   const target = String(panel || 'overview').toLowerCase();
@@ -3851,6 +4054,87 @@ async function loadPeerRows() {
   const peers = await j('/api/peers');
   setPeerRows(peers);
   setProtoPeerRows(peers);
+}
+function setKnownNodeRows(payload, peers) {
+  const body = byId('knownNodeRows');
+  if (!body) return;
+  const rows = Array.isArray(payload && payload.nodes) ? payload.nodes : [];
+  const peerMap = new Map((Array.isArray(peers) ? peers : []).map((peer) => [String(peer.peer || '').toUpperCase(), peer]));
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="7">No pyCluster nodes are known yet.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map((row) => {
+    const call = String(row.node_call || '').toUpperCase();
+    const confidence = String(row.confidence || 'reported').toLowerCase();
+    const directPeer = peerMap.get(call);
+    const peerPy = directPeer && directPeer.proto ? (directPeer.proto.py || {}) : {};
+    const health = peerPy.health || {};
+    const rbn = peerPy.rbn_status || {};
+    const location = [row.locator, row.qth].filter(Boolean).join(' • ') || '-';
+    const learned = confidence === 'local'
+      ? 'This node'
+      : `${row.learned_from || row.source_node || '-'} • ${Number(row.hop_count || 0)} hop${Number(row.hop_count || 0) === 1 ? '' : 's'}`;
+    const services = Array.isArray(row.services) ? row.services.join(', ') : '-';
+    const serviceMeta = directPeer
+      ? `<div class="mini">health ${esc(health.state || 'unknown')} • RBN ${esc(rbn.state || 'unknown')}</div>`
+      : '';
+    const publicUrl = String(row.public_web_url || '').trim();
+    const callText = publicUrl
+      ? `<a href="${esc(publicUrl)}" target="_blank" rel="noopener noreferrer"><strong>${esc(call)}</strong></a>`
+      : `<strong>${esc(call)}</strong>`;
+    return `<tr>
+      <td>${callText}<div class="mini">${esc(String(row.node_id || ''))}</div></td>
+      <td><span class="tag">${esc(confidence)}</span></td>
+      <td>${esc(row.software_version || '-')}<div class="mini">PY ${esc(row.protocol_version || '-')}</div></td>
+      <td>${esc(location)}</td>
+      <td>${esc(learned)}</td>
+      <td>${esc(services)}${serviceMeta}</td>
+      <td>Seen ${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">Expires ${esc(fmtEpoch(row.expires_at || 0))}</div></td>
+    </tr>`;
+  }).join('');
+}
+function localDateTimeValue(epoch) {
+  const date = new Date(Number(epoch || 0) * 1000);
+  if (!Number.isFinite(date.getTime()) || Number(epoch || 0) <= 0) return '';
+  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return shifted.toISOString().slice(0, 16);
+}
+function fillPyNotice(data) {
+  const row = data || {};
+  byId('pyNoticeShare').checked = !!row.share_notices;
+  byId('pyNoticeSeverity').value = row.severity || 'normal';
+  byId('pyNoticeMessage').value = row.message || '';
+  byId('pyNoticeExpires').value = localDateTimeValue(row.expires_epoch || 0);
+  const active = !!row.active;
+  byId('pyNoticeStatus').innerHTML = `<div class="status-cell wide"><label>Status</label><span>${active
+    ? `${esc(row.severity || 'normal')} notice active until ${esc(fmtEpoch(row.expires_epoch || 0))}`
+    : 'No active network notice.'}</span></div>`;
+}
+function fillPySharing(data) {
+  const row = data || {};
+  const fields = {
+    pyEnabled:'enabled', pyShareNodeInfo:'share_node_info', pyShareTopology:'share_topology',
+    pyShareHealth:'share_health', pyShareDatasets:'share_datasets', pyShareRbn:'share_rbn_status',
+    pySharePolicy:'share_policy', pyShareClock:'share_clock',
+    pySharePublicUrl:'share_public_web_url', pyShareLocator:'share_locator', pyShareQth:'share_qth',
+    pyShareContact:'share_sysop_contact',
+  };
+  Object.entries(fields).forEach(([id, key]) => { if (byId(id)) byId(id).checked = !!row[key]; });
+  byId('pyPublicUrl').value = row.public_web_url || '';
+  const preview = row.preview || {};
+  const values = [
+    preview.public_web_url ? `URL ${preview.public_web_url}` : '',
+    preview.locator ? `Locator ${preview.locator}` : '',
+    preview.qth ? `QTH ${preview.qth}` : '',
+    preview.sysop_contact ? `Contact ${preview.sysop_contact}` : '',
+  ].filter(Boolean);
+  byId('pySharingPreview').innerHTML = `<div class="status-cell wide"><label>Shared Metadata Preview</label><span>${esc(values.join(' • ') || 'Identity and software version only.')}</span></div>`;
+  byId('pyNoticeShare').checked = !!row.share_notices;
+}
+async function reloadKnownNodes() {
+  const [nodes, peers] = await Promise.all([j('/api/py-nodes'), j('/api/peers')]);
+  setKnownNodeRows(nodes, peers);
 }
 function setSpotRows(spots) {
   const body = byId('spotRows');
@@ -4544,6 +4828,9 @@ async function load() {
     j('/api/upgrade/status'),
     j('/api/audit?limit=20'),
     j('/api/security?limit=20'),
+    j('/api/py-nodes'),
+    j('/api/py-notice'),
+    j('/api/py-sharing'),
   ]);
 
   const [
@@ -4560,6 +4847,9 @@ async function load() {
     upgradeRes,
     auditRes,
     securityRes,
+    pyNodesRes,
+    pyNoticeRes,
+    pySharingRes,
   ] = results;
 
   const failures = results.filter((r) => r.status === 'rejected');
@@ -4606,6 +4896,11 @@ async function load() {
     setLoginRows((securityRes.value || {}).logins || []);
     setBanRows((securityRes.value || {}).bans || []);
   }
+  if (pyNodesRes.status === 'fulfilled') {
+    setKnownNodeRows(pyNodesRes.value, peersRes.status === 'fulfilled' ? peersRes.value : []);
+  }
+  if (pyNoticeRes.status === 'fulfilled') fillPyNotice(pyNoticeRes.value);
+  if (pySharingRes.status === 'fulfilled') fillPySharing(pySharingRes.value);
   await loadUserBrowser(currentUserBrowser);
   setText('postingCall', webCall || '-');
 
@@ -4618,6 +4913,75 @@ async function load() {
 }
 
 byId('reload').onclick = load;
+byId('knownNodesReload').onclick = async () => {
+  try {
+    await reloadKnownNodes();
+    say('Known pyCluster nodes refreshed.');
+  } catch (err) {
+    say('Known-node refresh failed: ' + errText(err), false);
+  }
+};
+byId('pySharingSave').onclick = async () => {
+  try {
+    const result = await j('/api/py-sharing', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        enabled:byId('pyEnabled').checked,
+        share_node_info:byId('pyShareNodeInfo').checked,
+        share_topology:byId('pyShareTopology').checked,
+        share_health:byId('pyShareHealth').checked,
+        share_datasets:byId('pyShareDatasets').checked,
+        share_rbn_status:byId('pyShareRbn').checked,
+        share_policy:byId('pySharePolicy').checked,
+        share_clock:byId('pyShareClock').checked,
+        share_notices:byId('pyNoticeShare').checked,
+        share_public_web_url:byId('pySharePublicUrl').checked,
+        share_locator:byId('pyShareLocator').checked,
+        share_qth:byId('pyShareQth').checked,
+        share_sysop_contact:byId('pyShareContact').checked,
+        public_web_url:byId('pyPublicUrl').value.trim(),
+      }),
+    });
+    fillPySharing(result);
+    say('PY sharing policy saved. Active links renegotiate after reconnect.');
+  } catch (err) {
+    say('Saving PY sharing policy failed: ' + errText(err), false);
+  }
+};
+byId('pyNoticeSave').onclick = async () => {
+  const expiryValue = byId('pyNoticeExpires').value;
+  const expiresEpoch = expiryValue ? Math.floor(new Date(expiryValue).getTime() / 1000) : 0;
+  try {
+    const result = await j('/api/py-notice', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        share_notices: byId('pyNoticeShare').checked,
+        severity: byId('pyNoticeSeverity').value,
+        message: byId('pyNoticeMessage').value.trim(),
+        expires_epoch: expiresEpoch,
+      }),
+    });
+    fillPyNotice(result);
+    say(result.active ? 'Network notice saved.' : 'Notice sharing settings saved.');
+  } catch (err) {
+    say('Saving network notice failed: ' + errText(err), false);
+  }
+};
+byId('pyNoticeClear').onclick = async () => {
+  try {
+    const result = await j('/api/py-notice', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({share_notices: byId('pyNoticeShare').checked, severity:'normal', message:'', expires_epoch:0}),
+    });
+    fillPyNotice(result);
+    say('Network notice cleared.');
+  } catch (err) {
+    say('Clearing network notice failed: ' + errText(err), false);
+  }
+};
 document.querySelectorAll('.sidebar-nav a').forEach((el) => {
   el.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -4740,9 +5104,9 @@ byId('login').onclick = async () => {
     }
   }
 };
-byId('saveNode').onclick = async () => {
+async function saveNodeSettings(actionId) {
   try {
-    await runButtonAction('saveNode', async () => {
+    await runButtonAction(actionId, async () => {
       syncRbnPresetFeeds();
       const payload = {
         branding_name: byId('branding_name').value.trim(),
@@ -4816,7 +5180,9 @@ byId('saveNode').onclick = async () => {
   } catch (err) {
     say('Saving node settings failed: ' + errText(err), false);
   }
-};
+}
+byId('saveNode').onclick = () => saveNodeSettings('saveNode');
+byId('saveNodeMaintenance').onclick = () => saveNodeSettings('saveNodeMaintenance');
 byId('runCleanup').onclick = async () => {
   const r = await j('/api/maintenance/cleanup', {method:'POST'});
   const removed = r && r.removed ? r.removed : {};
@@ -6526,6 +6892,154 @@ if (restoreWebSession()) {
                     for r in rows
                 ]
                 await self._write_response(writer, 200, self._json(body))
+                return
+
+            if path == "/api/py-nodes":
+                if method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                now_epoch = int(time.time())
+                await self.store.prune_expired_py_nodes(now_epoch)
+                rows = await self.store.list_py_node_records(now_epoch)
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json(
+                        {
+                            "generated_epoch": now_epoch,
+                            "count": len(rows),
+                            "nodes": rows,
+                        }
+                    ),
+                )
+                return
+
+            if path == "/api/py-notice":
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                now_epoch = int(time.time())
+                if method == "GET":
+                    expires_epoch = int(self.config.py_protocol.notice_expires_epoch or 0)
+                    await self._write_response(writer, 200, self._json({
+                        "share_notices": bool(self.config.py_protocol.share_notices),
+                        "severity": self.config.py_protocol.notice_severity,
+                        "message": self.config.py_protocol.notice_message,
+                        "expires_epoch": expires_epoch,
+                        "active": bool(self.config.py_protocol.notice_message and expires_epoch > now_epoch),
+                    }))
+                    return
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                payload = self._parse_json_body(body)
+                share_notices = bool(payload.get("share_notices", False))
+                severity = str(payload.get("severity", "normal") or "normal").strip().lower()
+                message = " ".join(str(payload.get("message", "") or "").split())
+                try:
+                    expires_epoch = int(payload.get("expires_epoch", 0) or 0)
+                except (TypeError, ValueError):
+                    await self._write_response(writer, 400, self._json({"error": "invalid notice expiry"}))
+                    return
+                if severity not in {"normal", "maintenance", "upgrading", "degraded", "testing"}:
+                    await self._write_response(writer, 400, self._json({"error": "invalid notice severity"}))
+                    return
+                if len(message) > 240:
+                    await self._write_response(writer, 400, self._json({"error": "notice message exceeds 240 characters"}))
+                    return
+                if message and (expires_epoch <= now_epoch or expires_epoch > now_epoch + 30 * 86400):
+                    await self._write_response(writer, 400, self._json({"error": "active notice expiry must be within 30 days"}))
+                    return
+                if not message:
+                    severity = "normal"
+                    expires_epoch = 0
+                self.config.py_protocol.share_notices = share_notices
+                self.config.py_protocol.notice_severity = severity
+                self.config.py_protocol.notice_message = message
+                self.config.py_protocol.notice_expires_epoch = expires_epoch
+                if self.config_path:
+                    save_config(self.config_path, self.config)
+                if self.config_updated_fn:
+                    self.config_updated_fn()
+                self._audit("config", "PY notice updated" if message else "PY notice cleared")
+                await self._write_response(writer, 200, self._json({
+                    "ok": True,
+                    "share_notices": share_notices,
+                    "severity": severity,
+                    "message": message,
+                    "expires_epoch": expires_epoch,
+                    "active": bool(message),
+                    "renegotiate_on_reconnect": True,
+                }))
+                return
+
+            if path == "/api/py-sharing":
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                boolean_fields = (
+                    "enabled", "share_node_info", "share_public_web_url", "share_locator", "share_qth",
+                    "share_sysop_contact", "share_topology", "share_health", "share_datasets",
+                    "share_rbn_status", "share_policy", "share_clock", "share_notices",
+                )
+                if method == "POST":
+                    payload = self._parse_json_body(body)
+                    public_web_url = self.config.py_protocol.public_web_url
+                    if "public_web_url" in payload:
+                        public_web_url = str(payload.get("public_web_url", "") or "").strip()
+                        if len(public_web_url) > 256:
+                            await self._write_response(writer, 400, self._json({"error": "public web URL is too long"}))
+                            return
+                        if public_web_url:
+                            parsed_url = urlparse(public_web_url)
+                            hostname = (parsed_url.hostname or "").lower()
+                            invalid = (
+                                parsed_url.scheme not in {"http", "https"}
+                                or not parsed_url.netloc
+                                or parsed_url.username is not None
+                                or parsed_url.password is not None
+                                or hostname == "localhost"
+                                or hostname.endswith(".local")
+                            )
+                            try:
+                                address = ipaddress.ip_address(hostname)
+                            except ValueError:
+                                address = None
+                            if invalid or (address is not None and not address.is_global):
+                                await self._write_response(writer, 400, self._json({"error": "public web URL is not public"}))
+                                return
+                    for key in boolean_fields:
+                        if key in payload:
+                            if not isinstance(payload[key], bool):
+                                await self._write_response(writer, 400, self._json({"error": f"{key} must be a boolean"}))
+                                return
+                            setattr(self.config.py_protocol, key, payload[key])
+                    self.config.py_protocol.public_web_url = public_web_url
+                    if self.config_path:
+                        save_config(self.config_path, self.config)
+                    if self.config_updated_fn:
+                        self.config_updated_fn()
+                    self._audit("config", "PY sharing policy updated")
+                elif method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                values = {key: bool(getattr(self.config.py_protocol, key)) for key in boolean_fields}
+                values.update({
+                    "public_web_url": self.config.py_protocol.public_web_url,
+                    "preview": {
+                        "public_web_url": self.config.py_protocol.public_web_url
+                        if self.config.py_protocol.share_public_web_url else "",
+                        "locator": self.config.node.node_locator if self.config.py_protocol.share_locator else "",
+                        "qth": self.config.node.qth if self.config.py_protocol.share_qth else "",
+                        "sysop_contact": self.config.node.support_contact
+                        if self.config.py_protocol.share_sysop_contact else "",
+                    },
+                    "renegotiate_on_reconnect": method == "POST",
+                })
+                await self._write_response(writer, 200, self._json(values))
                 return
 
             if path == "/api/peers":

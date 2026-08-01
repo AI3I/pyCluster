@@ -780,8 +780,27 @@ def parse_wire_pc_frame(line: str) -> WirePcFrame | None:
     return WirePcFrame(pc_type=pc, payload_fields=parts[1:])
 
 
-def serialize_wire_pc_frame(frame: WirePcFrame) -> str:
+def parse_wire_py_frame(line: str) -> WirePcFrame | None:
+    raw = line.strip()
+    if not raw:
+        return None
+    parts = raw.split("^")
+    py_type = parts[0].strip().upper()
+    if not re.match(r"^PY\d{2}[A-Z]?$", py_type):
+        return None
+    return WirePcFrame(pc_type=py_type, payload_fields=parts[1:])
+
+
+def parse_wire_protocol_frame(line: str) -> WirePcFrame | None:
+    return parse_wire_pc_frame(line) or parse_wire_py_frame(line)
+
+
+def serialize_wire_protocol_frame(frame: WirePcFrame) -> str:
     return "^".join([frame.pc_type, *frame.payload_fields])
+
+
+def serialize_wire_pc_frame(frame: WirePcFrame) -> str:
+    return serialize_wire_protocol_frame(frame)
 
 
 def decode_typed(

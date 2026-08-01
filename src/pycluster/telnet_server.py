@@ -672,15 +672,8 @@ class TelnetClusterServer:
             count = int(str(raw_count or "0").strip() or "0") + 1
         except ValueError:
             count = 1
-        if count < _TOTP_FAILURE_FALLBACK_THRESHOLD:
-            await self.store.set_user_pref(target, "mfa_totp_failed_count", str(count), now)
-            return False
-        await self.store.delete_user_pref(target, "mfa_totp_secret")
-        await self.store.delete_user_pref(target, "mfa_totp_failed_count")
-        await self.store.set_user_pref(target, "mfa_email_otp", "required", now)
-        await self.store.delete_mfa_challenges_for_call(target, include_ssids=False)
-        self._log_event("user", f"{target} totp_disenrolled after failed attempts")
-        return True
+        await self.store.set_user_pref(target, "mfa_totp_failed_count", str(count), now)
+        return count >= _TOTP_FAILURE_FALLBACK_THRESHOLD
 
     async def _clear_totp_failures(self, call: str, *, target: str | None = None) -> None:
         await self.store.delete_user_pref((target or call).upper(), "mfa_totp_failed_count")
@@ -2260,9 +2253,40 @@ class TelnetClusterServer:
             if supplied_totp is None:
                 return False
             if not verify_totp(totp_secret, supplied_totp):
-                disabled = await self._record_totp_failure(call, target=totp_target)
+                fallback_due = await self._record_totp_failure(call, target=totp_target)
                 await self._write(writer, self._string("mfa.invalid_code", "Login failed (invalid code)") + "\r\n")
-                if disabled:
+                if fallback_due:
+                    email = await self._email_for_call(call)
+                    if not email or not self._smtp.enabled():
+                        await self._write(
+                            writer,
+                            self._string(
+                                "mfa.totp_fallback_unavailable",
+                                "Authenticator MFA remains enabled because email fallback is unavailable. Contact a sysop if you need MFA reset.",
+                            )
+                            + "\r\n",
+                        )
+                        return False
+                    try:
+                        challenge_id, _expires = await self._mfa.issue(call=call, email=email, purpose="telnet")
+                    except Exception:
+                        LOG.exception("telnet mfa fallback delivery failed call=%s", call)
+                        await self._write(
+                            writer,
+                            self._string(
+                                "mfa.totp_fallback_delivery_failed",
+                                "Authenticator MFA remains enabled because the fallback code could not be delivered.",
+                            )
+                            + "\r\n",
+                        )
+                        return False
+                    now = int(datetime.now(timezone.utc).timestamp())
+                    await self.store.fallback_totp_to_email(
+                        totp_target,
+                        now,
+                        keep_challenge_id=challenge_id,
+                    )
+                    self._log_event("user", f"{totp_target} totp_disenrolled after failed attempts")
                     await self._write(
                         writer,
                         self._string(
@@ -2271,22 +2295,40 @@ class TelnetClusterServer:
                         )
                         + "\r\n",
                     )
+                    return await self._prompt_email_otp_challenge(
+                        call,
+                        reader,
+                        writer,
+                        challenge_id=challenge_id,
+                    )
                 return False
             await self._clear_totp_failures(call, target=totp_target)
             return True
-        email = await self._email_for_call(call)
-        if not email:
-            await self._write(writer, self._string("mfa.email_missing", "MFA email not configured") + "\r\n")
-            return False
-        if not self._smtp.enabled():
-            await self._write(writer, self._string("mfa.delivery_unconfigured", "MFA delivery is not configured") + "\r\n")
-            return False
-        try:
-            challenge_id, _expires = await self._mfa.issue(call=call, email=email, purpose="telnet")
-        except Exception:
-            LOG.exception("telnet mfa delivery failed call=%s", call)
-            await self._write(writer, self._string("mfa.delivery_failed", "MFA delivery failed") + "\r\n")
-            return False
+
+        return await self._prompt_email_otp_challenge(call, reader, writer)
+
+    async def _prompt_email_otp_challenge(
+        self,
+        call: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        *,
+        challenge_id: str = "",
+    ) -> bool:
+        if not challenge_id:
+            email = await self._email_for_call(call)
+            if not email:
+                await self._write(writer, self._string("mfa.email_missing", "MFA email not configured") + "\r\n")
+                return False
+            if not self._smtp.enabled():
+                await self._write(writer, self._string("mfa.delivery_unconfigured", "MFA delivery is not configured") + "\r\n")
+                return False
+            try:
+                challenge_id, _expires = await self._mfa.issue(call=call, email=email, purpose="telnet")
+            except Exception:
+                LOG.exception("telnet mfa delivery failed call=%s", call)
+                await self._write(writer, self._string("mfa.delivery_failed", "MFA delivery failed") + "\r\n")
+                return False
         await self._write(writer, self._string("mfa.otp_prompt", "otp: "))
         supplied_otp = await self._read_password(reader, writer)
         if supplied_otp is None:
@@ -7312,19 +7354,21 @@ class TelnetClusterServer:
         if not target or not is_valid_call(target):
             return self._string("sysop.clearmfa_usage", "Usage: sysop/clearmfa <call>") + "\r\n"
         now = int(datetime.now(timezone.utc).timestamp())
-        principal = target.split("-", 1)[0]
-        await self.store.upsert_user_registry(principal, now)
-        await self.store.set_user_pref(principal, "mfa_email_otp", "off", now)
-        await self.store.delete_user_pref(principal, "mfa_totp_secret")
-        if target != principal:
-            await self.store.delete_user_pref(target, "mfa_email_otp")
-            await self.store.delete_user_pref(target, "mfa_totp_secret")
-        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
+        await self.store.upsert_user_registry(target, now)
+        await self.store.set_user_pref(target, "mfa_email_otp", "off", now)
+        for key in (
+            "mfa_totp_secret",
+            "mfa_totp_pending_secret",
+            "mfa_totp_verified_epoch",
+            "mfa_totp_failed_count",
+        ):
+            await self.store.delete_user_pref(target, key)
+        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=False)
         self._log_event("sysop", f"{call} sysop/clearmfa {target} challenges={cleared}")
         return self._render_string(
             "sysop.clearmfa_done",
             "MFA reset for {principal}. Outstanding challenges cleared: {cleared}. MFA is now off.",
-            principal=principal,
+            principal=target,
             cleared=cleared,
         ) + "\r\n"
 
@@ -7388,7 +7432,7 @@ class TelnetClusterServer:
         await self.store.set_user_pref(target, "mfa_totp_secret", secret, now)
         await self.store.delete_user_pref(target, "mfa_totp_failed_count")
         await self.store.set_user_pref(target, "mfa_email_otp", "required", now)
-        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
+        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=False)
         uri = totp_otpauth_uri(
             issuer=self.config.mfa.issuer.strip() or self.config.node.node_call,
             account=target,
@@ -7413,7 +7457,7 @@ class TelnetClusterServer:
         await self.store.set_user_pref(target, "mfa_email_otp", "off", now)
         await self.store.delete_user_pref(target, "mfa_totp_secret")
         await self.store.delete_user_pref(target, "mfa_totp_failed_count")
-        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=True)
+        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=False)
         self._log_event("user", f"{call} unset/mfa challenges={cleared}")
         return self._render_string(
             "mfa.disabled",
