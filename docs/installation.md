@@ -119,8 +119,7 @@ If you skip nginx setup, pyCluster still installs and starts cleanly, but:
 - the public web UI stays on `127.0.0.1:8081`
 - those listeners are local-only until you publish them with nginx or another reverse proxy
 
-Skipping nginx setup does not change the supported deployment model. The intended path is still a pyCluster-owned nginx configuration on the pyCluster host, not grafting pyCluster into some unrelated existing reverse-proxy layout later.
-`deploy/setup-nginx.sh` is the supported out-of-the-gate path for wiring nginx to host ports `80` and `443`, and it now fails fast if another non-nginx service already owns those ports.
+`deploy/setup-nginx.sh` is the supported out-of-the-gate path when nginx will run on the pyCluster host. A separately managed reverse proxy on another trusted host is also supported and does not require nginx on the pyCluster VM. See [External Reverse Proxy / No Local nginx](#external-reverse-proxy--no-local-nginx).
 
 This installs:
 
@@ -358,9 +357,167 @@ Default bind behavior:
 - the public web service listens on `127.0.0.1:8081`
 
 That localhost binding is intentional. A fresh install is not meant to expose the web UI directly until you finish reverse-proxy setup.
-That is part of the standalone deployment model: pyCluster expects you to complete its own reverse-proxy setup cleanly, not to co-mingle it into an unrelated existing web stack and assume equivalent behavior.
+The reverse proxy may run locally or on another trusted host. External proxying requires explicit listener and firewall changes on the pyCluster VM.
 
-## Reverse Proxy Setup
+## External Reverse Proxy / No Local nginx
+
+pyCluster does not require nginx on its application host. A dedicated pyCluster VM can expose its backend listeners to a central nginx, HAProxy, Traefik, or similar reverse proxy elsewhere on the LAN.
+
+Installed services load configuration from:
+
+- `/home/pycluster/pyCluster/config/pycluster.toml`
+- `/home/pycluster/pyCluster/config/pycluster.local.toml`
+
+The checkout under `/usr/src/pyCluster` is the upgrade source. Editing its `config/` directory does not change the running services.
+
+To run telnet on `7373`, publish the public/user web interface on `8081`, and make the System Operator interface available to a trusted proxy or management LAN on `8080`, create or edit `/home/pycluster/pyCluster/config/pycluster.local.toml`:
+
+```toml
+[telnet]
+host = "0.0.0.0"
+port = 7373
+ports = [7373]
+
+[web]
+# System Operator interface. Restrict this port at the firewall.
+host = "0.0.0.0"
+port = 8080
+
+[public_web]
+# Public/user interface.
+enabled = true
+host = "0.0.0.0"
+port = 8081
+```
+
+`[telnet].ports`, when non-empty, takes precedence over `[telnet].port`; set both as shown when replacing an existing multi-port configuration. Binding to the VM's specific LAN address is preferable to `0.0.0.0` when its address is stable.
+
+For dual-stack IPv4 and IPv6 listeners on supported Linux systems, use an empty host string in each required section:
+
+```toml
+[telnet]
+host = ""
+port = 7373
+ports = [7373]
+
+[web]
+host = ""
+port = 8080
+
+[public_web]
+enabled = true
+host = ""
+port = 8081
+```
+
+`host = "::"` binds an IPv6-only wildcard socket, while `host = "::1"` remains IPv6 loopback-only. `host = ""` asks asyncio for separate IPv4 and IPv6 wildcard sockets and avoids relying on operating-system IPv4-mapped IPv6 behavior.
+
+Restart and verify the effective listeners:
+
+```bash
+sudo systemctl restart pycluster.service pyclusterweb.service
+sudo systemctl status pycluster.service pyclusterweb.service --no-pager
+sudo ss -lntp | grep -E ':(7373|8080|8081)\b'
+sudo /usr/src/pyCluster/deploy/doctor.sh
+sudo journalctl -u pycluster.service -u pyclusterweb.service -n 100 --no-pager
+```
+
+Expected roles:
+
+- `7373/tcp`: telnet cluster service
+- `8080/tcp`: private System Operator web interface
+- `8081/tcp`: public/user web interface
+
+If `ss` shows `0.0.0.0:7373` but another LAN machine cannot connect, pyCluster is listening correctly. Check the VM firewall, NAS virtual switch, VLAN policy, and any upstream ACL; nginx does not participate in telnet traffic.
+
+The IPv6 equivalent is a listener shown on `[::]:7373`. Confirm the client has a route to the VM, the VM has the expected global or ULA address, and IPv6 firewall policy permits the connection. Opening an IPv4 firewall rule does not necessarily open the equivalent IPv6 path.
+
+Allow only the necessary sources. Example with UFW, where `192.0.2.10` is the proxy and `192.0.2.0/24` is the trusted LAN:
+
+```bash
+sudo ufw allow from 192.0.2.0/24 to any port 7373 proto tcp
+sudo ufw allow from 192.0.2.10 to any port 8081 proto tcp
+sudo ufw allow from 192.0.2.10 to any port 8080 proto tcp
+```
+
+When UFW has `IPV6=yes`, add source-scoped IPv6 rules for the trusted LAN or proxy address as well:
+
+```bash
+sudo ufw allow from 2001:db8:100::/64 to any port 7373 proto tcp
+sudo ufw allow from 2001:db8:100::10 to any port 8081 proto tcp
+sudo ufw allow from 2001:db8:100::10 to any port 8080 proto tcp
+```
+
+Equivalent firewalld rules can use source-scoped rich rules:
+
+```bash
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.0.2.0/24" port port="7373" protocol="tcp" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.0.2.10/32" port port="8081" protocol="tcp" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.0.2.10/32" port port="8080" protocol="tcp" accept'
+sudo firewall-cmd --reload
+```
+
+IPv6 firewalld rules use `family="ipv6"` and IPv6 source prefixes:
+
+```bash
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv6" source address="2001:db8:100::/64" port port="7373" protocol="tcp" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv6" source address="2001:db8:100::10/128" port port="8081" protocol="tcp" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv6" source address="2001:db8:100::10/128" port port="8080" protocol="tcp" accept'
+sudo firewall-cmd --reload
+```
+
+On the central nginx host, use separate hostnames for the public and System Operator interfaces. Replace `192.0.2.20` with the pyCluster VM address:
+
+```nginx
+map $http_upgrade $connection_upgrade_pycluster {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen 443 ssl;
+    server_name cluster.example.net;
+
+    location / {
+        proxy_pass http://192.0.2.20:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade_pycluster;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name sysop-cluster.example.net;
+
+    location / {
+        proxy_pass http://192.0.2.20:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade_pycluster;
+    }
+}
+```
+
+Configure certificates and access controls according to the central proxy's existing policy. Do not expose `8080` broadly or send System Operator credentials over an untrusted plain-HTTP network.
+
+For an IPv6 backend, nginx requires brackets around the literal address:
+
+```nginx
+proxy_pass http://[2001:db8:100::20]:8081;
+```
+
+Publish matching `A` and/or `AAAA` records for the proxy's client-facing address as appropriate. The backend VM itself does not need public DNS when the central proxy reaches it over a private IPv4 address, ULA, or routed internal IPv6 prefix.
+
+## Local nginx Reverse Proxy Setup
 
 The supported reverse-proxy path is:
 

@@ -2,6 +2,11 @@
 
 Generated UTC: 2026-03-01T03:33:12.798019+00:00
 
+> Archived baseline capture. Counts and paths below describe the named fixture
+> set at capture time; they are not current pyCluster capability or release
+> status. Current command-path coverage is in
+> [DXSpider Command Parity Matrix](dxspider-parity-matrix.md).
+
 ## Baseline
 
 - Target node: `root@dxcluster.ai3i.net`
@@ -59,7 +64,7 @@ Generated UTC: 2026-03-01T03:33:12.798019+00:00
 | `PC18` | 1 | Implement after core |
 | `PC22` | 1 | Implement after core |
 
-## Minimum Compatible MVP
+## Original Baseline Goals
 
 1. Telnet login/banner/prompt matching the baseline transcript.
 2. Spot ingest and persistence compatible with caret-separated spot records.
@@ -67,9 +72,9 @@ Generated UTC: 2026-03-01T03:33:12.798019+00:00
 4. Parser/serializer for `PC61`, `PC92`, `PC93` node traffic.
 5. Replay tests using captured `debug/latest_debug.dat` frames.
 
-## Reference Files
+## Capture Reference Files
 
-- Raw manifest: `/home/jdlewis/dxcluster-compat/fixtures/raw/manifest.env`
-- Normalized fixtures: `/home/jdlewis/dxcluster-compat/fixtures/normalized/fixtures.json`
-- Summary: `/home/jdlewis/dxcluster-compat/fixtures/normalized/summary.json`
+- Raw manifest: `fixtures/raw/manifest.env` in the separate capture workspace
+- Normalized fixtures: `fixtures/normalized/fixtures.json` in that workspace
+- Summary: `fixtures/normalized/summary.json` in that workspace
 - Command inventory entries: `284`

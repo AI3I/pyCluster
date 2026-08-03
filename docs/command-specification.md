@@ -356,13 +356,13 @@ These commands are acceptable aliases because they map directly to stable behavi
 
 ## Current Audit Snapshot
 
-The active telnet registry currently exposes 368 grouped commands:
+As of `1.0.12`, the active telnet registry exposes 370 grouped commands:
 
 | Family | Count | Review status |
 | --- | ---: | --- |
 | `show/*` | 141 | Mixed: many are stable reads; several are compatibility aliases or local preference displays. |
-| `set/*` | 84 | Needs the most cleanup; many entries are generic preference writers. |
-| `unset/*` | 62 | Same cleanup profile as `set/*`. |
+| `set/*` | 85 | Needs the most cleanup; many entries are generic preference writers. |
+| `unset/*` | 63 | Same cleanup profile as `set/*`. |
 | `stat/*` | 23 | Mostly stable if backed by real DB/runtime summaries. |
 | `sysop/*` | 22 | Stable directionally; should remain the primary telnet admin namespace. |
 | `load/*` | 14 | Mostly status/reload compatibility; should be replaced over time by explicit `sysop/data *` commands. |
@@ -392,7 +392,7 @@ The `show/ai3i`, `show/n9jr`, and `show/spout` commands are intentional easter e
 
 ## Compatibility Commands to Hide or Deprecate
 
-The current registry recognizes hundreds of commands. A local scan of `telnet_server.py` shows 368 grouped commands, including 84 `set/*`, 62 `unset/*`, and 141 `show/*` entries. Many `set/*` and `unset/*` commands are generic named-variable wrappers rather than clearly designed pyCluster features.
+The current registry recognizes hundreds of commands. A local scan of `telnet_server.py` shows 370 grouped commands, including 85 `set/*`, 63 `unset/*`, and 141 `show/*` entries. Many `set/*` and `unset/*` commands are generic named-variable wrappers rather than clearly designed pyCluster features.
 
 These should not be promoted in normal help. Each should either graduate to stable behavior with tests and documentation, or move to deprecated/removed.
 
@@ -503,16 +503,19 @@ Documentation should follow this order:
 
 README and quick-start docs should avoid legacy aliases unless the alias is intentionally part of the stable user experience.
 
-## Cleanup Plan
+## Cleanup Policy
 
-Recommended release sequencing:
+Command cleanup is continuous rather than tied to an old release sequence:
 
-1. In `1.0.8`, hide deprecated compatibility commands from ordinary `show/commands`, leaving `show/notimpl` and a sysop/debug view for inventory.
-2. Add a command metadata table in code with fields for status, audience, capability, replacement, and visibility.
-3. Update command execution so deprecated commands emit a warning and replacement.
+1. Keep deprecated compatibility commands out of ordinary discovery.
+2. Classify commands by status, audience, capability, replacement, and visibility
+   when metadata is added or changed.
+3. Give deprecated commands a useful replacement message before removal.
 4. Remove inert named-variable wrappers that do not back real behavior.
-5. Replace peer-family `set/<family> [peer]` usage with explicit sysop peer-profile commands or web-only management.
-6. Keep tests for stable behavior and compatibility aliases; delete tests that only preserve legacy clutter.
+5. Keep peer-family configuration in explicit SysOp workflows; legacy
+   `set/<family>` forms are compatibility aliases, not the primary interface.
+6. Keep tests for stable behavior and intentional compatibility aliases. Do not
+   retain behavior solely to improve a parity count.
 
 ## Acceptance Criteria
 

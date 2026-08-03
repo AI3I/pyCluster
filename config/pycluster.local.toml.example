@@ -5,13 +5,21 @@
 # public_ipv6_address = "2001:db8::10"
 
 [telnet]
-# port = 7300
+# host = "0.0.0.0"  # Use "" for IPv4+IPv6 or "::" for IPv6 only.
+# port = 7373
+# ports = [7373]  # When non-empty, ports takes precedence over port.
 
 [web]
+# System Operator web interface. Bind to a trusted LAN only when an external
+# reverse proxy or management workstation must reach the service directly.
+# host = "127.0.0.1"  # Use "" for IPv4+IPv6 or "::1" for IPv6 loopback.
+# port = 8080
 # admin_token = "change-me"
 
 [public_web]
 # enabled = true
+# host = "127.0.0.1"  # Use "" for IPv4+IPv6 or "::1" for IPv6 loopback.
+# port = 8081
 
 [rbn]
 # enabled = true

@@ -52,6 +52,37 @@ def _parse_inventory_commands(path: Path) -> list[str]:
     return cmds
 
 
+def test_dxspider_catalog_declared_counts_match_entries() -> None:
+    lines = CATALOG.read_text(encoding="utf-8").splitlines()
+    commands = _parse_catalog_commands(CATALOG)
+    declared_total = next(
+        int(match.group(1))
+        for line in lines
+        if (match := re.match(r"^- Total callable entries: (\d+)$", line))
+    )
+    assert declared_total == len(commands)
+    declared_top_level = next(
+        int(match.group(1))
+        for line in lines
+        if (match := re.match(r"^- Top-level commands: (\d+)$", line))
+    )
+
+    current_heading = ""
+    section_counts: dict[str, int] = {}
+    for line in lines:
+        if line.startswith("## "):
+            current_heading = line
+            section_counts[current_heading] = 0
+        elif current_heading and re.match(r"^\s*-\s+`[^`]+`\s*$", line):
+            section_counts[current_heading] += 1
+
+    for heading, actual in section_counts.items():
+        match = re.search(r"\((\d+)\)$", heading)
+        if match:
+            assert int(match.group(1)) == actual, heading
+    assert declared_top_level == section_counts["## Top-Level"]
+
+
 PROBE_OVERRIDES: dict[str, str] = {
     "announce": "announce local coverage probe",
     "apropos": "apropos proto",

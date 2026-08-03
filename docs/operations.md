@@ -97,6 +97,7 @@ Install, upgrade, and repair runs keep the current `pycluster-data-refresh.*` un
 - SYSOP bootstrap note presence
 - public branding response
 - effective base-plus-local configuration paths and public web port
+- effective telnet, System Operator web, and public web listener bindings
 
 ## Retention Operations
 
@@ -214,6 +215,16 @@ By default fail2ban bans IP addresses only. To also lock the user account named 
 
 ## Telnet and Web Health
 
+Confirm the effective configured listeners and the sockets actually opened by systemd services:
+
+```bash
+sudo /usr/src/pyCluster/deploy/doctor.sh
+sudo ss -lntp | grep -E ':(7300|7373|8000|8080|8081)\b'
+sudo journalctl -u pycluster.service -u pyclusterweb.service -n 100 --no-pager
+```
+
+The installed services load `/home/pycluster/pyCluster/config/pycluster.toml` and its sibling `pycluster.local.toml`. The `/usr/src/pyCluster` checkout supplies upgrade code and documentation; editing its configuration does not alter the running installation.
+
 Core health:
 
 ```bash
@@ -225,6 +236,8 @@ Public web health:
 ```bash
 curl -fsS http://127.0.0.1:8081/health
 ```
+
+For a listener bound to a specific LAN address instead of loopback, substitute that address in the health URL; enclose IPv6 literals in brackets, for example `http://[2001:db8:100::20]:8081/health`. A socket shown on `0.0.0.0` or `[::]` but unreachable from another machine points to the host firewall, VM networking, VLAN policy, routing, or an upstream ACL rather than nginx.
 
 ## Peer Operations
 

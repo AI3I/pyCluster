@@ -46,10 +46,11 @@ pyCluster is intended to be installed as a standalone product on a clean system.
 - recommended targets are a fresh VPS, Raspberry Pi, mini PC, VM, or dedicated physical server running a supported Linux distribution
 - the supported deployment model is one host dedicated to pyCluster and its own bundled services
 - do not plan around co-mingling pyCluster with unrelated products, control panels, large application stacks, or hand-managed service bundles on the same machine
-- the same rule applies to reverse proxy and mail handling: use the documented nginx and SMTP configuration paths for pyCluster itself rather than trying to wedge pyCluster into an unrelated existing proxy/mail stack
+- nginx does not have to run on the pyCluster host; a dedicated pyCluster VM can publish its web listeners to a separately managed reverse proxy on a trusted network
+- when nginx runs locally, use the checked-in setup helper rather than merging generated files into an unrelated local web stack
 - if you want a predictable install, upgrade, repair, and support path, start with a clean host rather than trying to layer pyCluster into an already busy system
 
-This is not just a preference in the docs. The deployment scripts, service layout, ports, runtime paths, nginx guidance, SMTP configuration expectations, and operator assumptions are all written around pyCluster owning its host cleanly.
+The deployment scripts, service layout, runtime paths, and operator assumptions are written around pyCluster owning its application host cleanly. The reverse proxy may be local or external; external access must be enabled explicitly because both web listeners bind to loopback by default.
 
 ## Where pyCluster Improves on Legacy Cluster Software
 
@@ -193,8 +194,7 @@ Interactive installs now offer to run `deploy/setup-nginx.sh` for you. That flow
 - whether to use Let's Encrypt or self-signed TLS
 - the email address required for Let's Encrypt
 
-Do not skip that setup and then assume pyCluster is meant to be merged into some unrelated pre-existing nginx layout. The documented path is a pyCluster-owned nginx configuration on a clean host.
-`deploy/setup-nginx.sh` is also the supported out-of-the-gate path for wiring nginx to ports `80` and `443`; it now fails fast if some other non-nginx service already owns those ports.
+`deploy/setup-nginx.sh` is the supported out-of-the-gate path when nginx will run on the pyCluster host. It wires nginx to ports `80` and `443` and fails fast if some other non-nginx service already owns those ports. A central reverse proxy on another host is also supported; see [External Reverse Proxy / No Local nginx](docs/installation.md#external-reverse-proxy--no-local-nginx).
 
 For a host-level install, cloning into `/usr/src/pyCluster` is the recommended layout.
 The deploy scripts create the `pycluster` system user and group automatically; the installer does not require the operator to create that account first.
@@ -259,8 +259,10 @@ Important:
 - unless you publish nginx or another reverse proxy in front of them, the two web listeners stay bound to localhost only
 - a fresh install is intentionally not public on ports `8080` or `8081`
 - `deploy/install.sh` now offers to finish that nginx setup during the install
-- `deploy/setup-nginx.sh` is the supported way to claim `80/443` for pyCluster on the host
-- if you skip nginx or SMTP configuration, do not assume the supported answer is to splice pyCluster into some other product's reverse proxy or mail stack later; the intended path is still a clean pyCluster-owned host configuration
+- `deploy/setup-nginx.sh` is the supported way to claim `80/443` when nginx runs on the pyCluster host
+- an external reverse proxy does not require local nginx, but the runtime web listeners and firewall must be configured explicitly
+- IPv4-only, IPv6-only, and dual-stack backend listener examples are documented for external proxies
+- the systemd services read `/home/pycluster/pyCluster/config/pycluster.toml` and its sibling `pycluster.local.toml`, not the source checkout under `/usr/src/pyCluster`
 
 ## 🛠️ Deployment
 
@@ -396,6 +398,7 @@ pyCluster can automatically prune older operational data.
 
 ## 📚 Documentation
 
+- [Documentation Index](docs/README.md)
 - [User Manual](docs/user-manual.md)
 - [Administration Manual](docs/administration-manual.md)
 - [Installation](docs/installation.md)
@@ -412,7 +415,7 @@ pyCluster can automatically prune older operational data.
 - [Operations](docs/operations.md)
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/pycluster-roadmap.md)
-- [Project History](docs/pycluster-project-history.md)
+- [Changelog](CHANGELOG.md)
 
 ## 🙏 Credits
 

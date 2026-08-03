@@ -5,17 +5,20 @@ import argparse
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Callable
 
-from pycluster.config import AppConfig, NodeConfig, StoreConfig, TelnetConfig, WebConfig
+from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.store import SpotStore
 from pycluster.telnet_server import Session, TelnetClusterServer
 
 
-CATALOG_DEFAULT = "/home/jdlewis/GitHub/pyCluster/docs/dxspider-command-catalog.md"
-OUT_DEFAULT = "/home/jdlewis/GitHub/pyCluster/docs/dxspider-parity-matrix.md"
+ROOT = Path(__file__).resolve().parents[1]
+CATALOG_DEFAULT = str(ROOT / "docs" / "dxspider-command-catalog.md")
+OUT_DEFAULT = str(ROOT / "docs" / "dxspider-parity-matrix.md")
 
 
 PARTIAL_EXPR_TOKENS = ("_cmd_compat_disabled",)
@@ -195,13 +198,21 @@ def _status_rank(s: str) -> int:
 
 
 async def _audit(catalog_path: Path) -> list[Row]:
-    db = "/tmp/pycluster_parity_audit.db"
-    cfg = AppConfig(node=NodeConfig(), telnet=TelnetConfig(), web=WebConfig(), store=StoreConfig(sqlite_path=db))
+    fd, db = tempfile.mkstemp(prefix="pycluster-parity-", suffix=".db")
+    os.close(fd)
+    Path(db).unlink(missing_ok=True)
+    cfg = AppConfig(
+        node=NodeConfig(),
+        telnet=TelnetConfig(),
+        web=WebConfig(),
+        public_web=PublicWebConfig(),
+        store=StoreConfig(sqlite_path=db),
+    )
     store = SpotStore(db)
     srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
 
     reg = srv._build_registry()
-    expr_map = _parse_registry_expr_map(Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/telnet_server.py"))
+    expr_map = _parse_registry_expr_map(ROOT / "src" / "pycluster" / "telnet_server.py")
     rows: list[Row] = []
 
     try:
@@ -263,6 +274,7 @@ async def _audit(catalog_path: Path) -> list[Row]:
             rows.append(Row(command=cmd, status=status, resolved=resolved, note=note))
     finally:
         await store.close()
+        Path(db).unlink(missing_ok=True)
 
     return rows
 
@@ -278,6 +290,10 @@ def _render(rows: list[Row]) -> str:
     lines.append("# DXSpider Command Parity Matrix (1.55/1.57)")
     lines.append("")
     lines.append(f"Generated UTC: {now}")
+    lines.append("")
+    lines.append("> Historical compatibility audit. This matrix proves that catalog names resolve to")
+    lines.append("> concrete pyCluster command paths under the audit probes; it does not claim exact")
+    lines.append("> DXSpider output, side effects, privilege semantics, or protocol equivalence.")
     lines.append("")
     lines.append("## Summary")
     lines.append("")

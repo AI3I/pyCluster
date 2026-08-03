@@ -66,6 +66,13 @@ wpx_path=""
 wpx_note=""
 keps_path=""
 public_web_port="8081"
+telnet_host="unset"
+telnet_ports="unset"
+sysop_web_host="unset"
+sysop_web_port="8080"
+public_web_host="unset"
+public_web_enabled="unknown"
+public_web_probe_url="http://127.0.0.1:8081"
 if [ -f "$PYCLUSTER_CONFIG_DEST" ]; then
   cfg_output="$(
     cd "$PYCLUSTER_APP_DIR" &&
@@ -74,11 +81,33 @@ import sys
 from pycluster.config import load_config
 
 cfg = load_config(sys.argv[1])
+def display_host(host: str) -> str:
+    clean = host.strip()
+    if not clean:
+        return "* (IPv4+IPv6)"
+    if ":" in clean and not clean.startswith("["):
+        return f"[{clean}]"
+    return clean
+
 print(cfg.store.sqlite_path)
 print(cfg.public_web.cty_dat_path)
 print(cfg.public_web.wpxloc_raw_path)
 print(cfg.satellite.keps_path)
 print(cfg.public_web.port)
+print(display_host(cfg.telnet.host))
+print(",".join(str(port) for port in (cfg.telnet.ports or (cfg.telnet.port,))))
+print(display_host(cfg.web.host))
+print(cfg.web.port)
+print(display_host(cfg.public_web.host))
+print("yes" if cfg.public_web.enabled else "no")
+probe_host = cfg.public_web.host.strip()
+if probe_host in {"", "0.0.0.0"}:
+    probe_host = "127.0.0.1"
+elif probe_host == "::":
+    probe_host = "[::1]"
+elif ":" in probe_host and not probe_host.startswith("["):
+    probe_host = f"[{probe_host}]"
+print(f"http://{probe_host}:{cfg.public_web.port}")
 PY
   )" || config_ok="invalid"
   if [ "$config_ok" = "yes" ]; then
@@ -88,6 +117,13 @@ PY
     wpx_path="${cfg_values[2]:-}"
     keps_path="${cfg_values[3]:-}"
     public_web_port="${cfg_values[4]:-8081}"
+    telnet_host="${cfg_values[5]:-unset}"
+    telnet_ports="${cfg_values[6]:-unset}"
+    sysop_web_host="${cfg_values[7]:-unset}"
+    sysop_web_port="${cfg_values[8]:-8080}"
+    public_web_host="${cfg_values[9]:-unset}"
+    public_web_enabled="${cfg_values[10]:-unknown}"
+    public_web_probe_url="${cfg_values[11]:-http://127.0.0.1:${public_web_port}}"
   fi
 fi
 
@@ -133,17 +169,20 @@ sysop_bootstrap="no"
 
 api_stats="unavailable"
 if [ "$web_service_state" = "active" ]; then
-  api_stats="$(curl -fsS "http://127.0.0.1:${public_web_port}/api/stats?hours=24" 2>/dev/null || printf 'unavailable')"
+  api_stats="$(curl -fsS "${public_web_probe_url}/api/stats?hours=24" 2>/dev/null || printf 'unavailable')"
 fi
 
 public_branding="unavailable"
 if [ "$web_service_state" = "active" ]; then
-  public_branding="$(curl -fsS "http://127.0.0.1:${public_web_port}/api/public/branding" 2>/dev/null || printf 'unavailable')"
+  public_branding="$(curl -fsS "${public_web_probe_url}/api/public/branding" 2>/dev/null || printf 'unavailable')"
 fi
 
 status "user" "$PYCLUSTER_USER ($app_user_ok)"
 status "app dir" "$PYCLUSTER_APP_DIR"
 status "config" "$PYCLUSTER_CONFIG_DEST ($config_ok)"
+status "telnet listener" "$telnet_host:$telnet_ports"
+status "sysop web listener" "$sysop_web_host:$sysop_web_port"
+status "public web listener" "$public_web_host:$public_web_port (enabled=$public_web_enabled)"
 status "database" "${db_path:-unset} ($db_ok)"
 status "cty.dat" "${cty_path:-unset} ($cty_ok)"
 status "wpxloc.raw" "${wpx_path:-unset} ($wpx_ok)${wpx_note:+ [$wpx_note]}"

@@ -118,6 +118,10 @@ def test_data_refresh_service_uses_generic_names_and_migrates_legacy_timer() -> 
     assert "retention timer" in doctor
     assert "upgrade watcher" in doctor
     assert "from pycluster.config import load_config" in doctor
+    assert 'status "telnet listener"' in doctor
+    assert 'status "sysop web listener"' in doctor
+    assert 'status "public web listener"' in doctor
+    assert "public_web_probe_url" in doctor
     assert "PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" in uninstall
     assert "pycluster-auth-scanner.conf" in uninstall
     assert "pycluster-scanner.local" in uninstall
