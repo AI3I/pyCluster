@@ -55,9 +55,10 @@ Highlights:
 - live spots with filters
 - rare-entity badge support
 - cluster overview
-- watch lists and profiles
+- database-backed filters, watch lists, buddies, presets, and profiles shared
+  with telnet
 - operate tab for login and posting
-- in-browser profile editing
+- in-browser profile, password, e-mail, and MFA controls
 
 ### System Operator Web Console
 
@@ -72,6 +73,8 @@ Highlights:
 - protocol thresholds and history
 - audit and security views
 - runtime and at-a-glance node state
+- RBN configuration, feed state, and backpressure visibility
+- known pyCluster nodes and negotiated metadata visibility
 
 ## Security and Abuse Resistance
 
@@ -81,6 +84,7 @@ Highlights:
 
 - callsign blocking with reason tracking
 - per-user channel and posting controls
+- password, e-mail verification, authenticator-app MFA, and recovery workflows
 - structured auth-failure logging
 - shipped fail2ban support for core auth, web auth, and fast telnet scanner attempts
 - current-ban and recent-failure visibility in the sysop UI
@@ -96,7 +100,8 @@ Highlights:
 - `systemd` services
 - install, upgrade, repair, and uninstall scripts
 - doctor script for host checks
-- supported nginx helper for public web and optional sysop reverse proxy on `80/443`
+- supported local nginx helper plus documented external reverse-proxy deployments
+- configurable IPv4, IPv6, and dual-stack listeners
 - validated deployment on Debian 12/13, Ubuntu 24.04/25.10, Fedora 42/43, and SELinux-enforcing EL-family hosts
 - Python 3.11+ baseline, with older distro generations intentionally left out of the supported path
 
@@ -119,6 +124,15 @@ Highlights:
 - protocol summary/history
 - policy-drop visibility
 - link health and last-frame visibility
+
+### Decentralized pyCluster Metadata
+
+Authenticated pyCluster peers can negotiate a private `PY` protocol for bounded
+node information, topology, health, dataset freshness, RBN state, notices,
+policy summaries, and clock state. It uses local sharing controls, capability
+negotiation, sequence and expiry checks, digest-before-detail reconciliation,
+and rate limits. Legacy peers never receive these frames, and the protocol does
+not carry users, secrets, internal addresses, or remote configuration changes.
 
 ## Compatibility Without Imitating Every Quirk
 

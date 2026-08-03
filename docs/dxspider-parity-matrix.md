@@ -1,12 +1,16 @@
 # DXSpider Command Parity Matrix (1.55/1.57)
 
-Generated UTC: 2026-03-10T13:50:56.587344+00:00
+Generated UTC: 2026-08-03T11:44:27.330244+00:00
+
+> Historical compatibility audit. This matrix proves that catalog names resolve to
+> concrete pyCluster command paths under the audit probes; it does not claim exact
+> DXSpider output, side effects, privilege semantics, or protocol equivalence.
 
 ## Summary
 
-- Total catalog commands: 271
-- Complete: 271
-- Partial: 0
+- Total catalog commands: 260
+- Complete: 259
+- Partial: 1
 - Missing: 0
 
 ## Criteria
@@ -20,19 +24,20 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | Command | Status | Resolved | Note |
 |---|---|---|---|
 
-## Partial (0)
+## Partial (1)
 
 | Command | Status | Resolved | Note |
 |---|---|---|---|
+| `uncatchup` | `partial` | `uncatchup` | intentionally disabled for safety |
 
-## Complete (271)
+## Complete (259)
 
 | Command | Status | Resolved | Note |
 |---|---|---|---|
 | `accept/announce` | `complete` | `accept/announce` |  |
 | `accept/route` | `complete` | `accept/route` |  |
 | `accept/spots` | `complete` | `accept/spots` |  |
-| `agwrestart` | `complete` | `agwrestart` | real behavior path; privilege-gated |
+| `agwrestart` | `complete` | `agwrestart` |  |
 | `announce` | `complete` | `announce` |  |
 | `apropos` | `complete` | `apropos` |  |
 | `blank` | `complete` | `blank` |  |
@@ -46,13 +51,13 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `connect` | `complete` | `connect` |  |
 | `create/user` | `complete` | `create/user` |  |
 | `dbavail` | `complete` | `dbavail` |  |
-| `dbcreate` | `complete` | `dbcreate` | real behavior path; privilege-gated |
-| `dbdelkey` | `complete` | `dbdelkey` | real behavior path; privilege-gated |
-| `dbexport` | `complete` | `dbexport` | real behavior path; privilege-gated |
-| `dbimport` | `complete` | `dbimport` | real behavior path; privilege-gated |
-| `dbremove` | `complete` | `dbremove` | real behavior path; privilege-gated |
+| `dbcreate` | `complete` | `dbcreate` |  |
+| `dbdelkey` | `complete` | `dbdelkey` |  |
+| `dbexport` | `complete` | `dbexport` |  |
+| `dbimport` | `complete` | `dbimport` |  |
+| `dbremove` | `complete` | `dbremove` |  |
 | `dbshow` | `complete` | `dbshow` |  |
-| `dbupdate` | `complete` | `dbupdate` | real behavior path; privilege-gated |
+| `dbupdate` | `complete` | `dbupdate` |  |
 | `debug` | `complete` | `debug` |  |
 | `delete/usdb` | `complete` | `delete/usdb` |  |
 | `delete/user` | `complete` | `delete/user` |  |
@@ -64,15 +69,15 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `dxqsl_export` | `complete` | `dxqsl_export` |  |
 | `dxqsl_import` | `complete` | `dxqsl_import` |  |
 | `echo` | `complete` | `echo` |  |
-| `export` | `complete` | `export` | real behavior path; privilege-gated |
-| `export_users` | `complete` | `export_users` | real behavior path; privilege-gated |
+| `export` | `complete` | `export` |  |
+| `export_users` | `complete` | `export_users` |  |
 | `forward/latlong` | `complete` | `forward/latlong` |  |
 | `forward/opername` | `complete` | `forward/opername` |  |
 | `get/keps` | `complete` | `get/keps` |  |
 | `help` | `complete` | `help` |  |
-| `init` | `complete` | `init` | real behavior path; privilege-gated |
+| `init` | `complete` | `init` |  |
 | `join` | `complete` | `join` |  |
-| `kill` | `complete` | `kill` | real behavior path; privilege-gated |
+| `kill` | `complete` | `kill` |  |
 | `leave` | `complete` | `leave` |  |
 | `links` | `complete` | `links` |  |
 | `load/aliases` | `complete` | `load/aliases` |  |
@@ -100,7 +105,7 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `reject/route` | `complete` | `reject/route` |  |
 | `reject/spots` | `complete` | `reject/spots` |  |
 | `reply` | `complete` | `reply` |  |
-| `rinit` | `complete` | `rinit` | real behavior path; privilege-gated |
+| `rinit` | `complete` | `rinit` |  |
 | `run` | `complete` | `run` |  |
 | `save` | `complete` | `save` |  |
 | `send` | `complete` | `send` |  |
@@ -149,12 +154,11 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `set/qth` | `complete` | `set/qth` |  |
 | `set/register` | `complete` | `set/register` |  |
 | `set/routepc19` | `complete` | `set/routepc19` |  |
-| `set/send_dbg` | `complete` | `set/senddbg` |  |
+| `set/send_dbg` | `complete` | `set/send_dbg` |  |
 | `set/sendpc16` | `complete` | `set/sendpc16` |  |
-| `set/dxspider` | `complete` | `set/dxspider` |  |
 | `set/startup` | `complete` | `set/startup` |  |
-| `set/sys_location` | `complete` | `set/syslocation` |  |
-| `set/sys_qra` | `complete` | `set/sysqra` |  |
+| `set/sys_location` | `complete` | `set/sys_location` |  |
+| `set/sys_qra` | `complete` | `set/sys_qra` |  |
 | `set/talk` | `complete` | `set/talk` |  |
 | `set/usdb` | `complete` | `set/usdb` |  |
 | `set/user` | `complete` | `set/user` |  |
@@ -183,11 +187,11 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `show/date` | `complete` | `show/date` |  |
 | `show/db0sdx` | `complete` | `show/db0sdx` |  |
 | `show/debug` | `complete` | `show/debug` |  |
-| `show/dup_ann` | `complete` | `show/dupann` |  |
-| `show/dup_eph` | `complete` | `show/dupeph` |  |
-| `show/dup_spots` | `complete` | `show/dupspots` |  |
-| `show/dup_wcy` | `complete` | `show/dupwcy` |  |
-| `show/dup_wwv` | `complete` | `show/dupwwv` |  |
+| `show/dup_ann` | `complete` | `show/dup_ann` |  |
+| `show/dup_eph` | `complete` | `show/dup_eph` |  |
+| `show/dup_spots` | `complete` | `show/dup_spots` |  |
+| `show/dup_wcy` | `complete` | `show/dup_wcy` |  |
+| `show/dup_wwv` | `complete` | `show/dup_wwv` |  |
 | `show/dx` | `complete` | `show/dx` |  |
 | `show/dxqsl` | `complete` | `show/dxqsl` |  |
 | `show/dxstats` | `complete` | `show/dxstats` |  |
@@ -201,6 +205,7 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `show/hops` | `complete` | `show/hops` |  |
 | `show/ik3qar` | `complete` | `show/ik3qar` |  |
 | `show/isolate` | `complete` | `show/isolate` |  |
+| `show/lastspot` | `complete` | `show/lastspot` |  |
 | `show/lockout` | `complete` | `show/lockout` |  |
 | `show/log` | `complete` | `show/log` |  |
 | `show/moon` | `complete` | `show/moon` |  |
@@ -212,7 +217,7 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `show/prefix` | `complete` | `show/prefix` |  |
 | `show/program` | `complete` | `show/program` |  |
 | `show/qra` | `complete` | `show/qra` |  |
-| `show/qrz` | `partial` | `show/qrz` | real QRZ XML lookup when configured; requires QRZ credentials |
+| `show/qrz` | `complete` | `show/qrz` |  |
 | `show/rcmd` | `complete` | `show/rcmd` |  |
 | `show/registered` | `complete` | `show/registered` |  |
 | `show/route` | `complete` | `show/route` |  |
@@ -229,12 +234,12 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `show/vhfstats` | `complete` | `show/vhfstats` |  |
 | `show/vhftable` | `complete` | `show/vhftable` |  |
 | `show/wcy` | `complete` | `show/wcy` |  |
-| `show/wm7d` | `complete` | `show/wm7d` | real WM7D page lookup |
+| `show/wm7d` | `complete` | `show/wm7d` |  |
 | `show/wwv` | `complete` | `show/wwv` |  |
 | `show/wx` | `complete` | `show/wx` |  |
 | `shu` | `complete` | `shu` |  |
-| `shutdown` | `complete` | `shutdown` | real behavior path; privilege-gated |
-| `spoof` | `complete` | `spoof` | real behavior path; privilege-gated |
+| `shutdown` | `complete` | `shutdown` |  |
+| `spoof` | `complete` | `spoof` |  |
 | `stat/channel` | `complete` | `stat/channel` |  |
 | `stat/db` | `complete` | `stat/db` |  |
 | `stat/msg` | `complete` | `stat/msg` |  |
@@ -244,10 +249,9 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `stat/route_user` | `complete` | `stat/routeuser` |  |
 | `stat/user` | `complete` | `stat/user` |  |
 | `stat/userconfig` | `complete` | `stat/userconfig` |  |
-| `sysop` | `complete` | `sysop` | real behavior path; privilege-gated |
+| `sysop` | `complete` | `sysop` |  |
 | `talk` | `complete` | `talk` |  |
 | `type` | `complete` | `type` |  |
-| `uncatchup` | `complete` | `uncatchup` |  |
 | `unset/announce` | `complete` | `unset/announce` |  |
 | `unset/anntalk` | `complete` | `unset/anntalk` |  |
 | `unset/baddx` | `complete` | `unset/baddx` |  |
@@ -275,7 +279,7 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `unset/prompt` | `complete` | `unset/prompt` |  |
 | `unset/register` | `complete` | `unset/register` |  |
 | `unset/routepc19` | `complete` | `unset/routepc19` |  |
-| `unset/send_dbg` | `complete` | `unset/senddbg` |  |
+| `unset/send_dbg` | `complete` | `unset/send_dbg` |  |
 | `unset/sendpc16` | `complete` | `unset/sendpc16` |  |
 | `unset/startup` | `complete` | `unset/startup` |  |
 | `unset/talk` | `complete` | `unset/talk` |  |
@@ -291,3 +295,5 @@ Generated UTC: 2026-03-10T13:50:56.587344+00:00
 | `wx` | `complete` | `wx` |  |
 
 ## Prioritized Next Work
+
+- `uncatchup` (partial)

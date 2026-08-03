@@ -1,10 +1,14 @@
 # DXSpider Command Catalog (From Live Node Source)
 
-Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
+> Historical source inventory captured from a DXSpider node in March 2026.
+> This is an input to compatibility testing, not pyCluster's supported command
+> reference and not a promise of behavioral parity.
 
-- Top-level commands: 58
+Generated from the captured `cmd/*` inventory on `dxcluster.ai3i.net`.
+
+- Top-level commands: 57
 - Grouped command families: 12
-- Total callable entries: 271
+- Total callable entries: 260
 
 ## Top-Level
 
@@ -120,7 +124,7 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `reject/route`
 - `reject/spots`
 
-## set/* (63)
+## set/* (60)
 
 - `set/address`
 - `set/announce`
@@ -183,7 +187,7 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `set/wwv`
 - `set/wx`
 
-## show/* (66)
+## show/* (67)
 
 - `show/425`
 - `show/announce`
@@ -265,7 +269,7 @@ Generated from `cmd/*` inventory on `dxcluster.ai3i.net`.
 - `stat/user`
 - `stat/userconfig`
 
-## unset/* (39)
+## unset/* (37)
 
 - `unset/announce`
 - `unset/anntalk`

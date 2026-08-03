@@ -2,7 +2,7 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## 1.0.12 - 2026-08-01
+## 1.0.12 - Unreleased
 
 - Fixed telnet authenticator failure fallback so TOTP is retired only after an email challenge is successfully delivered; unavailable SMTP or delivery failure leaves the working authenticator configuration intact.
 - Scoped telnet MFA enrollment, disable, and System Operator reset challenge cleanup to the exact callsign/SSID.
@@ -11,6 +11,8 @@ All notable changes to pyCluster should be recorded here.
 - Upgrade, repair, and uninstall now stop live writers before taking runtime backups so SQLite/WAL snapshots are consistent; failed maintenance restores services that were active before shutdown. Upgrade and repair then use graceful systemd restarts instead of forced process kills.
 - Install no longer disables the host SSH fail2ban jail; the scanner jail is limited to malformed callsigns, and uninstall removes the complete on-demand upgrade watcher.
 - nginx setup validates hostnames and restores every configuration file it changed when validation, restart, or certificate provisioning fails.
+- Documented deployments that use a central reverse proxy without local nginx, including runtime config paths, listener roles, source-scoped firewall rules, proxy examples, and LAN troubleshooting; `doctor.sh` now reports effective listener bindings.
+- Refreshed the documentation index, roadmap, architecture, feature summary, command-policy snapshot, and repository-local DXSpider command audit for the `1.0.12` development tree.
 
 ### Added
 

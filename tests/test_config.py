@@ -66,10 +66,15 @@ def test_load_config_merges_sibling_local_override(tmp_path: Path) -> None:
                 'prompt_template = "{node}{suffix}"',
                 "",
                 "[telnet]",
+                'host = ""',
                 "port = 7373",
+                "",
+                "[web]",
+                'host = ""',
                 "",
                 "[public_web]",
                 "enabled = true",
+                'host = ""',
                 "",
                 "[qrz]",
                 'username = "AI3I"',
@@ -85,7 +90,10 @@ def test_load_config_merges_sibling_local_override(tmp_path: Path) -> None:
     assert cfg.node.qth == "Boston, MA"
     assert cfg.node.prompt_template == "{node}{suffix}"
     assert cfg.telnet.port == 7373
+    assert cfg.telnet.host == ""
+    assert cfg.web.host == ""
     assert cfg.public_web.enabled is True
+    assert cfg.public_web.host == ""
     assert cfg.store.sqlite_path == "./data/pycluster.db"
     assert cfg.qrz.username == "AI3I"
     assert cfg.rbn.enabled is False

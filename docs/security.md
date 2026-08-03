@@ -90,6 +90,9 @@ sudo /home/pycluster/pyCluster/scripts/lock_user_account.py --db /home/pycluster
 
 - keep sysop and public web behind a reverse proxy
 - use HTTPS externally
+- a reverse proxy may run on the pyCluster host or a separate trusted host; for an external proxy, bind backend listeners explicitly and allow their ports only from the proxy or management network
+- dual-stack listeners require both IPv4 and IPv6 firewall review; do not assume an IPv4-only ACL also protects a wildcard IPv6 socket
+- never expose the System Operator listener on `8080` broadly or send its credentials over an untrusted plain-HTTP network
 - enable the shipped `fail2ban` jails
 - keep telnet exposed only as needed
 - back up config and SQLite data regularly

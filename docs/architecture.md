@@ -37,9 +37,9 @@ Used for:
 
 - spots
 - messages
-- user prefs
+- user accounts, access, filters, watch lists, buddies, and preferences
 - registry records
-- protocol/operator state
+- peer, protocol, topology, and operator state
 
 ## Interface Model
 
@@ -104,6 +104,15 @@ This allows the system to distinguish:
 
 - how to connect
 - how to behave after the link is up
+- what authenticated node is actually connected
+
+Normal DX-cluster protocols remain the interoperability surface. The private
+`PY` protocol is negotiated only between authenticated pyCluster peers with
+compatible capabilities and local sharing enabled. It exchanges bounded
+operational metadata and controlled topology gossip; it is not sent to legacy
+or unknown peers and does not carry user data or secrets.
+
+See [Node Linking](node-linking.md) for the frame families and sharing policy.
 
 ## Design Philosophy
 

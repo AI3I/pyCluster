@@ -51,15 +51,23 @@ Telnet listener settings.
 Important fields:
 
 - `host`
-- `port` - commonly `587` for Submission/STARTTLS, `465` for implicit TLS/SMTPS, or `25` for a plain local relay
-- `ports`
-- `feeds`
+- `port` - single telnet listener port, default `7300`
+- `ports` - optional list of listener ports; when non-empty, this takes precedence over `port`
 - `max_clients`
 - `idle_timeout_seconds`
 - `keepalive_interval_seconds`
 - `max_line_length`
 
 `idle_timeout_seconds` controls authentication/input timeout behavior. `keepalive_interval_seconds` independently controls post-login application keepalives; it defaults to 300 seconds and emits a visible prompt while continuing to wait for input. Telnet sockets also enable operating-system TCP keepalive.
+
+Listener address forms on supported Linux hosts:
+
+- `127.0.0.1` or `0.0.0.0` - IPv4 loopback or wildcard
+- `::1` or `::` - IPv6 loopback or wildcard; `::` is IPv6-only
+- an empty string (`host = ""`) - request separate IPv4 and IPv6 wildcard sockets
+- a specific IPv4 or IPv6 address - bind only that interface address
+
+The same address forms apply to `[web].host` and `[public_web].host`. Wildcard and dual-stack bindings must be restricted with both IPv4 and IPv6 firewall policy.
 
 ### `[web]`
 
@@ -75,7 +83,8 @@ Note:
 - the sysop console uses callsign/password auth
 - keep it on `127.0.0.1` behind a reverse proxy unless you have a reason not to
 - a default install does exactly that; it does not expose the sysop web listener publicly by itself
-- `deploy/setup-nginx.sh --sysop-host <host>` is the supported way to publish it through nginx on a dedicated hostname
+- `deploy/setup-nginx.sh --sysop-host <host>` publishes it through nginx on the pyCluster host
+- an external reverse proxy can reach it over a trusted LAN after you explicitly change `host`; restrict that listener to the proxy or management network and use HTTPS at the proxy
 
 ### `[public_web]`
 
@@ -95,6 +104,7 @@ Note:
 - expose it through nginx or another reverse proxy when you want public access
 - `deploy/install.sh` can now call `deploy/setup-nginx.sh` interactively during first install
 - the supported nginx helper writes pyCluster-owned server blocks under `/etc/nginx/conf.d`
+- a reverse proxy on another host requires this listener to bind to the VM's LAN address or `0.0.0.0`, plus a firewall rule allowing the proxy host to reach it
 
 ### `[store]`
 
@@ -231,6 +241,8 @@ Default deployed layout:
 - CTY data: `/home/pycluster/pyCluster/data/cty.dat`
 - wpxloc.raw data: `/home/pycluster/pyCluster/data/wpxloc.raw` when you use the standard refresh path
 - satellite keps/TLE data: `/home/pycluster/pyCluster/data/keps.txt`
+
+The systemd services run from `/home/pycluster/pyCluster` and load the runtime files above. Editing `/usr/src/pyCluster/config/pycluster.toml` changes the source checkout used for upgrades, not the active installation. Confirm the unit paths with `systemctl cat pycluster.service pyclusterweb.service` when troubleshooting a nonstandard deployment.
 
 ## Operational Advice
 
