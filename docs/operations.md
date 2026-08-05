@@ -99,6 +99,41 @@ Install, upgrade, and repair runs keep the current `pycluster-data-refresh.*` un
 - effective base-plus-local configuration paths and public web port
 - effective telnet, System Operator web, and public web listener bindings
 
+## Support Report
+
+When an installation is incomplete, modified, or difficult to identify, collect
+a text-only support report:
+
+```bash
+cd /usr/src/pyCluster
+sudo ./deploy/support-bundle.sh
+```
+
+The report is written under `/tmp` by default with mode `0600`. It inventories
+the OS, kernel, CPU, memory, storage, virtualization/container indicators,
+runtime tools, service units, listeners, SELinux, nginx, fail2ban, source and
+runtime versions, immutable-tree differences, ownership anomalies, possible
+duplicate installations, and the built-in doctor results. It ends with a
+plain-language installation assessment.
+
+Configuration section/key names are included, but values are redacted. The
+collector does not directly read or copy TOML values, SQLite databases,
+bootstrap credentials, mail, private messages, or user records. Network
+addresses, routes, firewall rules, and recent journals require explicit
+options:
+
+```bash
+sudo ./deploy/support-bundle.sh --include-network --include-journal
+```
+
+Review the report before attaching it to a public issue. Hostnames, listener
+addresses, process metadata, and explicitly included logs can identify a node.
+
+Successful install, upgrade, and repair runs now write
+`data/deployment-state.toml` with the completed action, version, source commit,
+and source-tree state. The collector treats a missing receipt as a warning, not
+proof of manual copying, because older supported installs did not create one.
+
 ## Retention Operations
 
 pyCluster supports automatic age-based cleanup for:

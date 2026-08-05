@@ -186,6 +186,21 @@ sudo ./deploy/install.sh
 sudo ./deploy/doctor.sh
 ```
 
+For installation support, generate a reviewable report without copying
+configuration values, databases, credentials, or user records:
+
+```bash
+sudo ./deploy/support-bundle.sh
+```
+
+Detailed network state and recent service journals are opt-in. See
+[Support Report](docs/operations.md#support-report).
+
+The installer seeds a one-time `SYSOP` account and writes its credentials to
+`/root/pycluster-initial-sysop.txt`. The default configuration starts the node,
+but its example `N0CALL-1` identity must be replaced under **Node Settings >
+General** before the node is treated as production-ready.
+
 Interactive installs now offer to run `deploy/setup-nginx.sh` for you. That flow asks for:
 
 - the public hostname to publish

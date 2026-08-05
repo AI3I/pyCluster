@@ -33,4 +33,5 @@ apply_imported_fail2ban_badips
 wait_for_systemd_active "$PYCLUSTER_SERVICE_NAME" 45 || die "service failed to start"
 wait_for_systemd_active "$PYCLUSTER_WEB_SERVICE_NAME" 45 || die "web service failed to start"
 maybe_run_setup_nginx
+write_deployment_state install
 log "install complete"

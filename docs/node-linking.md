@@ -151,6 +151,21 @@ The `[py_protocol]` controls provide conservative boundaries for implemented and
 
 Authenticated SysOps can inspect the durable local catalog through `GET /api/py-nodes`. The response labels each record as `local`, `direct`, or `reported` and includes its source, learned-from peer, hop count, first/last seen times, and expiry.
 
+The SysOp Known pyCluster Nodes table also merges direct peers positively
+identified by PC18. This lets an operator see that a connected peer is running
+pyCluster even when the private protocol is disabled on either end. Such a row
+is labeled `identified` and explicitly distinguishes locally disabled PY,
+an absent or invalid `PY00` handshake, and a negotiated link that has not
+supplied `PY01` NODEINFO. The PC18 software version is descriptive only: a
+validated `PY00` proves private-protocol support, and its advertised capability
+list is authoritative. Each connection records its own PY00 transmit and valid
+receive times, preventing a successful old session from making a new session
+look negotiated. Silence after a transmitted PY00 is reported as no valid
+response rather than being misclassified as proof that the remote node disabled
+or rejected PY. The identified-only row is
+not inserted into the durable topology catalog until a validated NODEINFO
+record is received.
+
 The SysOp Node Settings > pyCluster Protocol view provides PY sharing controls, field-level NODEINFO privacy, a shared-metadata preview, and the structured network-notice editor. Protocol Health provides the Known pyCluster Nodes catalog and live protocol diagnostics. Sharing-policy changes apply locally immediately; existing links renegotiate newly enabled capabilities after reconnect.
 
 Outbound PC92 path advertisements are sanitized when `node.public_ip_address`, `node.public_ipv6_address`, or a detected global interface address is available. Private, loopback, link-local, `localhost`, and otherwise non-public IPv4/IPv6 literals in outbound PC92 payload fields are replaced with the same-family public address before transmission. PC61 spot relay uses the same configured-or-detected public address selection for its IP field.

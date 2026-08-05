@@ -301,8 +301,8 @@ def test_web_admin_static_exposes_satellite_settings() -> None:
 
 def test_web_admin_static_exposes_rbn_settings() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
-    assert 'data-node-group="rbn"' in text
-    assert "Reverse Beacon Network (RBN)" in text
+    assert 'data-node-group="rbn">RBN</button>' in text
+    assert ">Reverse Beacon Network</label>" in text
     assert 'id="node-group-rbn"' in text
     assert 'id="rbn_enabled"' in text
     assert 'id="rbn_host"' in text
@@ -469,7 +469,7 @@ def test_web_admin_static_exposes_taxonomy_editor() -> None:
 
 def test_web_admin_static_exposes_mail_tab_smtp_test() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
-    assert 'data-node-group="smtp">Mail (SMTP)</button>' in text
+    assert 'data-node-group="smtp">SMTP</button>' in text
     assert '<select id="smtp_port"' in text
     assert '<option value="587">Submission / STARTTLS (587)</option>' in text
     assert '<option value="465">Implicit TLS / SMTPS (465)</option>' in text
@@ -920,6 +920,10 @@ def test_proto_state_counts_pc18_handshake_as_known(tmp_path) -> None:
         assert proto["known"] is True
         assert proto["health"] == "ok"
         assert proto["last_pc_type"] == "PC18"
+        assert proto["py"]["identified"] is True
+        assert proto["py"]["local_enabled"] is False
+        assert proto["py"]["hello_validated"] is False
+        assert proto["py"]["negotiation_state"] == "local_disabled"
     finally:
         asyncio.run(store.close())
 
@@ -952,12 +956,43 @@ def test_proto_state_exposes_py_operational_metadata(tmp_path) -> None:
     }
     try:
         state = srv._proto_state_for_peer(node_cfg, "AI3I-90", now)["py"]
+        assert state["hello_validated"] is True
+        assert state["negotiation_state"] == "negotiated"
         assert state["health"]["services"] == {"telnet": "up"}
         assert state["datasets"]["records"][0]["name"] == "cty.dat"
         assert state["rbn_status"]["modes"] == ["CW", "FT8", "RTTY"]
         assert state["rbn_status"]["recent_spots_per_minute"] == 42
         assert state["policy"]["mfa_available"] is True
         assert state["clock"]["offset_seconds"] == -2
+    finally:
+        asyncio.run(store.close())
+
+
+def test_proto_state_reports_current_session_py00_without_reply(tmp_path) -> None:
+    db = str(tmp_path / "web_proto_py00_pending.db")
+    cfg = _mk_config(db, admin_token="adm")
+    cfg.py_protocol.enabled = True
+    store = SpotStore(db)
+    srv = WebAdminServer(
+        config=cfg,
+        store=store,
+        started_at=datetime.now(timezone.utc),
+        session_count_fn=lambda: 0,
+    )
+    now = int(datetime.now(timezone.utc).timestamp())
+    pfx = "proto.peer.ai3i-90."
+    node_cfg = {
+        pfx + "pc18.family": "pycluster",
+        pfx + "py.session_epoch": str(now - 5),
+        pfx + "py.hello_sent_epoch": str(now - 4),
+        pfx + "py.protocol_version": "1",
+        pfx + "py.node": "AI3I-90",
+    }
+    try:
+        state = srv._proto_state_for_peer(node_cfg, "AI3I-90", now)["py"]
+        assert state["hello_validated"] is False
+        assert state["protocol_version"] == ""
+        assert state["negotiation_state"] == "hello_sent"
     finally:
         asyncio.run(store.close())
 
@@ -2862,6 +2897,8 @@ def test_web_peers_reports_transmit_active_receive_quiet_link(tmp_path) -> None:
             assert row["peer"] == "KC9GWK-1"
             py_state = row["proto"]["py"]
             assert py_state["protocol_version"] == "1"
+            assert py_state["hello_validated"] is True
+            assert py_state["negotiation_state"] == "nodeinfo_received"
             assert py_state["node"] == "KC9GWK-1"
             assert py_state["software_version"] == "1.0.12"
             assert py_state["capabilities"] == ["py99-error"]
@@ -3104,6 +3141,14 @@ def test_web_admin_contains_py_topology_and_notice_controls() -> None:
     assert 'id="pyShareNotices"' not in text
     assert text.index('id="saveNodeMaintenance"') < text.index('id="runCleanup"')
     assert "target === 'pyprotocol' || target === 'maintenance'" in text
+    assert "Direct peers identified as pyCluster by PC18" in text
+    assert "PC18 identified; PY00 not sent yet" in text
+    assert "PC18 identified; PY disabled locally" in text
+    assert "PY00 sent; no valid response received" in text
+    assert "PY00 sent; peer disconnected before a valid response" in text
+    assert "negotiated; NODEINFO not received" in text
+    assert "confidence:'identified'" in text
+    assert "pc18Family === 'pycluster' || !!peerPy.node" in text
 
 
 def test_web_peers_displays_saved_inbound_peer_without_live_session(tmp_path) -> None:

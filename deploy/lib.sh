@@ -28,6 +28,7 @@ PYCLUSTER_SYSOP_BOOTSTRAP_NOTE="${PYCLUSTER_SYSOP_BOOTSTRAP_NOTE:-/root/pycluste
 PYCLUSTER_BACKUP_DIR="${PYCLUSTER_BACKUP_DIR:-/root/pycluster-backups}"
 PYCLUSTER_TMP_SWAPFILE="${PYCLUSTER_TMP_SWAPFILE:-/swapfile-pycluster}"
 PYCLUSTER_TMP_SWAP_MB="${PYCLUSTER_TMP_SWAP_MB:-1024}"
+PYCLUSTER_DEPLOYMENT_STATE="${PYCLUSTER_DEPLOYMENT_STATE:-$PYCLUSTER_APP_DIR/data/deployment-state.toml}"
 
 repo_root() {
   local src
@@ -285,6 +286,43 @@ ensure_runtime_ownership() {
   if [ -d "$PYCLUSTER_APP_DIR" ]; then
     chown -R "$PYCLUSTER_USER:$PYCLUSTER_GROUP" "$PYCLUSTER_APP_DIR"
   fi
+}
+
+toml_string() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
+}
+
+write_deployment_state() {
+  local action="$1"
+  local root version commit dirty tmp state_dir
+  root="$(repo_root)"
+  version="$(sed -nE 's/^__version__[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' "$root/src/pycluster/__init__.py" | head -n 1)"
+  commit="unknown"
+  dirty="false"
+  if [ -d "$root/.git" ]; then
+    commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || printf unknown)"
+    [ -z "$(git -C "$root" status --porcelain 2>/dev/null)" ] || dirty="true"
+  fi
+  state_dir="$(dirname "$PYCLUSTER_DEPLOYMENT_STATE")"
+  if [ ! -d "$state_dir" ]; then
+    install -d -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" "$state_dir"
+  fi
+  tmp="$(mktemp "${PYCLUSTER_DEPLOYMENT_STATE}.tmp.XXXXXX")"
+  {
+    printf 'schema = 1\n'
+    printf 'action = "%s"\n' "$(toml_string "$action")"
+    printf 'completed_utc = "%s"\n' "$(date -u --iso-8601=seconds)"
+    printf 'version = "%s"\n' "$(toml_string "${version:-unknown}")"
+    printf 'source_root = "%s"\n' "$(toml_string "$root")"
+    printf 'source_commit = "%s"\n' "$(toml_string "$commit")"
+    printf 'source_dirty = %s\n' "$dirty"
+  } >"$tmp"
+  chown "$PYCLUSTER_USER:$PYCLUSTER_GROUP" "$tmp"
+  chmod 0640 "$tmp"
+  mv -f "$tmp" "$PYCLUSTER_DEPLOYMENT_STATE"
 }
 
 backup_runtime_snapshot() {
