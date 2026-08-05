@@ -135,6 +135,16 @@ This installs:
 
 During install and repair, pyCluster now prints the bootstrap `SYSOP` credentials prominently in the terminal, saves the same note to `/root/pycluster-initial-sysop.txt`, and pauses interactive installs until the operator explicitly acknowledges that the credentials were reviewed.
 
+The default runtime `pycluster.toml` is sufficient to start both services and
+complete the first `SYSOP` login. It intentionally begins with example node
+identity values such as `N0CALL-1`. After that first login, open **Node Settings
+> General**, replace the example callsign, owner, QTH, locator, support contact,
+and public URL as applicable, then save. The System Operator console writes
+host-specific values to `pycluster.local.toml`, which is layered over the base
+file and preserved across upgrades. An installation is operational before this
+step, but it is not ready to advertise or peer as a real node while the example
+identity remains active.
+
 ## Upgrade
 
 ```bash
@@ -219,6 +229,16 @@ sudo KEEP_CONFIG=0 KEEP_DATA=0 ./deploy/uninstall.sh
 systemctl status pycluster.service pyclusterweb.service
 sudo ./deploy/doctor.sh
 ```
+
+For support cases where the installation method or host layout is uncertain,
+generate a redacted installation report:
+
+```bash
+sudo ./deploy/support-bundle.sh
+```
+
+See [Support Report](operations.md#support-report) for collected fields and the
+optional network/journal switches.
 
 If the first install created the bootstrap account successfully, you should also see:
 

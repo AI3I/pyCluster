@@ -1,7 +1,13 @@
 from pathlib import Path
+import grp
+import os
+import pwd
 import sqlite3
 import subprocess
 import sys
+import tomllib
+
+from pycluster import __version__
 
 
 def test_fail2ban_scanner_jail_and_install_hooks_exist() -> None:
@@ -157,6 +163,79 @@ def test_deploy_lifecycle_stops_live_services_and_removes_upgrade_units() -> Non
     assert 'systemctl disable --now "$PYCLUSTER_UPGRADE_PATH_NAME"' in lib
     assert 'rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_SERVICE_NAME"' in uninstall
     assert 'rm -f "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_PATH_NAME"' in uninstall
+
+
+def test_deploy_lifecycle_writes_support_receipt_and_has_safe_collector(tmp_path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    lib = (root / "deploy/lib.sh").read_text(encoding="utf-8")
+    install = (root / "deploy/install.sh").read_text(encoding="utf-8")
+    upgrade = (root / "deploy/upgrade.sh").read_text(encoding="utf-8")
+    repair = (root / "deploy/repair.sh").read_text(encoding="utf-8")
+    collector = root / "deploy/support-bundle.sh"
+    collector_text = collector.read_text(encoding="utf-8")
+
+    assert "write_deployment_state()" in lib
+    assert 'write_deployment_state install' in install
+    assert 'write_deployment_state upgrade' in upgrade
+    assert 'write_deployment_state repair' in repair
+    assert "--include-network" in collector_text
+    assert "--include-journal" in collector_text
+    assert "Configuration Presence (Values Redacted)" in collector_text
+    assert "pycluster-initial-sysop.txt" not in collector_text
+    assert "cat \"$PYCLUSTER_CONFIG_DEST\"" not in collector_text
+
+    runtime = tmp_path / "runtime"
+    config_dir = runtime / "config"
+    config_dir.mkdir(parents=True)
+    config = config_dir / "pycluster.toml"
+    config.write_text(
+        '[node]\nnode_call = "N0CALL-1"\n\n[smtp]\npassword = "DO_NOT_LEAK"\n',
+        encoding="utf-8",
+    )
+    report = tmp_path / "support.txt"
+    env = {
+        **os.environ,
+        "PYCLUSTER_SOURCE_DIR": str(root),
+        "PYCLUSTER_APP_DIR": str(runtime),
+        "PYCLUSTER_CONFIG_DEST": str(config),
+        "PYCLUSTER_SYSTEMD_DIR": str(tmp_path / "systemd"),
+    }
+    result = subprocess.run(
+        [str(collector), "--output", str(report), "--no-journal"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    output = report.read_text(encoding="utf-8")
+    assert "pyCluster Support Report" in output
+    assert "Installation Assessment" in output
+    assert "password = <redacted>" in output
+    assert "DO_NOT_LEAK" not in output
+
+    receipt = tmp_path / "receipt" / "deployment-state.toml"
+    receipt_env = {
+        **os.environ,
+        "PYCLUSTER_USER": pwd.getpwuid(os.getuid()).pw_name,
+        "PYCLUSTER_GROUP": grp.getgrgid(os.getgid()).gr_name,
+        "PYCLUSTER_DEPLOYMENT_STATE": str(receipt),
+    }
+    subprocess.run(
+        ["bash", "-c", ". deploy/lib.sh; write_deployment_state test"],
+        cwd=root,
+        env=receipt_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    with receipt.open("rb") as handle:
+        state = tomllib.load(handle)
+    assert state["schema"] == 1
+    assert state["action"] == "test"
+    assert state["version"] == __version__
+    assert len(state["source_commit"]) == 40
 
 
 def test_nginx_setup_validates_hosts_and_rolls_back_failed_changes() -> None:

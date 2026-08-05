@@ -1110,6 +1110,11 @@ class WebAdminServer:
             "pc51_from": node_cfg.get(pfx + "pc51.from", ""),
             "pc51_value": node_cfg.get(pfx + "pc51.value", ""),
             "py_protocol_version": node_cfg.get(pfx + "py.protocol_version", ""),
+            "py_session_epoch": node_cfg.get(pfx + "py.session_epoch", ""),
+            "py_hello_sent_epoch": node_cfg.get(pfx + "py.hello_sent_epoch", ""),
+            "py_hello_received_epoch": node_cfg.get(pfx + "py.hello_received_epoch", ""),
+            "py_handshake_error": node_cfg.get(pfx + "py.handshake_error", ""),
+            "py_handshake_error_epoch": node_cfg.get(pfx + "py.handshake_error_epoch", ""),
             "py_node": node_cfg.get(pfx + "py.node", ""),
             "py_software_version": node_cfg.get(pfx + "py.software_version", ""),
             "py_capabilities": node_cfg.get(pfx + "py.capabilities", ""),
@@ -1129,6 +1134,7 @@ class WebAdminServer:
             "py_nodeinfo_services": node_cfg.get(pfx + "py.nodeinfo.services", ""),
             "py_nodeinfo_capabilities": node_cfg.get(pfx + "py.nodeinfo.capabilities", ""),
             "py_nodeinfo_updated_epoch": node_cfg.get(pfx + "py.nodeinfo.updated_epoch", ""),
+            "py_nodeinfo_received_epoch": node_cfg.get(pfx + "py.nodeinfo.received_epoch", ""),
             "py_nodeinfo_expires_epoch": node_cfg.get(pfx + "py.nodeinfo.expires_epoch", ""),
             "py_nodeinfo_learned_from": node_cfg.get(pfx + "py.nodeinfo.learned_from", ""),
             "py_nodeinfo_confidence": node_cfg.get(pfx + "py.nodeinfo.confidence", ""),
@@ -1211,6 +1217,37 @@ class WebAdminServer:
         except Exception:
             hist = []
         last_event = hist[-1] if hist else None
+        py_identified = str(state["pc18_family"]).strip().lower() == "pycluster"
+        py_session_epoch = _to_int(state["py_session_epoch"], 0)
+        py_hello_sent_epoch = _to_int(state["py_hello_sent_epoch"], 0)
+        py_hello_received_epoch = _to_int(state["py_hello_received_epoch"], 0)
+        py_hello_validated = bool(
+            state["py_protocol_version"]
+            and state["py_node"]
+            and (py_session_epoch <= 0 or py_hello_received_epoch >= py_session_epoch)
+        )
+        py_nodeinfo_received = bool(
+            py_hello_validated
+            and state["py_nodeinfo_node_id"]
+            and (
+                py_session_epoch <= 0
+                or _to_int(state["py_nodeinfo_received_epoch"], 0) >= py_session_epoch
+            )
+        )
+        if py_nodeinfo_received:
+            py_negotiation_state = "nodeinfo_received"
+        elif py_hello_validated:
+            py_negotiation_state = "negotiated"
+        elif state["py_handshake_error"]:
+            py_negotiation_state = "invalid_response"
+        elif py_hello_sent_epoch and (py_session_epoch <= 0 or py_hello_sent_epoch >= py_session_epoch):
+            py_negotiation_state = "hello_sent"
+        elif py_identified and not self.config.py_protocol.enabled:
+            py_negotiation_state = "local_disabled"
+        elif py_identified:
+            py_negotiation_state = "awaiting_py00"
+        else:
+            py_negotiation_state = "not_identified"
         return {
             "known": bool(known),
             "health": health,
@@ -1232,7 +1269,16 @@ class WebAdminServer:
             "pc50": {"call": state["pc50_call"], "count": state["pc50_count"]},
             "pc51": {"to": state["pc51_to"], "from": state["pc51_from"], "value": state["pc51_value"]},
             "py": {
-                "protocol_version": state["py_protocol_version"],
+                "identified": py_identified,
+                "local_enabled": self.config.py_protocol.enabled,
+                "hello_validated": py_hello_validated,
+                "negotiation_state": py_negotiation_state,
+                "session_epoch": py_session_epoch,
+                "hello_sent_epoch": py_hello_sent_epoch,
+                "hello_received_epoch": py_hello_received_epoch,
+                "handshake_error": state["py_handshake_error"],
+                "handshake_error_epoch": _to_int(state["py_handshake_error_epoch"], 0),
+                "protocol_version": state["py_protocol_version"] if py_hello_validated else "",
                 "node": state["py_node"],
                 "software_version": state["py_software_version"],
                 "capabilities": [item for item in str(state["py_capabilities"]).split(",") if item],
@@ -1259,6 +1305,7 @@ class WebAdminServer:
                         item for item in str(state["py_nodeinfo_capabilities"]).split(",") if item
                     ],
                     "updated_epoch": _to_int(state["py_nodeinfo_updated_epoch"], 0),
+                    "received_epoch": _to_int(state["py_nodeinfo_received_epoch"], 0),
                     "expires_epoch": _to_int(state["py_nodeinfo_expires_epoch"], 0),
                     "learned_from": state["py_nodeinfo_learned_from"],
                     "confidence": state["py_nodeinfo_confidence"],
@@ -3260,7 +3307,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="users-browser-topbar">
               <div>
                 <h3>Known pyCluster Nodes</h3>
-                <div class="subtle">Nodes known directly or reported through negotiated pyCluster topology exchange.</div>
+                <div class="subtle">Direct peers identified as pyCluster by PC18, plus nodes learned through negotiated pyCluster metadata and topology exchange.</div>
               </div>
               <button class="secondary" id="knownNodesReload" type="button" title="Reload the local known-node catalog">Reload</button>
             </div>
@@ -4058,8 +4105,53 @@ async function loadPeerRows() {
 function setKnownNodeRows(payload, peers) {
   const body = byId('knownNodeRows');
   if (!body) return;
-  const rows = Array.isArray(payload && payload.nodes) ? payload.nodes : [];
-  const peerMap = new Map((Array.isArray(peers) ? peers : []).map((peer) => [String(peer.peer || '').toUpperCase(), peer]));
+  const peerRows = Array.isArray(peers) ? peers : [];
+  const rows = (Array.isArray(payload && payload.nodes) ? payload.nodes : []).map((row) => ({...row}));
+  const peerMap = new Map(peerRows.map((peer) => [String(peer.peer || '').toUpperCase(), peer]));
+  const knownCalls = new Set(rows.map((row) => String(row.node_call || '').toUpperCase()).filter(Boolean));
+  peerRows.forEach((peer) => {
+    const call = String(peer && peer.peer || '').toUpperCase();
+    const proto = peer && peer.proto ? peer.proto : {};
+    const peerPy = proto.py || {};
+    const nodeInfo = peerPy.node_info || {};
+    const pc18Family = String(proto.pc18_family || '').toLowerCase();
+    const positivelyIdentified = peerPy.identified === true || pc18Family === 'pycluster' || !!peerPy.node;
+    if (!call || !positivelyIdentified || knownCalls.has(call)) return;
+    const protocolVersion = String(peerPy.protocol_version || '');
+    rows.push({
+      node_call:call,
+      node_id:String(nodeInfo.node_id || ''),
+      confidence:'identified',
+      software_version:String(nodeInfo.software_version || peerPy.software_version || proto.pc18_summary || proto.pc18_software || ''),
+      protocol_version:protocolVersion,
+      public_web_url:String(nodeInfo.public_web_url || ''),
+      locator:String(nodeInfo.locator || ''),
+      qth:String(nodeInfo.qth || ''),
+      services:Array.isArray(nodeInfo.services) ? nodeInfo.services : [],
+      source_node:call,
+      learned_from:call,
+      hop_count:0,
+      last_seen:Number(proto.last_epoch || peer.last_rx_epoch || peer.connected_epoch || 0),
+      expires_at:Number(nodeInfo.expires_epoch || 0),
+      discovery_state:peerPy.negotiation_state === 'local_disabled'
+        ? 'PC18 identified; PY disabled locally'
+        : peerPy.negotiation_state === 'invalid_response'
+          ? `Invalid PY00 received: ${String(peerPy.handshake_error || 'invalid response')}`
+          : peerPy.negotiation_state === 'hello_sent'
+            ? peer.connected
+              ? 'PY00 sent; no valid response received'
+              : 'PY00 sent; peer disconnected before a valid response'
+          : peerPy.negotiation_state === 'awaiting_py00'
+              ? String(peer.profile || '').toLowerCase() === 'pycluster'
+                ? 'PC18 identified; PY00 not sent yet'
+                : `PC18 identified; PY00 blocked by ${String(peer.profile || 'unknown')} peer profile`
+            : protocolVersion
+                ? `PY ${protocolVersion} negotiated; NODEINFO not received`
+                : 'PC18 identified; PY00 not sent yet',
+    });
+    knownCalls.add(call);
+  });
+  rows.sort((a, b) => String(a.node_call || '').localeCompare(String(b.node_call || '')));
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="7">No pyCluster nodes are known yet.</td></tr>';
     return;
@@ -4074,10 +4166,14 @@ function setKnownNodeRows(payload, peers) {
     const location = [row.locator, row.qth].filter(Boolean).join(' • ') || '-';
     const learned = confidence === 'local'
       ? 'This node'
-      : `${row.learned_from || row.source_node || '-'} • ${Number(row.hop_count || 0)} hop${Number(row.hop_count || 0) === 1 ? '' : 's'}`;
+      : confidence === 'identified'
+        ? `${directPeer && directPeer.connected ? 'Connected direct peer' : 'Direct peer'} • PC18 identified`
+        : `${row.learned_from || row.source_node || '-'} • ${Number(row.hop_count || 0)} hop${Number(row.hop_count || 0) === 1 ? '' : 's'}`;
     const services = Array.isArray(row.services) ? row.services.join(', ') : '-';
-    const serviceMeta = directPeer
-      ? `<div class="mini">health ${esc(health.state || 'unknown')} • RBN ${esc(rbn.state || 'unknown')}</div>`
+    const serviceMeta = row.discovery_state
+      ? `<div class="mini">${esc(row.discovery_state)}</div>`
+      : directPeer
+        ? `<div class="mini">health ${esc(health.state || 'unknown')} • RBN ${esc(rbn.state || 'unknown')}</div>`
       : '';
     const publicUrl = String(row.public_web_url || '').trim();
     const callText = publicUrl
@@ -4086,11 +4182,11 @@ function setKnownNodeRows(payload, peers) {
     return `<tr>
       <td>${callText}<div class="mini">${esc(String(row.node_id || ''))}</div></td>
       <td><span class="tag">${esc(confidence)}</span></td>
-      <td>${esc(row.software_version || '-')}<div class="mini">PY ${esc(row.protocol_version || '-')}</div></td>
+      <td>${esc(row.software_version || '-')}<div class="mini">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div></td>
       <td>${esc(location)}</td>
       <td>${esc(learned)}</td>
       <td>${esc(services)}${serviceMeta}</td>
-      <td>Seen ${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">Expires ${esc(fmtEpoch(row.expires_at || 0))}</div></td>
+      <td>Seen ${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
     </tr>`;
   }).join('');
 }

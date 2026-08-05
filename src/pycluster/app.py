@@ -599,6 +599,7 @@ class ClusterApp:
         effective_dsn = self._merge_peer_password(clean_dsn, secret)
         wire_profile = "spider" if clean_dsn.strip().lower().startswith("dxspider://") and profile == "dxspider" else profile
         await self.node_link.connect_dsn(name, effective_dsn, profile=wire_profile)
+        await self._begin_py_peer_session(name)
         await self._reset_mail_transport_state(name, "peer session refreshed")
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_connect_epoch"), str(now), now)
@@ -726,6 +727,7 @@ class ClusterApp:
         # handshakes, `client X telnet` names the node being connected to.
         peer_key = login_key
         self._reset_py_peer_state(peer_key)
+        await self._begin_py_peer_session(peer_key)
         profile = (
             await self.store.get_user_pref(peer_key, "node_family")
             or await self.store.get_user_pref(login_key, "node_family")
@@ -1357,6 +1359,20 @@ class ClusterApp:
         self._py_topology_snapshots.pop(peer_key, None)
         self._py_metadata_epoch.pop(peer_key, None)
 
+    async def _begin_py_peer_session(self, peer_name: str) -> None:
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self._record_proto_state(
+            peer_name,
+            {
+                "py.session_epoch": str(now),
+                "py.hello_sent_epoch": "",
+                "py.hello_received_epoch": "",
+                "py.nodeinfo.received_epoch": "",
+                "py.handshake_error": "",
+                "py.handshake_error_epoch": "",
+            },
+        )
+
     def _local_py_capabilities(self) -> tuple[str, ...]:
         capabilities = set(PY_CAPABILITIES)
         if self.config.py_protocol.share_node_info:
@@ -1398,6 +1414,8 @@ class ClusterApp:
         if await self.node_link.send(peer_name, WirePcFrame(PY_HELLO_TYPE, hello.to_fields())) is False:
             return False
         self._py_hello_sent.add(peer_key)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self._record_proto_state(peer_name, {"py.hello_sent_epoch": str(now)})
         return True
 
     async def _build_py_node_info(self) -> PyNodeInfoMessage:
@@ -1969,9 +1987,25 @@ class ClusterApp:
                 hello = PyHelloMessage.from_fields(frame.payload_fields)
             except ValueError:
                 await self.node_link.mark_policy_drop(peer_name, "invalid_py_hello")
+                now = int(datetime.now(timezone.utc).timestamp())
+                await self._record_proto_state(
+                    peer_name,
+                    {
+                        "py.handshake_error": "invalid_py00",
+                        "py.handshake_error_epoch": str(now),
+                    },
+                )
                 return
             if hello.node_call != peer_key:
                 await self.node_link.mark_policy_drop(peer_name, "py_identity_mismatch")
+                now = int(datetime.now(timezone.utc).timestamp())
+                await self._record_proto_state(
+                    peer_name,
+                    {
+                        "py.handshake_error": "identity_mismatch",
+                        "py.handshake_error_epoch": str(now),
+                    },
+                )
                 return
             remote_capabilities = frozenset(hello.capabilities)
             negotiated = frozenset(set(self._local_py_capabilities()).intersection(remote_capabilities))
@@ -1987,6 +2021,9 @@ class ClusterApp:
                     "py.capabilities": ",".join(hello.capabilities),
                     "py.negotiated_capabilities": ",".join(sorted(negotiated)),
                     "py.announced_epoch": str(hello.epoch),
+                    "py.hello_received_epoch": str(int(datetime.now(timezone.utc).timestamp())),
+                    "py.handshake_error": "",
+                    "py.handshake_error_epoch": "",
                 },
             )
             await self._send_py_hello(peer_name)
@@ -2084,6 +2121,7 @@ class ClusterApp:
                     "py.nodeinfo.services": ",".join(node_info.services),
                     "py.nodeinfo.capabilities": ",".join(node_info.capabilities),
                     "py.nodeinfo.updated_epoch": str(node_info.updated_epoch),
+                    "py.nodeinfo.received_epoch": str(now),
                     "py.nodeinfo.expires_epoch": str(node_info.expires_epoch),
                     "py.nodeinfo.learned_from": peer_key,
                     "py.nodeinfo.confidence": "direct",

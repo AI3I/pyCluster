@@ -100,6 +100,8 @@ Highlights:
 - `systemd` services
 - install, upgrade, repair, and uninstall scripts
 - doctor script for host checks
+- redacted support-report collector with host, virtualization, deployment
+  integrity, and copied-installation diagnostics
 - supported local nginx helper plus documented external reverse-proxy deployments
 - configurable IPv4, IPv6, and dual-stack listeners
 - validated deployment on Debian 12/13, Ubuntu 24.04/25.10, Fedora 42/43, and SELinux-enforcing EL-family hosts

@@ -399,6 +399,25 @@ Shows link state, health, activity, and negotiated protocol detail for each peer
 
 #### Known pyCluster Nodes
 
+This table includes two levels of knowledge:
+
+- a direct peer positively identified as pyCluster by its PC18 software string,
+  even when private-protocol negotiation has not completed
+- direct or reported node records received through negotiated `PY01` and
+  topology exchange
+
+An identified-only row explicitly reports whether PY is disabled locally,
+is awaiting a valid PY00 handshake, or has negotiated but not received NODEINFO.
+The PC18 software version is informational and never substitutes for PY00
+capability negotiation. The row reports whether PY00 was not sent, sent without
+a valid response, followed by a disconnect, or whether an invalid or
+identity-mismatched PY00 was received. A silent peer cannot be conclusively
+labeled remotely disabled or rejecting PY.
+A negotiated row can also report that NODEINFO
+has not been received. Locator, services, public URL, health, dataset, RBN, and
+topology metadata remain unavailable until both nodes enable compatible `PY`
+capabilities and exchange the corresponding records.
+
 Lists local, directly observed, and relayed pyCluster node records with version, location, provenance, services, and freshness. These records are reported topology observations, not a central registry.
 
 #### Protocol Alerts

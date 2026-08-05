@@ -377,6 +377,8 @@ def test_pycluster_pc18_negotiates_one_py_hello_and_persists_remote_hello(tmp_pa
 
             prefs = await app.store.list_user_prefs(app.config.node.node_call)
             assert prefs["proto.peer.ai3i-90.py.protocol_version"] == "1"
+            assert int(prefs["proto.peer.ai3i-90.py.hello_sent_epoch"]) > 0
+            assert int(prefs["proto.peer.ai3i-90.py.hello_received_epoch"]) > 0
             assert prefs["proto.peer.ai3i-90.py.node"] == "AI3I-90"
             assert prefs["proto.peer.ai3i-90.py.software_version"] == "1.0.12"
             assert prefs["proto.peer.ai3i-90.py.capabilities"] == "future-capability,py99-error"
