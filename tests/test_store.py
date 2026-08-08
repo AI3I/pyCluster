@@ -1,7 +1,8 @@
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
-from pycluster.models import parse_spot_record
+from pycluster.models import Spot, parse_spot_record
 from pycluster.shdx import parse_sh_dx_args
 from pycluster.store import SpotStore
 
@@ -346,6 +347,22 @@ def test_store_apply_retention_prunes_old_rows(tmp_path: Path) -> None:
             assert len(msgs) == 1 and msgs[0]["body"] == "new message"
             bulls = await store.list_bulletins("announce", limit=10)
             assert len(bulls) == 1 and bulls[0]["body"] == "new bulletin"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_store_purges_only_persisted_rbn_history(tmp_path: Path) -> None:
+    async def run() -> None:
+        store = SpotStore(str(tmp_path / "purge_rbn.db"))
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.add_spot(Spot(14025.0, "AI3I-90", now, "CW 20 dB", "WZ7I-#", "RBN", ""))
+            await store.add_spot(Spot(14026.0, "AI3I-91", now, "CW", "AI3I-92", "AI3I-15", ""))
+            assert await store.purge_persisted_rbn_spots() == 1
+            rows = await store.latest_spots(limit=10)
+            assert [row["dx_call"] for row in rows] == ["AI3I-91"]
         finally:
             await store.close()
 

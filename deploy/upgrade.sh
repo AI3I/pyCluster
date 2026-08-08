@@ -30,6 +30,7 @@ install_or_refresh_logrotate
 enable_service
 run_upgrade_1_0_1
 run_upgrade_1_0_6
+cleanup_persisted_rbn_history
 refresh_runtime_data_best_effort
 restart_service_hard
 restart_web_service_hard

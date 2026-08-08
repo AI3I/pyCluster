@@ -1,11 +1,11 @@
-[pycluster-core-auth]
+[pycluster-telnet-auth]
 enabled = true
 backend = auto
-filter = pycluster-auth-core
+filter = pycluster-auth-telnet
 logpath = /var/log/pycluster/authfail.log
 maxretry = 5
 findtime = 5m
 bantime = 2h
 bantime.increment = true
 bantime.factor = 2
-port = http,https
+port = 7300,7373,8000

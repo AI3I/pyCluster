@@ -15,14 +15,17 @@ def test_fail2ban_scanner_jail_and_install_hooks_exist() -> None:
     scanner_filter = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/filter.d/pycluster-auth-scanner.conf").read_text(encoding="utf-8")
     core_filter = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/filter.d/pycluster-auth-core.conf").read_text(encoding="utf-8")
     web_filter = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/filter.d/pycluster-auth-web.conf").read_text(encoding="utf-8")
+    telnet_filter = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/filter.d/pycluster-auth-telnet.conf").read_text(encoding="utf-8")
     account_action = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/action.d/pycluster-lock-account.conf").read_text(encoding="utf-8")
     scanner_jail = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/jail.d/pycluster-scanner.local").read_text(encoding="utf-8")
     core_jail = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/jail.d/pycluster-core.local").read_text(encoding="utf-8")
+    telnet_jail = Path("/home/jdlewis/GitHub/pyCluster/deploy/fail2ban/jail.d/pycluster-telnet.local").read_text(encoding="utf-8")
 
     assert "pycluster-auth-scanner.conf" in lib
     assert "pycluster-lock-account.conf" in lib
     assert "pycluster-scanner.local" in lib
     assert "pycluster-telnet-scanner" in lib
+    assert "pycluster-telnet-auth" in lib
 
     assert "channel=telnet" in scanner_filter
     assert "invalid_callsign" in scanner_filter
@@ -38,6 +41,12 @@ def test_fail2ban_scanner_jail_and_install_hooks_exist() -> None:
     assert "maxretry = 5" in core_jail
     assert "findtime = 5m" in core_jail
     assert "bantime = 2h" in core_jail
+    assert "port = http,https" in core_jail
+    assert "channel=sysop-web" in core_filter
+    assert "channel=telnet" in telnet_filter
+    assert "[pycluster-telnet-auth]" in telnet_jail
+    assert "port = 7300,7373,8000" in telnet_jail
+    assert "invalid_credentials_verified|account_locked_verified" in web_filter
     assert "<F-USER>" in core_filter
     assert "<F-USER>" in web_filter
     assert "lock_user_account.py" in account_action

@@ -199,25 +199,29 @@ Relevant repo paths:
 
 - `deploy/fail2ban/filter.d/pycluster-auth-core.conf`
 - `deploy/fail2ban/filter.d/pycluster-auth-web.conf`
+- `deploy/fail2ban/filter.d/pycluster-auth-telnet.conf`
 - `deploy/fail2ban/filter.d/pycluster-auth-scanner.conf`
 - `deploy/fail2ban/action.d/pycluster-lock-account.conf`
 - `deploy/fail2ban/jail.d/pycluster-core.local`
 - `deploy/fail2ban/jail.d/pycluster-web.local`
+- `deploy/fail2ban/jail.d/pycluster-telnet.local`
 - `deploy/fail2ban/jail.d/pycluster-scanner.local`
 
 Installed jail names:
 
 - `pycluster-core-auth`
+- `pycluster-telnet-auth`
 - `pycluster-web-auth`
 - `pycluster-telnet-scanner`
 
-The core jail and pyCluster account state both use a five-failure threshold. Account failure state is scoped to the exact callsign-SSID supplied at login. The aggressive scanner jail matches malformed callsigns only; normal registration requests and policy-denied logins do not count as scanner traffic. Installation does not alter the host's SSH jail policy.
+The SysOp-web and telnet jails each use a five-failure threshold and affect only their respective service ports. Known-account public-web password failures use pyCluster's durable account lock instead of an IP ban, preserving access to password reset. Password and MFA failure state is scoped to the exact callsign-SSID supplied at login. The aggressive scanner jail matches malformed callsigns only; normal registration requests and policy-denied logins do not count as scanner traffic. Installation does not alter the host's SSH jail policy.
 
 Useful checks:
 
 ```bash
 sudo fail2ban-client status
 sudo fail2ban-client status pycluster-core-auth
+sudo fail2ban-client status pycluster-telnet-auth
 sudo fail2ban-client status pycluster-web-auth
 sudo fail2ban-client status pycluster-telnet-scanner
 sudo tail -n 50 /var/log/pycluster/authfail.log
@@ -245,6 +249,8 @@ The System Operator web console includes:
 - current bans
 
 Install, upgrade, and repair runs refresh the pyCluster fail2ban filters, optional actions, and jails, then restart `fail2ban` when the service is available.
+
+Upgrade and repair also remove obsolete rows whose `source_node` is `RBN`. New RBN reports are live-only and do not enter SQLite. This cleanup makes deleted pages reusable; operators who need the database file itself to shrink can stop both services, make a backup, and run `sqlite3 data/pycluster.db 'VACUUM;'` with sufficient free disk space.
 
 By default fail2ban bans IP addresses only. To also lock the user account named in a structured auth-failure line, add the optional `pycluster-lock-account` action to a local jail override and set `pycluster_db` to the active SQLite database. The action calls `scripts/lock_user_account.py`, which can also be run manually on the host for emergency lock/unlock work.
 

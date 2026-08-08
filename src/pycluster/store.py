@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS spots (
 CREATE INDEX IF NOT EXISTS idx_spots_epoch ON spots(epoch DESC);
 CREATE INDEX IF NOT EXISTS idx_spots_dx_call ON spots(dx_call);
 CREATE INDEX IF NOT EXISTS idx_spots_spotter_epoch ON spots(spotter, epoch DESC);
+CREATE INDEX IF NOT EXISTS idx_spots_source_node ON spots(source_node);
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -266,6 +267,18 @@ class SpotStore:
                 counts[table] = int(row["n"] if row is not None else 0)
             self._conn.commit()
         return counts
+
+    async def purge_persisted_rbn_spots(self) -> int:
+        async with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM spots WHERE UPPER(TRIM(source_node)) = 'RBN'"
+            )
+            removed = int(cur.rowcount or 0)
+            self._conn.commit()
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._conn.execute("PRAGMA optimize")
+            self._conn.commit()
+            return removed
 
     async def apply_retention(
         self,

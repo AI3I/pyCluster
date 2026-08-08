@@ -600,6 +600,9 @@ install_or_refresh_fail2ban() {
     "$root/deploy/fail2ban/filter.d/pycluster-auth-web.conf" \
     "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-web.conf"
   install -o root -g root -m 0644 \
+    "$root/deploy/fail2ban/filter.d/pycluster-auth-telnet.conf" \
+    "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-telnet.conf"
+  install -o root -g root -m 0644 \
     "$root/deploy/fail2ban/filter.d/pycluster-auth-scanner.conf" \
     "$PYCLUSTER_FAIL2BAN_DIR/filter.d/pycluster-auth-scanner.conf"
   install -o root -g root -m 0644 \
@@ -611,6 +614,9 @@ install_or_refresh_fail2ban() {
   install -o root -g root -m 0644 \
     "$root/deploy/fail2ban/jail.d/pycluster-web.local" \
     "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-web.local"
+  install -o root -g root -m 0644 \
+    "$root/deploy/fail2ban/jail.d/pycluster-telnet.local" \
+    "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-telnet.local"
   install -o root -g root -m 0644 \
     "$root/deploy/fail2ban/jail.d/pycluster-scanner.local" \
     "$PYCLUSTER_FAIL2BAN_DIR/jail.d/pycluster-scanner.local"
@@ -655,12 +661,12 @@ apply_imported_fail2ban_badips() {
     : >"$prev"
   fi
   for entry in $(comm -23 "$prev" "$tmp"); do
-    for jail in pycluster-core-auth pycluster-web-auth pycluster-telnet-scanner; do
+    for jail in pycluster-core-auth pycluster-web-auth pycluster-telnet-auth pycluster-telnet-scanner; do
       "$client" set "$jail" unbanip "$entry" >/dev/null 2>&1 || true
     done
   done
   for entry in $(comm -13 "$prev" "$tmp"); do
-    for jail in pycluster-core-auth pycluster-web-auth pycluster-telnet-scanner; do
+    for jail in pycluster-core-auth pycluster-web-auth pycluster-telnet-auth pycluster-telnet-scanner; do
       "$client" set "$jail" banip "$entry" >/dev/null 2>&1 || true
     done
   done
@@ -720,6 +726,15 @@ run_upgrade_1_0_6() {
   (
     cd "$PYCLUSTER_APP_DIR" &&
     PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/upgrade_1_0_6.py \
+      --config "$PYCLUSTER_CONFIG_DEST"
+  )
+  ensure_runtime_ownership
+}
+
+cleanup_persisted_rbn_history() {
+  (
+    cd "$PYCLUSTER_APP_DIR" &&
+    PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/cleanup_rbn_history.py \
       --config "$PYCLUSTER_CONFIG_DEST"
   )
   ensure_runtime_ownership

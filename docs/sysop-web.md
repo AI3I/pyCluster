@@ -81,7 +81,7 @@ Tabs:
 - `Public IPv4 Address`
 - `Public IPv6 Address`
 
-`Public IPv4 Address` and `Public IPv6 Address` are used when pyCluster sends outbound PC92 path data. If a PC92 payload would otherwise advertise a private, loopback, link-local, `localhost`, or otherwise non-public IP literal, pyCluster substitutes the same-family configured public address before sending the frame to peers. Blank fields are auto-populated in the SysOp form from detected global interface addresses when available; saving persists the displayed values. The core service also uses detected global interface addresses as a runtime fallback for PC92 sanitization and PC61 spot relay when the saved fields are blank.
+`Public IPv4 Address` and `Public IPv6 Address` are used when pyCluster sends outbound peer traffic. If a PC92 payload would otherwise advertise a private, loopback, link-local, `localhost`, or otherwise non-public IP literal, pyCluster substitutes the same-family configured public address before sending the frame to peers. Locally generated PC61 spot and PC93 chat/bulletin relays use the same public-address selection. Blank fields are auto-populated in the SysOp form from detected global interface addresses when available; saving persists the displayed values. The core service also uses detected global interface addresses as a runtime fallback when the saved fields are blank.
 
 ### Long-Text Fields
 
@@ -152,7 +152,7 @@ This section controls:
 
 Direct RBN ingestion is disabled by default. When enabled from the disabled state, `CW/RTTY` is selected by default and `FT8` is left disabled unless the sysop enables it. Changes made while RBN is enabled are honored. `Advanced Options` contains host, default port, feed ports, named feeds, login callsign, feed password, source node, startup commands, and reconnect seconds.
 
-RBN spots still respect the per-user and peer access matrix. Telnet users do not receive live RBN spots by default; they opt in with `set/rbn`. `show/rbn` remains available for summarized RBN history.
+RBN spots still respect the per-user and peer access matrix. Telnet users do not receive live RBN spots by default; they opt in with `set/rbn`. `show/rbn` reports bounded current-session summaries. RBN reports are not retained in SQLite.
 
 ### QRZ Lookup
 

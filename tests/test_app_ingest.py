@@ -1396,7 +1396,7 @@ def test_ingest_pc11_adds_spot(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_ingest_pc61_accepts_rbn_skimmer_spotter(tmp_path) -> None:
+def test_ingest_pc61_delivers_rbn_skimmer_spotter_without_persistence(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_pc61_rbn_skimmer.db")
         cfg = _mk_config(db)
@@ -1408,11 +1408,8 @@ def test_ingest_pc61_accepts_rbn_skimmer_spotter(tmp_path) -> None:
             )
             await app._handle_node_link_item("PEER1", WirePcFrame("PC61", msg.to_fields()), msg)
 
-            assert await app.store.count_spots() == 1
-            rows = await app.store.latest_spots(limit=1)
-            assert rows[0]["dx_call"] == "N9JR"
-            assert rows[0]["spotter"] == "KO4BHX-#"
-            assert rows[0]["info"] == "CW 39dB Q:2 Z:4"
+            assert await app.store.count_spots() == 0
+            assert len(app._rbn_recent_spot_epochs) == 1
         finally:
             await app.store.close()
 
@@ -1439,7 +1436,8 @@ def test_ingest_pc61_drops_rbn_spots_when_peer_rbn_access_disabled(tmp_path) -> 
 
             await app.store.set_user_pref("PEER1", "access.telnet.rbn", "on", now)
             await app._handle_node_link_item("PEER1", WirePcFrame("PC61", rbn_msg.to_fields()), rbn_msg)
-            assert await app.store.count_spots() == 1
+            assert await app.store.count_spots() == 0
+            assert len(app._rbn_recent_spot_epochs) == 1
         finally:
             await app.store.close()
 
@@ -2441,7 +2439,9 @@ def test_direct_spot_ingest_supports_multi_band_filter_rules(tmp_path) -> None:
 def test_outbound_bulletin_relay_with_category_prefix(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "relay_bulletin.db")
-        app = ClusterApp(_mk_config(db))
+        cfg = _mk_config(db)
+        cfg.node.public_ip_address = "44.2.3.4"
+        app = ClusterApp(cfg)
         captured = []
 
         async def _peer_names():
@@ -2467,6 +2467,7 @@ def test_outbound_bulletin_relay_with_category_prefix(tmp_path) -> None:
             assert any("[ANNOUNCE/FULL] test relay" in t for t in texts)
             assert any("[WCY/LOCAL] A=8 K=2" in t for t in texts)
             assert all("via:" in t for t in texts)
+            assert all(Pc93Message.from_fields(frame.payload_fields).ip == "44.2.3.4" for frame in captured)
         finally:
             await app.store.close()
 
@@ -3344,6 +3345,7 @@ def test_app_rbn_feed_ingests_dx_style_skimmer_lines(tmp_path, monkeypatch) -> N
         cfg.rbn.host = "127.0.0.1"
         cfg.rbn.port = 7300
         fake_writer = _FakeRbnWriter()
+        delivered: list[Spot] = []
 
         async def _open_connection(_host: str, _port: int):
             return _FakeRbnReader(), fake_writer
@@ -3356,6 +3358,7 @@ def test_app_rbn_feed_ingests_dx_style_skimmer_lines(tmp_path, monkeypatch) -> N
         try:
             app.telnet.start = _noop  # type: ignore[method-assign]
             app.telnet.stop = _noop  # type: ignore[method-assign]
+            app.telnet.publish_spot = lambda spot: delivered.append(spot) or asyncio.sleep(0, result=0)  # type: ignore[method-assign]
             app.web.start = _noop  # type: ignore[method-assign]
             app.web.stop = _noop  # type: ignore[method-assign]
             app.public_web.start = _noop  # type: ignore[method-assign]
@@ -3364,15 +3367,15 @@ def test_app_rbn_feed_ingests_dx_style_skimmer_lines(tmp_path, monkeypatch) -> N
             await app.start()
 
             async def _has_spot() -> bool:
-                return await app.store.count_spots() == 1
+                return len(delivered) == 1
 
             await _wait_until_async(_has_spot, timeout=2.0)
 
-            rows = await app.store.latest_spots(limit=1)
-            assert rows[0]["dx_call"] == "N9JR"
-            assert rows[0]["spotter"] == "KO4BHX-#"
-            assert rows[0]["source_node"] == "RBN"
-            assert rows[0]["info"] == "CW  39dB Q:2 Z:4"
+            assert await app.store.count_spots() == 0
+            assert delivered[0].dx_call == "N9JR"
+            assert delivered[0].spotter == "KO4BHX-#"
+            assert delivered[0].source_node == "RBN"
+            assert delivered[0].info == "CW  39dB Q:2 Z:4"
             assert fake_writer.lines == ["N9JR-5", "set/skimmer"]
             status = app.rbn_feed_status()
             assert status["enabled"] is True
@@ -3423,6 +3426,7 @@ def test_app_rbn_feed_applies_login_call_filters_before_ingest(tmp_path, monkeyp
         cfg.rbn.port = 7300
         cfg.rbn.source_node = "RBN"
         app = ClusterApp(cfg)
+        delivered: list[Spot] = []
 
         async def _open_connection(_host: str, _port: int):
             return _FakeRbnReader(), _FakeRbnWriter()
@@ -3435,6 +3439,7 @@ def test_app_rbn_feed_applies_login_call_filters_before_ingest(tmp_path, monkeyp
         try:
             app.telnet.start = _noop  # type: ignore[method-assign]
             app.telnet.stop = _noop  # type: ignore[method-assign]
+            app.telnet.publish_spot = lambda spot: delivered.append(spot) or asyncio.sleep(0, result=0)  # type: ignore[method-assign]
             app.web.start = _noop  # type: ignore[method-assign]
             app.web.stop = _noop  # type: ignore[method-assign]
             app.public_web.start = _noop  # type: ignore[method-assign]
@@ -3446,12 +3451,11 @@ def test_app_rbn_feed_applies_login_call_filters_before_ingest(tmp_path, monkeyp
             await app.start()
 
             async def _has_filtered_spot() -> bool:
-                rows = await app.store.latest_spots(limit=10)
-                return len(rows) == 1 and str(rows[0]["dx_call"]) == "N9JR"
+                return len(delivered) == 1 and delivered[0].dx_call == "N9JR"
 
             await _wait_until_async(_has_filtered_spot, timeout=2.0)
-            rows = await app.store.latest_spots(limit=10)
-            assert [row["dx_call"] for row in rows] == ["N9JR"]
+            assert await app.store.count_spots() == 0
+            assert [spot.dx_call for spot in delivered] == ["N9JR"]
         finally:
             await app.stop()
 
@@ -3504,6 +3508,7 @@ def test_app_rbn_feed_can_ingest_multiple_public_rbn_ports(tmp_path, monkeypatch
         )
         app = ClusterApp(cfg)
         opened: list[int] = []
+        delivered: list[Spot] = []
 
         async def _open_connection(_host: str, port: int):
             opened.append(port)
@@ -3517,6 +3522,7 @@ def test_app_rbn_feed_can_ingest_multiple_public_rbn_ports(tmp_path, monkeypatch
         try:
             app.telnet.start = _noop  # type: ignore[method-assign]
             app.telnet.stop = _noop  # type: ignore[method-assign]
+            app.telnet.publish_spot = lambda spot: delivered.append(spot) or asyncio.sleep(0, result=0)  # type: ignore[method-assign]
             app.web.start = _noop  # type: ignore[method-assign]
             app.web.stop = _noop  # type: ignore[method-assign]
             app.public_web.start = _noop  # type: ignore[method-assign]
@@ -3525,9 +3531,10 @@ def test_app_rbn_feed_can_ingest_multiple_public_rbn_ports(tmp_path, monkeypatch
             await app.start()
 
             async def _has_spots() -> bool:
-                return await app.store.count_spots() == 2
+                return len(delivered) == 2
 
             await _wait_until_async(_has_spots, timeout=2.0)
+            assert await app.store.count_spots() == 0
             assert sorted(opened) == [7000, 7001]
             status = app.rbn_feed_status()
             assert [row["name"] for row in status["feeds"]] == ["CW/RTTY", "FT8"]
@@ -3606,6 +3613,40 @@ def test_app_rbn_feed_reconfigure_stops_running_tasks(tmp_path, monkeypatch) -> 
             assert app._rbn_feed_tasks == {}
         finally:
             await app.stop()
+
+    asyncio.run(run())
+
+
+def test_rbn_sustained_ingest_is_bounded_and_never_persisted(tmp_path) -> None:
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "rbn_sustained.db")))
+        delivered = 0
+
+        async def _publish(_spot: Spot) -> int:
+            nonlocal delivered
+            delivered += 1
+            return 1
+
+        async def _relay(_spot: Spot, exclude_peer=None) -> None:
+            return
+
+        app.telnet.publish_spot = _publish  # type: ignore[method-assign]
+        app._relay_spot_to_links = _relay  # type: ignore[method-assign]
+        app._publish_rbn_to_public_web = lambda _spot: None  # type: ignore[method-assign]
+        now = int(datetime.now(timezone.utc).timestamp())
+        pending = [
+            Spot(14000.0 + (idx % 1000) / 10, f"AI3I-{90 + idx % 10}", now + idx, "CW 20 dB", f"AI3I-{90 + idx % 10}", "RBN", "RBN")
+            for idx in range(20000)
+        ]
+        try:
+            assert await app._flush_rbn_spot_batch("stress", pending) == 20000
+            assert pending == []
+            assert delivered == 20000
+            assert await app.store.count_spots() == 0
+            assert len(app._rbn_recent_spot_epochs) == 10000
+            assert len(app._rbn_seen) <= 50000
+        finally:
+            await app.store.close()
 
     asyncio.run(run())
 

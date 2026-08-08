@@ -20,6 +20,7 @@ System Operator console:
 - RBN visibility is controlled through the same access matrix and stored user preferences used elsewhere
 - spots sourced from the configured RBN source node are treated as RBN traffic even when the comment text does not include a Skimmer-style marker
 - raw PC11/PC61 RBN markers are honored even when the visible spot comment contains only a mode such as FT8
+- RBN reports are delivered over a best-effort local socket and kept in a bounded in-memory window; they are not part of durable spot history or statistics
 - authenticated websocket updates, spot history, statistics, and leaderboards all apply the same stored RBN preference and accept/reject filters
 
 Browser storage is used only as a convenience cache or for anonymous,
@@ -145,7 +146,7 @@ Features:
 - available only after login
 - permission-aware posting controls
 - footer `Log In` popup for authentication
-- footer `Register` popup for new registration requests
+- footer `Register` popup for verified account setup or new registration requests
 - login-modal password reset for verified accounts
 - footer `Edit Profile` popup after login
 
@@ -175,6 +176,8 @@ Password reset:
 - sends a reset code through the configured SMTP path
 - requires the reset code plus matching new-password fields
 - clears the failed-password lock state after a successful reset
+
+When node policy requires registration, the verified `Register` submission remains pending until a System Operator approves it. When registration approval is disabled, the same email-verification flow creates the account immediately. Existing telnet identities without a web password may complete web account setup only by verifying the email already stored on that callsign.
 
 ## Posting Controls
 

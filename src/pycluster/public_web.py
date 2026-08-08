@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import deque
 from datetime import datetime, timezone, timedelta
 import fnmatch
 import hashlib
@@ -11,6 +12,7 @@ import mimetypes
 from pathlib import Path
 import re
 import secrets
+import socket
 import time
 import tomllib
 from urllib.parse import parse_qs, unquote, urlparse
@@ -29,6 +31,7 @@ from .maidenhead import extract_locator
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .qr_svg import qr_svg
 from .rbn import is_rbn_spot
+from .live_spots import decode_rbn_spot, rbn_socket_address
 from .models import Spot, display_call, is_valid_call, is_valid_registration_call, normalize_call
 from .pathmeta import describe_session_path
 from .propagation import latest_wwv_snapshot, merge_solar_snapshots, parse_hamqsl_solar_xml, snapshot_payload
@@ -61,6 +64,23 @@ _CONFIG_AUTH_NODE_FIELDS = {
     "prompt_template",
     "telnet_ports",
 }
+
+
+class _RbnLiveProtocol(asyncio.DatagramProtocol):
+    def __init__(self, server: "PublicWebServer") -> None:
+        self.server = server
+
+    def datagram_received(self, data: bytes, _addr) -> None:
+        try:
+            spot = decode_rbn_spot(data)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            LOG.warning("discarded malformed local RBN live datagram")
+            return
+        if not is_rbn_spot(spot.dx_call, spot.spotter, f"{spot.info} {spot.raw}"):
+            LOG.warning("discarded non-RBN spot from local RBN live datagram")
+            return
+        self.server._rbn_live_sequence += 1
+        self.server._rbn_live_spots.append((self.server._rbn_live_sequence, spot))
 
 _DEFAULT_MODE_ORDER = ["CW", "WSPR", "RTTY", "FT8", "FT4", "FT2", "JS8", "JT9", "JT65", "Q65", "MSK144", "SSB", "AM", "FM", "PSK"]
 _DEFAULT_MODE_RULES = [
@@ -219,6 +239,10 @@ class PublicWebServer:
         self._wpx_mtime_ns = 0
         self._ws_clients: set[asyncio.Task[None]] = set()
         self._ws_writers: set[asyncio.StreamWriter] = set()
+        self._rbn_transport: asyncio.DatagramTransport | None = None
+        self._rbn_socket_path = Path(rbn_socket_address(config))
+        self._rbn_live_spots: deque[tuple[int, Spot]] = deque(maxlen=2000)
+        self._rbn_live_sequence = 0
         self._web_sessions: dict[str, tuple[str, int]] = {}
         self._smtp = SMTPMailer(config.smtp)
         self._mfa = EmailOtpManager(config.mfa, self._smtp.send_code, store)
@@ -390,7 +414,8 @@ class PublicWebServer:
         return f"{proto}://{host}"
 
     async def _send_account_locked_notice(self, call: str, email: str, headers: dict[str, str]) -> None:
-        if not self._smtp.enabled() or not has_valid_email(email):
+        _state, verified_epoch, _remaining = await registration_state(self.store, call)
+        if verified_epoch <= 0 or not self._smtp.enabled() or not has_valid_email(email):
             return
         issuer = self.config.mfa.issuer.strip() or self.config.node.branding_name.strip() or "pyCluster"
         reset_url = self._public_base_url(headers)
@@ -435,6 +460,10 @@ class PublicWebServer:
         await self.store.delete_user_pref(target, "failed_password_locked_epoch")
         await self.store.delete_user_pref(base, "failed_password_count")
         await self.store.delete_user_pref(base, "failed_password_locked_epoch")
+        await self.store.delete_user_pref(target, "failed_mfa_count")
+        await self.store.delete_user_pref(target, "failed_mfa_locked_epoch")
+        await self.store.delete_user_pref(base, "failed_mfa_count")
+        await self.store.delete_user_pref(base, "failed_mfa_locked_epoch")
 
     async def _sysop_notification_emails(self) -> list[str]:
         rows = await self.store.list_user_registry(limit=200, privilege="sysop")
@@ -644,6 +673,7 @@ class PublicWebServer:
             "footer_secondary": footer_secondary,
             "home_node": node_call,
             "telnet_ports": telnet_ports,
+            "registration_required": bool(self.config.node.registration_required),
             "ui_strings": self._public_ui_strings(),
         }
 
@@ -675,6 +705,26 @@ class PublicWebServer:
             "profile_mfa_enter_code": "Enter the MFA code first.",
             "register_required_fields": "Callsign, email, and password are required.",
             "register_password_mismatch": "Passwords do not match.",
+            "register_sending_verification": "Sending verification code...",
+            "register_title_pending": "Request Registration",
+            "register_title_direct": "Create Account",
+            "register_help_pending": "Use your real callsign and a working email address. A system operator will review the request after email verification.",
+            "register_help_direct": "Use your real callsign and a working email address to create a verified account.",
+            "register_send_verification": "Send Verification",
+            "register_footer_pending": "Register",
+            "register_footer_direct": "Create Account",
+            "register_code_sent_pending": "Verification code sent. Enter it below to submit your request.",
+            "register_code_sent_direct": "Verification code sent. Enter it below to create your account.",
+            "register_pending_note": "Your request will remain pending until a system operator approves it.",
+            "register_direct_note": "Email verification creates the account immediately; system operator approval is not required.",
+            "register_submit_request": "Submit Request",
+            "register_create_account": "Create Account",
+            "register_enter_code": "Enter the verification code first.",
+            "register_submitting_request": "Submitting request...",
+            "register_creating_account": "Creating account...",
+            "register_submitted": "Registration request submitted. A system operator will review it.",
+            "register_account_created": "Account created. You can now log in.",
+            "register_failed": "Account setup failed.",
             "password_reset_email_required": "Enter your verified account email address.",
             "password_reset_sending": "Sending password reset code...",
             "password_reset_code_sent": "Password reset code sent. Enter the code and your new password.",
@@ -730,10 +780,27 @@ class PublicWebServer:
             port=self.config.public_web.port,
             limit=16384,
         )
+        loop = asyncio.get_running_loop()
+        try:
+            self._rbn_socket_path.unlink(missing_ok=True)
+            transport, _protocol = await loop.create_datagram_endpoint(
+                lambda: _RbnLiveProtocol(self),
+                local_addr=str(self._rbn_socket_path),
+                family=socket.AF_UNIX,
+            )
+            self._rbn_transport = transport
+            self._rbn_socket_path.chmod(0o600)
+        except OSError as exc:
+            self._rbn_transport = None
+            LOG.warning("public web live RBN socket unavailable at %s: %s", self._rbn_socket_path, exc)
         addrs = ", ".join(str(s.getsockname()) for s in (self._server.sockets or []))
         LOG.info("Public web listening on %s", addrs)
 
     async def stop(self) -> None:
+        if self._rbn_transport:
+            self._rbn_transport.close()
+            self._rbn_transport = None
+        self._rbn_socket_path.unlink(missing_ok=True)
         if self._server:
             self._server.close()
             try:
@@ -960,14 +1027,23 @@ class PublicWebServer:
 
         async def _run() -> None:
             last_seen: tuple[int, str] = (0, "")
+            last_rbn_sequence = 0
             try:
                 while True:
                     rows = await self.store.latest_spots(limit=1)
+                    candidates: list[tuple[int, str, object]] = []
                     if rows:
-                        row = rows[0]
-                        marker = (int(row["epoch"]), str(row["raw"] or ""))
+                        candidates.append((int(rows[0]["epoch"]), "stored", rows[0]))
+                    if self._rbn_live_spots and self._rbn_live_spots[-1][0] > last_rbn_sequence:
+                        sequence, live_spot = self._rbn_live_spots[-1]
+                        candidates.append((int(live_spot.epoch), f"rbn:{sequence}", live_spot))
+                    if candidates:
+                        _epoch, source_marker, row = max(candidates, key=lambda item: (item[0], item[1]))
+                        marker = (int(row.epoch), source_marker) if isinstance(row, Spot) else (int(row["epoch"]), str(row["raw"] or ""))
                         if marker != last_seen:
                             last_seen = marker
+                            if isinstance(row, Spot):
+                                last_rbn_sequence = self._rbn_live_spots[-1][0]
                             spot = self._spot_payload(row)
                             if await self._spot_visible_for_public_call(call, spot):
                                 await self._write_ws_text(writer, json.dumps(spot, separators=(",", ":")))
@@ -994,13 +1070,14 @@ class PublicWebServer:
 
     def _spot_payload(self, row) -> dict[str, object]:
         self._refresh_datafiles_if_changed()
-        freq = float(row["freq_khz"])
-        comment = str(row["info"] or "")
-        dx_call = str(row["dx_call"] or "")
-        spotter = display_call(str(row["spotter"] or ""))
-        source_node = str(row["source_node"] or "")
-        raw = str(row["raw"] or "")
-        stamp = datetime.fromtimestamp(int(row["epoch"]), tz=timezone.utc).isoformat()
+        value = lambda key: getattr(row, key) if isinstance(row, Spot) else row[key]
+        freq = float(value("freq_khz"))
+        comment = str(value("info") or "")
+        dx_call = str(value("dx_call") or "")
+        spotter = display_call(str(value("spotter") or ""))
+        source_node = str(value("source_node") or "")
+        raw = str(value("raw") or "")
+        stamp = datetime.fromtimestamp(int(value("epoch")), tz=timezone.utc).isoformat()
         dx_ent = lookup(dx_call) if self._cty_loaded else None
         if dx_ent is None and self._wpx_loaded:
             dx_ent = wpx_lookup(dx_call)
@@ -1342,8 +1419,11 @@ class PublicWebServer:
         mode = str(q.get("mode", [""])[0] or "").strip()
         activity = str(q.get("activity", [""])[0] or "").strip()
         search = str(q.get("search", [""])[0] or "").strip().lower()
-        rows = await self.store.latest_spots(limit=max(limit, 500 if any((band, mode, activity, search)) else limit))
-        payload = [self._spot_payload(r) for r in rows]
+        query_limit = max(limit, 500 if any((band, mode, activity, search)) else limit)
+        rows = await self.store.latest_spots(limit=query_limit)
+        live_rows = [spot for _sequence, spot in list(self._rbn_live_spots)[-query_limit:]]
+        payload = [self._spot_payload(r) for r in [*rows, *live_rows]]
+        payload.sort(key=lambda spot: str(spot["time"]), reverse=True)
         if band and band != "ALL":
             payload = [r for r in payload if r["band"] == band]
         if mode and mode != "ALL":
@@ -1640,7 +1720,7 @@ class PublicWebServer:
                     "connected": connected,
                     "desired": True,
                     "last_pc_type": last_pc_type,
-                    "inbound": False,
+                    "inbound": not bool(str(row.get("dsn", "")).strip()),
                 }
             )
             if connected:
@@ -1833,8 +1913,16 @@ class PublicWebServer:
                     return
                 reg = await self.store.get_user_registry(call)
                 if reg is not None:
-                    await self._write_response(writer, 409, self._json({"error": "callsign is already registered"}))
-                    return
+                    existing_password = str(await self.store.get_user_pref(call, "password") or "").strip()
+                    existing_email = str(reg["email"] or "").strip()
+                    if self.config.node.registration_required or existing_password:
+                        await self._write_response(writer, 409, self._json({"error": "callsign is already registered"}))
+                        return
+                    if has_valid_email(existing_email) and existing_email.lower() != email.lower():
+                        await self._write_response(writer, 409, self._json({"error": "email does not match the existing account"}))
+                        return
+                    if has_valid_email(existing_email):
+                        email = existing_email
                 challenge_id = str(payload.get("challenge_id", "")).strip()
                 otp = str(payload.get("otp", "")).strip()
                 if not challenge_id or not otp:
@@ -1847,7 +1935,15 @@ class PublicWebServer:
                     await self._write_response(
                         writer,
                         202,
-                        self._json({"ok": False, "verification_required": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
+                        self._json(
+                            {
+                                "ok": False,
+                                "verification_required": True,
+                                "approval_required": bool(self.config.node.registration_required),
+                                "challenge_id": challenge_id,
+                                "expires_epoch": expires_epoch,
+                            }
+                        ),
                     )
                     return
                 ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="public-register", otp=otp)
@@ -1856,19 +1952,37 @@ class PublicWebServer:
                         reason = "verification code expired; request a new code"
                     await self._write_response(writer, 401, self._json({"error": reason}))
                     return
-                await self._submit_registration_request(
-                    call=call,
-                    display_name=display_name,
-                    home_node=home_node,
-                    qth=qth,
-                    qra=qra,
-                    email=email,
-                    note=note,
-                    source="public-web",
-                    email_verified=True,
-                    password=password,
-                )
-                await self._write_response(writer, 200, self._json({"ok": True, "call": call, "pending": True}))
+                if self.config.node.registration_required:
+                    await self._submit_registration_request(
+                        call=call,
+                        display_name=display_name,
+                        home_node=home_node,
+                        qth=qth,
+                        qra=qra,
+                        email=email,
+                        note=note,
+                        source="public-web",
+                        email_verified=True,
+                        password=password,
+                    )
+                    pending = True
+                else:
+                    now = int(time.time())
+                    await self.store.upsert_user_registry(
+                        call,
+                        now,
+                        display_name=display_name,
+                        home_node=home_node,
+                        qth=qth,
+                        qra=qra,
+                        email=email,
+                        privilege="user",
+                    )
+                    await mark_email_verified(self.store, call, now_epoch=now)
+                    await self.store.set_user_pref(call, "password", hash_password(password), now)
+                    pending = False
+                    self._audit("user", f"{call} created a verified public web account")
+                await self._write_response(writer, 200, self._json({"ok": True, "call": call, "pending": pending}))
                 return
             if path == "/api/auth/password-reset/request":
                 if method != "POST":
@@ -1966,18 +2080,28 @@ class PublicWebServer:
                     return
                 reg = await self.store.get_user_registry(call)
                 if reg is None:
-                    self._log_auth_failure(writer, headers, "public-web", call, "registration_required")
-                    await self._write_response(writer, 403, self._json({"error": "registration required"}))
+                    reason = "registration_required" if self.config.node.registration_required else "account_setup_required"
+                    self._log_auth_failure(writer, headers, "public-web", call, reason)
+                    error = "registration required" if self.config.node.registration_required else "account setup required"
+                    await self._write_response(writer, 403, self._json({"error": error}))
                     return
                 for lock_candidate in (call, call.split("-", 1)[0].upper()):
-                    lock_state, _lock_verified_epoch, _lock_remaining = await registration_state(self.store, lock_candidate)
+                    lock_state, lock_verified_epoch, _lock_remaining = await registration_state(self.store, lock_candidate)
                     if lock_state == "locked":
-                        self._log_auth_failure(writer, headers, "public-web", call, "account_locked")
-                        await self._write_response(writer, 403, self._json({"error": "account locked; use password reset"}))
+                        recoverable = lock_verified_epoch > 0
+                        self._log_auth_failure(
+                            writer,
+                            headers,
+                            "public-web",
+                            call,
+                            "account_locked_verified" if recoverable else "account_locked_unverified",
+                        )
+                        error = "account locked; use password reset" if recoverable else "account locked; contact a system operator"
+                        await self._write_response(writer, 403, self._json({"error": error}))
                         return
                 req = await self.store.get_registration_request(call)
                 req_status = str(req["status"] or "").strip().lower() if req is not None else ""
-                if req_status and req_status != "approved":
+                if self.config.node.registration_required and req_status and req_status != "approved":
                     self._log_auth_failure(writer, headers, "public-web", call, "registration_pending")
                     await self._write_response(writer, 403, self._json({"error": "registration pending"}))
                     return
@@ -1991,10 +2115,19 @@ class PublicWebServer:
                     await self._write_response(writer, 403, self._json({"error": "password setup required"}))
                     return
                 if not verify_password(password, str(expected)):
-                    self._log_auth_failure(writer, headers, "public-web", call, "invalid_credentials")
+                    _state, verified_epoch, _remaining = await registration_state(self.store, call)
+                    recoverable = verified_epoch > 0
+                    self._log_auth_failure(
+                        writer,
+                        headers,
+                        "public-web",
+                        call,
+                        "invalid_credentials_verified" if recoverable else "invalid_credentials_unverified",
+                    )
                     count = await self._record_public_password_failure(call, headers)
                     if count >= 5:
-                        await self._write_response(writer, 403, self._json({"error": "account locked; use password reset"}))
+                        error = "account locked; use password reset" if recoverable else "account locked; contact a system operator"
+                        await self._write_response(writer, 403, self._json({"error": error}))
                         return
                     await self._write_response(writer, 401, self._json({"error": "invalid credentials"}))
                     return

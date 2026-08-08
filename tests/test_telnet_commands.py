@@ -418,6 +418,23 @@ def test_show_motd_prefers_node_presentation_override(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_motd_normalizes_all_lines_to_telnet_crlf(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "motd_crlf.db")
+        cfg = _mk_config(db)
+        cfg.node.motd = "First\nSecond\rThird\r\nFourth"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            block = await srv._motd_block()
+            assert "First\r\nSecond\r\nThird\r\nFourth" in block
+            assert "\n" not in block.replace("\r\n", "")
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_set_unset_flags(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "set.db")
@@ -6578,7 +6595,10 @@ def test_startup_commands_manage_and_execute(tmp_path) -> None:
             assert "skipped unsafe command" in joined
 
             _, out = await srv._execute_command("N0CALL", "unset/startup")
-            assert "Startup commands disabled for N0CALL." in out
+            assert "Startup commands disabled for N0CALL; cleared 3 command(s)." in out
+            _, out = await srv._execute_command("N0CALL", "show/startup")
+            assert "Startup Commands: 0" in out
+            assert "show/time" not in out and "show/date" not in out
             outs2 = await srv._run_startup_commands("N0CALL")
             assert outs2 == []
         finally:
@@ -7011,6 +7031,56 @@ def test_telnet_failed_password_counter_sets_locked_state(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_telnet_failed_password_lock_sends_recovery_notice_once(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "failed_password_notice.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        sent: list[tuple[str, str, str]] = []
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-93", now, email="ai3i-93@example.test")
+        await store.set_user_pref("AI3I-93", "email_verified_epoch", str(now), now)
+        try:
+            for _idx in range(6):
+                await srv._record_telnet_password_failure("AI3I-93", ("203.0.113.10", 50000))
+            assert len(sent) == 1
+            assert sent[0][0] == "ai3i-93@example.test"
+            assert "password reset" in sent[0][2].lower()
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_repeated_mfa_failures_lock_exact_account_and_unlock_clears_counter(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "failed_mfa_counter.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-94", now, privilege="user", email="ai3i-94@example.test")
+        try:
+            for _idx in range(4):
+                assert await srv._record_mfa_failure("AI3I-94") is False
+            assert await srv._record_mfa_failure("AI3I-94") is True
+            assert await store.get_user_pref("AI3I-94", "failed_mfa_count") == "5"
+            assert await store.get_user_pref("AI3I-94", "registration_state") == "locked"
+            assert await store.get_user_pref("AI3I", "registration_state") is None
+
+            await srv._clear_mfa_failures("AI3I-94")
+            assert await store.get_user_pref("AI3I-94", "failed_mfa_count") is None
+            assert await store.get_user_pref("AI3I-94", "failed_mfa_locked_epoch") is None
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_telnet_first_login_forces_password_creation(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "first_login_password.db")
@@ -7141,6 +7211,100 @@ def test_telnet_login_email_verification_expired_code_points_user_back_to_regist
             ok = await srv._require_verified_email_for_login("N1NEW", reader, writer)  # type: ignore[arg-type]
             assert ok is False
             assert "Verification code expired. Run REGISTER again to request a new code." in writer.buffer.decode("utf-8", "ignore")
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_verified_email_login_does_not_force_registration_interview(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_verified_email_without_registration.db")
+        cfg = AppConfig(
+            node=NodeConfig(
+                node_call="AI3I-16",
+                require_password=False,
+                registration_required=False,
+                verified_email_required_for_telnet=True,
+            ),
+            telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
+            web=WebConfig(host="127.0.0.1", port=0),
+            public_web=PublicWebConfig(),
+            store=StoreConfig(sqlite_path=db),
+        )
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda _rcpt, _subject, _body: None  # type: ignore[assignment]
+        try:
+            await srv.start()
+        except OSError:
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            sock = (srv._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+            reader, writer = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(reader.readuntil(b"login: "), timeout=2.0)
+            writer.write(b"AI3I-92\r\n")
+            await writer.drain()
+            intro = await asyncio.wait_for(reader.readuntil(b"Email address: "), timeout=2.0)
+            assert b"does not submit a registration request" in intro
+            writer.write(b"ai3i-92@example.test\r\n")
+            await writer.drain()
+            verify_prompt = await asyncio.wait_for(reader.readuntil(b"verification code: "), timeout=2.0)
+            assert b"registration profile" not in verify_prompt
+            account = await store.get_user_registry("AI3I-92")
+            assert account is not None
+            assert int(account["last_login_epoch"] or 0) == 0
+            async with store._lock:
+                challenge = store._conn.execute(
+                    "SELECT code FROM mfa_challenges WHERE call = ? AND purpose = ? ORDER BY issued_epoch DESC LIMIT 1",
+                    ("AI3I-92", "telnet-verify"),
+                ).fetchone()
+            assert challenge is not None
+            writer.write((str(challenge["code"]) + "\r\n").encode("ascii"))
+            await writer.drain()
+            welcome = await asyncio.wait_for(reader.readuntil(b"AI3I-16> "), timeout=2.0)
+            assert b"Email address verified for AI3I-92." in welcome
+            assert b"Let's finish your registration profile" not in welcome
+            account = await store.get_user_registry("AI3I-92")
+            assert account is not None
+            assert int(account["last_login_epoch"] or 0) > 0
+            assert await store.get_registration_request("AI3I-92") is None
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_telnet_email_verification_reuses_active_challenge_after_reconnect(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_verify_resume.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        sent: list[tuple[str, str, str]] = []
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-94", now, email="ai3i-94@example.test")
+        try:
+            first_id, first_sent = await srv._ensure_login_verification_challenge(
+                "AI3I-94", "ai3i-94@example.test"
+            )
+            second_id, second_sent = await srv._ensure_login_verification_challenge(
+                "AI3I-94", "ai3i-94@example.test"
+            )
+            assert first_sent is True
+            assert second_sent is False
+            assert second_id == first_id
+            assert len(sent) == 1
         finally:
             await store.close()
 
@@ -7497,9 +7661,9 @@ def test_telnet_idle_keepalive_stops_on_eof(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_path) -> None:
+def test_telnet_registration_interview_runs_only_after_explicit_register(tmp_path) -> None:
     async def run() -> None:
-        db = str(tmp_path / "first_login_registration_interview.db")
+        db = str(tmp_path / "explicit_registration_interview.db")
         cfg = AppConfig(
             node=NodeConfig(node_call="AI3I-16", require_password=False, registration_required=False, verified_email_required_for_telnet=False),
             telnet=TelnetConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30),
@@ -7509,8 +7673,6 @@ def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_pat
         )
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
-        now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry("N0CALL", now, privilege="user", email="")
         try:
             await srv.start()
         except OSError:
@@ -7524,256 +7686,28 @@ def test_telnet_first_login_runs_registration_interview_for_normal_users(tmp_pat
             await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
             w1.write(b"N0CALL\r\n")
             await w1.drain()
-            hello = await asyncio.wait_for(r1.readuntil(b"Name: "), timeout=2.0)
+            hello = await asyncio.wait_for(r1.readuntil(b"AI3I-16> "), timeout=2.0)
             assert b"Welcome" in hello
-            assert b"Let's finish your registration profile for N0CALL." in hello
-            w1.write(b"Alice Example\r\n")
-            await w1.drain()
-            await asyncio.wait_for(r1.readuntil(b"Home node: "), timeout=2.0)
-            w1.write(b"W1AW\r\n")
-            await w1.drain()
-            await asyncio.wait_for(r1.readuntil(b"Grid square: "), timeout=2.0)
-            w1.write(b"FN42\r\n")
-            await w1.drain()
-            await asyncio.wait_for(r1.readuntil(b"QTH / location: "), timeout=2.0)
-            w1.write(b"\r\n")
-            await w1.drain()
-            await asyncio.wait_for(r1.readuntil(b"Email address: "), timeout=2.0)
-            w1.write(b"alice@example.test\r\n")
-            await w1.drain()
-            await asyncio.wait_for(r1.readuntil(b"new password: "), timeout=2.0)
-            w1.write(b"pw1\r\n")
-            await w1.drain()
-            await asyncio.wait_for(r1.readuntil(b"confirm password: "), timeout=2.0)
-            w1.write(b"pw1\r\n")
-            await w1.drain()
-            tail = await asyncio.wait_for(r1.read(4096), timeout=2.0)
-            assert b"Registration interview complete." in tail
-            assert b"Registration checklist for N0CALL:" in tail
-            assert b"QTH: set/qth" in tail
-            assert b"Password: set/password" not in tail
+            assert b"Let's finish your registration profile" not in hello
             row = await store.get_user_registry("N0CALL")
             assert row is not None
-            assert str(row["display_name"]) == "Alice Example"
-            assert str(row["home_node"]) == "W1AW"
-            assert str(row["qra"]) == "FN42"
-            assert str(row["email"]) == "alice@example.test"
-            assert await store.get_user_pref("N0CALL", "homenode") == "W1AW"
-            assert verify_password("pw1", str(await store.get_user_pref("N0CALL", "password")))
+            assert int(row["last_login_epoch"] or 0) > 0
             w1.close()
             await w1.wait_closed()
+
+            r2, w2 = await asyncio.open_connection(host, port)
+            await asyncio.wait_for(r2.readuntil(b"login: "), timeout=2.0)
+            w2.write(b"N0CALL\r\n")
+            await w2.drain()
+            await asyncio.wait_for(r2.readuntil(b"AI3I-16> "), timeout=2.0)
+            w2.write(b"register\r\n")
+            await w2.drain()
+            registration = await asyncio.wait_for(r2.readuntil(b"Name: "), timeout=2.0)
+            assert b"Let's finish your registration profile for N0CALL." in registration
+            w2.close()
+            await w2.wait_closed()
         finally:
             await srv.stop()
-            await store.close()
-
-    asyncio.run(run())
-
-
-def test_first_login_interview_uses_entered_qra_before_location_estimate(tmp_path) -> None:
-    async def run() -> None:
-        db = str(tmp_path / "interview_qra_before_qth.db")
-        cfg = _mk_config(db)
-        store = SpotStore(db)
-        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
-        now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry(
-            "N0CALL",
-            now,
-            display_name="Alice Example",
-            home_node="W1AW",
-            email="alice@example.test",
-            privilege="user",
-        )
-        reader = asyncio.StreamReader()
-        writer = _DummyWriter()
-        reader.feed_data(b"EN63AA\r\nMilwaukee, WI\r\n")
-        reader.feed_eof()
-        try:
-            ok = await srv._run_first_login_interview(
-                "N0CALL",
-                reader,
-                writer,  # type: ignore[arg-type]
-                node_family="",
-                password_set=True,
-            )
-            assert ok is True
-            prompts = bytes(writer.buffer)
-            assert prompts.index(b"Grid square: ") < prompts.index(b"QTH / location: ")
-            row = await store.get_user_registry("N0CALL")
-            assert row is not None
-            assert str(row["qra"]) == "EN63AA"
-            assert str(row["qth"]) == "Milwaukee, WI"
-        finally:
-            await store.close()
-
-    asyncio.run(run())
-
-
-def test_first_login_interview_defaults_blank_qra_to_node_locator(tmp_path) -> None:
-    async def run() -> None:
-        db = str(tmp_path / "interview_qra_node_default.db")
-        cfg = _mk_config(db)
-        cfg.node.node_locator = "FN20"
-        store = SpotStore(db)
-        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
-        now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry(
-            "N0CALL",
-            now,
-            display_name="Alice Example",
-            home_node="W1AW",
-            email="alice@example.test",
-            privilege="user",
-        )
-        reader = asyncio.StreamReader()
-        writer = _DummyWriter()
-        reader.feed_data(b"\r\n\r\n\r\n")
-        reader.feed_eof()
-        try:
-            ok = await srv._run_first_login_interview(
-                "N0CALL",
-                reader,
-                writer,  # type: ignore[arg-type]
-                node_family="",
-                password_set=True,
-            )
-            assert ok is True
-            row = await store.get_user_registry("N0CALL")
-            assert row is not None
-            assert str(row["qra"]) == "FN20"
-        finally:
-            await store.close()
-
-    asyncio.run(run())
-
-
-def test_first_login_interview_does_not_offer_mfa_before_email_verified(tmp_path) -> None:
-    async def run() -> None:
-        db = str(tmp_path / "interview_no_mfa_before_verified.db")
-        cfg = _mk_config(db)
-        cfg.smtp.host = "smtp.example.test"
-        cfg.smtp.from_addr = "cluster@example.test"
-        store = SpotStore(db)
-        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
-        now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry(
-            "N0CALL",
-            now,
-            display_name="Alice Example",
-            home_node="W1AW",
-            qth="Milwaukee, WI",
-            qra="EN63AA",
-            email="alice@example.test",
-            privilege="user",
-        )
-        await store.set_user_pref("N0CALL", "homenode", "W1AW", now)
-        await store.set_user_pref("N0CALL", "forward_lat", "43.0389", now)
-        await store.set_user_pref("N0CALL", "forward_lon", "-87.9065", now)
-        await store.set_user_pref("N0CALL", "location", "Milwaukee, WI", now)
-        reader = asyncio.StreamReader()
-        writer = _DummyWriter()
-        reader.feed_eof()
-        try:
-            ok = await srv._run_first_login_interview(
-                "N0CALL",
-                reader,
-                writer,  # type: ignore[arg-type]
-                node_family="",
-                password_set=True,
-            )
-            assert ok is True
-            assert b"Enable email MFA now?" not in bytes(writer.buffer)
-            assert await store.get_user_pref("N0CALL", "mfa_email_otp") is None
-        finally:
-            await store.close()
-
-    asyncio.run(run())
-
-
-def test_first_login_interview_prompts_for_missing_password(tmp_path) -> None:
-    async def run() -> None:
-        db = str(tmp_path / "interview_password_setup.db")
-        cfg = _mk_config(db)
-        store = SpotStore(db)
-        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
-        now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry(
-            "N0CALL",
-            now,
-            display_name="Alice Example",
-            home_node="W1AW",
-            qth="Milwaukee, WI",
-            qra="EN63AA",
-            email="alice@example.test",
-            privilege="user",
-        )
-        await store.set_user_pref("N0CALL", "homenode", "W1AW", now)
-        await store.set_user_pref("N0CALL", "forward_lat", "43.0389", now)
-        await store.set_user_pref("N0CALL", "forward_lon", "-87.9065", now)
-        await store.set_user_pref("N0CALL", "location", "Milwaukee, WI", now)
-        reader = asyncio.StreamReader()
-        writer = _DummyWriter()
-        reader.feed_data(b"pw1\r\npw1\r\n")
-        reader.feed_eof()
-        try:
-            ok = await srv._run_first_login_interview(
-                "N0CALL",
-                reader,
-                writer,  # type: ignore[arg-type]
-                node_family="",
-                password_set=False,
-            )
-            assert ok is True
-            output = bytes(writer.buffer)
-            assert b"new password: " in output
-            assert b"Password setup is still required" not in output
-            assert verify_password("pw1", str(await store.get_user_pref("N0CALL", "password")))
-        finally:
-            await store.close()
-
-    asyncio.run(run())
-
-
-def test_first_login_interview_does_not_offer_mfa_when_node_policy_requires_it(tmp_path) -> None:
-    async def run() -> None:
-        db = str(tmp_path / "interview_mfa_node_policy.db")
-        cfg = _mk_config(db)
-        cfg.smtp.host = "smtp.example.test"
-        cfg.smtp.from_addr = "cluster@example.test"
-        cfg.mfa.enabled = True
-        cfg.mfa.require_for_users = True
-        store = SpotStore(db)
-        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
-        now = int(datetime.now(timezone.utc).timestamp())
-        await store.upsert_user_registry(
-            "N0CALL",
-            now,
-            display_name="Alice Example",
-            home_node="W1AW",
-            qth="Milwaukee, WI",
-            qra="EN63AA",
-            email="alice@example.test",
-            privilege="user",
-        )
-        await store.set_user_pref("N0CALL", "homenode", "W1AW", now)
-        await store.set_user_pref("N0CALL", "forward_lat", "43.0389", now)
-        await store.set_user_pref("N0CALL", "forward_lon", "-87.9065", now)
-        await store.set_user_pref("N0CALL", "email_verified_epoch", str(now), now)
-        reader = asyncio.StreamReader()
-        writer = _DummyWriter()
-        reader.feed_eof()
-        try:
-            ok = await srv._run_first_login_interview(
-                "N0CALL",
-                reader,
-                writer,  # type: ignore[arg-type]
-                node_family="",
-                password_set=True,
-            )
-            assert ok is True
-            assert b"Enable email MFA now?" not in bytes(writer.buffer)
-            assert await store.get_user_pref("N0CALL", "mfa_email_otp") is None
-        finally:
             await store.close()
 
     asyncio.run(run())
@@ -8190,6 +8124,39 @@ def test_telnet_login_requires_email_verification_for_unverified_user(tmp_path) 
             await w1.wait_closed()
         finally:
             await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_failed_final_email_verification_attempt_locks_without_login(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "telnet_email_verification_lock.db")
+        cfg = _mk_config(db)
+        cfg.node.initial_grace_logins = 1
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda _rcpt, _subject, _body: None  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-96", now, privilege="user", email="ai3i-96@example.test")
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"000000\r\n")
+        reader.feed_eof()
+        writer = _DummyWriter()
+        try:
+            assert await srv._require_verified_email_for_login("AI3I-96", reader, writer) is False  # type: ignore[arg-type]
+            assert await store.get_user_pref("AI3I-96", "grace_logins_remaining") == "0"
+            assert await store.get_user_pref("AI3I-96", "registration_state") == "locked"
+            assert b"Welcome" not in bytes(writer.buffer)
+
+            second_reader = asyncio.StreamReader()
+            second_reader.feed_eof()
+            second_writer = _DummyWriter()
+            assert await srv._require_verified_email_for_login("AI3I-96", second_reader, second_writer) is False  # type: ignore[arg-type]
+            assert b"is locked" in bytes(second_writer.buffer)
+        finally:
             await store.close()
 
     asyncio.run(run())
