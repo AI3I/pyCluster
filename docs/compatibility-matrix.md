@@ -67,7 +67,7 @@ Generated UTC: 2026-03-01T03:33:12.798019+00:00
 ## Original Baseline Goals
 
 1. Telnet login/banner/prompt matching the baseline transcript.
-2. Spot ingest and persistence compatible with caret-separated spot records.
+2. Ordinary spot ingest and persistence compatible with caret-separated spot records; high-volume RBN reports are deliberately live-only.
 3. `show/version` and `show/dx` output shape compatible with baseline.
 4. Parser/serializer for `PC61`, `PC92`, `PC93` node traffic.
 5. Replay tests using captured `debug/latest_debug.dat` frames.

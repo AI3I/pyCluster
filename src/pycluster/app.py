@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 import re
 import signal
+import socket
 import time
 import uuid
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -22,6 +23,7 @@ from .wpxloc import is_loaded as wpx_loaded, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_data_file, describe_wpxloc_file
 from .geomag import WcyReading, WwvReading, canonicalize_wcy_text, canonicalize_wwv_text, parse_wcy_text, parse_wwv_text
 from .maidenhead import extract_locator
+from .live_spots import encode_rbn_spot, rbn_socket_address
 from .models import Spot, is_plausible_spot_call, is_plausible_spotter_call, is_valid_call, normalize_call
 from .netutil import detected_public_ip_addresses, valid_global_ip
 from .node_link import NodeLinkEngine
@@ -195,6 +197,9 @@ class ClusterApp:
         self._rbn_feed_tasks: dict[str, asyncio.Task[None]] = {}
         self._rbn_feed_statuses: dict[str, dict[str, object]] = {}
         self._rbn_recent_spot_epochs: deque[int] = deque(maxlen=10000)
+        self._rbn_seen_order: deque[tuple[int, tuple[object, ...]]] = deque(maxlen=50000)
+        self._rbn_seen: set[tuple[object, ...]] = set()
+        self._rbn_web_socket: socket.socket | None = None
         self._rbn_feed_status: dict[str, object] = {
             "state": "disabled" if not config.rbn.enabled else "stopped",
             "last_connected_at": "",
@@ -786,6 +791,9 @@ class ClusterApp:
     async def stop(self) -> None:
         self._node_ingest_stop.set()
         await self._stop_rbn_feed_tasks()
+        if self._rbn_web_socket:
+            self._rbn_web_socket.close()
+            self._rbn_web_socket = None
         if self._peer_reconnect_task:
             self._peer_reconnect_task.cancel()
             try:
@@ -875,20 +883,70 @@ class ClusterApp:
             return 0
         pending = list(spots)
         spots.clear()
-        inserted_spots = await self.store.add_spots_returning_inserted(pending)
         ingest_epoch = int(datetime.now(timezone.utc).timestamp())
-        self._rbn_recent_spot_epochs.extend([ingest_epoch] * len(inserted_spots))
-        for idx, spot in enumerate(inserted_spots, start=1):
+        forwarded = 0
+        for idx, spot in enumerate(pending, start=1):
+            if not self._remember_rbn_spot(spot, ingest_epoch):
+                continue
+            forwarded += 1
+            self._rbn_recent_spot_epochs.append(ingest_epoch)
             self._set_rbn_feed_status(
                 feed_key,
                 last_spot_at=self._utc_status_time(),
                 last_spot=f"{spot.spotter} {spot.freq_khz:.1f} {spot.dx_call} {spot.info}".strip(),
             )
             await self.telnet.publish_spot(spot)
+            self._publish_rbn_to_public_web(spot)
             await self._relay_spot_to_links(spot, exclude_peer=None)
             if idx % 25 == 0:
                 await asyncio.sleep(0)
-        return len(inserted_spots)
+        return forwarded
+
+    @staticmethod
+    def _rbn_spot_key(spot: Spot) -> tuple[object, ...]:
+        return (
+            round(float(spot.freq_khz), 3),
+            normalize_call(spot.dx_call),
+            int(spot.epoch),
+            normalize_call(spot.spotter),
+            str(spot.info or ""),
+        )
+
+    def _remember_rbn_spot(self, spot: Spot, now_epoch: int | None = None) -> bool:
+        now = int(now_epoch or datetime.now(timezone.utc).timestamp())
+        cutoff = now - 600
+        while self._rbn_seen_order and self._rbn_seen_order[0][0] < cutoff:
+            _seen_epoch, stale_key = self._rbn_seen_order.popleft()
+            self._rbn_seen.discard(stale_key)
+        key = self._rbn_spot_key(spot)
+        if key in self._rbn_seen:
+            return False
+        if len(self._rbn_seen_order) == self._rbn_seen_order.maxlen:
+            _seen_epoch, stale_key = self._rbn_seen_order.popleft()
+            self._rbn_seen.discard(stale_key)
+        self._rbn_seen.add(key)
+        self._rbn_seen_order.append((now, key))
+        return True
+
+    def _publish_rbn_to_public_web(self, spot: Spot) -> None:
+        if self._rbn_web_socket is None:
+            self._rbn_web_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self._rbn_web_socket.setblocking(False)
+        try:
+            self._rbn_web_socket.sendto(encode_rbn_spot(spot), rbn_socket_address(self.config))
+        except (BlockingIOError, ConnectionRefusedError, FileNotFoundError, OSError):
+            # Public web is optional and live RBN delivery is intentionally best-effort.
+            return
+
+    async def _publish_peer_rbn_spot(self, spot: Spot, *, exclude_peer: str) -> bool:
+        now = int(datetime.now(timezone.utc).timestamp())
+        if not self._remember_rbn_spot(spot, now):
+            return False
+        self._rbn_recent_spot_epochs.append(now)
+        await self.telnet.publish_spot(spot)
+        self._publish_rbn_to_public_web(spot)
+        await self._relay_spot_to_links(spot, exclude_peer=exclude_peer)
+        return True
 
     async def _run_rbn_feed_once(self, feed: dict[str, object]) -> None:
         cfg = self.config.rbn
@@ -2567,7 +2625,8 @@ class ClusterApp:
             if source_node == normalize_call(self.config.node.node_call):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_loop")
                 return
-            if self._is_rbn_peer_spot(dx_call, spotter, msg.info, msg.raw_fields) and not await self._rbn_ingest_allowed_for_call(peer_name):
+            is_rbn = self._is_rbn_peer_spot(dx_call, spotter, msg.info, msg.raw_fields)
+            if is_rbn and not await self._rbn_ingest_allowed_for_call(peer_name):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_rbn_disabled")
                 return
             review_reasons = self._spot_review_reasons(dx_call, spotter)
@@ -2615,8 +2674,9 @@ class ClusterApp:
                 source_node=source_node,
                 raw=raw,
             )
-            inserted = await self.store.add_spot(spot)
-            if inserted:
+            if is_rbn:
+                await self._publish_peer_rbn_spot(spot, exclude_peer=peer_name)
+            elif await self.store.add_spot(spot):
                 await self.telnet.publish_spot(spot)
                 await self._relay_spot_to_links(spot, exclude_peer=peer_name)
             return
@@ -2640,7 +2700,8 @@ class ClusterApp:
             if source_node == normalize_call(self.config.node.node_call):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_spots_loop")
                 return
-            if self._is_rbn_peer_spot(dx_call, spotter, msg.info, msg.raw_fields) and not await self._rbn_ingest_allowed_for_call(peer_name):
+            is_rbn = self._is_rbn_peer_spot(dx_call, spotter, msg.info, msg.raw_fields)
+            if is_rbn and not await self._rbn_ingest_allowed_for_call(peer_name):
                 await self.node_link.mark_policy_drop(peer_name, "ingest_rbn_disabled")
                 return
             review_reasons = self._spot_review_reasons(dx_call, spotter)
@@ -2678,8 +2739,9 @@ class ClusterApp:
                 source_node=source_node,
                 raw=raw,
             )
-            inserted = await self.store.add_spot(spot)
-            if inserted:
+            if is_rbn:
+                await self._publish_peer_rbn_spot(spot, exclude_peer=peer_name)
+            elif await self.store.add_spot(spot):
                 await self.telnet.publish_spot(spot)
                 await self._relay_spot_to_links(spot, exclude_peer=peer_name)
             return
@@ -3081,7 +3143,7 @@ class ClusterApp:
             star2="*",
             text=payload_text,
             extra="",
-            ip="127.0.0.1",
+            ip=self._public_relay_ip(),
             hops_token="H1",
             trailer="",
         )
@@ -3148,7 +3210,7 @@ class ClusterApp:
                                 star2="*",
                                 text=body,
                                 extra="",
-                                ip="127.0.0.1",
+                                ip=self._public_relay_ip(),
                                 hops_token="H1",
                                 trailer="",
                             ).to_fields(),
@@ -3170,7 +3232,7 @@ class ClusterApp:
                                 star2="*",
                                 text=body,
                                 extra="",
-                                ip="127.0.0.1",
+                                ip=self._public_relay_ip(),
                                 hops_token="H1",
                                 trailer="",
                             ).to_fields(),
@@ -3188,7 +3250,7 @@ class ClusterApp:
                         star2="*",
                         text=body,
                         extra="",
-                        ip="127.0.0.1",
+                        ip=self._public_relay_ip(),
                         hops_token="H1",
                         trailer="",
                     ).to_fields(),

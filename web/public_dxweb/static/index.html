@@ -1991,8 +1991,8 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 <div id="register-modal-bg">
   <div id="spot-modal">
     <button class="sm-close" id="register-close" type="button" title="Close" aria-label="Close registration">✕</button>
-    <h2>Request Registration</h2>
-    <div class="register-help">Use your real callsign and a working email address. A sysop will review the request after email verification.</div>
+    <h2 id="register-title">Request Registration</h2>
+    <div class="register-help" id="register-help"></div>
     <div class="profile-modal-grid">
       <div class="field">
         <label for="register-call">Callsign</label>
@@ -2528,7 +2528,12 @@ function updateFooterUser() {
   const el = document.getElementById('footer-user');
   if (!el) return;
   if (!(webToken && webCall)) {
-    el.innerHTML = '<span class="footer-user-line"><span class="footer-user-actions"><button id="footer-login" class="footer-user-edit footer-user-login" type="button">Log In</button><button id="footer-register" class="footer-user-edit footer-user-register" type="button">Register</button></span></span>';
+    const registerLabel = brandingData
+      ? uiText(brandingData.registration_required === false ? 'register_footer_direct' : 'register_footer_pending')
+      : 'Register';
+    el.innerHTML = '<span class="footer-user-line"><span class="footer-user-actions"><button id="footer-login" class="footer-user-edit footer-user-login" type="button">Log In</button><button id="footer-register" class="footer-user-edit footer-user-register" type="button"></button></span></span>';
+    const registerButton = document.getElementById('footer-register');
+    if (registerButton) registerButton.textContent = registerLabel;
     document.getElementById('footer-login')?.addEventListener('click', openOperateLogin);
     document.getElementById('footer-register')?.addEventListener('click', openRegisterModal);
     return;
@@ -2647,7 +2652,12 @@ function openRegisterModal() {
   const otpRow = document.getElementById('register-otp-row');
   if (otpRow) otpRow.style.display = 'none';
   const submit = document.getElementById('register-submit');
-  if (submit) submit.textContent = 'Send Verification';
+  if (submit) submit.textContent = uiText('register_send_verification');
+  const approvalRequired = !brandingData || brandingData.registration_required !== false;
+  const title = document.getElementById('register-title');
+  if (title) title.textContent = uiText(approvalRequired ? 'register_title_pending' : 'register_title_direct');
+  const help = document.getElementById('register-help');
+  if (help) help.textContent = uiText(approvalRequired ? 'register_help_pending' : 'register_help_direct');
   const note = document.getElementById('register-note-line');
   if (note) note.textContent = '';
   setRegisterStatus('');
@@ -2776,7 +2786,7 @@ async function submitRegisterRequest() {
   try {
     if (submit) submit.disabled = true;
     if (!registerChallengeId) {
-      setRegisterStatus('Sending verification code...', 'warn');
+      setRegisterStatus(uiText('register_sending_verification'), 'warn');
       const body = await fetch(REGISTER_REQUEST, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
@@ -2790,12 +2800,13 @@ async function submitRegisterRequest() {
       });
       if (body && body.verification_required && body.challenge_id) {
         registerChallengeId = body.challenge_id;
+        const approvalRequired = body.approval_required !== false;
         const otpRow = document.getElementById('register-otp-row');
         if (otpRow) otpRow.style.display = '';
-        if (submit) submit.textContent = 'Submit Request';
+        if (submit) submit.textContent = uiText(approvalRequired ? 'register_submit_request' : 'register_create_account');
         const note = document.getElementById('register-note-line');
-        if (note) note.textContent = 'Your request will remain pending until a sysop approves it.';
-        setRegisterStatus('Verification code sent. Enter it below to finish your request.', 'warn');
+        if (note) note.textContent = uiText(approvalRequired ? 'register_pending_note' : 'register_direct_note');
+        setRegisterStatus(uiText(approvalRequired ? 'register_code_sent_pending' : 'register_code_sent_direct'), 'warn');
         document.getElementById('register-otp')?.focus();
       }
       return;
@@ -2803,10 +2814,10 @@ async function submitRegisterRequest() {
     payload.challenge_id = registerChallengeId;
     payload.otp = (document.getElementById('register-otp')?.value || '').trim();
     if (!payload.otp) {
-      setRegisterStatus('Enter the verification code first.', 'err');
+      setRegisterStatus(uiText('register_enter_code'), 'err');
       return;
     }
-    setRegisterStatus('Submitting request...', 'warn');
+    setRegisterStatus(uiText((brandingData && brandingData.registration_required) ? 'register_submitting_request' : 'register_creating_account'), 'warn');
     const body = await fetch(REGISTER_REQUEST, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -2820,14 +2831,14 @@ async function submitRegisterRequest() {
     });
     if (body && body.ok) {
       registerChallengeId = '';
-      if (submit) submit.textContent = 'Send Verification';
+      if (submit) submit.textContent = uiText('register_send_verification');
       const note = document.getElementById('register-note-line');
-      if (note) note.textContent = 'Watch your email in case a sysop needs more information.';
-      setRegisterStatus('Registration request submitted. A sysop will review it.', 'ok');
+      if (note) note.textContent = body.pending ? uiText('register_pending_note') : uiText('register_direct_note');
+      setRegisterStatus(uiText(body.pending ? 'register_submitted' : 'register_account_created'), 'ok');
       setTimeout(() => closeRegisterModal(), 1200);
     }
   } catch (err) {
-    setRegisterStatus(err.message || 'Registration request failed.', 'err');
+    setRegisterStatus(err.message || uiText('register_failed'), 'err');
   } finally {
     if (submit) submit.disabled = false;
   }
@@ -3612,6 +3623,7 @@ async function loadBranding() {
     return;
   }
   if (!brandingData) return;
+  updateFooterUser();
   document.title = brandingData.page_title || 'pyCluster';
   const titleEl = document.getElementById('site-title');
   if (titleEl) titleEl.innerHTML = `&#128225; ${brandingData.header_title || 'pyCluster'}`;

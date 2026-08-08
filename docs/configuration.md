@@ -37,12 +37,13 @@ Important fields:
 Auth policy notes:
 
 - `registration_required` is now the primary ordinary-user gate.
-- When `registration_required = true`, ordinary human users must have a local record before account activation.
-- When `verified_email_required_for_web = true`, ordinary web login requires a verified email address. If SMTP is configured, unverified users receive an email code challenge instead of a hard denial.
-- When `verified_email_required_for_telnet = true`, ordinary telnet login requires a verified email address. New telnet users can complete first-login profile/password setup before the verification gate is enforced, and unverified users are driven through telnet email verification before normal commands continue.
+- When `registration_required = true`, ordinary human users must have an approved local registration before login. Public and telnet registration requests remain pending until a System Operator approves them.
+- When `registration_required = false`, the public account-setup flow activates an account immediately after email verification; it does not create a pending System Operator request.
+- When `verified_email_required_for_web = true`, ordinary web login requires a verified account email. Email verification authenticates the account independently of registration approval.
+- When `verified_email_required_for_telnet = true`, ordinary telnet login requires a verified email address. A new caller is prompted only for the email needed for authentication and its verification code; the profile registration interview runs only after the user explicitly enters `REGISTER`.
 - `initial_grace_logins` controls how many failed or skipped telnet verification attempts are allowed before the pending account is locked.
 - `require_password` is now a narrower legacy telnet-password toggle. For ordinary human users, the stronger registration policy effectively implies passworded access.
-- `public_ip_address` is optional IPv4. `public_ipv6_address` is optional IPv6. When set, outbound PC92 path data replaces private, loopback, link-local, `localhost`, or otherwise non-public IP literals with the same-family configured public address before advertising them to peers. If either field is blank, pyCluster detects global interface addresses at runtime and uses them as protocol-sanitizer fallbacks. Existing configs that stored an IPv6 address in `public_ip_address` are accepted and migrated in memory.
+- `public_ip_address` is optional IPv4. `public_ipv6_address` is optional IPv6. When set, outbound PC92 path data replaces private, loopback, link-local, `localhost`, or otherwise non-public IP literals with the same-family configured public address before advertising them to peers. Locally generated PC61 spot and PC93 chat/bulletin relay frames use the same public-address selection. If either field is blank, pyCluster detects global interface addresses at runtime and uses them as protocol fallbacks. Existing configs that stored an IPv6 address in `public_ip_address` are accepted and migrated in memory.
 
 ### `[telnet]`
 
@@ -182,7 +183,8 @@ Notes:
 - `feeds` gives each feed a stable label and can replace `host`/`ports`, for example `feeds = [{ name = "CW/RTTY", host = "telnet.reversebeacon.net", port = 7000 }, { name = "FT8", host = "telnet.reversebeacon.net", port = 7001 }]`.
 - The public Reverse Beacon Network relays are `telnet.reversebeacon.net:7000` for CW/RTTY spots and `telnet.reversebeacon.net:7001` for FT8 spots.
 - The public RBN relays are high-throughput raw feeds and do not provide cluster-side filtering; use pyCluster filters and user preferences after ingestion.
-- RBN feed spots are stored as normal spots with `source_node` set from this section.
+- RBN feed spots are live traffic. They are filtered and delivered to eligible telnet, web, and peer sessions but are not stored in SQLite or included in historical statistics.
+- The public web service receives a best-effort local RBN stream and keeps at most 2,000 reports in memory. Restarting either service clears that display window.
 - telnet users do not receive live RBN spots by default; users opt in with `set/rbn` and opt out with `unset/rbn`.
 - cluster-peer records and the SysOp access matrix still control whether a peer account may ingest or relay RBN traffic.
 - `show/rbn` displays summarized RBN history, while `show/dx` remains the traditional human-posted DX history.

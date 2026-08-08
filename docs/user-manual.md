@@ -37,11 +37,11 @@ Welcome to pyCluster on N0CALL-1
 N0CALL-1>
 ```
 
-If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal. After three failed authenticator-code attempts, pyCluster sends an email challenge first. It disables the old authenticator secret only when delivery succeeds; otherwise the authenticator remains enabled for sysop recovery.
+If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal. After three failed authenticator-code attempts, pyCluster sends an email challenge first. It disables the old authenticator secret only when delivery succeeds; otherwise the authenticator remains enabled for sysop recovery. Five failed MFA codes across reconnects lock the exact account until password reset or a SysOp unlocks it.
 
 For SSID logins, self-service MFA commands apply to the exact callsign you used to log in. For example, `set/mfa authenticator` or `set/totp` as `N0CALL-2` enrolls MFA for `N0CALL-2`, not for the base `N0CALL` account.
 
-If this is your first telnet login and no password exists yet, pyCluster will stop and require password creation before continuing.
+If node policy requires a password and none exists yet, pyCluster stops and requires password creation before continuing. If verified email is required, pyCluster collects only the email needed for authentication and sends a verification code; it does not start registration automatically.
 
 If your node requires or encourages registration, telnet shows a registration
 notice after the MOTD until your account has an approved registration request.
@@ -68,7 +68,7 @@ The main command is:
 sh/dx
 ```
 
-Use `sh/dx` when you want the traditional global cluster view of recent human-posted DX spots. Personal accept/reject spot filters do not hide results from this history view; use `sh/mydx` when you want the same style of list after applying your filters. RBN/Skimmer reports are kept out of `sh/dx`; use `show/rbn` for recent RBN history.
+Use `sh/dx` when you want the traditional global cluster view of recent human-posted DX spots. Personal accept/reject spot filters do not hide results from this history view; use `sh/mydx` when you want the same style of list after applying your filters. RBN/Skimmer reports are live-only and kept out of `sh/dx`; use `show/rbn` for bounded summaries collected during the current session.
 
 It is the fastest way to:
 
@@ -328,7 +328,7 @@ The public web UI gives users a browser interface for:
 - browsing announcements, chat, WX, WCY, and WWV bulletins
 - cluster summary
 - logging in from the footer `Log In` modal
-- registration requests from the footer `Register` modal
+- verified account setup or registration requests from the footer `Register` modal, depending on node policy
 - watch rules after login
 - posting after login
 - editing their profile

@@ -961,7 +961,7 @@ class WebAdminServer:
         if not client.exists():
             return []
         rows: list[dict[str, str]] = []
-        for jail in ("pycluster-core-auth", "pycluster-web-auth"):
+        for jail in ("pycluster-core-auth", "pycluster-web-auth", "pycluster-telnet-auth"):
             proc = None
             commands = [[str(client), "status", jail]]
             if sudo.exists():
@@ -6775,6 +6775,8 @@ if (restoreWebSession()) {
                             await self.store.set_user_pref(state_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
                         await self.store.delete_user_pref(state_call, "failed_password_count")
                         await self.store.delete_user_pref(state_call, "failed_password_locked_epoch")
+                        await self.store.delete_user_pref(state_call, "failed_mfa_count")
+                        await self.store.delete_user_pref(state_call, "failed_mfa_locked_epoch")
                         await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
                         audit_detail = "locked=off"
                 elif kind == "blocked":
@@ -6932,6 +6934,8 @@ if (restoreWebSession()) {
                     await self.store.set_user_pref(state_call, "grace_logins_remaining", str(int(self.config.node.initial_grace_logins)), now)
                 await self.store.delete_user_pref(state_call, "failed_password_count")
                 await self.store.delete_user_pref(state_call, "failed_password_locked_epoch")
+                await self.store.delete_user_pref(state_call, "failed_mfa_count")
+                await self.store.delete_user_pref(state_call, "failed_mfa_locked_epoch")
                 cleared = await self.store.delete_mfa_challenges_for_call(state_call, include_ssids=False)
                 row = await self.store.get_user_registry(call)
                 self._audit("sysop", f"{self._authorized_call(headers)} unlocked account {state_call} challenges={cleared}")

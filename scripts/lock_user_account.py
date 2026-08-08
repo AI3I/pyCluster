@@ -47,7 +47,7 @@ def unlock_account(db_path: str, call: str) -> None:
     with sqlite3.connect(db_path) as conn:
         _set_pref(conn, call, "registration_state", "verified", now)
         conn.execute(
-            "DELETE FROM user_prefs WHERE call = ? AND pref_key IN ('failed_password_locked_epoch', 'failed_password_count')",
+            "DELETE FROM user_prefs WHERE call = ? AND pref_key IN ('failed_password_locked_epoch', 'failed_password_count', 'failed_mfa_locked_epoch', 'failed_mfa_count')",
             (call,),
         )
         conn.commit()

@@ -168,7 +168,7 @@ record is received.
 
 The SysOp Node Settings > pyCluster Protocol view provides PY sharing controls, field-level NODEINFO privacy, a shared-metadata preview, and the structured network-notice editor. Protocol Health provides the Known pyCluster Nodes catalog and live protocol diagnostics. Sharing-policy changes apply locally immediately; existing links renegotiate newly enabled capabilities after reconnect.
 
-Outbound PC92 path advertisements are sanitized when `node.public_ip_address`, `node.public_ipv6_address`, or a detected global interface address is available. Private, loopback, link-local, `localhost`, and otherwise non-public IPv4/IPv6 literals in outbound PC92 payload fields are replaced with the same-family public address before transmission. PC61 spot relay uses the same configured-or-detected public address selection for its IP field.
+Outbound PC92 path advertisements are sanitized when `node.public_ip_address`, `node.public_ipv6_address`, or a detected global interface address is available. Private, loopback, link-local, `localhost`, and otherwise non-public IPv4/IPv6 literals in outbound PC92 payload fields are replaced with the same-family public address before transmission. Locally generated PC61 spot and PC93 chat/bulletin relays use the same configured-or-detected public address selection for their IP fields.
 
 ## Operator Views
 

@@ -13,6 +13,8 @@ pyCluster uses layered security controls rather than a single mechanism.
 - callsign blocking
 - block reason tracking
 - durable failed-password lock state shared by telnet and public web login
+- account-lock recovery notices from both telnet and public web when SMTP and a verified account email are configured
+- durable five-attempt MFA lock state scoped to the exact callsign-SSID
 - verified-email password reset through the public web when SMTP is configured
 - authenticator MFA fallback to email OTP after repeated failed TOTP attempts
 
@@ -30,6 +32,7 @@ Included filters:
 
 - `deploy/fail2ban/filter.d/pycluster-auth-core.conf`
 - `deploy/fail2ban/filter.d/pycluster-auth-web.conf`
+- `deploy/fail2ban/filter.d/pycluster-auth-telnet.conf`
 - `deploy/fail2ban/filter.d/pycluster-auth-scanner.conf`
 
 Included optional actions:
@@ -40,15 +43,17 @@ Included jails:
 
 - `deploy/fail2ban/jail.d/pycluster-core.local`
 - `deploy/fail2ban/jail.d/pycluster-web.local`
+- `deploy/fail2ban/jail.d/pycluster-telnet.local`
 - `deploy/fail2ban/jail.d/pycluster-scanner.local`
 
 Installed jail names:
 
 - `pycluster-core-auth`
+- `pycluster-telnet-auth`
 - `pycluster-web-auth`
 - `pycluster-telnet-scanner`
 
-The core authentication jail uses five failed attempts, matching pyCluster's durable account-lock threshold. Failed-password counters and locks are recorded against the exact callsign-SSID being authenticated; a failure for one SSID does not lock its base call or sibling SSIDs. The scanner jail matches malformed callsigns only, and pyCluster installation leaves any existing SSH jail enabled.
+The SysOp-web and telnet authentication jails each use five failed attempts, but they ban only their own service ports. A telnet ban therefore cannot prevent a user from reaching public-web password reset. Known-account password failures on public web are handled by pyCluster's durable account lock and are excluded from its IP ban so the reset endpoint remains reachable. Failed-password and failed-MFA locks are recorded against the exact callsign-SSID; a failure for one SSID does not lock its base call or siblings. The scanner jail matches malformed callsigns only, and installation leaves any existing SSH jail enabled.
 
 ## Auth Failure Logging
 
@@ -74,6 +79,7 @@ Operational checks:
 ```bash
 sudo fail2ban-client status
 sudo fail2ban-client status pycluster-core-auth
+sudo fail2ban-client status pycluster-telnet-auth
 sudo fail2ban-client status pycluster-web-auth
 sudo fail2ban-client status pycluster-telnet-scanner
 sudo tail -n 50 /var/log/pycluster/authfail.log

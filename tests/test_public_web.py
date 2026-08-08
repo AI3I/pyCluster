@@ -5,16 +5,19 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
+import pytest
 import re
+import socket
 from types import SimpleNamespace
 
 from pycluster.auth import verify_password
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.mfa import EmailOtpManager, totp_code
+from pycluster.live_spots import encode_rbn_spot, rbn_socket_address
 from pycluster import __version__
 from pycluster import public_web as public_web_mod
 from pycluster.models import Spot
-from pycluster.public_web import PublicWebServer
+from pycluster.public_web import PublicWebServer, _RbnLiveProtocol
 from pycluster.store import SpotStore
 
 
@@ -242,6 +245,102 @@ def test_public_web_spot_payload_strips_ssid_in_display_only(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_public_web_serves_live_rbn_without_database_persistence(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_live_rbn.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-90", now, privilege="user")
+        await store.set_user_pref("AI3I-90", "rbn", "on", now)
+        try:
+            live = Spot(14025.1, "N9JR", now, "CW 22 dB 25 WPM", "WZ7I-#", "RBN", "")
+            _RbnLiveProtocol(srv).datagram_received(encode_rbn_spot(live), None)
+
+            assert await store.count_spots() == 0
+            rows = await srv._api_spots({"limit": ["10"]}, "AI3I-90")
+            assert len(rows) == 1
+            assert rows[0]["dx_call"] == "N9JR"
+            assert rows[0]["is_rbn"] is True
+
+            assert await srv._api_spots({"limit": ["10"]}, "") == []
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_live_rbn_window_is_bounded(tmp_path) -> None:
+    db = str(tmp_path / "public_web_live_rbn_bounded.db")
+    store = SpotStore(db)
+    srv = PublicWebServer(_mk_config(db), store, datetime.now(timezone.utc))
+    protocol = _RbnLiveProtocol(srv)
+    now = int(datetime.now(timezone.utc).timestamp())
+    for idx in range(5000):
+        protocol.datagram_received(
+            encode_rbn_spot(Spot(14000.0 + idx / 100, "AI3I-90", now + idx, "CW", f"AI3I-{90 + idx % 10}", "RBN", "RBN")),
+            None,
+        )
+    assert len(srv._rbn_live_spots) == 2000
+    assert srv._rbn_live_spots[0][0] == 3001
+    asyncio.run(store.close())
+
+
+def test_public_web_receives_live_rbn_over_local_socket(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_live_rbn_socket.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            srv._rbn_socket_path.unlink(missing_ok=True)
+            try:
+                transport, _protocol = await asyncio.get_running_loop().create_datagram_endpoint(
+                    lambda: _RbnLiveProtocol(srv),
+                    local_addr=str(srv._rbn_socket_path),
+                    family=socket.AF_UNIX,
+                )
+            except OSError as exc:
+                pytest.skip(f"Unix datagram bind unavailable in sandbox: {exc}")
+            srv._rbn_transport = transport
+            srv._rbn_socket_path.chmod(0o600)
+            now = int(datetime.now(timezone.utc).timestamp())
+            sender.sendto(
+                encode_rbn_spot(Spot(14025.0, "AI3I-90", now, "CW", "AI3I-91", "RBN", "RBN")),
+                rbn_socket_address(cfg),
+            )
+            deadline = asyncio.get_running_loop().time() + 1.0
+            while not srv._rbn_live_spots and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.01)
+            assert len(srv._rbn_live_spots) == 1
+            assert srv._rbn_live_spots[0][1].dx_call == "AI3I-90"
+        finally:
+            sender.close()
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_still_starts_when_live_rbn_socket_is_unavailable(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_no_rbn_socket.db")
+        store = SpotStore(db)
+        srv = PublicWebServer(_mk_config(db), store, datetime.now(timezone.utc))
+        srv._rbn_socket_path = tmp_path / "missing" / "rbn.sock"
+        try:
+            await srv.start()
+            assert srv._server is not None
+            assert srv._rbn_transport is None
+        finally:
+            await srv.stop()
+            await store.close()
+
+    asyncio.run(run())
+
+
 
 def test_public_web_spot_endpoints_and_static_root(tmp_path) -> None:
     async def run() -> None:
@@ -431,6 +530,41 @@ def test_public_web_nodes_and_network_use_local_state(tmp_path) -> None:
                 and node["version"] == "DXSpider version: 1.57 build: 533"
                 for node in net["nodes"]
             )
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_network_preserves_disconnected_inbound_peer_role(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_network_inbound.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+
+        async def _desired_peers():
+            return [
+                {"peer": "AI3I-90", "dsn": "", "profile": "pycluster", "reconnect_enabled": False},
+                {
+                    "peer": "AI3I-91",
+                    "dsn": "pycluster://example.test:7300?login=AI3I-92&client=AI3I-91",
+                    "profile": "pycluster",
+                    "reconnect_enabled": True,
+                },
+            ]
+
+        srv = PublicWebServer(
+            cfg,
+            store,
+            datetime.now(timezone.utc),
+            link_desired_peers_fn=_desired_peers,
+        )
+        try:
+            code, _, body = await _http_request(srv, "/api/network")
+            assert code == 200
+            nodes = {row["call"]: row for row in json.loads(body.decode("utf-8"))["nodes"]}
+            assert nodes["AI3I-90"]["inbound"] is True
+            assert nodes["AI3I-91"]["inbound"] is False
         finally:
             await store.close()
 
@@ -733,7 +867,34 @@ def test_public_web_login_failure_logs_structured_authfail(tmp_path, caplog) -> 
                 )
             assert code == 401
             assert json.loads(body.decode("utf-8"))["error"] == "invalid credentials"
-            assert "AUTHFAIL channel=public-web ip=203.0.113.77 call=AI3I reason=invalid_credentials" in caplog.text
+            assert "AUTHFAIL channel=public-web ip=203.0.113.77 call=AI3I reason=invalid_credentials_verified" in caplog.text
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_unverified_password_failure_remains_bannable(tmp_path, caplog) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_authfail_unverified.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            await store.upsert_user_registry("AI3I-90", now, privilege="user", email="ai3i-90@example.test")
+            await store.set_user_pref("AI3I-90", "password", "correct", now)
+            with caplog.at_level(logging.WARNING, logger="pycluster.public_web"):
+                code, _, body = await _http_request_ex(
+                    srv,
+                    "POST",
+                    "/api/auth/login",
+                    headers={"Content-Type": "application/json", "X-Forwarded-For": "203.0.113.78"},
+                    body=json.dumps({"call": "AI3I-90", "password": "wrong"}).encode("utf-8"),
+                )
+            assert code == 401
+            assert json.loads(body.decode("utf-8"))["error"] == "invalid credentials"
+            assert "reason=invalid_credentials_unverified" in caplog.text
         finally:
             await store.close()
 
@@ -1970,6 +2131,7 @@ def test_public_web_login_requires_registration_and_valid_email(tmp_path) -> Non
     async def run() -> None:
         db = str(tmp_path / "public_auth_registration_required.db")
         cfg = _mk_config(db)
+        cfg.node.registration_required = True
         cfg.node.verified_email_required_for_web = True
         cfg.smtp.host = "smtp.example.test"
         cfg.smtp.from_addr = "cluster@example.test"
@@ -2066,6 +2228,7 @@ def test_public_web_registration_request_verifies_email_and_queues_pending_reque
     async def run() -> None:
         db = str(tmp_path / "public_registration_request.db")
         cfg = _mk_config(db)
+        cfg.node.registration_required = True
         cfg.smtp.host = "smtp.example.test"
         cfg.smtp.from_addr = "cluster@example.test"
         store = SpotStore(db)
@@ -2162,6 +2325,108 @@ def test_public_web_registration_request_verifies_email_and_queues_pending_reque
             assert json.loads(body.decode("utf-8"))["ok"] is True
             assert any(rcpt == "sysop@example.test" for rcpt, _subject, _body in sent)
             assert any(rcpt == "new@example.test" for rcpt, _subject, _body in sent)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_account_setup_activates_without_registration_approval(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_account_setup.db")
+        cfg = _mk_config(db)
+        cfg.node.registration_required = False
+        cfg.node.verified_email_required_for_web = True
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        try:
+            request = {
+                "call": "AI3I-90",
+                "name": "Test User",
+                "email": "ai3i-90@example.test",
+                "password": "secret-pass",
+                "password_confirm": "secret-pass",
+            }
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(request).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 202
+            challenge = json.loads(body.decode("utf-8"))
+            assert challenge["approval_required"] is False
+            row = await store.get_mfa_challenge(challenge["challenge_id"])
+            assert row is not None
+
+            request.update({"challenge_id": challenge["challenge_id"], "otp": str(row["code"])})
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(request).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["pending"] is False
+            assert await store.get_registration_request("AI3I-90") is None
+            account = await store.get_user_registry("AI3I-90")
+            assert account is not None
+            assert str(account["privilege"]) == "user"
+            assert await store.get_user_pref("AI3I-90", "email_verified_epoch") is not None
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I-90", "password": "secret-pass"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["ok"] is True
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_account_setup_preserves_existing_telnet_email(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_existing_telnet_account_setup.db")
+        cfg = _mk_config(db)
+        cfg.node.registration_required = False
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-91", now, email="ai3i-91@example.test")
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda _rcpt, _subject, _body: None  # type: ignore[assignment]
+        try:
+            payload = {
+                "call": "AI3I-91",
+                "email": "attacker@example.test",
+                "password": "secret-pass",
+                "password_confirm": "secret-pass",
+            }
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/register/request",
+                json.dumps(payload).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 409
+            assert json.loads(body.decode("utf-8"))["error"] == "email does not match the existing account"
+            account = await store.get_user_registry("AI3I-91")
+            assert account is not None
+            assert str(account["email"]) == "ai3i-91@example.test"
+            assert await store.get_user_pref("AI3I-91", "password") is None
         finally:
             await store.close()
 

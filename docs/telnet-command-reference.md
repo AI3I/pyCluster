@@ -55,7 +55,7 @@ It also supports direct commands such as:
 | Command | Purpose |
 |---|---|
 | `show/dx` or `sh/dx` | Show recent DX spots. |
-| `show/rbn [call] [limit]` | Show recent RBN/Skimmer reports for your base callsign or another callsign. |
+| `show/rbn [call] [limit]` | Show bounded current-session RBN/Skimmer summaries for your base callsign or another callsign. |
 | `show/node [call]` | Show local node state or stored node/user routing info. |
 | `show/cluster` | Show a compact cluster summary. |
 | `show/users` | Show currently connected users and session details. |
@@ -90,7 +90,7 @@ sh/dx day 2
 sh/mydx 10
 ```
 
-`sh/dx` shows the global recent human-posted DX spot history. RBN/Skimmer reports are intentionally kept out of this view; use `show/rbn` for RBN history. `sh/mydx` applies the user's personal spot filters, including spotter-based rules such as `spotter_cont NA`.
+`sh/dx` shows the global recent human-posted DX spot history. RBN/Skimmer reports are live-only and intentionally kept out of this view; use `show/rbn` for bounded summaries collected during the current session. `sh/mydx` applies the user's personal spot filters, including spotter-based rules such as `spotter_cont NA`.
 
 Spotter-based filters match the station that posted the spot. They do not match the DX callsign being spotted.
 
@@ -128,14 +128,14 @@ Spotter-based filters match the station that posted the spot. They do not match 
 | `set/logininfo` / `unset/logininfo` | Control login-info display preference. |
 | `set/maxconnect <n>` | Set the per-callsign connection cap. |
 | `set/startup ...` | Add a startup command for login-time replay. |
-| `unset/startup ...` | Remove a startup command. |
+| `unset/startup` | Disable startup replay and clear all saved startup commands. |
 | `show/startup` | Show configured startup commands. |
 | `show/station [call]` | Show stored station/profile details and USDB fields. |
 | `show/registered [call]` | Show registry information for users. |
 | `show/configuration` | Show node configuration summary. |
 | `show/newconfiguration` | Alias to the current configuration view. |
 
-When MFA is required during telnet login, pyCluster prompts for `authenticator code:` for authenticator-app accounts and `otp:` for email one-time-code accounts. Password and MFA-code prompts suppress local echo. After three failed authenticator-code attempts, pyCluster first sends an email OTP challenge. Only successful delivery retires the old authenticator secret and transitions the exact account to email OTP. Missing email, unavailable SMTP, or delivery failure leaves authenticator MFA enabled for sysop recovery.
+When MFA is required during telnet login, pyCluster prompts for `authenticator code:` for authenticator-app accounts and `otp:` for email one-time-code accounts. Password and MFA-code prompts suppress local echo. After three failed authenticator-code attempts, pyCluster first sends an email OTP challenge. Only successful delivery retires the old authenticator secret and transitions the exact account to email OTP. Missing email, unavailable SMTP, or delivery failure leaves authenticator MFA enabled for sysop recovery. Five failed MFA codes across reconnects lock the exact callsign-SSID; successful MFA, password reset, or SysOp unlock clears the counter.
 
 Self-service MFA commands act on the exact logged-in callsign, including SSIDs such as `N9JR-10`; login-time email lookup can still fall back to the base callsign's email record when the SSID record has no address.
 
@@ -187,7 +187,7 @@ RBN display is summarized into compact skimmer-style text such as `CW 8dB Q:9* Z
 
 ## Registration
 
-`REGISTER` is interactive on a live telnet session. It prompts only for missing required profile fields and password setup. The first-login registration interview also prompts for password setup when a human user record has no local password. When SMTP is configured, an unverified user must verify their email address before the request is submitted to the sysop queue: the first `REGISTER` sends an email code, and `REGISTER <code>` verifies the email and submits the completed request. Approved and verified users do not receive the registration reminder on later logins.
+`REGISTER` is interactive on a live telnet session and is the only action that starts the profile registration interview. Verified-email login does not start registration automatically. The interview prompts only for missing required profile fields and password setup. When SMTP is configured, an unverified user must verify their email address before the request is submitted to the System Operator queue: the first `REGISTER` sends an email code, and `REGISTER <code>` verifies the email and submits the completed request.
 
 | Command | Purpose |
 |---|---|

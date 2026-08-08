@@ -641,7 +641,7 @@ class TelnetClusterServer:
     def _log_auth_failure(self, channel: str, peer, call: str, reason: str) -> None:
         log_auth_failure(LOG, channel, self._peer_host(peer), self._auth_log_call(call), reason)
 
-    async def _record_telnet_password_failure(self, call: str, peer) -> None:
+    async def _record_telnet_password_failure(self, call: str, peer) -> bool:
         target = call.upper()
         now = int(datetime.now(timezone.utc).timestamp())
         raw_count = await self.store.get_user_pref(target, "failed_password_count")
@@ -652,9 +652,45 @@ class TelnetClusterServer:
         await self.store.set_user_pref(target, "failed_password_count", str(count), now)
         if count >= _AUTH_FAILURE_LOCK_THRESHOLD:
             await self.store.upsert_user_registry(target, now)
+            already_locked = str(await self.store.get_user_pref(target, "registration_state") or "").strip().lower() == "locked"
             await self.store.set_user_pref(target, "registration_state", "locked", now)
             await self.store.set_user_pref(target, "failed_password_locked_epoch", str(now), now)
             self._log_auth_failure("telnet", peer, call, "account_locked_failed_password")
+            if not already_locked:
+                return await self._send_telnet_account_locked_notice(target)
+        return False
+
+    async def _send_telnet_account_locked_notice(self, call: str) -> bool:
+        email = await self._email_for_call(call)
+        _state, verified_epoch, _remaining = await registration_state(self.store, call)
+        if verified_epoch <= 0 or not self._smtp.enabled() or not has_valid_email(email):
+            return False
+        issuer = self.config.mfa.issuer.strip() or self.config.node.branding_name.strip() or "pyCluster"
+        subject = self._render_string(
+            "account.locked_email_subject",
+            "{issuer} account locked for {call}",
+            issuer=issuer,
+            call=call.upper(),
+        )
+        body = self._render_string(
+            "account.locked_email_body",
+            (
+                "Your {issuer} account {call} has been locked because of repeated failed password attempts.\n\n"
+                "Use the password reset option on the public web interface to verify your email address and set a new password.\n\n"
+                "If you did not try to log in, contact a system operator.\n"
+            ),
+            issuer=issuer,
+            call=call.upper(),
+        )
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._smtp.send_code, email, subject, body),
+                timeout=8.0,
+            )
+            return True
+        except Exception:
+            LOG.exception("telnet account lock notice failed call=%s email=%s", call, email)
+            return False
 
     async def _clear_telnet_password_failures(self, call: str) -> None:
         target = call.upper()
@@ -677,6 +713,30 @@ class TelnetClusterServer:
 
     async def _clear_totp_failures(self, call: str, *, target: str | None = None) -> None:
         await self.store.delete_user_pref((target or call).upper(), "mfa_totp_failed_count")
+
+    async def _record_mfa_failure(self, call: str) -> bool:
+        target = call.upper()
+        now = int(datetime.now(timezone.utc).timestamp())
+        raw_count = await self.store.get_user_pref(target, "failed_mfa_count")
+        try:
+            count = int(str(raw_count or "0").strip() or "0") + 1
+        except ValueError:
+            count = 1
+        await self.store.set_user_pref(target, "failed_mfa_count", str(count), now)
+        if count < _AUTH_FAILURE_LOCK_THRESHOLD:
+            return False
+        await self.store.upsert_user_registry(target, now)
+        already_locked = str(await self.store.get_user_pref(target, "registration_state") or "").strip().lower() == "locked"
+        await self.store.set_user_pref(target, "registration_state", "locked", now)
+        await self.store.set_user_pref(target, "failed_mfa_locked_epoch", str(now), now)
+        if not already_locked:
+            await self._send_telnet_account_locked_notice(target)
+        return True
+
+    async def _clear_mfa_failures(self, call: str) -> None:
+        target = call.upper()
+        await self.store.delete_user_pref(target, "failed_mfa_count")
+        await self.store.delete_user_pref(target, "failed_mfa_locked_epoch")
 
     async def _apply_page_size(self, call: str, lines: list[str], explicit_limit: bool = False) -> list[str]:
         if explicit_limit:
@@ -2071,12 +2131,18 @@ class TelnetClusterServer:
             await self._write(writer, self._string("registration.verify_delivery_unconfigured", "Email verification delivery is not configured") + "\r\n")
             return False
         try:
-            challenge_id, _expires = await self._mfa.issue(call=call, email=email, purpose="telnet-verify")
+            challenge_id, sent = await self._ensure_login_verification_challenge(call, email)
         except Exception:
             LOG.exception("telnet registration verification delivery failed call=%s", call)
             await self._write(writer, self._string("registration.verify_delivery_failed", "Email verification delivery failed") + "\r\n")
             return False
-        await self._write(writer, self._string("registration.verify_sent", "A verification code has been sent to your registered email address.") + "\r\n")
+        message_key = "registration.verify_sent" if sent else "registration.verify_existing"
+        fallback = (
+            "A verification code has been sent to your registered email address."
+            if sent
+            else "An active verification code is already pending for your registered email address."
+        )
+        await self._write(writer, self._string(message_key, fallback) + "\r\n")
         await self._write(writer, self._string("registration.verify_prompt", "verification code: "))
         supplied_otp = await self._read_password(reader, writer)
         if supplied_otp is None:
@@ -2099,6 +2165,8 @@ class TelnetClusterServer:
             return False
         ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="telnet-verify", otp=supplied_otp)
         if not ok:
+            if reason in {"challenge expired", "invalid challenge", "too many attempts"}:
+                await self.store.delete_user_pref(call, "telnet_verify_challenge_id")
             await self._write(writer, self._registration_verify_failure_text(reason))
             remaining = await consume_grace_login(
                 self.store,
@@ -2118,9 +2186,72 @@ class TelnetClusterServer:
                 )
             return False
         await mark_email_verified(self.store, call, now_epoch=int(datetime.now(timezone.utc).timestamp()))
+        await self.store.delete_user_pref(call, "telnet_verify_challenge_id")
         await self._write(
             writer,
             self._render_string("registration.verify_success", "Email address verified for {call}.", call=call) + "\r\n",
+        )
+        return True
+
+    async def _ensure_login_verification_challenge(self, call: str, email: str) -> tuple[str, bool]:
+        pref_key = "telnet_verify_challenge_id"
+        challenge_id = str(await self.store.get_user_pref(call, pref_key) or "").strip()
+        if challenge_id:
+            row = await self.store.get_mfa_challenge(challenge_id)
+            if (
+                row is not None
+                and str(row["call"] or "").strip().upper() == call.upper()
+                and str(row["purpose"] or "").strip() == "telnet-verify"
+                and int(row["expires_epoch"] or 0) >= int(time.time())
+                and int(row["attempts_left"] or 0) > 0
+            ):
+                return challenge_id, False
+            await self.store.delete_user_pref(call, pref_key)
+        challenge_id, _expires = await self._mfa.issue(call=call, email=email, purpose="telnet-verify")
+        await self.store.set_user_pref(call, pref_key, challenge_id, int(time.time()))
+        return challenge_id, True
+
+    async def _ensure_login_email(
+        self,
+        call: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> bool:
+        email = await self._email_for_call(call)
+        if has_valid_email(email):
+            return True
+        await self._write(
+            writer,
+            self._string(
+                "registration.authentication_email_intro",
+                "A verified email address is required for login. This does not submit a registration request.",
+            )
+            + "\r\n",
+        )
+        entered = await self._prompt_optional_value(
+            reader,
+            writer,
+            "registration.authentication_email_prompt",
+            "Email address: ",
+            call=call,
+        )
+        if entered is None:
+            return False
+        email = entered.strip()
+        if not has_valid_email(email):
+            await self._write(
+                writer,
+                self._string("registration.authentication_email_invalid", "A valid email address is required for login.")
+                + "\r\n",
+            )
+            return False
+        now = int(datetime.now(timezone.utc).timestamp())
+        await self.store.upsert_user_registry(call, now, email=email)
+        await mark_email_unverified(
+            self.store,
+            call,
+            now_epoch=now,
+            grace_logins=int(self.config.node.initial_grace_logins),
         )
         return True
 
@@ -2255,6 +2386,9 @@ class TelnetClusterServer:
             if not verify_totp(totp_secret, supplied_totp):
                 fallback_due = await self._record_totp_failure(call, target=totp_target)
                 await self._write(writer, self._string("mfa.invalid_code", "Login failed (invalid code)") + "\r\n")
+                if await self._record_mfa_failure(call):
+                    await self._write(writer, self._string("mfa.account_locked", "Account locked after repeated invalid MFA codes.") + "\r\n")
+                    return False
                 if fallback_due:
                     email = await self._email_for_call(call)
                     if not email or not self._smtp.enabled():
@@ -2303,6 +2437,7 @@ class TelnetClusterServer:
                     )
                 return False
             await self._clear_totp_failures(call, target=totp_target)
+            await self._clear_mfa_failures(call)
             return True
 
         return await self._prompt_email_otp_challenge(call, reader, writer)
@@ -2335,8 +2470,12 @@ class TelnetClusterServer:
             return False
         ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="telnet", otp=supplied_otp)
         if not ok:
+            if reason in {"invalid code", "too many attempts"} and await self._record_mfa_failure(call):
+                await self._write(writer, self._string("mfa.account_locked", "Account locked after repeated invalid MFA codes.") + "\r\n")
+                return False
             await self._write(writer, self._render_string("login.failed_reason", "Login failed ({reason})", reason=reason) + "\r\n")
             return False
+        await self._clear_mfa_failures(call)
         return True
 
     async def _motd_text(self) -> str:
@@ -2345,9 +2484,10 @@ class TelnetClusterServer:
 
     async def _motd_block(self) -> str:
         divider = self._string("welcome.motd.divider", "================================================================================")
+        motd = (await self._motd_text()).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
         return (
             f"{divider}\r\n"
-            f"{await self._motd_text()}\r\n"
+            f"{motd}\r\n"
             f"{divider}\r\n"
         )
 
@@ -2605,236 +2745,6 @@ class TelnetClusterServer:
             if not await self._run_registration_profile_interview(call, reader, writer):
                 return self._string("registration.interview_incomplete", "Registration interview was not completed.") + "\r\n"
         return await self._cmd_register(call, None)
-
-    async def _run_first_login_interview(
-        self,
-        call: str,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-        *,
-        node_family: str,
-        password_set: bool,
-    ) -> bool:
-        if node_family:
-            return True
-        reg = await self.store.get_user_registry(call)
-        if reg is None:
-            return True
-        reg_row = dict(reg)
-        prefs = await self._load_prefs_for_call(call)
-        has_coords = bool(str(prefs.get("forward_lat", "")).strip() and str(prefs.get("forward_lon", "")).strip())
-        raw_mfa = await self.store.get_user_pref(call, "mfa_email_otp")
-        mfa_txt = str(raw_mfa or "").strip().lower()
-        _reg_state, verified_epoch, _remaining = await registration_state(self.store, call)
-        is_sysop = (await self._privilege_level_for(call)) >= 2
-        can_offer_mfa = verified_epoch > 0
-        node_requires_mfa = self._mfa.required_for(is_sysop=is_sysop)
-        needs_interview = any(
-            (
-                not str(reg_row.get("display_name") or "").strip(),
-                not str(prefs.get("homenode", "") or reg_row.get("home_node") or "").strip(),
-                not str(reg_row.get("qth") or "").strip(),
-                not str(reg_row.get("qra") or "").strip(),
-                not has_coords,
-                not has_valid_email(str(reg_row.get("email") or "").strip()),
-                not password_set,
-                can_offer_mfa
-                and not node_requires_mfa
-                and self._smtp.enabled()
-                and has_valid_email(str(reg_row.get("email") or "").strip())
-                and mfa_txt not in {"required", "off"},
-            )
-        )
-        if not needs_interview:
-            return True
-        await self._write(
-            writer,
-            self._render_string("registration.interview_title", "Let's finish your registration profile for {call}.", call=call) + "\r\n",
-        )
-        await self._write(
-            writer,
-            self._string(
-                "registration.interview_intro",
-                "Press Enter to skip any question and come back later with the normal set/* commands.",
-            )
-            + "\r\n",
-        )
-        now = int(datetime.now(timezone.utc).timestamp())
-
-        if not str(reg_row.get("display_name") or "").strip():
-            name = await self._prompt_optional_value(
-                reader,
-                writer,
-                "registration.interview_name",
-                "Name: ",
-                call=call,
-            )
-            if name is None:
-                return False
-            if name:
-                await self.store.upsert_user_registry(call, now, display_name=name[:80])
-                reg_row["display_name"] = name[:80]
-
-        home_node = str(prefs.get("homenode", "") or reg_row.get("home_node") or "").strip().upper()
-        if not home_node:
-            entered = await self._prompt_optional_value(
-                reader,
-                writer,
-                "registration.interview_home_node",
-                "Home node: ",
-                call=call,
-            )
-            if entered is None:
-                return False
-            normalized = normalize_call(entered or "")
-            if normalized and is_valid_call(normalized):
-                await self.store.set_user_pref(call, "homenode", normalized, now)
-                await self.store.upsert_user_registry(call, now, home_node=normalized)
-                prefs["homenode"] = normalized
-                reg_row["home_node"] = normalized
-
-        if not str(reg_row.get("qra") or "").strip():
-            qra = await self._prompt_optional_value(
-                reader,
-                writer,
-                "registration.interview_qra",
-                "Grid square: ",
-                call=call,
-            )
-            if qra is None:
-                return False
-            locator = extract_locator(qra or "")
-            if locator:
-                await self.store.upsert_user_registry(call, now, qra=locator)
-                await self._sync_locator_defaults(call, locator, overwrite_coords=False)
-                await self._backfill_location_from_qra(call, locator)
-                reg_row["qra"] = locator
-                prefs["qra"] = locator
-
-        if not str(reg_row.get("qth") or "").strip():
-            qth = await self._prompt_optional_value(
-                reader,
-                writer,
-                "registration.interview_qth",
-                "QTH / location: ",
-                call=call,
-            )
-            if qth is None:
-                return False
-            if qth:
-                qth = qth[:80]
-                await self.store.upsert_user_registry(call, now, qth=qth)
-                reg_row["qth"] = qth
-                if not str(reg_row.get("qra") or "").strip():
-                    loc = await self._sync_location_defaults(call, qth)
-                    if loc:
-                        reg_row["qra"] = loc
-                        prefs["qra"] = loc
-                        prefs["forward_lat"] = str(await self.store.get_user_pref(call, "forward_lat") or "")
-                        prefs["forward_lon"] = str(await self.store.get_user_pref(call, "forward_lon") or "")
-
-        if not str(reg_row.get("qra") or "").strip():
-            node_locator = extract_locator(str(self.config.node.node_locator or "").strip().upper())
-            if node_locator:
-                await self.store.upsert_user_registry(call, now, qra=node_locator)
-                await self._sync_locator_defaults(call, node_locator, overwrite_coords=False)
-                reg_row["qra"] = node_locator
-                prefs["qra"] = node_locator
-
-        has_coords = bool(str(await self.store.get_user_pref(call, "forward_lat") or "").strip() and str(await self.store.get_user_pref(call, "forward_lon") or "").strip())
-        if not has_coords:
-            coords_txt = await self._prompt_optional_value(
-                reader,
-                writer,
-                "registration.interview_latlong",
-                "Coordinates (lat lon): ",
-                call=call,
-            )
-            if coords_txt is None:
-                return False
-            coords = self._parse_latlon_pair(coords_txt or "")
-            if coords is not None:
-                lat, lon = coords
-                await self.store.set_user_pref(call, "forward_lat", f"{lat:.4f}", now)
-                await self.store.set_user_pref(call, "forward_lon", f"{lon:.4f}", now)
-                if not str(reg_row.get("qra") or "").strip():
-                    locator = coords_to_locator(lat, lon)
-                    await self.store.upsert_user_registry(call, now, qra=locator)
-                    reg_row["qra"] = locator
-                if not str(reg_row.get("qth") or "").strip():
-                    estimate = estimate_location_from_locator(str(reg_row.get("qra") or coords_to_locator(lat, lon))).strip()
-                    if estimate:
-                        await self.store.upsert_user_registry(call, now, qth=estimate[:80])
-                        reg_row["qth"] = estimate[:80]
-
-        location_detail = str(await self.store.get_user_pref(call, "location") or "").strip()
-        if not location_detail:
-            location_detail = await self._prompt_optional_value(
-                reader,
-                writer,
-                "registration.interview_location",
-                "Location detail: ",
-                call=call,
-            )
-            if location_detail is None:
-                return False
-            location_detail = location_detail[:80].strip()
-            if location_detail:
-                await self.store.set_user_pref(call, "location", location_detail, now)
-                await self.store.set_user_pref(call, "location_source", "user", now)
-            elif str(reg_row.get("qra") or "").strip():
-                await self._backfill_location_from_qra(call, str(reg_row["qra"]))
-
-        if not has_valid_email(str(reg_row.get("email") or "").strip()):
-            email = await self._prompt_optional_value(
-                reader,
-                writer,
-                "registration.interview_email",
-                "Email address: ",
-                call=call,
-            )
-            if email is None:
-                return False
-            if has_valid_email(email):
-                await self.store.upsert_user_registry(call, now, email=email.strip())
-                await mark_email_unverified(
-                    self.store,
-                    call,
-                    now_epoch=now,
-                    grace_logins=int(self.config.node.initial_grace_logins),
-                )
-                reg_row["email"] = email.strip()
-                await self._write(
-                    writer,
-                    self._string(
-                        "registration.interview_email_saved",
-                        "Email saved. It will need verification before protected login paths stay open.",
-                    )
-                    + "\r\n",
-                )
-
-        email = str(reg_row.get("email") or "").strip()
-        if can_offer_mfa and not node_requires_mfa and self._smtp.enabled() and has_valid_email(email) and mfa_txt not in {"required", "off"}:
-            answer = await self._prompt_optional_value(
-                reader,
-                writer,
-                "registration.interview_mfa",
-                "Enable email MFA now? [y/N]: ",
-                call=call,
-            )
-            if answer is None:
-                return False
-            response = answer.strip().lower()
-            if response in {"y", "yes"}:
-                await self.store.set_user_pref(call, "mfa_email_otp", "required", now)
-            elif response in {"", "n", "no"}:
-                await self.store.set_user_pref(call, "mfa_email_otp", "off", now)
-
-        if not password_set:
-            if not await self._prompt_new_password(call, reader, writer):
-                return False
-        await self._write(writer, self._string("registration.interview_done", "Registration interview complete.") + "\r\n")
-        return True
 
     async def _cmd_show_version(self) -> str:
         lines = [self._render_string("show.version.banner", "pyCluster version {version}", version=__version__)]
@@ -8291,7 +8201,7 @@ class TelnetClusterServer:
         s = self._find_session(target)
         low = text.lower()
         now = int(datetime.now(timezone.utc).timestamp())
-        if low in {"all", "clear"}:
+        if not low or low in {"all", "clear"}:
             n = await self.store.clear_startup_commands(target)
             if s:
                 s.vars["startup"] = "off"
@@ -11107,7 +11017,6 @@ class TelnetClusterServer:
                 password_set = expected_password is not None and str(expected_password).strip() != ""
                 password_just_set = False
                 reg = await self.store.get_user_registry(call)
-                first_login = reg is None or int(reg["last_login_epoch"] or 0) <= 0
                 if not node_family and self.config.node.registration_required:
                     if reg is None:
                         self._log_auth_failure("telnet", peer, call, "registration_request_required")
@@ -11169,15 +11078,29 @@ class TelnetClusterServer:
                     if expected_password is not None and str(expected_password).strip():
                         if not verify_password(supplied_password, str(expected_password)):
                             self._log_auth_failure("telnet", peer, call, "bad_password")
-                            await self._record_telnet_password_failure(call, peer)
+                            reset_sent = await self._record_telnet_password_failure(call, peer)
                             await self._write(writer, self._string("login.failed", "Login failed") + "\r\n")
+                            if reset_sent:
+                                await self._write(
+                                    writer,
+                                    self._string(
+                                        "account.locked_reset_sent",
+                                        "Account locked. Password reset instructions were sent to your verified email address.",
+                                    )
+                                    + "\r\n",
+                                )
                             writer.close()
                             await writer.wait_closed()
                             return
                         if not is_password_hash(str(expected_password)):
                             await self.store.set_user_pref(call, "password", hash_password(supplied_password), int(datetime.now(timezone.utc).timestamp()))
                         await self._clear_telnet_password_failures(call)
-                if self.config.node.verified_email_required_for_telnet and not node_family and not first_login:
+                if self.config.node.verified_email_required_for_telnet and not node_family:
+                    if not self.config.node.registration_required and not await self._ensure_login_email(call, reader, writer):
+                        self._log_auth_failure("telnet", peer, call, "valid_email_required")
+                        writer.close()
+                        await writer.wait_closed()
+                        return
                     if not await self._require_verified_email_for_login(call, reader, writer):
                         self._log_auth_failure("telnet", peer, call, "email_verification_required")
                         writer.close()
@@ -11218,7 +11141,6 @@ class TelnetClusterServer:
                         writer.get_extra_info("sockname") if hasattr(writer, "get_extra_info") else None,
                     ),
                 )
-
                 if node_family:
                     bridged = await self._bridge_node_login(call, reader, writer)
                     if bridged:
@@ -11233,42 +11155,6 @@ class TelnetClusterServer:
                     await self._on_sessions_changed_fn()
                 LOG.info("login call=%s peer=%s", call, peer)
                 await self._write(writer, await self._welcome_block(call))
-                if first_login:
-                    self._sessions[session_id].suppress_async_spots = True
-                    try:
-                        ok = await self._run_first_login_interview(
-                            call,
-                            reader,
-                            writer,
-                            node_family=node_family,
-                            password_set=password_set,
-                        )
-                    finally:
-                        sess = self._sessions.get(session_id)
-                        if sess:
-                            sess.suppress_async_spots = False
-                    if not ok:
-                        writer.close()
-                        await writer.wait_closed()
-                        return
-                    password_set = bool(str(await self.store.get_user_pref(call, "password") or "").strip())
-                    checklist = await self._registration_checklist_block(call, password_set=password_set, node_family=node_family)
-                    if checklist:
-                        await self._write(writer, checklist)
-                    if self.config.node.verified_email_required_for_telnet and not node_family:
-                        sess = self._sessions.get(session_id)
-                        if sess:
-                            sess.suppress_async_spots = True
-                        try:
-                            if not await self._require_verified_email_for_login(call, reader, writer):
-                                self._log_auth_failure("telnet", peer, call, "email_verification_required")
-                                writer.close()
-                                await writer.wait_closed()
-                                return
-                        finally:
-                            sess = self._sessions.get(session_id)
-                            if sess:
-                                sess.suppress_async_spots = False
                 startup_outputs = await self._run_startup_commands(call)
                 for out in startup_outputs:
                     await self._write(writer, out)
