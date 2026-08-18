@@ -11,8 +11,8 @@ import socket
 from types import SimpleNamespace
 
 from pycluster.auth import verify_password
-from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
-from pycluster.mfa import EmailOtpManager, totp_code
+from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig, dump_config, save_config
+from pycluster.mfa import EmailOtpManager, SMTPMailer, totp_code
 from pycluster.live_spots import encode_rbn_spot, rbn_socket_address
 from pycluster import __version__
 from pycluster import public_web as public_web_mod
@@ -2844,6 +2844,67 @@ def test_public_web_password_reset_unlocks_account_and_changes_password(tmp_path
             assert code == 200
             assert json.loads(body.decode("utf-8"))["ok"] is True
             assert any("password changed" in subject.lower() for _rcpt, subject, _body in sent)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_password_reset_reloads_persisted_smtp_config(tmp_path, monkeypatch) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_password_reset_reload.db")
+        config_path = tmp_path / "pycluster.toml"
+        initial = _mk_config(db)
+        config_path.write_text(dump_config(initial), encoding="utf-8")
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        monkeypatch.setattr(
+            SMTPMailer,
+            "send_code",
+            lambda _self, recipient, subject, body: sent.append((recipient, subject, body)),
+        )
+        srv = PublicWebServer(initial, store, datetime.now(timezone.utc), config_path=str(config_path))
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-90", now, privilege="user", email="ai3i-90@example.test")
+        await store.set_user_pref("AI3I-90", "email_verified_epoch", str(now), now)
+
+        refreshed = _mk_config(db)
+        refreshed.smtp.host = "smtp.example.test"
+        refreshed.smtp.from_addr = "cluster@example.test"
+        save_config(config_path, refreshed)
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/password-reset/request",
+                json.dumps({"email": "ai3i-90@example.test"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 202
+            assert json.loads(body.decode("utf-8"))["sent"] is True
+            assert sent and sent[0][0] == "ai3i-90@example.test"
+            assert srv.config.smtp.host == "smtp.example.test"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_password_reset_unconfigured_uses_ui_string(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_password_reset_unconfigured.db")
+        store = SpotStore(db)
+        srv = PublicWebServer(_mk_config(db), store, datetime.now(timezone.utc))
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/password-reset/request",
+                json.dumps({"email": "ai3i-90@example.test"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 503
+            assert json.loads(body.decode("utf-8"))["error"] == "Password reset email is not configured on this node."
         finally:
             await store.close()
 

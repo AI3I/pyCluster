@@ -56,6 +56,7 @@ from .importer import import_spot_file
 from .maidenhead import coords_to_locator, extract_locator, locator_to_coords
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
 from .wm7d import WM7DClient, WM7DLookupError
+from .ve7cc import CC11Location, format_cc11
 
 
 LOG = logging.getLogger(__name__)
@@ -317,6 +318,7 @@ class TelnetClusterServer:
         self._rbn_live_respot_seconds = 180.0
         self._rbn_live_freq_tolerance_tenths = 5
         self._rbn_live_group_limit = 5000
+        self._cc11_location_cache: dict[str, tuple[float, CC11Location]] = {}
         self._cty_loaded = False
         self._wpx_loaded = False
         self._cty_mtime_ns = 0
@@ -1224,6 +1226,69 @@ class TelnetClusterServer:
             parts.append(f"ITU{ent.itu_zone}")
         return (" " + " ".join(parts)) if parts else ""
 
+    async def _cc11_location(self, callsign: str) -> CC11Location:
+        call = normalize_call(str(callsign or "")).removesuffix("-#")
+        base_call = call.split("-", 1)[0]
+        cache_key = call or base_call
+        cached = self._cc11_location_cache.get(cache_key)
+        now = time.monotonic()
+        if cached and now - cached[0] < 300.0:
+            return cached[1]
+
+        wpx = wpx_lookup(call) if self._wpx_loaded else None
+        cty = lookup(call) if self._cty_loaded else None
+        entity = wpx or cty
+        dxcc_id = str(wpx.dxcc) if wpx is not None else ""
+        cq_zone = str(entity.cq_zone) if entity is not None else ""
+        itu_zone = str(entity.itu_zone) if entity is not None else ""
+        entity_name = ""
+        if entity is not None:
+            name = "-".join(str(entity.name).split())
+            prefix = str(entity.prefix or "").lstrip("*")
+            entity_name = f"{name}-{prefix}" if prefix and not name.endswith(f"-{prefix}") else name
+
+        registry = await self.store.get_user_registry(call)
+        if registry is None and base_call != call:
+            registry = await self.store.get_user_registry(base_call)
+        grid = str(registry["qra"] or "").strip().upper() if registry is not None else ""
+        usdb = await self.store.list_usdb_entries(call)
+        if not usdb and base_call != call:
+            usdb = await self.store.list_usdb_entries(base_call)
+        state = str(usdb.get("state") or usdb.get("us_state") or "").strip().upper()
+        location = CC11Location(
+            dxcc_id=dxcc_id,
+            cq_zone=cq_zone,
+            itu_zone=itu_zone,
+            state=state,
+            entity=entity_name,
+            grid=grid,
+        )
+        if len(self._cc11_location_cache) >= 4096:
+            self._cc11_location_cache.clear()
+        self._cc11_location_cache[cache_key] = (now, location)
+        return location
+
+    async def _format_cc11_spot(
+        self,
+        *,
+        freq_khz: float,
+        dx_call: str,
+        epoch: int,
+        info: str,
+        spotter: str,
+        source_node: str,
+    ) -> str:
+        return format_cc11(
+            freq_khz=freq_khz,
+            dx_call=normalize_call(dx_call),
+            epoch=epoch,
+            info=info,
+            spotter=normalize_call(spotter),
+            source_node=normalize_call(source_node),
+            spotted=await self._cc11_location(dx_call),
+            spotting=await self._cc11_location(spotter),
+        )
+
     def _geo_lookup(self, callsign: str):
         ent = lookup(callsign) if self._cty_loaded else None
         if ent is None and self._wpx_loaded:
@@ -1334,6 +1399,7 @@ class TelnetClusterServer:
                 "db": None,
                 "q_count": 0,
                 "display_spotter": self._rbn_display_spotter(spot.spotter),
+                "source_node": normalize_call(spot.source_node),
                 "peer_profile": session.peer_profile,
                 "first_monotonic": now_monotonic,
                 "updated_monotonic": now_monotonic,
@@ -1413,15 +1479,25 @@ class TelnetClusterServer:
                 max(1, int(group.get("q_count") or len(spotters) or 1)),
                 [int(z) for z in zones],
             )
-            line = format_live_dx_line_for_profile(
-                profile=str(group.get("peer_profile") or session.peer_profile),
-                freq_khz=float(freq),
-                dx_call=str(group["dx_call"]),
-                when=when,
-                info=info,
-                spotter=str(group.get("display_spotter") or ""),
-                suffix=await self._dx_line_suffix_for_call(session.call, str(group["dx_call"])),
-            )
+            if self._is_on_value(session.vars.get("ve7cc"), default=False):
+                line = await self._format_cc11_spot(
+                    freq_khz=float(freq),
+                    dx_call=str(group["dx_call"]),
+                    epoch=int(group["epoch"]),
+                    info=info,
+                    spotter=str(group.get("display_spotter") or ""),
+                    source_node=str(group.get("source_node") or self.config.node.node_call),
+                )
+            else:
+                line = format_live_dx_line_for_profile(
+                    profile=str(group.get("peer_profile") or session.peer_profile),
+                    freq_khz=float(freq),
+                    dx_call=str(group["dx_call"]),
+                    when=when,
+                    info=info,
+                    spotter=str(group.get("display_spotter") or ""),
+                    suffix=await self._dx_line_suffix_for_call(session.call, str(group["dx_call"])),
+                )
             prefix = "\r\n" if session.prompt_line_open or not session.async_line_open else ""
             await self._write(session.writer, f"{prefix}{line}\r\n")
             session.async_line_open = True
@@ -1538,15 +1614,25 @@ class TelnetClusterServer:
                 self._queue_rbn_live_spot(sid, s, spot)
                 delivered += 1
                 continue
-            line = format_live_dx_line_for_profile(
-                profile=s.peer_profile,
-                freq_khz=spot.freq_khz,
-                dx_call=spot.dx_call,
-                when=when,
-                info=spot.info,
-                spotter=display_call(spot.spotter),
-                suffix=await self._dx_line_suffix_for_call(s.call, spot.dx_call),
-            )
+            if self._is_on_value(s.vars.get("ve7cc"), default=False):
+                line = await self._format_cc11_spot(
+                    freq_khz=spot.freq_khz,
+                    dx_call=spot.dx_call,
+                    epoch=spot.epoch,
+                    info=spot.info,
+                    spotter=spot.spotter,
+                    source_node=spot.source_node,
+                )
+            else:
+                line = format_live_dx_line_for_profile(
+                    profile=s.peer_profile,
+                    freq_khz=spot.freq_khz,
+                    dx_call=spot.dx_call,
+                    when=when,
+                    info=spot.info,
+                    spotter=display_call(spot.spotter),
+                    suffix=await self._dx_line_suffix_for_call(s.call, spot.dx_call),
+                )
             prefix = "\r\n" if s.prompt_line_open or not s.async_line_open else ""
             await self._write(s.writer, f"{prefix}{line}\r\n")
             s.async_line_open = True
@@ -1845,9 +1931,14 @@ class TelnetClusterServer:
         node = await self._node_text("node_call")
         callsign = str(call or "").strip().upper()
         suffix = "# " if await self._privilege_level_for(call) >= 2 else "> "
-        template = await self._prompt_template()
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        return self._render_prompt(template, node, callsign, suffix, timestamp)
+        session = self._find_session(call)
+        session_template = str(session.vars.get("prompt") or "").strip() if session else ""
+        if session_template.lower() in {"", "0", "1", "off", "on", "no", "yes", "false", "true"}:
+            session_template = ""
+        template = session_template or await self._prompt_template()
+        now = datetime.now(timezone.utc)
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S UTC")
+        return self._render_prompt(template, node, callsign, suffix, timestamp, now)
 
     async def _write_prompt_for_session(self, session: Session) -> None:
         prefix = "\r\n" if session.async_line_open else ""
@@ -1888,7 +1979,16 @@ class TelnetClusterServer:
     def _command_summary_key(cmd: str) -> str:
         return cmd.lower().replace("/", "_").replace("-", "_")
 
-    def _render_prompt(self, template: str, node: str, callsign: str, suffix: str, timestamp: str) -> str:
+    def _render_prompt(
+        self,
+        template: str,
+        node: str,
+        callsign: str,
+        suffix: str,
+        timestamp: str,
+        now: datetime | None = None,
+    ) -> str:
+        current = now or datetime.now(timezone.utc)
         tokens = {
             "node": node,
             "callsign": callsign,
@@ -1900,7 +2000,13 @@ class TelnetClusterServer:
             def __missing__(_self, key: str) -> str:
                 return ""
 
-        return template.format_map(_PromptTokens(tokens))
+        rendered = template.format_map(_PromptTokens(tokens))
+        return (
+            rendered.replace("%M", node)
+            .replace("%C", callsign)
+            .replace("%D", current.strftime("%-d-%b-%Y"))
+            .replace("%T", current.strftime("%H%MZ"))
+        )
 
     def _display_label(self, key: str) -> str:
         labels = {
@@ -2795,15 +2901,25 @@ class TelnetClusterServer:
                 when = spot_when.strftime("%-d-%b-%Y %H%MZ")
                 sess = self._find_session(call)
                 profile = sess.peer_profile if sess else "dxspider"
-                line = format_dx_line_for_profile(
-                    profile=profile,
-                    freq_khz=float(row["freq_khz"]),
-                    dx_call=str(row["dx_call"]),
-                    when=when,
-                    info=str(row["info"] or ""),
-                    spotter=display_call(str(row["spotter"])),
-                )
-                line += await self._dx_line_suffix_for_call(call, str(row["dx_call"]))
+                if sess and self._is_on_value(sess.vars.get("ve7cc"), default=False):
+                    line = await self._format_cc11_spot(
+                        freq_khz=float(row["freq_khz"]),
+                        dx_call=str(row["dx_call"]),
+                        epoch=int(row["epoch"]),
+                        info=str(row["info"] or ""),
+                        spotter=str(row["spotter"]),
+                        source_node=str(row["source_node"]),
+                    )
+                else:
+                    line = format_dx_line_for_profile(
+                        profile=profile,
+                        freq_khz=float(row["freq_khz"]),
+                        dx_call=str(row["dx_call"]),
+                        when=when,
+                        info=str(row["info"] or ""),
+                        spotter=display_call(str(row["spotter"])),
+                    )
+                    line += await self._dx_line_suffix_for_call(call, str(row["dx_call"]))
                 lines.append(line)
                 if len(lines) >= requested_limit:
                     break
@@ -10601,6 +10717,7 @@ class TelnetClusterServer:
             "set/dxitu": lambda c, a: self._cmd_set_named_var(c, a, "dxitu", "on"),
             "set/dxgrid": lambda c, a: self._cmd_set_named_var(c, a, "dxgrid", "on"),
             "set/rbn": lambda c, a: self._cmd_set_named_var(c, a, "rbn", "on"),
+            "set/ve7cc": lambda c, a: self._cmd_set_named_var(c, a, "ve7cc", "on"),
             "set/talk": lambda c, a: self._cmd_set_named_var(c, a, "talk", "on"),
             "set/wcy": lambda c, a: self._cmd_set_named_var(c, a, "wcy", "on"),
             "set/wwv": lambda c, a: self._cmd_set_named_var(c, a, "wwv", "on"),
@@ -10707,6 +10824,7 @@ class TelnetClusterServer:
             "unset/dxitu": lambda c, a: self._cmd_unset_named_var(c, a, "dxitu"),
             "unset/dxgrid": lambda c, a: self._cmd_unset_named_var(c, a, "dxgrid"),
             "unset/rbn": lambda c, a: self._cmd_unset_named_var(c, a, "rbn"),
+            "unset/ve7cc": lambda c, a: self._cmd_unset_named_var(c, a, "ve7cc"),
             "unset/talk": lambda c, a: self._cmd_unset_named_var(c, a, "talk"),
             "unset/wcy": lambda c, a: self._cmd_unset_named_var(c, a, "wcy"),
             "unset/wwv": lambda c, a: self._cmd_unset_named_var(c, a, "wwv"),
@@ -10819,6 +10937,7 @@ class TelnetClusterServer:
             "show/wwv": self._cmd_show_wwv,
             "show/wx": self._cmd_show_wx,
             "show/announce": self._cmd_show_announce,
+            "show/ann": self._cmd_show_announce,
             "show/chat": self._cmd_show_chat,
             # extra recognized commands
             "show/qrz": self._cmd_show_qrz,
@@ -10845,6 +10964,7 @@ class TelnetClusterServer:
             "show/here": lambda c, a: self._show_key_value(c, a, "show/here", "here", default="on", readable_label="Here"),
             "show/beep": lambda c, a: self._show_key_value(c, a, "show/beep", "beep", default="off", readable_label="Beep"),
             "show/rbn": self._cmd_show_rbn,
+            "show/ve7cc": lambda c, a: self._show_key_value(c, a, "show/ve7cc", "ve7cc", default="off", readable_label="VE7CC"),
             "show/dxcq": lambda c, a: self._show_key_value(c, a, "show/dxcq", "dxcq", default="on", readable_label="DX CQ"),
             "show/dxitu": lambda c, a: self._show_key_value(c, a, "show/dxitu", "dxitu", default="on", readable_label="DX ITU"),
             "show/dxgrid": lambda c, a: self._show_key_value(c, a, "show/dxgrid", "dxgrid", default="on", readable_label="DX Grid"),

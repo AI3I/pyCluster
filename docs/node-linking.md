@@ -170,6 +170,10 @@ The SysOp Node Settings > pyCluster Protocol view provides PY sharing controls, 
 
 Outbound PC92 path advertisements are sanitized when `node.public_ip_address`, `node.public_ipv6_address`, or a detected global interface address is available. Private, loopback, link-local, `localhost`, and otherwise non-public IPv4/IPv6 literals in outbound PC92 payload fields are replaced with the same-family public address before transmission. Locally generated PC61 spot and PC93 chat/bulletin relays use the same configured-or-detected public address selection for their IP fields.
 
+RBN/skimmer reports are a local live feed and are not forwarded over cluster peer links. This applies both to reports read from a configured RBN connection and reports recognized as RBN after arriving from a peer. Ordinary human-posted cluster spots continue to follow the configured peer relay policy.
+
+Outbound peer passwords are stored separately from transport addresses. The SysOp peer API and editor never return a saved password; they expose only whether one exists. Leaving the password field blank while editing preserves the saved secret, and Connect resolves a missing password from the saved peer record. Entering a new password replaces the saved value.
+
 ## Operator Views
 
 Useful visibility commands:

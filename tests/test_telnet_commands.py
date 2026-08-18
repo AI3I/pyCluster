@@ -2876,6 +2876,30 @@ def test_live_rbn_spots_are_grouped_into_dxspider_style_summary(tmp_path) -> Non
     asyncio.run(run())
 
 
+def test_live_rbn_spots_use_cc11_in_ve7cc_mode(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "live_rbn_cc11.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        srv._sessions[1] = Session(call="AI3I-99", writer=writer, connected_at=datetime.now(timezone.utc))
+        try:
+            epoch = int(datetime(2026, 8, 18, 1, 8, tzinfo=timezone.utc).timestamp())
+            await srv._execute_command("AI3I-99", "set/rbn")
+            await srv._execute_command("AI3I-99", "set/ve7cc")
+            await srv.publish_spot(Spot(14011.2, "N9JR", epoch, "CW 6 dB 21 WPM CQ", "WS3W", "RBN", ""))
+            assert await srv._flush_rbn_live_queue() == 1
+            live = writer.buffer.decode("utf-8", "replace")
+            assert "CC11^14011.2^N9JR^18-Aug-2026^0108Z^CW 6dB Q:1 Z:-^WS3W-#" in live
+            assert "^RBN^" in live
+            assert "DX de" not in live
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_live_rbn_command_flush_waits_for_batch_dwell(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "live_rbn_flush_dwell.db")
@@ -6820,7 +6844,7 @@ def test_maxconnect_enforced_on_login(tmp_path) -> None:
             w1.write(b"N0CALL\r\n")
             await w1.drain()
             hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
-            assert b"Welcome, N0CALL." in hello
+            assert b"Hello, N0CALL." in hello
             assert b"N0NODE-1>" in hello
 
             r2, w2 = await asyncio.open_connection(host, port)
@@ -8232,8 +8256,78 @@ def test_wpxloc_fixture_lookup_supports_exact_call(tmp_path) -> None:
     row = wpx_lookup("RG65SM")
     assert row is not None
     assert row.name == "European Russia"
+    assert row.dxcc == 54
     assert row.cq_zone == 29
     assert row.itu_zone == 16
+
+
+def test_ve7cc_mode_persists_and_formats_history_and_live_spots(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ve7cc.db")
+        cfg = _mk_config(db)
+        cfg.node.node_call = "AI3I-15"
+        cfg.public_web.cty_dat_path = _write_cty(tmp_path)
+        cfg.public_web.wpxloc_raw_path = _write_wpxloc(tmp_path)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        ve7cc_writer = _DummyWriter()
+        normal_writer = _DummyWriter()
+        ve7cc_session = Session("AI3I-99", ve7cc_writer, datetime.now(timezone.utc))
+        normal_session = Session("AI3I-98", normal_writer, datetime.now(timezone.utc))
+        srv._sessions[1] = ve7cc_session
+        srv._sessions[2] = normal_session
+        epoch = int(datetime(2026, 8, 18, 0, 41, tzinfo=timezone.utc).timestamp())
+        try:
+            await store.upsert_user_registry("K1ABC", epoch, qra="FN42LI")
+            await store.upsert_user_registry("RG65SM", epoch, qra="KO85TQ")
+            await store.set_usdb_entry("K1ABC", "state", "MA", epoch)
+            await store.add_spot(Spot(28074.0, "K1ABC", epoch, "CQ test", "RG65SM", "N9JR-3", ""))
+
+            _, out = await srv._execute_command("AI3I-99", "set/ve7cc")
+            assert "VE7CC set to on" in out
+            _, out = await srv._execute_command("AI3I-99", "show/ve7cc")
+            assert "VE7CC for AI3I-99: on" in out
+            _, out = await srv._execute_command("AI3I-99", "sh/ann 10")
+            assert out != "?\r\n"
+
+            _, out = await srv._execute_command("AI3I-99", "set/prompt %M>")
+            assert "Prompt set to %M>" in out
+            assert await srv._prompt("AI3I-99") == "AI3I-15>"
+
+            _, history = await srv._execute_command("AI3I-99", "sh/dx 200")
+            fields = history.strip().split("^")
+            assert len(fields) == 20
+            assert fields[:7] == ["CC11", "28074.0", "K1ABC", "18-Aug-2026", "0041Z", "CQ test", "RG65SM"]
+            assert fields[7:10] == ["291", "54", "N9JR-3"]
+            assert fields[10:16] == ["5", "8", "29", "16", "MA", ""]
+            assert fields[18:] == ["FN42LI", "KO85TQ"]
+
+            live = Spot(14074.0, "K1ABC", epoch + 60, "FT8", "RG65SM", "N9JR-3", "")
+            assert await srv.publish_spot(live) == 2
+            ve7cc_live = ve7cc_writer.buffer.decode("utf-8")
+            normal_live = normal_writer.buffer.decode("utf-8")
+            assert "CC11^14074.0^K1ABC^18-Aug-2026^0042Z^FT8^RG65SM" in ve7cc_live
+            assert "DX de RG65SM:" in normal_live
+            assert "CC11" not in normal_live
+
+            _, out = await srv._execute_command("AI3I-99", "unset/ve7cc")
+            assert "VE7CC set to off" in out
+            assert await store.get_user_pref("AI3I-99", "ve7cc") == "off"
+        finally:
+            await store.close()
+
+        store2 = SpotStore(db)
+        srv2 = TelnetClusterServer(cfg, store2, datetime.now(timezone.utc))
+        restored = Session("AI3I-99", _DummyWriter(), datetime.now(timezone.utc))
+        srv2._sessions[1] = restored
+        try:
+            await srv2._apply_prefs_to_session(restored)
+            assert restored.vars["ve7cc"] == "off"
+            assert restored.vars["prompt"] == "%M>"
+        finally:
+            await store2.close()
+
+    asyncio.run(run())
 
 
 def test_show_heading_uses_wpxloc_when_cty_is_unavailable(tmp_path) -> None:

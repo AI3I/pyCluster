@@ -46,7 +46,7 @@ class NodeConfig:
     node_locator: str = ""
     motd: str = "Welcome to pyCluster"
     branding_name: str = "pyCluster"
-    welcome_title: str = "Welcome"
+    welcome_title: str = "Hello"
     welcome_body: str = ""
     login_tip: str = "Tip: help shows commands, sh/dx shows recent spots."
     show_status_after_login: bool = True

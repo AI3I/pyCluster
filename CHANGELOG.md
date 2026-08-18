@@ -2,7 +2,11 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## 1.0.12 - Unreleased
+## 1.0.13 - Unreleased
+
+- Added persistent `set/ve7cc`, `show/ve7cc`, and `unset/ve7cc` user preferences with structured CC11 history, live spot, and RBN output for VE7CC-compatible clients such as Ham Radio Deluxe.
+- Added DXSpider-style `%M`, `%C`, `%D`, and `%T` substitutions to stored user prompt templates and raised bounded DX history requests to 200 records for client initialization.
+- Changed the default telnet greeting title to `Hello`; the System Operator setting warns that changing it can prevent Ham Radio Deluxe from completing session initialization.
 
 - Fixed telnet authenticator failure fallback so TOTP is retired only after an email challenge is successfully delivered; unavailable SMTP or delivery failure leaves the working authenticator configuration intact.
 - Scoped telnet MFA enrollment, disable, and System Operator reset challenge cleanup to the exact callsign/SSID.
@@ -12,7 +16,7 @@ All notable changes to pyCluster should be recorded here.
 - Install no longer disables the host SSH fail2ban jail; the scanner jail is limited to malformed callsigns, and uninstall removes the complete on-demand upgrade watcher.
 - nginx setup validates hostnames and restores every configuration file it changed when validation, restart, or certificate provisioning fails.
 - Documented deployments that use a central reverse proxy without local nginx, including runtime config paths, listener roles, source-scoped firewall rules, proxy examples, and LAN troubleshooting; `doctor.sh` now reports effective listener bindings.
-- Refreshed the documentation index, roadmap, architecture, feature summary, command-policy snapshot, and repository-local DXSpider command audit for the `1.0.12` development tree.
+- Refreshed the documentation index, roadmap, architecture, feature summary, command-policy snapshot, and repository-local DXSpider command audit for the `1.0.13` development tree.
 - Added a redacted support-report collector for host, VM/container, capacity, service, listener, security, source/runtime integrity, ownership, duplicate-installation, and deployment-provenance diagnostics; successful lifecycle runs now leave a deployment receipt.
 - The SysOp Known pyCluster Nodes table now includes direct peers positively identified by PC18 before private-protocol metadata is available, while distinguishing local PY disablement, PY00 not sent, sent without a valid response, invalid replies, disconnection, negotiation, and missing NODEINFO; per-session timestamps prevent stale negotiation state and software version is never treated as proof of PY support.
 

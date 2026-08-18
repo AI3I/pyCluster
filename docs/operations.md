@@ -2,6 +2,23 @@
 
 This page covers the day-to-day operator view of a deployed pyCluster node.
 
+## Test Suites
+
+The default regression suite does not open TCP listeners and therefore does not
+trigger desktop or execution-environment firewall authorization prompts:
+
+```bash
+pytest -q
+```
+
+Real TCP login and transport integration tests are retained separately. They
+bind only to loopback addresses and never modify firewall rules, but some host
+environments still request listener authorization when they run:
+
+```bash
+pytest -q -m socket_listener
+```
+
 ## Services
 
 Typical production services:

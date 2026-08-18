@@ -130,6 +130,7 @@ set/user
 set/uservar
 set/usstate
 set/var
+set/ve7cc
 set/wantpc16
 set/wantpc9x
 set/wcy
@@ -195,6 +196,7 @@ show/time
 show/usdb
 show/users
 show/var
+show/ve7cc
 show/version
 show/vhfstats
 show/vhftable
@@ -250,6 +252,7 @@ unset/sendpc16
 unset/startup
 unset/talk
 unset/usstate
+unset/ve7cc
 unset/wantpc16
 unset/wantpc9x
 unset/wcy

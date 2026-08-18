@@ -190,6 +190,9 @@ set/beep
 unset/beep
 set/nowrap
 unset/nowrap
+set/ve7cc
+show/ve7cc
+unset/ve7cc
 ```
 
 Important notes:
@@ -200,6 +203,14 @@ Important notes:
   - disables the default wrapped formatting
 - `unset/nowrap`
   - restores the more conservative default style
+- `set/ve7cc`
+  - stores VE7CC-compatible CC11 spot output for clients such as Ham Radio Deluxe
+- `show/ve7cc` and `unset/ve7cc`
+  - inspect the saved mode or return to normal human-readable spot output
+
+VE7CC mode changes formatting only. It does not automatically retrieve spots;
+the client requests its desired history separately, such as `sh/mydx 200`, and
+then receives new accepted spots live in CC11 format.
 
 ## 5. Mail, Talk, and Announcements
 

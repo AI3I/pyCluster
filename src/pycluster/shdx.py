@@ -94,7 +94,7 @@ def parse_sh_dx_args(arg: str | None, now_utc: datetime | None = None) -> ShDxQu
         tl = t.lower()
 
         if _is_int(t) and q.limit == 10 and i == 0:
-            q.limit = max(1, min(int(t), 50))
+            q.limit = max(1, min(int(t), 200))
             i += 1
             continue
 

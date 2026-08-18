@@ -24,3 +24,9 @@ version = {attr = "pycluster.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not socket_listener'"
+markers = [
+    "socket_listener: opens a loopback TCP listener for explicit integration testing",
+]

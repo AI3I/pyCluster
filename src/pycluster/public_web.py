@@ -22,7 +22,7 @@ from . import __version__
 from .auth_logging import log_auth_failure
 from .access_policy import CLUSTER_NODE_FAMILIES, default_access_allowed
 from .auth import hash_password, is_password_hash, verify_password
-from .config import AppConfig, node_presentation_defaults
+from .config import AppConfig, config_override_paths, load_config, node_presentation_defaults
 from .ctydat import load_cty, lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
@@ -219,8 +219,11 @@ class PublicWebServer:
         relay_bulletin_fn=None,
         event_log_fn=None,
         strings_path: str | None = None,
+        config_path: str | None = None,
     ) -> None:
         self.config = config
+        self._config_path = Path(config_path).expanduser().resolve() if config_path else None
+        self._config_signature = self._runtime_config_signature()
         self.store = store
         self.started_at = started_at
         self.link_stats_fn = link_stats_fn
@@ -259,6 +262,37 @@ class PublicWebServer:
         self._comment_tags: list[dict[str, object]] = []
         self._rare_entities: set[str] = set()
         self._mode_order: list[str] = list(_DEFAULT_MODE_ORDER)
+
+    def _runtime_config_signature(self) -> tuple[tuple[str, int, int], ...]:
+        if self._config_path is None:
+            return ()
+        paths = (self._config_path, *config_override_paths(self._config_path))
+        signature: list[tuple[str, int, int]] = []
+        for path in paths:
+            try:
+                stat = path.stat()
+                signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                signature.append((str(path), 0, 0))
+        return tuple(signature)
+
+    def _refresh_runtime_config(self) -> None:
+        signature = self._runtime_config_signature()
+        if not signature or signature == self._config_signature or self._config_path is None:
+            return
+        try:
+            refreshed = load_config(self._config_path)
+        except Exception:
+            LOG.exception("public web runtime configuration reload failed from %s", self._config_path)
+            return
+        # Listener and database changes remain restart-bound. Request-time policy and
+        # service integrations must follow settings saved by the independent core process.
+        for section in ("node", "qrz", "smtp", "satellite", "rbn", "mfa", "py_protocol"):
+            setattr(self.config, section, getattr(refreshed, section))
+        self._smtp = SMTPMailer(self.config.smtp)
+        self._mfa = EmailOtpManager(self.config.mfa, self._smtp.send_code, self.store)
+        self._config_signature = signature
+        LOG.info("public web runtime configuration reloaded from %s", self._config_path)
 
     def _refresh_taxonomy(self) -> None:
         raw = {
@@ -734,6 +768,8 @@ class PublicWebServer:
             "password_reset_submitting": "Resetting password...",
             "password_reset_done": "Password updated. You can log in with the new password.",
             "password_reset_failed": "Password reset failed.",
+            "password_reset_delivery_not_configured": "Password reset email is not configured on this node.",
+            "password_reset_delivery_failed": "Password reset email could not be sent. Contact the system operator.",
             "presets_login_required": "Log in to save presets.",
             "presets_save_failed": "Saving presets failed:",
             "presets_load_failed": "Loading presets failed:",
@@ -1868,6 +1904,8 @@ class PublicWebServer:
                 if content_len > 0:
                     body = await reader.readexactly(content_len)
 
+            self._refresh_runtime_config()
+
             if path == "/ws":
                 if method != "GET":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
@@ -1989,7 +2027,8 @@ class PublicWebServer:
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
                 if not self._smtp.enabled():
-                    await self._write_response(writer, 503, self._json({"error": "password reset delivery not configured"}))
+                    message = self._public_ui_strings()["password_reset_delivery_not_configured"]
+                    await self._write_response(writer, 503, self._json({"error": message}))
                     return
                 payload = self._parse_json_body(body)
                 email = str(payload.get("email", "")).strip()
@@ -2002,7 +2041,8 @@ class PublicWebServer:
                     challenge_id, expires_epoch = await self._mfa.issue(call=call, email=row_email, purpose="password-reset")
                 except Exception:
                     LOG.exception("public password reset delivery failed call=%s", call)
-                    await self._write_response(writer, 503, self._json({"error": "password reset delivery failed"}))
+                    message = self._public_ui_strings()["password_reset_delivery_failed"]
+                    await self._write_response(writer, 503, self._json({"error": message}))
                     return
                 self._audit("user", f"{call} requested public password reset")
                 await self._write_response(

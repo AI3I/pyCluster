@@ -102,7 +102,7 @@ def main() -> None:
 
     if args.cmd == "serve-public":
         cfg = load_config(args.config)
-        asyncio.run(serve_public_forever(cfg))
+        asyncio.run(serve_public_forever(cfg, config_path=args.config))
         return
 
     if args.cmd == "import-spots":
