@@ -7086,6 +7086,38 @@ def test_telnet_failed_password_lock_sends_recovery_notice_once(tmp_path) -> Non
     asyncio.run(run())
 
 
+def test_telnet_verified_mail_account_uses_recoverable_failure_reason(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "recoverable_password_failure.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        logged: list[tuple[str, str]] = []
+        srv._log_auth_failure = lambda channel, _peer, _call, reason: logged.append((channel, reason))  # type: ignore[method-assign]
+        srv._smtp.send_code = lambda _rcpt, _subject, _body: None  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-93", now, email="ai3i-93@example.test")
+        await store.set_user_pref("AI3I-93", "email_verified_epoch", str(now), now)
+        try:
+            assert await srv._telnet_password_recovery_available("AI3I-93") is True
+            for _idx in range(5):
+                await srv._record_telnet_password_failure(
+                    "AI3I-93",
+                    ("203.0.113.10", 50000),
+                    recoverable=True,
+                )
+            assert logged[-1] == ("telnet", "account_locked_recoverable")
+
+            await store.upsert_user_registry("AI3I-94", now, email="ai3i-94@example.test")
+            assert await srv._telnet_password_recovery_available("AI3I-94") is False
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_telnet_repeated_mfa_failures_lock_exact_account_and_unlock_clears_counter(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "failed_mfa_counter.db")

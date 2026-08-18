@@ -643,7 +643,12 @@ class TelnetClusterServer:
     def _log_auth_failure(self, channel: str, peer, call: str, reason: str) -> None:
         log_auth_failure(LOG, channel, self._peer_host(peer), self._auth_log_call(call), reason)
 
-    async def _record_telnet_password_failure(self, call: str, peer) -> bool:
+    async def _telnet_password_recovery_available(self, call: str) -> bool:
+        email = await self._email_for_call(call)
+        _state, verified_epoch, _remaining = await registration_state(self.store, call)
+        return verified_epoch > 0 and self._smtp.enabled() and has_valid_email(email)
+
+    async def _record_telnet_password_failure(self, call: str, peer, *, recoverable: bool = False) -> bool:
         target = call.upper()
         now = int(datetime.now(timezone.utc).timestamp())
         raw_count = await self.store.get_user_pref(target, "failed_password_count")
@@ -657,7 +662,8 @@ class TelnetClusterServer:
             already_locked = str(await self.store.get_user_pref(target, "registration_state") or "").strip().lower() == "locked"
             await self.store.set_user_pref(target, "registration_state", "locked", now)
             await self.store.set_user_pref(target, "failed_password_locked_epoch", str(now), now)
-            self._log_auth_failure("telnet", peer, call, "account_locked_failed_password")
+            reason = "account_locked_recoverable" if recoverable else "account_locked_failed_password"
+            self._log_auth_failure("telnet", peer, call, reason)
             if not already_locked:
                 return await self._send_telnet_account_locked_notice(target)
         return False
@@ -11116,7 +11122,9 @@ class TelnetClusterServer:
                         locked_call = candidate
                         break
                 if locked_call:
-                    self._log_auth_failure("telnet", peer, call, "account_locked")
+                    recoverable = await self._telnet_password_recovery_available(locked_call)
+                    reason = "account_locked_recoverable" if recoverable else "account_locked"
+                    self._log_auth_failure("telnet", peer, call, reason)
                     await self._write(
                         writer,
                         self._render_string(
@@ -11200,8 +11208,10 @@ class TelnetClusterServer:
                         return
                     if expected_password is not None and str(expected_password).strip():
                         if not verify_password(supplied_password, str(expected_password)):
-                            self._log_auth_failure("telnet", peer, call, "bad_password")
-                            reset_sent = await self._record_telnet_password_failure(call, peer)
+                            recoverable = await self._telnet_password_recovery_available(call)
+                            reason = "bad_password_recoverable" if recoverable else "bad_password"
+                            self._log_auth_failure("telnet", peer, call, reason)
+                            reset_sent = await self._record_telnet_password_failure(call, peer, recoverable=recoverable)
                             await self._write(writer, self._string("login.failed", "Login failed") + "\r\n")
                             if reset_sent:
                                 await self._write(
