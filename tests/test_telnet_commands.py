@@ -8309,11 +8309,14 @@ def test_ve7cc_mode_persists_and_formats_history_and_live_spots(tmp_path) -> Non
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         ve7cc_writer = _DummyWriter()
+        ve7cc_writer_2 = _DummyWriter()
         normal_writer = _DummyWriter()
         ve7cc_session = Session("AI3I-99", ve7cc_writer, datetime.now(timezone.utc))
+        ve7cc_session_2 = Session("AI3I-99", ve7cc_writer_2, datetime.now(timezone.utc))
         normal_session = Session("AI3I-98", normal_writer, datetime.now(timezone.utc))
         srv._sessions[1] = ve7cc_session
-        srv._sessions[2] = normal_session
+        srv._sessions[2] = ve7cc_session_2
+        srv._sessions[3] = normal_session
         epoch = int(datetime(2026, 8, 18, 0, 41, tzinfo=timezone.utc).timestamp())
         try:
             await store.upsert_user_registry("K1ABC", epoch, qra="FN42LI")
@@ -8323,6 +8326,8 @@ def test_ve7cc_mode_persists_and_formats_history_and_live_spots(tmp_path) -> Non
 
             _, out = await srv._execute_command("AI3I-99", "set/ve7cc")
             assert "VE7CC set to on" in out
+            assert ve7cc_session.vars["ve7cc"] == "on"
+            assert ve7cc_session_2.vars["ve7cc"] == "on"
             _, out = await srv._execute_command("AI3I-99", "show/ve7cc")
             assert "VE7CC for AI3I-99: on" in out
             _, out = await srv._execute_command("AI3I-99", "sh/ann 10")
@@ -8341,16 +8346,27 @@ def test_ve7cc_mode_persists_and_formats_history_and_live_spots(tmp_path) -> Non
             assert fields[18:] == ["FN42LI", "KO85TQ"]
 
             live = Spot(14074.0, "K1ABC", epoch + 60, "FT8", "RG65SM", "N9JR-3", "")
-            assert await srv.publish_spot(live) == 2
+            assert await srv.publish_spot(live) == 3
             ve7cc_live = ve7cc_writer.buffer.decode("utf-8")
+            ve7cc_live_2 = ve7cc_writer_2.buffer.decode("utf-8")
             normal_live = normal_writer.buffer.decode("utf-8")
             assert "CC11^14074.0^K1ABC^18-Aug-2026^0042Z^FT8^RG65SM" in ve7cc_live
+            assert "CC11^14074.0^K1ABC^18-Aug-2026^0042Z^FT8^RG65SM" in ve7cc_live_2
             assert "DX de RG65SM:" in normal_live
             assert "CC11" not in normal_live
 
             _, out = await srv._execute_command("AI3I-99", "unset/ve7cc")
             assert "VE7CC set to off" in out
+            assert ve7cc_session.vars["ve7cc"] == "off"
+            assert ve7cc_session_2.vars["ve7cc"] == "off"
             assert await store.get_user_pref("AI3I-99", "ve7cc") == "off"
+            ve7cc_writer.buffer.clear()
+            ve7cc_writer_2.buffer.clear()
+            assert await srv.publish_spot(Spot(14075.0, "K1ABC", epoch + 120, "FT8", "RG65SM", "N9JR-3", "")) == 3
+            for writer in (ve7cc_writer, ve7cc_writer_2):
+                rendered = writer.buffer.decode("utf-8")
+                assert "DX de RG65SM:" in rendered
+                assert "CC11" not in rendered
         finally:
             await store.close()
 
@@ -8364,6 +8380,65 @@ def test_ve7cc_mode_persists_and_formats_history_and_live_spots(tmp_path) -> Non
             assert restored.vars["prompt"] == "%M>"
         finally:
             await store2.close()
+
+    asyncio.run(run())
+
+
+def test_unset_ve7cc_survives_tcp_reconnect(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ve7cc_reconnect.db")
+        cfg = _mk_config(db)
+        cfg.node.node_call = "AI3I-15"
+        cfg.telnet.host = "127.0.0.1"
+        cfg.telnet.port = 0
+        call = "AI3I-99"
+
+        async def exercise(server: TelnetClusterServer, *, change_state: bool) -> None:
+            sock = (server._server.sockets or [None])[0]
+            assert sock is not None
+            host, port = sock.getsockname()[0], sock.getsockname()[1]
+            reader, writer = await asyncio.open_connection(host, port)
+            try:
+                await asyncio.wait_for(reader.readuntil(b"login: "), timeout=2.0)
+                writer.write((call + "\r\n").encode("ascii"))
+                await writer.drain()
+                prompt = (await server._prompt(call)).encode("utf-8")
+                await asyncio.wait_for(reader.readuntil(prompt), timeout=2.0)
+                if change_state:
+                    for command, expected in (
+                        ("set/ve7cc", b"VE7CC set to on"),
+                        ("unset/ve7cc", b"VE7CC set to off"),
+                    ):
+                        writer.write((command + "\r\n").encode("ascii"))
+                        await writer.drain()
+                        output = await asyncio.wait_for(reader.readuntil(prompt), timeout=2.0)
+                        assert expected in output
+                writer.write(b"show/ve7cc\r\n")
+                await writer.drain()
+                output = await asyncio.wait_for(reader.readuntil(prompt), timeout=2.0)
+                assert b"VE7CC for AI3I-99: off" in output
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        store = SpotStore(db)
+        server = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            await server.start()
+        except OSError:
+            await store.close()
+            pytest.skip("socket bind unavailable in sandbox")
+        try:
+            await exercise(server, change_state=True)
+            for _attempt in range(20):
+                if server.session_count == 0:
+                    break
+                await asyncio.sleep(0.01)
+            await exercise(server, change_state=False)
+            assert await store.get_user_pref(call, "ve7cc") == "off"
+        finally:
+            await server.stop()
+            await store.close()
 
     asyncio.run(run())
 
