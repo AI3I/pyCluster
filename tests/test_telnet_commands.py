@@ -3924,6 +3924,12 @@ def test_connect_disconnect_links_commands(tmp_path) -> None:
             assert "Connection attempt started for peer1" in out
             assert calls[-1] == ("peer1", "tcp://127.0.0.1:7300")
 
+            secret_dsn = "dxspider://user:DO_NOT_LEAK@192.168.222.2:7300?password=DO_NOT_LEAK"
+            _, out = await srv._execute_command("N0CALL", f"connect peer1 {secret_dsn}")
+            assert calls[-1] == ("peer1", secret_dsn)
+            assert "DO_NOT_LEAK" not in out
+            assert "dxspider ipv4 192.168.222.2:7300" in out
+
             _, out = await srv._execute_command("N0CALL", "links")
             assert "peer1" in out
             assert "Peer         Family" in out

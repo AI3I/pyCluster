@@ -27,7 +27,7 @@ from .datafiles import describe_cty_file, describe_wpxloc_file
 from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .geomag import canonicalize_wcy_text, canonicalize_wwv_text, derive_wcy_from_wwv, parse_wcy_text, parse_wwv_text
 from .models import Spot, display_call, is_valid_call, is_valid_registration_call, normalize_call
-from .pathmeta import describe_session_path, normalize_recorded_path
+from .pathmeta import describe_session_path, describe_transport_dsn, normalize_recorded_path
 from .peer_profiles import format_dx_line_for_profile, format_live_dx_line_for_profile, normalize_profile
 from .propagation import (
     effective_muf_for_zenith,
@@ -9756,8 +9756,11 @@ class TelnetClusterServer:
             dsn = " ".join(toks[1:])
         try:
             await self._link_connect_fn(peer, dsn)
-            self._log_event("connect", f"{peer} {dsn}")
-            return self._render_string("links.connect_started", "Connection attempt started for {peer} ({dsn}).", peer=peer, dsn=dsn) + "\r\n"
+            transport, path_hint = describe_transport_dsn(dsn)
+            safe_dsn = " ".join(part for part in (transport, path_hint) if part and part != dsn).strip()
+            safe_dsn = safe_dsn or transport or "configured endpoint"
+            self._log_event("connect", f"{peer} {safe_dsn}")
+            return self._render_string("links.connect_started", "Connection attempt started for {peer} ({dsn}).", peer=peer, dsn=safe_dsn) + "\r\n"
         except Exception as exc:
             return self._render_string("links.connect_failed", "Connection to {peer} failed: {error}", peer=peer, error=exc) + "\r\n"
 

@@ -123,9 +123,11 @@ a text-only support report:
 
 ```bash
 cd /usr/src/pyCluster
-sudo ./deploy/support-bundle.sh
+sudo ./deploy/support-bundle.sh --redacted
 ```
 
+Running the collector without options displays its help and does not create a
+report. Every collection must explicitly choose `--redacted` or `--unredacted`.
 The report is written under `/tmp` by default with mode `0600`. It inventories
 the OS, kernel, CPU, memory, storage, virtualization/container indicators,
 runtime tools, service units, listeners, SELinux, nginx, fail2ban, source and
@@ -133,18 +135,67 @@ runtime versions, immutable-tree differences, ownership anomalies, possible
 duplicate installations, and the built-in doctor results. It ends with a
 plain-language installation assessment.
 
-Configuration section/key names are included, but values are redacted. The
-collector does not directly read or copy TOML values, SQLite databases,
-bootstrap credentials, mail, private messages, or user records. Network
-addresses, routes, firewall rules, and recent journals require explicit
-options:
+Redacted mode masks configuration values, network addresses, and MAC addresses
+where practical. Unredacted mode includes host/network identifiers and
+non-secret configuration values for private troubleshooting. Passwords,
+tokens, DSNs, API keys, and similar credentials remain redacted in both modes.
+The normal report does not copy bootstrap credentials, mail, private messages,
+or user records.
+
+The protocol section reports the configured, detected, and effective IPv4/IPv6
+addresses used by PC frames, runs a local PC92 `localhost` substitution probe,
+lists saved peer endpoints without credentials, checks SQLite integrity and row
+counts, and summarizes recent PC18/PC61/PC92/PC93/PY traffic. This is the first
+report to request for private-address or `localhost` reports such as issue #193.
+
+Detailed addresses, routes, DNS state, policy routing, network namespaces,
+established sockets, and nftables/iptables/UFW/firewalld state require
+`--include-network`. Recent service journals remain separately opt-in:
 
 ```bash
-sudo ./deploy/support-bundle.sh --include-network --include-journal
+sudo ./deploy/support-bundle.sh --redacted --include-network --include-journal
 ```
 
 Review the report before attaching it to a public issue. Hostnames, listener
 addresses, process metadata, and explicitly included logs can identify a node.
+
+For trusted private troubleshooting, request an unredacted report. It still
+removes credentials:
+
+```bash
+sudo ./deploy/support-bundle.sh --unredacted --include-network --include-journal
+```
+
+To export only a transactionally consistent copy of the live SQLite store:
+
+```bash
+sudo ./deploy/support-bundle.sh --unredacted --include-database
+```
+
+The database snapshot is written beside the report with mode `0600`. It contains
+accounts, preferences, mail, and operational history and must never be attached
+to a public issue.
+
+For an offline reproduction environment, `--include-instance` creates a
+restricted `tar.gz` containing the deployed runtime (excluding virtual
+environments and live SQLite sidecars), complete config/data/logs, a consistent
+database snapshot, pyCluster-specific systemd/nginx/fail2ban/logrotate files,
+SELinux configuration when present, ACL metadata, and a Git source bundle plus
+working-tree patch. A SHA-256 file is written beside it:
+
+```bash
+sudo ./deploy/support-bundle.sh --unredacted --include-network \
+  --include-journal --include-instance
+```
+
+Treat this archive as a full copy of the node. Transfer it only over an
+authenticated encrypted channel. Extract it into a new empty directory on an
+isolated test host, inspect `MANIFEST.txt`, and point test tooling at
+`database/pycluster.sqlite3` and `runtime/config`; do not extract it over
+`/home/pycluster/pyCluster` or use it to overwrite a live node. Historical
+protocol logs created before the credential-safe connection-trace fix may
+contain effective peer DSNs, which is another reason the archive must remain
+private and peer credentials should be rotated if such an archive is exposed.
 
 Successful install, upgrade, and repair runs now write
 `data/deployment-state.toml` with the completed action, version, source commit,

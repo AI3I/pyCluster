@@ -17,7 +17,9 @@ All notable changes to pyCluster should be recorded here.
 - nginx setup validates hostnames and restores every configuration file it changed when validation, restart, or certificate provisioning fails.
 - Documented deployments that use a central reverse proxy without local nginx, including runtime config paths, listener roles, source-scoped firewall rules, proxy examples, and LAN troubleshooting; `doctor.sh` now reports effective listener bindings.
 - Refreshed the documentation index, roadmap, architecture, feature summary, command-policy snapshot, and repository-local DXSpider command audit for the `1.0.13` development tree.
-- Added a redacted support-report collector for host, VM/container, capacity, service, listener, security, source/runtime integrity, ownership, duplicate-installation, and deployment-provenance diagnostics; successful lifecycle runs now leave a deployment receipt.
+- Expanded the support collector with explicit redacted/unredacted modes, IPv4/IPv6/DNS/routing/firewall and SELinux policy diagnostics, protocol-address and peer evidence for PC61/PC92/PC93 troubleshooting, consistent SQLite export, and a sensitive full-instance archive for isolated lab reproduction; credentials remain redacted in every text report.
+- Peer connection traces and telnet connect confirmations now record a credential-free transport description instead of the effective DSN, preventing saved peer passwords from entering future protocol/event logs.
+- Successful lifecycle runs now leave a deployment receipt used by support diagnostics.
 - The SysOp Known pyCluster Nodes table now includes direct peers positively identified by PC18 before private-protocol metadata is available, while distinguishing local PY disablement, PY00 not sent, sent without a valid response, invalid replies, disconnection, negotiation, and missing NODEINFO; per-session timestamps prevent stale negotiation state and software version is never treated as proof of PY support.
 
 ### Added

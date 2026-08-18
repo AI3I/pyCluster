@@ -191,10 +191,12 @@ For installation support, generate a reviewable report without copying
 configuration values, databases, credentials, or user records:
 
 ```bash
-sudo ./deploy/support-bundle.sh
+sudo ./deploy/support-bundle.sh --redacted
 ```
 
-Detailed network state and recent service journals are opt-in. See
+Running without options shows help. Detailed network state and recent service
+journals are opt-in; trusted maintainers can also request an unredacted report,
+a consistent SQLite snapshot, or a complete offline lab-import archive. See
 [Support Report](docs/operations.md#support-report).
 
 The installer seeds a one-time `SYSOP` account and writes its credentials to
