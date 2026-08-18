@@ -5,6 +5,7 @@ import pwd
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tomllib
 
 from pycluster import __version__
@@ -189,7 +190,12 @@ def test_deploy_lifecycle_writes_support_receipt_and_has_safe_collector(tmp_path
     assert 'write_deployment_state repair' in repair
     assert "--include-network" in collector_text
     assert "--include-journal" in collector_text
-    assert "Configuration Presence (Values Redacted)" in collector_text
+    assert "--redacted" in collector_text
+    assert "--unredacted" in collector_text
+    assert "--include-database" in collector_text
+    assert "--include-instance" in collector_text
+    assert "Protocol Address And Peer Diagnostics" in collector_text
+    assert "Sensitive Lab-Import Archive" in collector_text
     assert "pycluster-initial-sysop.txt" not in collector_text
     assert "cat \"$PYCLUSTER_CONFIG_DEST\"" not in collector_text
 
@@ -210,7 +216,7 @@ def test_deploy_lifecycle_writes_support_receipt_and_has_safe_collector(tmp_path
         "PYCLUSTER_SYSTEMD_DIR": str(tmp_path / "systemd"),
     }
     result = subprocess.run(
-        [str(collector), "--output", str(report), "--no-journal"],
+        [str(collector), "--redacted", "--output", str(report), "--no-journal"],
         cwd=root,
         env=env,
         text=True,
@@ -221,8 +227,78 @@ def test_deploy_lifecycle_writes_support_receipt_and_has_safe_collector(tmp_path
     output = report.read_text(encoding="utf-8")
     assert "pyCluster Support Report" in output
     assert "Installation Assessment" in output
-    assert "password = <redacted>" in output
+    assert "password = <credential-redacted>" in output
     assert "DO_NOT_LEAK" not in output
+
+    help_result = subprocess.run(
+        [str(collector)],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert help_result.returncode == 0
+    assert "--redacted" in help_result.stdout
+    assert "--unredacted" in help_result.stdout
+    assert not any(tmp_path.glob("pycluster-support-*.txt"))
+
+    data_dir = runtime / "data"
+    data_dir.mkdir()
+    live_database = data_dir / "pycluster.db"
+    with sqlite3.connect(live_database) as connection:
+        connection.execute("CREATE TABLE support_probe (value TEXT)")
+        connection.execute("INSERT INTO support_probe VALUES ('snapshot-ok')")
+    private_report = tmp_path / "support-private.txt"
+    private_database = tmp_path / "support-private.sqlite3"
+    private_instance = tmp_path / "support-private-instance.tar.gz"
+    private_result = subprocess.run(
+        [
+            str(collector),
+            "--unredacted",
+            "--include-database",
+            "--database-output",
+            str(private_database),
+            "--include-instance",
+            "--instance-output",
+            str(private_instance),
+            "--output",
+            str(private_report),
+            "--no-journal",
+        ],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert private_result.returncode == 0, private_result.stderr
+    private_output = private_report.read_text(encoding="utf-8")
+    assert 'node_call = "N0CALL-1"' in private_output
+    assert "password = <credential-redacted>" in private_output
+    assert "DO_NOT_LEAK" not in private_output
+    assert private_database.stat().st_mode & 0o777 == 0o600
+    with sqlite3.connect(private_database) as connection:
+        assert connection.execute("SELECT value FROM support_probe").fetchone() == ("snapshot-ok",)
+    assert private_instance.stat().st_mode & 0o777 == 0o600
+    assert Path(f"{private_instance}.sha256").is_file()
+    with tarfile.open(private_instance, "r:gz") as archive:
+        members = {member.name.removeprefix("./") for member in archive.getmembers()}
+    assert "MANIFEST.txt" in members
+    assert "database/pycluster.sqlite3" in members
+    assert "runtime/config/pycluster.toml" in members
+    assert "source/source.bundle" in members
+
+    rejected_database = subprocess.run(
+        [str(collector), "--redacted", "--include-database", "--output", str(tmp_path / "rejected.txt")],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert rejected_database.returncode == 2
+    assert "requires --unredacted" in rejected_database.stderr
 
     receipt = tmp_path / "receipt" / "deployment-state.toml"
     receipt_env = {

@@ -86,6 +86,32 @@ def test_node_link_sanitizes_outbound_pc92_private_ips() -> None:
     asyncio.run(run())
 
 
+def test_node_link_connect_trace_never_records_dsn_credentials(monkeypatch) -> None:
+    async def run() -> None:
+        async def _connect(_name: str, _dsn: str):
+            return _ClosedInboundConnection()
+
+        monkeypatch.setattr("pycluster.node_link.connect_from_dsn", _connect)
+        events: list[tuple[str, str, str]] = []
+        engine = NodeLinkEngine()
+
+        async def _trace(peer: str, direction: str, text: str) -> None:
+            events.append((peer, direction, text))
+
+        engine.set_trace_hook(_trace)
+        await engine.connect_dsn(
+            "N9JR-2",
+            "dxspider://user:DO_NOT_LEAK@192.168.222.2:7300?password=DO_NOT_LEAK",
+        )
+        await asyncio.sleep(0)
+        await engine.stop()
+        connect_events = [event for event in events if event[1] == "connect"]
+        assert connect_events == [("N9JR-2", "connect", "dxspider ipv4 192.168.222.2:7300")]
+        assert all("DO_NOT_LEAK" not in event[2] for event in events)
+
+    asyncio.run(run())
+
+
 def test_cluster_app_passes_detected_public_ip_to_node_link_when_config_blank(tmp_path, monkeypatch) -> None:
     db = str(tmp_path / "detected_public_ip.db")
     cfg = _mk_config(db)

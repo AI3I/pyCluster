@@ -234,11 +234,12 @@ For support cases where the installation method or host layout is uncertain,
 generate a redacted installation report:
 
 ```bash
-sudo ./deploy/support-bundle.sh
+sudo ./deploy/support-bundle.sh --redacted
 ```
 
 See [Support Report](operations.md#support-report) for collected fields and the
-optional network/journal switches.
+explicit privacy mode, network/journal switches, consistent database export,
+and sensitive offline instance archive.
 
 If the first install created the bootstrap account successfully, you should also see:
 

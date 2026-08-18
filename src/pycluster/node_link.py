@@ -151,7 +151,8 @@ class NodeLinkEngine:
         )
         async with self._lock:
             self._peers[name] = peer
-        await self._trace(name, "connect", dsn)
+        trace_endpoint = " ".join(part for part in (peer.transport, peer.path_hint) if part).strip()
+        await self._trace(name, "connect", trace_endpoint or "configured endpoint")
         self._track_reader_task(asyncio.create_task(self._peer_reader(peer), name=f"node-link-reader-{name}"))
 
     async def accept_inbound(self, name: str, conn: LinkConnection, profile: str = "dxspider") -> None:
