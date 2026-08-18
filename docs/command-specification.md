@@ -356,7 +356,7 @@ These commands are acceptable aliases because they map directly to stable behavi
 
 ## Current Audit Snapshot
 
-As of `1.0.12`, the active telnet registry exposes 370 grouped commands:
+As of `1.0.13`, the active telnet registry includes persistent VE7CC/CC11 compatibility commands in addition to the audited grouped command surface:
 
 | Family | Count | Review status |
 | --- | ---: | --- |

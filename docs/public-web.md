@@ -20,7 +20,8 @@ System Operator console:
 - RBN visibility is controlled through the same access matrix and stored user preferences used elsewhere
 - spots sourced from the configured RBN source node are treated as RBN traffic even when the comment text does not include a Skimmer-style marker
 - raw PC11/PC61 RBN markers are honored even when the visible spot comment contains only a mode such as FT8
-- RBN reports are delivered over a best-effort local socket and kept in a bounded in-memory window; they are not part of durable spot history or statistics
+- RBN reports are delivered over a best-effort local socket and kept in a bounded in-memory window; they are not part of durable spot history or statistics and are not forwarded to cluster peers
+- persisted request-time policy and integration settings, including SMTP and MFA, reload when the primary or local override configuration changes; listener addresses, ports, and the database path remain restart-bound
 - authenticated websocket updates, spot history, statistics, and leaderboards all apply the same stored RBN preference and accept/reject filters
 
 Browser storage is used only as a convenience cache or for anonymous,

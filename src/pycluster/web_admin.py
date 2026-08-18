@@ -2840,7 +2840,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="field"><label for="node_locator" title="Node Maidenhead grid square shown in public branding and node details.">Grid Square</label><input id="node_locator" placeholder="Grid square" title="Displayed in the public footer and operator-facing node identity details."></div>
               <div class="field"><label for="telnet_ports" title="Comma-separated list of telnet listener ports the cluster should bind.">Telnet Ports</label><input id="telnet_ports" placeholder="7300,7373,8000" title="Comma-separated list of listener ports. Saving applies the listener set live if the new ports can be bound."></div>
               <div class="field"><label for="branding_name" title="Short product or node brand shown in the telnet welcome experience.">Node Brand</label><input id="branding_name" placeholder="Node brand" title="Short product or node brand shown in the telnet welcome experience."></div>
-              <div class="field"><label for="welcome_title" title="First line shown to a telnet user after successful login.">Welcome Title</label><input id="welcome_title" placeholder="Short welcome line" title="Keep this short and warm; it is prepended to the connecting callsign."></div>
+              <div class="field"><label for="welcome_title" title="First line shown after telnet login. Ham Radio Deluxe (HRD) requires this to begin with Hello; changing it can prevent HRD from completing session initialization.">Welcome Title</label><input id="welcome_title" placeholder="Hello" title="Keep this set to Hello for Ham Radio Deluxe (HRD) compatibility. Changing it can prevent HRD from completing session initialization."></div>
               <div class="field"><label for="website_url" title="Optional URL shown in the telnet welcome block and useful for directing operators to documentation or a public site.">Website URL</label><input id="website_url" placeholder="https://example.org" title="Shown as a reference URL in the login welcome text if set."></div>
               <div class="field"><label for="support_contact" title="Contact string displayed to operators who need help with the node.">Support Contact</label><input id="support_contact" placeholder="support@example.org" title="Email address or other support contact shown in the telnet welcome block."></div>
               <div class="field"><label for="public_ip_address" title="Public IPv4 address substituted into outbound cluster path messages when a local private IPv4 address would otherwise be advertised.">Public IPv4 Address</label><input id="public_ip_address" placeholder="Auto-detect when blank" title="Used only to replace private, loopback, link-local, or otherwise non-public IPv4 literals in outbound PC92 path data."></div>
@@ -2933,7 +2933,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid compact-controls">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.12" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.13" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>
@@ -3922,7 +3922,8 @@ function fillPeerForm(peer) {
   byId('peername').value = data.peer || '';
   byId('peerdsn').value = auth.dsn || '';
   byId('peerprof').value = data.profile || 'pycluster';
-  byId('peerpass').value = data.password || auth.password || '';
+  byId('peerpass').value = '';
+  byId('peerpass').placeholder = data.has_password ? 'Saved password; leave blank to keep' : 'Optional peer password';
   byId('peerretry').checked = data.reconnect_enabled !== false;
   const editable = !!data.desired || !data.inbound;
   byId('peerdsn').disabled = !editable;
@@ -3975,6 +3976,7 @@ function clearPeerForm() {
   byId('peerdsn').value = '';
   byId('peerprof').value = 'pycluster';
   byId('peerpass').value = '';
+  byId('peerpass').placeholder = 'Optional peer password';
   byId('peerretry').checked = true;
   byId('peerdsn').disabled = false;
   byId('peerprof').disabled = false;
@@ -5503,8 +5505,14 @@ byId('pconnect').onclick = async () => {
   const password = byId('peerpass').value;
   const profile = byId('peerprof').value.trim();
   const reconnect = !!byId('peerretry').checked;
-  await j('/api/peer/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, password, profile, reconnect})});
-  const r = await j('/api/peer/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, password, profile})});
+  const savePayload = {peer, dsn, profile, reconnect};
+  const connectPayload = {peer, dsn, profile};
+  if (password) {
+    savePayload.password = password;
+    connectPayload.password = password;
+  }
+  await j('/api/peer/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(savePayload)});
+  const r = await j('/api/peer/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(connectPayload)});
   say(r && r.ok ? 'Connected ' + peer + '.' : 'Peer connect failed.', !!(r && r.ok));
   await load();
 };
@@ -5514,7 +5522,9 @@ byId('peerSave').onclick = async () => {
   const password = byId('peerpass').value;
   const profile = byId('peerprof').value.trim();
   const reconnect = !!byId('peerretry').checked;
-  const r = await j('/api/peer/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer, dsn, password, profile, reconnect})});
+  const payload = {peer, dsn, profile, reconnect};
+  if (password) payload.password = password;
+  const r = await j('/api/peer/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
   if (r && r.ok) closePeerModal();
   say(r && r.ok ? 'Saved peer ' + peer + '.' : 'Saving peer failed.', !!(r && r.ok));
   await load();
@@ -7198,7 +7208,7 @@ if (restoreWebSession()) {
                             "pending_mail": int(desired.get("pending_mail", 0) or 0),
                             "route_issues": int(desired.get("route_issues", 0) or 0),
                             "dsn": str(desired.get("dsn", "")),
-                            "password": str(desired.get("password", "")),
+                            "has_password": bool(str(desired.get("password", "")).strip()),
                         }
                     )
                 await self._write_response(writer, 200, self._json(out))
@@ -7694,12 +7704,13 @@ if (restoreWebSession()) {
                 if not peer:
                     await self._write_response(writer, 400, self._json({"error": "peer is required"}))
                     return
-                if not dsn and self.link_desired_peers_fn:
+                if self.link_desired_peers_fn:
                     desired_rows = await self.link_desired_peers_fn()
                     for row in desired_rows:
                         if str(row.get("peer", "")).strip().lower() != peer.lower():
                             continue
-                        dsn = str(row.get("dsn", "")).strip()
+                        if not dsn:
+                            dsn = str(row.get("dsn", "")).strip()
                         if not password:
                             password = str(row.get("password", "")).strip()
                         if not str(payload.get("profile", "")).strip():
@@ -7730,14 +7741,14 @@ if (restoreWebSession()) {
                 payload = self._parse_json_body(body)
                 peer = str(payload.get("peer", "")).strip()
                 dsn = str(payload.get("dsn", "")).strip()
-                password = str(payload.get("password", "")).strip()
+                password = str(payload.get("password", "")).strip() if "password" in payload else None
                 profile = str(payload.get("profile", "")).strip() or "dxspider"
                 reconnect = bool(payload.get("reconnect", True))
                 if not peer:
                     await self._write_response(writer, 400, self._json({"error": "peer is required"}))
                     return
                 try:
-                    await self.link_save_peer_fn(peer, dsn, profile, reconnect, password)
+                    await self.link_save_peer_fn(peer, dsn, profile, reconnect, password or None)
                 except Exception as exc:
                     await self._write_response(writer, 500, self._json({"error": f"save failed: {exc}"}))
                     return

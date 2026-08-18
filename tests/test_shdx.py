@@ -26,3 +26,8 @@ def test_parse_exact() -> None:
     q = parse_sh_dx_args("K3AJ exact")
     assert q.prefix_exact is True
     assert q.prefix_pattern == "K3AJ%"
+
+
+def test_parse_history_limit_supports_ve7cc_clients() -> None:
+    assert parse_sh_dx_args("200").limit == 200
+    assert parse_sh_dx_args("9999").limit == 200

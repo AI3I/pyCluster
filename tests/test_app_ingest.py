@@ -296,7 +296,7 @@ def test_inbound_pycluster_identity_is_registered_before_queued_py_frames(tmp_pa
 
             assert ok is True
             assert [frame.pc_type for frame in sent] == ["PY00"]
-            assert "PC18^pyCluster 1.0.12^5457^" in writer.buffer.decode()
+            assert f"PC18^pyCluster {__version__}^5457^" in writer.buffer.decode()
         finally:
             await app.store.close()
 
@@ -1308,6 +1308,15 @@ def test_peer_password_is_stored_separately_from_dsn_and_injected_on_connect(tmp
             row = await app.store.get_user_registry("AI3I-16")
             assert row is not None
             assert await app.store.get_user_pref("AI3I-16", "node_family") == "dxspider"
+
+            await app.save_peer_target(
+                "AI3I-16",
+                "dxspider://dxspider.ai3i.net:7300?login=AI3I-15&client=AI3I-16",
+                profile="dxspider",
+                reconnect=True,
+                password=None,
+            )
+            assert await app.store.get_user_pref(app.config.node.node_call, "peer.outbound.ai3i-16.password") == "sekret"
 
             rows = await app.desired_peer_status()
             assert len(rows) == 1
@@ -3621,6 +3630,7 @@ def test_rbn_sustained_ingest_is_bounded_and_never_persisted(tmp_path) -> None:
     async def run() -> None:
         app = ClusterApp(_mk_config(str(tmp_path / "rbn_sustained.db")))
         delivered = 0
+        relayed = 0
 
         async def _publish(_spot: Spot) -> int:
             nonlocal delivered
@@ -3628,7 +3638,8 @@ def test_rbn_sustained_ingest_is_bounded_and_never_persisted(tmp_path) -> None:
             return 1
 
         async def _relay(_spot: Spot, exclude_peer=None) -> None:
-            return
+            nonlocal relayed
+            relayed += 1
 
         app.telnet.publish_spot = _publish  # type: ignore[method-assign]
         app._relay_spot_to_links = _relay  # type: ignore[method-assign]
@@ -3642,9 +3653,69 @@ def test_rbn_sustained_ingest_is_bounded_and_never_persisted(tmp_path) -> None:
             assert await app._flush_rbn_spot_batch("stress", pending) == 20000
             assert pending == []
             assert delivered == 20000
+            assert relayed == 0
             assert await app.store.count_spots() == 0
             assert len(app._rbn_recent_spot_epochs) == 10000
             assert len(app._rbn_seen) <= 50000
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_peer_rbn_spot_is_delivered_locally_without_peer_relay(tmp_path) -> None:
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "peer_rbn_no_relay.db")))
+        delivered: list[Spot] = []
+        published_web: list[Spot] = []
+        relayed: list[Spot] = []
+
+        async def _publish(spot: Spot) -> int:
+            delivered.append(spot)
+            return 1
+
+        async def _relay(spot: Spot, exclude_peer=None) -> None:
+            relayed.append(spot)
+
+        app.telnet.publish_spot = _publish  # type: ignore[method-assign]
+        app._publish_rbn_to_public_web = lambda spot: published_web.append(spot)  # type: ignore[method-assign]
+        app._relay_spot_to_links = _relay  # type: ignore[method-assign]
+        now = int(datetime.now(timezone.utc).timestamp())
+        spot = Spot(14025.0, "AI3I-90", now, "CW 20 dB", "AI3I-91-#", "PEER1", "RBN")
+        try:
+            assert await app._publish_peer_rbn_spot(spot, exclude_peer="PEER1") is True
+            assert delivered == [spot]
+            assert published_web == [spot]
+            assert relayed == []
+            assert await app.store.count_spots() == 0
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_generic_spot_relay_refuses_rbn_classified_spots(tmp_path) -> None:
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "generic_rbn_no_relay.db")))
+        sent: list[tuple[str, WirePcFrame]] = []
+
+        async def _peer_names() -> list[str]:
+            return ["PEER1"]
+
+        async def _stats() -> dict[str, dict[str, object]]:
+            return {"PEER1": {"profile": "pycluster"}}
+
+        async def _send(peer: str, frame: WirePcFrame) -> None:
+            sent.append((peer, frame))
+
+        app.node_link.peer_names = _peer_names  # type: ignore[method-assign]
+        app.node_link.stats = _stats  # type: ignore[method-assign]
+        app.node_link.send = _send  # type: ignore[method-assign]
+        now = int(datetime.now(timezone.utc).timestamp())
+        spot = Spot(14025.0, "AI3I-90", now, "CW 20 dB", "AI3I-91-#", "RBN", "RBN")
+        try:
+            await app._relay_spot_to_links(spot)
+            assert sent == []
         finally:
             await app.store.close()
 

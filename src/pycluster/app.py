@@ -190,6 +190,7 @@ class ClusterApp:
             relay_bulletin_fn=self._relay_bulletin_to_links,
             event_log_fn=self.telnet.record_event,
             strings_path=strings_path,
+            config_path=config_path,
         )
         self._node_ingest_task: asyncio.Task[None] | None = None
         self._peer_reconnect_task: asyncio.Task[None] | None = None
@@ -897,7 +898,6 @@ class ClusterApp:
             )
             await self.telnet.publish_spot(spot)
             self._publish_rbn_to_public_web(spot)
-            await self._relay_spot_to_links(spot, exclude_peer=None)
             if idx % 25 == 0:
                 await asyncio.sleep(0)
         return forwarded
@@ -945,7 +945,6 @@ class ClusterApp:
         self._rbn_recent_spot_epochs.append(now)
         await self.telnet.publish_spot(spot)
         self._publish_rbn_to_public_web(spot)
-        await self._relay_spot_to_links(spot, exclude_peer=exclude_peer)
         return True
 
     async def _run_rbn_feed_once(self, feed: dict[str, object]) -> None:
@@ -3542,6 +3541,8 @@ class ClusterApp:
                 return
 
     async def _relay_spot_to_links(self, spot: Spot, exclude_peer: str | None = None) -> None:
+        if self._is_rbn_spot_obj(spot):
+            return
         sender = normalize_call(spot.spotter)
         if not await self._relay_category_enabled(sender, "spots"):
             return
@@ -3684,9 +3685,9 @@ async def serve_core_forever(config: AppConfig, config_path: str | None = None) 
             await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def serve_public_forever(config: AppConfig) -> None:
+async def serve_public_forever(config: AppConfig, config_path: str | None = None) -> None:
     store = SpotStore(config.store.sqlite_path)
-    public_web = PublicWebServer(config=config, store=store, started_at=datetime.now(timezone.utc))
+    public_web = PublicWebServer(config=config, store=store, started_at=datetime.now(timezone.utc), config_path=config_path)
     await public_web.start()
     logging.getLogger(__name__).info("pyCluster public web started")
 

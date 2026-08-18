@@ -88,11 +88,11 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current development release: `1.0.12`
+Current development release: `1.0.13`
 
-Recent highlights in `1.0.12`:
+Recent highlights in `1.0.13`:
 
-- RBN feed ingestion is live-only, with bounded in-memory delivery, ten-second aggregation, nearby-frequency grouping, and respot suppression; it does not grow the historical spot database
+- RBN feed ingestion is live-only and local, with bounded in-memory delivery, ten-second aggregation, nearby-frequency grouping, and respot suppression; it neither grows the historical spot database nor forwards RBN reports to cluster peers
 - System Operator user management includes a locked-account view alongside blocked users
 - registration-required nodes keep telnet and public requests in the approval queue until a System Operator approves them; nodes without that requirement activate public accounts after email verification
 - deleted/denied user records clean up stale registration and MFA state before a callsign-SSID can be reused
@@ -108,6 +108,7 @@ Recent highlights in `1.0.12`:
 - optional pyCluster-only capability negotiation, decentralized topology, and read-only health/dataset/RBN/policy/clock summaries are isolated to authenticated pyCluster peers and disabled by default
 - the System Operator protocol view manages field-level sharing privacy, structured expiring network notices, and direct/reported known-node visibility without a central registry
 - upgrade and repair paths protect runtime string catalogs by backing up invalid `strings.toml` files and restoring bundled defaults
+- persistent `set/ve7cc` compatibility emits structured CC11 history and live spots for Ham Radio Deluxe while leaving normal user and peer output unchanged
 
 ## 🖥️ Interfaces
 

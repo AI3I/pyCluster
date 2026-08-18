@@ -7,6 +7,7 @@ import re
 @dataclass(slots=True)
 class PrefixLocation:
     name: str
+    dxcc: int
     cq_zone: int
     itu_zone: int
     continent: str
@@ -84,6 +85,7 @@ def load_wpxloc(path: str) -> None:
                 continue
             current = PrefixLocation(
                 name=m.group("name").strip().replace("-", " "),
+                dxcc=int(m.group("dxcc")),
                 cq_zone=int(m.group("cq")),
                 itu_zone=int(m.group("itu")),
                 continent="",

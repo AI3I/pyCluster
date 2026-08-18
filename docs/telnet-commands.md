@@ -100,4 +100,5 @@ For the full documented command surface, grouped by family, see:
 
 - pyCluster recognizes many DXSpider-style command names for compatibility
 - the documented reference focuses on implemented, operator-meaningful behavior
-- obsolete compatibility names such as `mrtg`, `gtk`, and `ve7cc` are no longer part of the active command surface
+- obsolete compatibility names such as `mrtg` and `gtk` are not part of the active command surface
+- `set/ve7cc`, `show/ve7cc`, and `unset/ve7cc` provide persistent CC11 output for VE7CC-compatible clients

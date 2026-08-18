@@ -165,6 +165,7 @@ Generated UTC: 2026-08-03T11:44:27.330244+00:00
 | `set/uservar` | `complete` | `set/uservar` |  |
 | `set/usstate` | `complete` | `set/usstate` |  |
 | `set/var` | `complete` | `set/var` |  |
+| `set/ve7cc` | `complete` | `set/ve7cc` | Persists CC11 spot output for compatible clients. |
 | `set/wantpc16` | `complete` | `set/wantpc16` |  |
 | `set/wantpc9x` | `complete` | `set/wantpc9x` |  |
 | `set/wcy` | `complete` | `set/wcy` |  |
@@ -230,6 +231,7 @@ Generated UTC: 2026-08-03T11:44:27.330244+00:00
 | `show/usdb` | `complete` | `show/usdb` |  |
 | `show/users` | `complete` | `show/users` |  |
 | `show/var` | `complete` | `show/var` |  |
+| `show/ve7cc` | `complete` | `show/ve7cc` | Shows the persisted CC11 compatibility state. |
 | `show/version` | `complete` | `show/version` |  |
 | `show/vhfstats` | `complete` | `show/vhfstats` |  |
 | `show/vhftable` | `complete` | `show/vhftable` |  |
@@ -284,6 +286,7 @@ Generated UTC: 2026-08-03T11:44:27.330244+00:00
 | `unset/startup` | `complete` | `unset/startup` |  |
 | `unset/talk` | `complete` | `unset/talk` |  |
 | `unset/usstate` | `complete` | `unset/usstate` |  |
+| `unset/ve7cc` | `complete` | `unset/ve7cc` | Restores normal spot output. |
 | `unset/wantpc16` | `complete` | `unset/wantpc16` |  |
 | `unset/wantpc9x` | `complete` | `unset/wantpc9x` |  |
 | `unset/wcy` | `complete` | `unset/wcy` |  |

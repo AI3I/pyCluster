@@ -16,6 +16,12 @@ from pycluster.mfa import SMTPMailer, totp_code
 from pycluster.models import Spot
 from pycluster.registration import registration_state
 from pycluster.store import SpotStore
+
+
+def test_sysop_welcome_title_warns_about_hrd_compatibility() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert "Keep this set to Hello for Ham Radio Deluxe (HRD) compatibility." in text
+    assert "changing it can prevent HRD from completing session initialization" in text
 from pycluster.telnet_server import TelnetClusterServer
 from pycluster.web_admin import WebAdminServer
 
@@ -1505,7 +1511,7 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             ops.append(("profile", peer, profile))
             return peer == "peer1"
 
-        async def _save(peer: str, dsn: str, profile: str = "dxspider", reconnect: bool = True, password: str = "") -> None:
+        async def _save(peer: str, dsn: str, profile: str = "dxspider", reconnect: bool = True, password: str | None = "") -> None:
             ops.append(("save", peer, dsn, profile, reconnect, password))
 
         async def _desired() -> list[dict[str, object]]:
@@ -1643,7 +1649,7 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
                 "POST",
                 "/api/peer/connect",
                 headers={"X-Admin-Token": "adm", "Content-Type": "application/json"},
-                body=json.dumps({"peer": "peer1", "dsn": "tcp://127.0.0.1:7300", "password": "sekret", "profile": "dxspider"}).encode("utf-8"),
+                body=json.dumps({"peer": "peer1", "dsn": "tcp://127.0.0.1:7300", "profile": "dxspider"}).encode("utf-8"),
             )
             assert code == 200
             assert json.loads(body.decode("utf-8"))["ok"] is True
@@ -1678,7 +1684,7 @@ def test_web_admin_requires_sysop_session_for_admin_endpoints(tmp_path) -> None:
             assert code == 200
             assert json.loads(body.decode("utf-8"))["ok"] is True
             assert ("save", "peer1", "tcp://127.0.0.1:7300", "dxspider", True, "sekret") in ops
-            assert ("save", "inbound1", "", "dxspider", False, "") in ops
+            assert ("save", "inbound1", "", "dxspider", False, None) in ops
             assert ("connect", "peer1", "tcp://127.0.0.1:7300", "dxspider", True, "sekret") in ops
             assert ("profile", "peer1", "arcluster") in ops
             assert ("disconnect", "peer1", False) in ops
@@ -1919,6 +1925,7 @@ def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
                     "peer": "AI3I-15",
                     "dsn": "pycluster://dxspider.ai3i.net:7300?login=AI3I-16&client=AI3I-15",
                     "profile": "pycluster",
+                    "password": "sekret",
                     "reconnect_enabled": True,
                     "retry_count": 2,
                     "next_retry_epoch": 1773275000,
@@ -1958,6 +1965,8 @@ def test_api_peers_includes_desired_reconnect_state(tmp_path) -> None:
             assert row["profile"] == "pycluster"
             assert row["transport"] == "pycluster"
             assert row["path_hint"] == "host dxspider.ai3i.net:7300"
+            assert "password" not in row
+            assert row["has_password"] is True
             assert row["proto"]["pc18_summary"] == "pyCluster 1.0.6"
         finally:
             await store.close()

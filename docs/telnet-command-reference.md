@@ -77,6 +77,25 @@ It also supports direct commands such as:
 | `show/hftable` | Band-table style view for HF ranges. |
 | `show/vhftable` | Band-table style view for VHF/UHF ranges. |
 
+### VE7CC and Ham Radio Deluxe compatibility
+
+`set/ve7cc` enables persistent VE7CC-compatible `CC11` spot records for the
+current user. Both historical output from `sh/dx` or `sh/mydx` and subsequent
+live spots use CC11 while the preference is enabled. `show/ve7cc` reports the
+stored state, and `unset/ve7cc` restores normal human-readable spot lines.
+
+The mode command does not send a spot backlog. Client software controls the
+initial history count independently, for example with `sh/mydx 200`. pyCluster
+honors history requests up to 200 records. Spot filters continue to apply to
+`sh/mydx` and live traffic before CC11 formatting.
+
+Ham Radio Deluxe normally initializes a compatible session with commands such
+as `set/prompt %M>`, `set/ve7cc`, and `sh/mydx 200`. The per-user prompt template
+and VE7CC mode are database-backed and survive reconnects. A telnet welcome
+title beginning with `Hello` is the default for new installations and allows
+HRD to recognize that login has completed; existing nodes can set Welcome Title
+to `Hello` under System Operator Console > Node Settings > General.
+
 Common `sh/dx` examples:
 
 ```text
