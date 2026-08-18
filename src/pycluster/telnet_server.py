@@ -442,10 +442,12 @@ class TelnetClusterServer:
         return tuple(sorted(set(ports)))
 
     def _find_session(self, call: str) -> Session | None:
-        for s in self._sessions.values():
-            if s.call == call:
-                return s
-        return None
+        sessions = self._sessions_for_call(call)
+        return sessions[0] if sessions else None
+
+    def _sessions_for_call(self, call: str) -> list[Session]:
+        target = call.upper()
+        return [session for session in self._sessions.values() if session.call.upper() == target]
 
     def _session_vars(self, call: str) -> dict[str, str]:
         s = self._find_session(call)
@@ -6901,8 +6903,8 @@ class TelnetClusterServer:
         return self._render_string("set.password_updated", "Password updated for {call}.", call=call) + "\r\n"
 
     async def _cmd_set_named_var(self, call: str, arg: str | None, name: str, default: str = "on") -> str:
-        s = self._find_session(call)
-        if not s:
+        sessions = self._sessions_for_call(call)
+        if not sessions:
             return self._string("set.session_not_found", "Session not found") + "\r\n"
         value = default
         if arg and arg.strip():
@@ -6968,7 +6970,8 @@ class TelnetClusterServer:
             value = value.upper()
         if name == "password":
             value = hash_password(value)
-        s.vars[name] = value
+        for session in sessions:
+            session.vars[name] = value
         await self._persist_pref(call, name, value)
         if name in {"name", "qth", "qra"}:
             now = int(datetime.now(timezone.utc).timestamp())
@@ -6983,11 +6986,12 @@ class TelnetClusterServer:
         elif name == "location":
             now = int(datetime.now(timezone.utc).timestamp())
             await self.store.set_user_pref(call, "location_source", "user", now)
-            if s:
-                s.vars["location_source"] = "user"
+            for session in sessions:
+                session.vars["location_source"] = "user"
             loc = await self._sync_location_defaults(call, value)
-            if loc and s:
-                s.vars["qra"] = loc
+            if loc:
+                for session in sessions:
+                    session.vars["qra"] = loc
         self._log_event("set", f"{call} {name}={value}")
         if name == "password":
             return self._render_string("set.password_updated", "Password updated for {call}.", call=call) + "\r\n"
@@ -7055,10 +7059,11 @@ class TelnetClusterServer:
         return self._render_string("set.ingestpeer_set", "Ingest policy for {peer} {scope} set to {value}.", peer=peer, scope=scope, value=val) + "\r\n"
 
     async def _cmd_unset_named_var(self, call: str, _arg: str | None, name: str, off: str = "off") -> str:
-        s = self._find_session(call)
-        if not s:
+        sessions = self._sessions_for_call(call)
+        if not sessions:
             return self._string("set.session_not_found", "Session not found") + "\r\n"
-        s.vars[name] = off
+        for session in sessions:
+            session.vars[name] = off
         await self._persist_pref(call, name, off)
         self._log_event("unset", f"{call} {name}={off}")
         return self._render_string("unset.display_set", "{label} set to {value} for {call}.", label=self._display_label(name), value=off, call=call) + "\r\n"
