@@ -45,6 +45,7 @@ def test_fail2ban_scanner_jail_and_install_hooks_exist() -> None:
     assert "port = http,https" in core_jail
     assert "channel=sysop-web" in core_filter
     assert "channel=telnet" in telnet_filter
+    assert "bad_password_recoverable|account_locked_recoverable" in telnet_filter
     assert "[pycluster-telnet-auth]" in telnet_jail
     assert "port = 7300,7373,8000" in telnet_jail
     assert "invalid_credentials_verified|account_locked_verified" in web_filter

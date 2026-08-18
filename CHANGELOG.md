@@ -21,6 +21,7 @@ All notable changes to pyCluster should be recorded here.
 - Peer connection traces and telnet connect confirmations now record a credential-free transport description instead of the effective DSN, preventing saved peer passwords from entering future protocol/event logs.
 - Successful lifecycle runs now leave a deployment receipt used by support diagnostics.
 - The SysOp Known pyCluster Nodes table now includes direct peers positively identified by PC18 before private-protocol metadata is available, while distinguishing local PY disablement, PY00 not sent, sent without a valid response, invalid replies, disconnection, negotiation, and missing NODEINFO; per-session timestamps prevent stale negotiation state and software version is never treated as proof of PY support.
+- Public password reset now binds the challenge to an exact callsign/SSID and matching verified email, preventing a shared email address from resetting the wrong account. Recoverable telnet password failures use pyCluster's durable account lock without also creating a Fail2Ban telnet ban; malformed, unverified, and mail-unrecoverable attempts remain bannable.
 
 ### Added
 

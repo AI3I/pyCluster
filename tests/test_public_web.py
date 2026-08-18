@@ -666,6 +666,7 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "const REGISTER_REQUEST = '/api/register/request';" in text
     assert 'id="password-reset-modal-bg"' in text
     assert 'id="login-reset-password"' in text
+    assert 'id="password-reset-call"' in text
     assert "const PASSWORD_RESET_REQUEST = '/api/auth/password-reset/request';" in text
     assert "const PASSWORD_RESET_CONFIRM = '/api/auth/password-reset/confirm';" in text
     assert "uiText('password_reset_code_sent')" in text
@@ -2800,7 +2801,7 @@ def test_public_web_password_reset_unlocks_account_and_changes_password(tmp_path
                 srv,
                 "POST",
                 "/api/auth/password-reset/request",
-                json.dumps({"email": "ai3i@example.test"}).encode("utf-8"),
+                json.dumps({"call": "AI3I", "email": "ai3i@example.test"}).encode("utf-8"),
                 {"Content-Type": "application/json"},
             )
             assert code == 202
@@ -2816,6 +2817,7 @@ def test_public_web_password_reset_unlocks_account_and_changes_password(tmp_path
                 "/api/auth/password-reset/confirm",
                 json.dumps(
                     {
+                        "call": "AI3I",
                         "email": "ai3i@example.test",
                         "challenge_id": challenge_id,
                         "otp": str(row["code"]),
@@ -2850,6 +2852,42 @@ def test_public_web_password_reset_unlocks_account_and_changes_password(tmp_path
     asyncio.run(run())
 
 
+def test_public_web_password_reset_targets_exact_call_when_email_is_shared(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_password_reset_shared_email.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        for call in ("AI3I", "AI3I-90"):
+            await store.upsert_user_registry(call, now, privilege="user", email="shared@example.test")
+            await store.set_user_pref(call, "email_verified_epoch", str(now), now)
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/password-reset/request",
+                json.dumps({"call": "AI3I-90", "email": "shared@example.test"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 202
+            data = json.loads(body.decode("utf-8"))
+            row = await store.get_mfa_challenge(data["challenge_id"])
+            assert row is not None
+            assert row["call"] == "AI3I-90"
+            assert sent
+            assert "AI3I-90" in sent[0][1]
+            assert "AI3I-90" in sent[0][2]
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_password_reset_reloads_persisted_smtp_config(tmp_path, monkeypatch) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_password_reset_reload.db")
@@ -2877,7 +2915,7 @@ def test_public_web_password_reset_reloads_persisted_smtp_config(tmp_path, monke
                 srv,
                 "POST",
                 "/api/auth/password-reset/request",
-                json.dumps({"email": "ai3i-90@example.test"}).encode("utf-8"),
+                json.dumps({"call": "AI3I-90", "email": "ai3i-90@example.test"}).encode("utf-8"),
                 {"Content-Type": "application/json"},
             )
             assert code == 202
@@ -2900,7 +2938,7 @@ def test_public_web_password_reset_unconfigured_uses_ui_string(tmp_path) -> None
                 srv,
                 "POST",
                 "/api/auth/password-reset/request",
-                json.dumps({"email": "ai3i-90@example.test"}).encode("utf-8"),
+                json.dumps({"call": "AI3I-90", "email": "ai3i-90@example.test"}).encode("utf-8"),
                 {"Content-Type": "application/json"},
             )
             assert code == 503

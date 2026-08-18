@@ -423,20 +423,19 @@ class PublicWebServer:
                 return email
         return ""
 
-    async def _verified_call_for_email(self, email: str) -> tuple[str, str] | None:
+    async def _verified_account_for_recovery(self, call: str, email: str) -> tuple[str, str] | None:
+        target = normalize_call(str(call or "").strip())
         wanted = str(email or "").strip().lower()
-        if not has_valid_email(wanted):
+        if not is_valid_call(target) or not has_valid_email(wanted):
             return None
-        rows = await self.store.list_user_registry(limit=1000, search=wanted)
-        for row in rows:
-            row_email = str(row["email"] or "").strip()
-            if row_email.lower() != wanted:
-                continue
-            call = str(row["call"] or "").strip().upper()
-            _state, verified_epoch, _remaining = await registration_state(self.store, call)
-            if verified_epoch > 0:
-                return call, row_email
-        return None
+        row = await self.store.get_user_registry(target)
+        if row is None:
+            return None
+        row_email = str(row["email"] or "").strip()
+        if row_email.lower() != wanted:
+            return None
+        _state, verified_epoch, _remaining = await registration_state(self.store, target)
+        return (target, row_email) if verified_epoch > 0 else None
 
     def _public_base_url(self, headers: dict[str, str]) -> str:
         host = (headers.get("x-forwarded-host") or headers.get("host") or "").strip()
@@ -760,9 +759,11 @@ class PublicWebServer:
             "register_account_created": "Account created. You can now log in.",
             "register_failed": "Account setup failed.",
             "password_reset_email_required": "Enter your verified account email address.",
+            "password_reset_call_required": "Enter your exact callsign, including SSID.",
+            "password_reset_help": "Enter the exact callsign and verified email address on your account.",
             "password_reset_sending": "Sending password reset code...",
             "password_reset_code_sent": "Password reset code sent. Enter the code and your new password.",
-            "password_reset_no_match": "If that email matches a verified account, a reset code has been sent.",
+            "password_reset_no_match": "If that callsign and email match a verified account, a reset code has been sent.",
             "password_reset_password_required": "Enter and confirm your new password.",
             "password_reset_password_mismatch": "Passwords do not match.",
             "password_reset_submitting": "Resetting password...",
@@ -2031,8 +2032,9 @@ class PublicWebServer:
                     await self._write_response(writer, 503, self._json({"error": message}))
                     return
                 payload = self._parse_json_body(body)
+                requested_call = normalize_call(str(payload.get("call", "")).strip())
                 email = str(payload.get("email", "")).strip()
-                match = await self._verified_call_for_email(email)
+                match = await self._verified_account_for_recovery(requested_call, email)
                 if not match:
                     await self._write_response(writer, 202, self._json({"ok": True, "sent": False}))
                     return
@@ -2056,6 +2058,7 @@ class PublicWebServer:
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                     return
                 payload = self._parse_json_body(body)
+                requested_call = normalize_call(str(payload.get("call", "")).strip())
                 email = str(payload.get("email", "")).strip()
                 challenge_id = str(payload.get("challenge_id", "")).strip()
                 otp = str(payload.get("otp", "")).strip()
@@ -2070,7 +2073,7 @@ class PublicWebServer:
                 if password != password_confirm:
                     await self._write_response(writer, 400, self._json({"error": "passwords do not match"}))
                     return
-                match = await self._verified_call_for_email(email)
+                match = await self._verified_account_for_recovery(requested_call, email)
                 if not match:
                     await self._write_response(writer, 401, self._json({"error": "invalid challenge"}))
                     return

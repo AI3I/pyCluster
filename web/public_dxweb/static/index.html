@@ -2048,8 +2048,12 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
   <div id="spot-modal">
     <button class="sm-close" id="password-reset-close" type="button" title="Close" aria-label="Close password reset">✕</button>
     <h2>Password Reset</h2>
-    <div class="register-help">Enter the verified email address on your account. If it matches, a reset code will be sent.</div>
+    <div class="register-help" id="password-reset-help">Enter the exact callsign and verified email address on your account.</div>
     <div class="profile-modal-grid">
+      <div class="field span-2">
+        <label for="password-reset-call">Callsign</label>
+        <input id="password-reset-call" type="text" maxlength="16" placeholder="AI3I-90" autocomplete="username">
+      </div>
       <div class="field span-2">
         <label for="password-reset-email">Email</label>
         <input id="password-reset-email" type="email" maxlength="120" placeholder="operator@example.org" autocomplete="email">
@@ -2686,7 +2690,7 @@ function setPasswordResetStep(hasChallenge) {
   if (submit) submit.textContent = show ? 'Reset Password' : 'Send Code';
 }
 
-function openPasswordResetModal(email='') {
+function openPasswordResetModal(call='', email='') {
   passwordResetChallengeId = '';
   ['password-reset-code','password-reset-new','password-reset-confirm'].forEach((id) => {
     const el = document.getElementById(id);
@@ -2694,10 +2698,12 @@ function openPasswordResetModal(email='') {
   });
   const emailEl = document.getElementById('password-reset-email');
   if (emailEl) emailEl.value = email;
+  const callEl = document.getElementById('password-reset-call');
+  if (callEl) callEl.value = (call || '').trim().toUpperCase();
   setPasswordResetStep(false);
   setPasswordResetStatus('');
   document.getElementById('password-reset-modal-bg')?.classList.add('open');
-  (emailEl || document.getElementById('password-reset-email'))?.focus();
+  (callEl || emailEl)?.focus();
 }
 
 function closePasswordResetModal() {
@@ -2705,7 +2711,12 @@ function closePasswordResetModal() {
 }
 
 async function submitPasswordReset() {
+  const call = (document.getElementById('password-reset-call')?.value || '').trim().toUpperCase();
   const email = (document.getElementById('password-reset-email')?.value || '').trim();
+  if (!call) {
+    setPasswordResetStatus(uiText('password_reset_call_required'), 'err');
+    return;
+  }
   if (!email) {
     setPasswordResetStatus(uiText('password_reset_email_required'), 'err');
     return;
@@ -2718,7 +2729,7 @@ async function submitPasswordReset() {
       const body = await webJson(PASSWORD_RESET_REQUEST, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({email}),
+        body:JSON.stringify({call, email}),
         authOptional:true,
       });
       if (body && body.challenge_id) {
@@ -2732,6 +2743,7 @@ async function submitPasswordReset() {
       return;
     }
     const payload = {
+      call,
       email,
       challenge_id: passwordResetChallengeId,
       otp: (document.getElementById('password-reset-code')?.value || '').trim(),
@@ -3623,6 +3635,8 @@ async function loadBranding() {
     return;
   }
   if (!brandingData) return;
+  const passwordResetHelp = document.getElementById('password-reset-help');
+  if (passwordResetHelp) passwordResetHelp.textContent = uiText('password_reset_help');
   updateFooterUser();
   document.title = brandingData.page_title || 'pyCluster';
   const titleEl = document.getElementById('site-title');
@@ -5180,9 +5194,9 @@ document.getElementById('login-modal-bg').addEventListener('click', e => {
   if (e.target.id==='login-modal-bg') closeLoginModal();
 });
 document.getElementById('login-reset-password').addEventListener('click', () => {
-  const email = '';
+  const call = (document.getElementById('login-call')?.value || '').trim().toUpperCase();
   closeLoginModal();
-  openPasswordResetModal(email);
+  openPasswordResetModal(call, '');
 });
 document.getElementById('register-close').addEventListener('click', closeRegisterModal);
 document.getElementById('register-cancel').addEventListener('click', closeRegisterModal);
@@ -5202,7 +5216,7 @@ document.addEventListener('keydown', e => { if(e.key==='Escape') closeLoginModal
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeRegisterModal(); });
 document.addEventListener('keydown', e => { if(e.key==='Escape') closePasswordResetModal(); });
 
-['password-reset-email','password-reset-code','password-reset-new','password-reset-confirm'].forEach(id => {
+['password-reset-call','password-reset-email','password-reset-code','password-reset-new','password-reset-confirm'].forEach(id => {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener('keydown', e => { if(e.key==='Enter') submitPasswordReset(); });

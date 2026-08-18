@@ -282,7 +282,7 @@ Installed jail names:
 - `pycluster-web-auth`
 - `pycluster-telnet-scanner`
 
-The SysOp-web and telnet jails each use a five-failure threshold and affect only their respective service ports. Known-account public-web password failures use pyCluster's durable account lock instead of an IP ban, preserving access to password reset. Password and MFA failure state is scoped to the exact callsign-SSID supplied at login. The aggressive scanner jail matches malformed callsigns only; normal registration requests and policy-denied logins do not count as scanner traffic. Installation does not alter the host's SSH jail policy.
+The SysOp-web and telnet jails each use a five-failure threshold and affect only their respective service ports. Password failures for an account with verified email and configured recovery mail use pyCluster's durable account lock instead of an IP ban, preserving immediate public reset and telnet reconnection. Malformed, unverified, and mail-unrecoverable attempts remain bannable. Password reset and all failure state are scoped to the exact callsign-SSID; reset additionally requires its matching verified email address. The aggressive scanner jail matches malformed callsigns only; normal registration requests and policy-denied logins do not count as scanner traffic. Installation does not alter the host's SSH jail policy.
 
 Useful checks:
 

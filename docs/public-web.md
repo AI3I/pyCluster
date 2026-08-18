@@ -148,7 +148,7 @@ Features:
 - permission-aware posting controls
 - footer `Log In` popup for authentication
 - footer `Register` popup for verified account setup or new registration requests
-- login-modal password reset for verified accounts
+- login-modal password reset for verified accounts; the exact callsign/SSID and its matching verified email address are both required
 - footer `Edit Profile` popup after login
 
 Profile fields:
