@@ -88,7 +88,7 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current development release: `1.0.13`
+Current release: `1.0.13`
 
 Recent highlights in `1.0.13`:
 

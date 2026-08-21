@@ -2,7 +2,7 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## 1.0.13 - Unreleased
+## 1.0.13 - 2026-08-21
 
 - Added persistent `set/ve7cc`, `show/ve7cc`, and `unset/ve7cc` user preferences with structured CC11 history, live spot, and RBN output for VE7CC-compatible clients such as Ham Radio Deluxe.
 - Added DXSpider-style `%M`, `%C`, `%D`, and `%T` substitutions to stored user prompt templates and raised bounded DX history requests to 200 records for client initialization.
