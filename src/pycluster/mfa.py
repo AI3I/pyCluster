@@ -166,11 +166,16 @@ class EmailOtpManager:
                 issued_epoch=now,
             )
         issuer = self.config.issuer.strip() or "pyCluster"
-        subject = f"{issuer} login code for {call.upper()}"
+        purpose_label = {
+            "password-reset": "password reset",
+            "mfa-reset": "MFA recovery",
+            "public-register": "registration verification",
+        }.get(purpose, "login verification")
+        subject = f"{issuer} {purpose_label} code for {call.upper()}"
         body = (
-            f"{issuer} login verification code for {call.upper()}: {digits}\n\n"
+            f"{issuer} {purpose_label} code for {call.upper()}: {digits}\n\n"
             f"This code expires in {ttl // 60} minute(s).\n"
-            f"If you did not request this login, ignore this message.\n"
+            f"If you did not request this code, ignore this message.\n"
         )
         try:
             await asyncio.wait_for(asyncio.to_thread(self._sender, email.strip(), subject, body), timeout=8.0)

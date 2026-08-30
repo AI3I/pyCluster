@@ -600,6 +600,7 @@ def test_public_web_branding_uses_node_settings(tmp_path) -> None:
             assert data["ui_strings"]["register_required_fields"] == "Callsign, email, and password are required."
             assert data["ui_strings"]["register_password_mismatch"] == "Passwords do not match."
             assert data["ui_strings"]["password_reset_code_sent"] == "Password reset code sent. Enter the code and your new password."
+            assert data["ui_strings"]["mfa_reset_code_sent"] == "MFA recovery code sent. Enter the emailed code to reset MFA."
         finally:
             await store.close()
 
@@ -666,10 +667,14 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "const REGISTER_REQUEST = '/api/register/request';" in text
     assert 'id="password-reset-modal-bg"' in text
     assert 'id="login-reset-password"' in text
+    assert 'id="login-reset-mfa"' in text
     assert 'id="password-reset-call"' in text
     assert "const PASSWORD_RESET_REQUEST = '/api/auth/password-reset/request';" in text
     assert "const PASSWORD_RESET_CONFIRM = '/api/auth/password-reset/confirm';" in text
-    assert "uiText('password_reset_code_sent')" in text
+    assert "const MFA_RESET_REQUEST = '/api/auth/mfa-reset/request';" in text
+    assert "const MFA_RESET_CONFIRM = '/api/auth/mfa-reset/confirm';" in text
+    assert "'password_reset_code_sent'" in text
+    assert "'mfa_reset_code_sent'" in text
     assert "location.hash === '#password-reset'" in text
     assert "@media (max-width:1100px)" in text
     assert "@media (max-width:760px)" in text
@@ -2882,6 +2887,143 @@ def test_public_web_password_reset_targets_exact_call_when_email_is_shared(tmp_p
             assert sent
             assert "AI3I-90" in sent[0][1]
             assert "AI3I-90" in sent[0][2]
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_mfa_reset_uses_verified_email_and_preserves_password(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_mfa_reset.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-90", now, privilege="user", email="ai3i-90@example.test")
+        await store.set_user_pref("AI3I-90", "email_verified_epoch", str(now), now)
+        await store.set_user_pref("AI3I-90", "registration_state", "locked", now)
+        await store.set_user_pref("AI3I-90", "password", "unchanged-secret", now)
+        await store.set_user_pref("AI3I-90", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+        await store.set_user_pref("AI3I-90", "mfa_totp_verified_epoch", str(now), now)
+        await store.set_user_pref("AI3I-90", "failed_mfa_count", "5", now)
+        await store.set_user_pref("AI3I-90", "failed_mfa_locked_epoch", str(now), now)
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/login",
+                json.dumps({"call": "AI3I-90", "password": "unchanged-secret"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "Account locked; use Reset MFA."
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/mfa-reset/request",
+                json.dumps({"call": "AI3I-90", "email": "ai3i-90@example.test"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 202
+            data = json.loads(body.decode("utf-8"))
+            challenge = await store.get_mfa_challenge(data["challenge_id"])
+            assert challenge is not None
+            assert challenge["call"] == "AI3I-90"
+            assert challenge["purpose"] == "mfa-reset"
+            assert "MFA recovery code" in sent[0][1]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/mfa-reset/confirm",
+                json.dumps(
+                    {
+                        "call": "AI3I-90",
+                        "email": "ai3i-90@example.test",
+                        "challenge_id": data["challenge_id"],
+                        "otp": str(challenge["code"]),
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            result = json.loads(body.decode("utf-8"))
+            assert code == 200
+            assert result["email_mfa"] == "off"
+            assert await store.get_user_pref("AI3I-90", "password") == "unchanged-secret"
+            assert await store.get_user_pref("AI3I-90", "mfa_totp_secret") is None
+            assert await store.get_user_pref("AI3I-90", "mfa_totp_verified_epoch") is None
+            assert await store.get_user_pref("AI3I-90", "failed_mfa_count") is None
+            assert await store.get_user_pref("AI3I-90", "failed_mfa_locked_epoch") is None
+            assert await store.get_user_pref("AI3I-90", "registration_state") == "verified"
+            assert await store.get_user_pref("AI3I-90", "mfa_email_otp") == "off"
+            assert any("MFA reset" in subject for _rcpt, subject, _body in sent[1:])
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_mfa_reset_preserves_password_lock_and_node_mfa_policy(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_mfa_reset_policy.db")
+        cfg = _mk_config(db)
+        cfg.smtp.host = "smtp.example.test"
+        cfg.smtp.from_addr = "cluster@example.test"
+        cfg.mfa.enabled = True
+        cfg.mfa.require_for_users = True
+        store = SpotStore(db)
+        sent: list[tuple[str, str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        srv._mfa._sender = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        srv._smtp.send_code = lambda rcpt, subject, body: sent.append((rcpt, subject, body))  # type: ignore[assignment]
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I-91", now, privilege="user", email="ai3i-91@example.test")
+        await store.set_user_pref("AI3I-91", "email_verified_epoch", str(now), now)
+        await store.set_user_pref("AI3I-91", "registration_state", "locked", now)
+        await store.set_user_pref("AI3I-91", "password", "unchanged-secret", now)
+        await store.set_user_pref("AI3I-91", "mfa_totp_secret", "JBSWY3DPEHPK3PXP", now)
+        await store.set_user_pref("AI3I-91", "failed_mfa_locked_epoch", str(now), now)
+        await store.set_user_pref("AI3I-91", "failed_password_locked_epoch", str(now), now)
+        try:
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/mfa-reset/request",
+                json.dumps({"call": "AI3I-91", "email": "ai3i-91@example.test"}).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 202
+            data = json.loads(body.decode("utf-8"))
+            challenge = await store.get_mfa_challenge(data["challenge_id"])
+            assert challenge is not None
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/auth/mfa-reset/confirm",
+                json.dumps(
+                    {
+                        "call": "AI3I-91",
+                        "email": "ai3i-91@example.test",
+                        "challenge_id": data["challenge_id"],
+                        "otp": str(challenge["code"]),
+                    }
+                ).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            result = json.loads(body.decode("utf-8"))
+            assert code == 200
+            assert result["email_mfa"] == "required"
+            assert await store.get_user_pref("AI3I-91", "mfa_email_otp") == "required"
+            assert await store.get_user_pref("AI3I-91", "failed_mfa_locked_epoch") is None
+            assert await store.get_user_pref("AI3I-91", "failed_password_locked_epoch") == str(now)
+            assert await store.get_user_pref("AI3I-91", "registration_state") == "locked"
         finally:
             await store.close()
 

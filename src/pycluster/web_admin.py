@@ -1436,7 +1436,7 @@ class WebAdminServer:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pyCluster System Operator Console</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>📡</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='16' fill='%230d6ea8'/><path d='M50 25 25 70h50L50 25Z' fill='none' stroke='white' stroke-width='8' stroke-linejoin='round'/><circle cx='50' cy='25' r='10' fill='white'/><circle cx='25' cy='70' r='10' fill='white'/><circle cx='75' cy='70' r='10' fill='white'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Exo:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap">
@@ -2940,7 +2940,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid compact-controls">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.13" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.14" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>

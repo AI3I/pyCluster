@@ -37,7 +37,7 @@ Welcome to pyCluster on N0CALL-1
 N0CALL-1>
 ```
 
-If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal. After three failed authenticator-code attempts, pyCluster sends an email challenge first. It disables the old authenticator secret only when delivery succeeds; otherwise the authenticator remains enabled for sysop recovery. Five failed MFA codes across reconnects lock the exact account until password reset or a SysOp unlocks it.
+If MFA is required, telnet prompts for `authenticator code:` when your account uses an app, or `otp:` when your account uses email codes. Password and MFA-code entry are not echoed back to the terminal. After three failed authenticator-code attempts, pyCluster sends an email challenge first. It disables the old authenticator secret only when delivery succeeds; otherwise the authenticator remains enabled for recovery. Five failed MFA codes across reconnects lock the exact account until the user completes verified-email **Reset MFA** on the public web or a SysOp resets it.
 
 For SSID logins, self-service MFA commands apply to the exact callsign you used to log in. For example, `set/mfa authenticator` or `set/totp` as `N0CALL-2` enrolls MFA for `N0CALL-2`, not for the base `N0CALL` account.
 
@@ -351,6 +351,8 @@ The public web UI gives users a browser interface for:
 Logged-in public web filters are stored in the same database-backed filter table used by telnet. Common filter combinations are saved as a compound `accept/spots` rule so the web and telnet views make the same filtering decision for that user. The public web exposes band, mode, activity, continent, CQ-zone, spotter-continent, spotter-CQ, and comment-tag filters; ITU-zone filters are not exposed in the web UI.
 
 The profile modal lets logged-in users update name, QTH, grid square, home node, and email address. It also exposes MFA settings for switching between email and authenticator-app codes, enabling an app with a QR code, verifying the active method, and disabling user-level MFA.
+
+The login modal provides separate **Reset Password** and **Reset MFA** recovery actions. MFA recovery requires the exact callsign/SSID and matching verified email, removes the unusable authenticator and outstanding MFA challenges, preserves the password and unrelated locks, and sends a confirmation notice. If node policy requires MFA, verified email OTP remains enabled after recovery.
 
 If the browser does not already have a local QTH override, the spot map seeds its QTH marker from the logged-in profile grid square.
 

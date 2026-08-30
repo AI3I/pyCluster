@@ -457,8 +457,12 @@ def test_public_web_greyline_mask_closes_through_dark_pole() -> None:
     assert "const pole = sub.lat >= 0 ? -89.9 : 89.9;" in text
     assert "Close through the dark pole" in text
     assert "24.06570982441908*D + utcH" not in text
-    assert "#map .leaflet-tile { filter:brightness(1.42) contrast(.86) saturate(.84); }" in text
+    assert "#map .leaflet-tile { filter:invert(1) hue-rotate(180deg) brightness(.78) contrast(.88) saturate(.55); }" in text
     assert "html.light #map .leaflet-tile { filter:none; }" in text
+    assert "https://tile.openstreetmap.org/{z}/{x}/{y}.png" in text
+    assert "basemaps.cartocdn.com" not in text
+    assert "attributionControl:true" in text
+    assert "OpenStreetMap</a> contributors" in text
     assert "color:'rgba(255,211,42,0.78)'" in text
 
 

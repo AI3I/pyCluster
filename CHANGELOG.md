@@ -4,11 +4,18 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+## 1.0.14 - 2026-08-30
+
+- Replaced CARTO map tiles, which now render an API-key watermark, with attributed OpenStreetMap tiles and theme-aware client-side styling.
+- Added verified-email public MFA recovery that resets an unusable authenticator without changing the password, bypassing node MFA policy, or clearing unrelated locks.
+- Successful manual upgrades now discard stale failed/running console-upgrade status after recording the new deployment receipt.
 - Added action-specific `clear/accept` and `clear/reject` filter commands, with `clear/acc` and `clear/rej` aliases, so one accept or reject slot can be removed without deleting the opposite action.
 - Improved `show/moon` with topocentric altitude, principal lunar perturbations, refraction and semidiameter-aware rise/set calculations, lunar distance, dated events, and event azimuths.
 - Exposed protocol-trace retention under System Operator Node Settings > Maintenance; daily pruning remains independent of database cleanup and defaults to 14 days.
 - Added full-frame, events-only, and disabled protocol trace detail levels for high-volume nodes.
 - Fixed System Operator upgrade checks against root-owned source repositories, preserved actionable Git stderr, distinguished an empty tag list from a failed check, and aligned nonstandard deployment source paths across status checks and the root-owned worker.
+- Upgrade and repair now three-way merge bundled string-catalog changes against the prior defaults, preserving operator customizations while installing new and updated defaults; invalid catalogs remain backed up and replaced safely.
+- Replaced inconsistent text and emoji favicons with a shared connected-node cluster mark.
 
 ## 1.0.13 - 2026-08-21
 

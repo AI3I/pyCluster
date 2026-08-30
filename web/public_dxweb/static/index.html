@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>pyCluster</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text x='8' y='.78em' font-size='72'>py</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='16' fill='%230d6ea8'/><path d='M50 25 25 70h50L50 25Z' fill='none' stroke='white' stroke-width='8' stroke-linejoin='round'/><circle cx='50' cy='25' r='10' fill='white'/><circle cx='25' cy='70' r='10' fill='white'/><circle cx='75' cy='70' r='10' fill='white'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Exo:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap">
@@ -228,8 +228,11 @@ html.light #header { box-shadow:0 2px 10px rgba(0,0,0,.08); }
 /* ================================================================ map */
 #map-wrap { height:340px; flex-shrink:0; position:relative; border-bottom:1px solid var(--border-main); }
 #map { height:100%; background:var(--bg-filters); }
-#map .leaflet-tile { filter:brightness(1.42) contrast(.86) saturate(.84); }
+#map .leaflet-tile { filter:invert(1) hue-rotate(180deg) brightness(.78) contrast(.88) saturate(.55); }
 html.light #map .leaflet-tile { filter:none; }
+#map .leaflet-control-attribution { background:rgba(18,24,31,.88); color:var(--text-secondary); }
+#map .leaflet-control-attribution a { color:var(--accent); }
+html.light #map .leaflet-control-attribution { background:rgba(255,255,255,.88); }
 .ml-row { display:flex; align-items:center; gap:3px; cursor:pointer; border-radius:4px; padding:1px 5px; border:1px solid transparent; transition:background .12s,border-color .12s; }
 .ml-row:hover { background:var(--row-hover); }
 .ml-row.active { border-color:var(--accent); background:var(--row-hover); }
@@ -1981,6 +1984,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
     </div>
     <div class="profile-modal-actions">
       <button id="login-reset-password" type="button">Reset Password</button>
+      <button id="login-reset-mfa" type="button">Reset MFA</button>
       <button id="login-cancel" type="button">Cancel</button>
       <button id="login-submit" class="primary" type="button">Log In</button>
     </div>
@@ -2047,7 +2051,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
 <div id="password-reset-modal-bg">
   <div id="spot-modal">
     <button class="sm-close" id="password-reset-close" type="button" title="Close" aria-label="Close password reset">✕</button>
-    <h2>Password Reset</h2>
+    <h2 id="password-reset-title">Password Reset</h2>
     <div class="register-help" id="password-reset-help">Enter the exact callsign and verified email address on your account.</div>
     <div class="profile-modal-grid">
       <div class="field span-2">
@@ -2094,6 +2098,8 @@ const AUTH_LOGOUT = '/api/auth/logout';
 const AUTH_ME = '/api/auth/me';
 const PASSWORD_RESET_REQUEST = '/api/auth/password-reset/request';
 const PASSWORD_RESET_CONFIRM = '/api/auth/password-reset/confirm';
+const MFA_RESET_REQUEST = '/api/auth/mfa-reset/request';
+const MFA_RESET_CONFIRM = '/api/auth/mfa-reset/confirm';
 const FILTER_SPOTS = '/api/filters/spots';
 const REGISTER_REQUEST = '/api/register/request';
 const PROFILE_SAVE = '/api/profile';
@@ -2126,8 +2132,7 @@ const AUDIO_ON  = `<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d=
 const AUDIO_OFF = `<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>`;
 
 // ================================================================ Theme
-const TILE_DARK  = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-const TILE_LIGHT = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 const _storedSidebar = localStorage.getItem('sidebarHidden');
 const _storedTheme = localStorage.getItem('theme');
 const _storedToast = localStorage.getItem('toastPopups');
@@ -2160,8 +2165,6 @@ function applyTheme(light) {
   document.documentElement.classList.toggle('light', light);
   document.getElementById('theme-icon').innerHTML = light ? ICON_MOON : ICON_SUN;
   localStorage.setItem('theme', light ? 'light' : 'dark');
-  if (tileLayer) tileLayer.setUrl(light ? TILE_LIGHT : TILE_DARK);
-  if (clusterTileLayer) clusterTileLayer.setUrl(light ? TILE_LIGHT : TILE_DARK);
   drawHdrSparkline();
 }
 document.getElementById('theme-toggle').addEventListener('click', () => applyTheme(!isLight));
@@ -2306,6 +2309,7 @@ let webProfile  = {};
 let opBusyCount = 0;
 let registerChallengeId = '';
 let passwordResetChallengeId = '';
+let accountRecoveryMode = 'password';
 let pendingWebLogin = null;
 let liveStats   = null;
 
@@ -2682,15 +2686,17 @@ function setPasswordResetStatus(msg, cls='') {
 
 function setPasswordResetStep(hasChallenge) {
   const show = !!hasChallenge;
+  const isMfaReset = accountRecoveryMode === 'mfa';
   document.getElementById('password-reset-code-row')?.style.setProperty('display', show ? '' : 'none');
   document.querySelectorAll('.password-reset-secret-row').forEach(el => {
-    el.style.display = show ? '' : 'none';
+    el.style.display = show && !isMfaReset ? '' : 'none';
   });
   const submit = document.getElementById('password-reset-submit');
-  if (submit) submit.textContent = show ? 'Reset Password' : 'Send Code';
+  if (submit) submit.textContent = show ? (isMfaReset ? uiText('mfa_reset_title') : 'Reset Password') : 'Send Code';
 }
 
-function openPasswordResetModal(call='', email='') {
+function openPasswordResetModal(call='', email='', mode='password') {
+  accountRecoveryMode = mode === 'mfa' ? 'mfa' : 'password';
   passwordResetChallengeId = '';
   ['password-reset-code','password-reset-new','password-reset-confirm'].forEach((id) => {
     const el = document.getElementById(id);
@@ -2700,6 +2706,10 @@ function openPasswordResetModal(call='', email='') {
   if (emailEl) emailEl.value = email;
   const callEl = document.getElementById('password-reset-call');
   if (callEl) callEl.value = (call || '').trim().toUpperCase();
+  const title = document.getElementById('password-reset-title');
+  if (title) title.textContent = accountRecoveryMode === 'mfa' ? uiText('mfa_reset_title') : 'Password Reset';
+  const help = document.getElementById('password-reset-help');
+  if (help) help.textContent = uiText(accountRecoveryMode === 'mfa' ? 'mfa_reset_help' : 'password_reset_help');
   setPasswordResetStep(false);
   setPasswordResetStatus('');
   document.getElementById('password-reset-modal-bg')?.classList.add('open');
@@ -2707,6 +2717,8 @@ function openPasswordResetModal(call='', email='') {
 }
 
 function closePasswordResetModal() {
+  passwordResetChallengeId = '';
+  setPasswordResetStep(false);
   document.getElementById('password-reset-modal-bg')?.classList.remove('open');
 }
 
@@ -2722,11 +2734,12 @@ async function submitPasswordReset() {
     return;
   }
   const submit = document.getElementById('password-reset-submit');
+  const isMfaReset = accountRecoveryMode === 'mfa';
   try {
     if (submit) submit.disabled = true;
     if (!passwordResetChallengeId) {
-      setPasswordResetStatus(uiText('password_reset_sending'), 'warn');
-      const body = await webJson(PASSWORD_RESET_REQUEST, {
+      setPasswordResetStatus(uiText(isMfaReset ? 'mfa_reset_sending' : 'password_reset_sending'), 'warn');
+      const body = await webJson(isMfaReset ? MFA_RESET_REQUEST : PASSWORD_RESET_REQUEST, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({call, email}),
@@ -2735,10 +2748,10 @@ async function submitPasswordReset() {
       if (body && body.challenge_id) {
         passwordResetChallengeId = body.challenge_id;
         setPasswordResetStep(true);
-        setPasswordResetStatus(uiText('password_reset_code_sent'), 'warn');
+        setPasswordResetStatus(uiText(isMfaReset ? 'mfa_reset_code_sent' : 'password_reset_code_sent'), 'warn');
         document.getElementById('password-reset-code')?.focus();
       } else {
-        setPasswordResetStatus(uiText('password_reset_no_match'), 'warn');
+        setPasswordResetStatus(uiText(isMfaReset ? 'mfa_reset_no_match' : 'password_reset_no_match'), 'warn');
       }
       return;
     }
@@ -2750,25 +2763,33 @@ async function submitPasswordReset() {
       password: document.getElementById('password-reset-new')?.value || '',
       password_confirm: document.getElementById('password-reset-confirm')?.value || '',
     };
-    if (!payload.password || !payload.password_confirm) {
+    if (!isMfaReset && (!payload.password || !payload.password_confirm)) {
       setPasswordResetStatus(uiText('password_reset_password_required'), 'err');
       return;
     }
-    if (payload.password !== payload.password_confirm) {
+    if (!isMfaReset && payload.password !== payload.password_confirm) {
       setPasswordResetStatus(uiText('password_reset_password_mismatch'), 'err');
       return;
     }
-    setPasswordResetStatus(uiText('password_reset_submitting'), 'warn');
-    await webJson(PASSWORD_RESET_CONFIRM, {
+    setPasswordResetStatus(uiText(isMfaReset ? 'mfa_reset_submitting' : 'password_reset_submitting'), 'warn');
+    const result = await webJson(isMfaReset ? MFA_RESET_CONFIRM : PASSWORD_RESET_CONFIRM, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(payload),
       authOptional:true,
     });
-    setPasswordResetStatus(uiText('password_reset_done'), 'ok');
-    setTimeout(closePasswordResetModal, 900);
+    const doneKey = isMfaReset && result.email_mfa === 'required' ? 'mfa_reset_email_required' : (isMfaReset ? 'mfa_reset_done' : 'password_reset_done');
+    setPasswordResetStatus(uiText(doneKey), 'ok');
+    setTimeout(() => {
+      closePasswordResetModal();
+      const loginCall = document.getElementById('login-call');
+      const loginPass = document.getElementById('login-pass');
+      if (loginCall) loginCall.value = call;
+      if (loginPass) loginPass.value = '';
+      openOperateLogin();
+    }, 900);
   } catch (err) {
-    setPasswordResetStatus(err.message || uiText('password_reset_failed'), 'err');
+    setPasswordResetStatus(err.message || uiText(isMfaReset ? 'mfa_reset_failed' : 'password_reset_failed'), 'err');
   } finally {
     if (submit) submit.disabled = false;
   }
@@ -3371,8 +3392,11 @@ let MODE_FILTERS = ['CW','WSPR','RTTY','FT8','FT4','FT2','JS8','JT9','JT65','SSB
 let ACTIVITY_FILTERS = ['RARE','EME','SAT','WWFF','SOTA','POTA','IOTA','BOTA','LOTA','GMA'];
 
 // ================================================================ Map
-const map = L.map('map', { center:[40.75,-79.55], zoom:3, zoomControl:true, attributionControl:false });
-tileLayer = L.tileLayer(isLight ? TILE_LIGHT : TILE_DARK, { maxZoom:18 }).addTo(map);
+const map = L.map('map', { center:[40.75,-79.55], zoom:3, zoomControl:true, attributionControl:true });
+tileLayer = L.tileLayer(TILE_URL, {
+  maxZoom:19,
+  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
+}).addTo(map);
 const mapLayers = {};
 const MAX_MAP = 150;
 
@@ -3637,6 +3661,8 @@ async function loadBranding() {
   if (!brandingData) return;
   const passwordResetHelp = document.getElementById('password-reset-help');
   if (passwordResetHelp) passwordResetHelp.textContent = uiText('password_reset_help');
+  const loginResetMfa = document.getElementById('login-reset-mfa');
+  if (loginResetMfa) loginResetMfa.textContent = uiText('mfa_reset_title');
   updateFooterUser();
   document.title = brandingData.page_title || 'pyCluster';
   const titleEl = document.getElementById('site-title');
@@ -5196,7 +5222,12 @@ document.getElementById('login-modal-bg').addEventListener('click', e => {
 document.getElementById('login-reset-password').addEventListener('click', () => {
   const call = (document.getElementById('login-call')?.value || '').trim().toUpperCase();
   closeLoginModal();
-  openPasswordResetModal(call, '');
+  openPasswordResetModal(call, '', 'password');
+});
+document.getElementById('login-reset-mfa').addEventListener('click', () => {
+  const call = (document.getElementById('login-call')?.value || '').trim().toUpperCase();
+  closeLoginModal();
+  openPasswordResetModal(call, '', 'mfa');
 });
 document.getElementById('register-close').addEventListener('click', closeRegisterModal);
 document.getElementById('register-cancel').addEventListener('click', closeRegisterModal);

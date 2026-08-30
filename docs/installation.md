@@ -319,6 +319,11 @@ Normal operator recovery paths:
   - requires SMTP delivery to be configured
   - requires the account to already have a verified email address
   - sends a reset code, accepts a confirmed replacement password, and clears failed-password lock state
+- Public web MFA reset:
+  - is available separately from password reset in the login popup
+  - requires the exact callsign/SSID, matching verified email, and an emailed recovery code
+  - clears authenticator/MFA state without changing the password or unrelated lock state
+  - retains verified email OTP when node policy requires MFA
 
 If an account is locked or stuck pending verification and you need to recover it locally on the host:
 
