@@ -498,6 +498,31 @@ class PublicWebServer:
         await self.store.delete_user_pref(base, "failed_mfa_count")
         await self.store.delete_user_pref(base, "failed_mfa_locked_epoch")
 
+    async def _clear_mfa_for_recovery(self, call: str) -> tuple[int, str]:
+        target = call.upper()
+        base = target.split("-", 1)[0]
+        now = int(time.time())
+        row = await self.store.get_user_registry(target)
+        is_sysop = str(row["privilege"] or "").strip().lower() in {"sysop", "admin"} if row is not None else False
+        email_mode = "required" if self._mfa.required_for(is_sysop=is_sysop) else "off"
+
+        await self.store.set_user_pref(target, "mfa_email_otp", email_mode, now)
+        for key in ("mfa_totp_secret", "mfa_totp_pending_secret", "mfa_totp_verified_epoch", "mfa_totp_failed_count"):
+            await self.store.delete_user_pref(target, key)
+
+        for candidate in dict.fromkeys((target, base)):
+            had_mfa_lock = bool(str(await self.store.get_user_pref(candidate, "failed_mfa_locked_epoch") or "").strip())
+            has_password_lock = bool(str(await self.store.get_user_pref(candidate, "failed_password_locked_epoch") or "").strip())
+            await self.store.delete_user_pref(candidate, "failed_mfa_count")
+            await self.store.delete_user_pref(candidate, "failed_mfa_locked_epoch")
+            if had_mfa_lock and not has_password_lock:
+                _state, verified_epoch, _remaining = await registration_state(self.store, candidate)
+                if verified_epoch > 0:
+                    await mark_email_verified(self.store, candidate, now_epoch=now)
+
+        cleared = await self.store.delete_mfa_challenges_for_call(target, include_ssids=False)
+        return cleared, email_mode
+
     async def _sysop_notification_emails(self) -> list[str]:
         rows = await self.store.list_user_registry(limit=200, privilege="sysop")
         out: list[str] = []
@@ -771,6 +796,18 @@ class PublicWebServer:
             "password_reset_failed": "Password reset failed.",
             "password_reset_delivery_not_configured": "Password reset email is not configured on this node.",
             "password_reset_delivery_failed": "Password reset email could not be sent. Contact the system operator.",
+            "mfa_reset_title": "Reset MFA",
+            "mfa_reset_help": "Enter the exact callsign and verified email address on your account.",
+            "mfa_reset_sending": "Sending MFA recovery code...",
+            "mfa_reset_code_sent": "MFA recovery code sent. Enter the emailed code to reset MFA.",
+            "mfa_reset_no_match": "If that callsign and email match a verified account, an MFA recovery code has been sent.",
+            "mfa_reset_submitting": "Resetting MFA...",
+            "mfa_reset_done": "MFA reset. You can return to login.",
+            "mfa_reset_email_required": "MFA reset. Verified email codes remain required by node policy.",
+            "mfa_reset_failed": "MFA reset failed.",
+            "mfa_reset_delivery_not_configured": "MFA recovery email is not configured on this node.",
+            "mfa_reset_delivery_failed": "MFA recovery email could not be sent. Contact the system operator.",
+            "mfa_reset_locked": "Account locked; use Reset MFA.",
             "presets_login_required": "Log in to save presets.",
             "presets_save_failed": "Saving presets failed:",
             "presets_load_failed": "Loading presets failed:",
@@ -2101,6 +2138,79 @@ class PublicWebServer:
                         LOG.exception("public password reset confirmation email failed call=%s", call)
                 await self._write_response(writer, 200, self._json({"ok": True, "call": call}))
                 return
+            if path == "/api/auth/mfa-reset/request":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._smtp.enabled():
+                    message = self._public_ui_strings()["mfa_reset_delivery_not_configured"]
+                    await self._write_response(writer, 503, self._json({"error": message}))
+                    return
+                payload = self._parse_json_body(body)
+                requested_call = normalize_call(str(payload.get("call", "")).strip())
+                email = str(payload.get("email", "")).strip()
+                match = await self._verified_account_for_recovery(requested_call, email)
+                if not match:
+                    await self._write_response(writer, 202, self._json({"ok": True, "sent": False}))
+                    return
+                call, row_email = match
+                try:
+                    challenge_id, expires_epoch = await self._mfa.issue(call=call, email=row_email, purpose="mfa-reset")
+                except Exception:
+                    LOG.exception("public MFA reset delivery failed call=%s", call)
+                    message = self._public_ui_strings()["mfa_reset_delivery_failed"]
+                    await self._write_response(writer, 503, self._json({"error": message}))
+                    return
+                self._audit("user", f"{call} requested public MFA reset")
+                await self._write_response(
+                    writer,
+                    202,
+                    self._json({"ok": True, "sent": True, "challenge_id": challenge_id, "expires_epoch": expires_epoch}),
+                )
+                return
+            if path == "/api/auth/mfa-reset/confirm":
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                payload = self._parse_json_body(body)
+                requested_call = normalize_call(str(payload.get("call", "")).strip())
+                email = str(payload.get("email", "")).strip()
+                challenge_id = str(payload.get("challenge_id", "")).strip()
+                otp = str(payload.get("otp", "")).strip()
+                if not challenge_id or not otp:
+                    await self._write_response(writer, 400, self._json({"error": "verification code required"}))
+                    return
+                match = await self._verified_account_for_recovery(requested_call, email)
+                if not match:
+                    await self._write_response(writer, 401, self._json({"error": "invalid challenge"}))
+                    return
+                call, row_email = match
+                ok, reason = await self._mfa.verify(challenge_id=challenge_id, call=call, purpose="mfa-reset", otp=otp)
+                if not ok:
+                    await self._write_response(writer, 401, self._json({"error": reason}))
+                    return
+                cleared, email_mode = await self._clear_mfa_for_recovery(call)
+                self._audit("user", f"{call} completed public MFA reset challenges={cleared} mode={email_mode}")
+                if self._smtp.enabled():
+                    issuer = self.config.mfa.issuer.strip() or self.config.node.branding_name.strip() or "pyCluster"
+                    try:
+                        self._smtp.send_code(
+                            row_email,
+                            f"{issuer} MFA reset for {call}",
+                            (
+                                f"Authenticator MFA for {call} was reset through the {issuer} public web recovery workflow.\n\n"
+                                + ("Verified email codes remain required by node policy.\n\n" if email_mode == "required" else "MFA is now disabled for this account.\n\n")
+                                + "If you did not make this change, contact a system operator immediately.\n"
+                            ),
+                        )
+                    except Exception:
+                        LOG.exception("public MFA reset confirmation email failed call=%s", call)
+                await self._write_response(
+                    writer,
+                    200,
+                    self._json({"ok": True, "call": call, "email_mfa": email_mode, "challenges_cleared": cleared}),
+                )
+                return
             if path == "/api/auth/login":
                 if method != "POST":
                     await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
@@ -2132,6 +2242,8 @@ class PublicWebServer:
                     lock_state, lock_verified_epoch, _lock_remaining = await registration_state(self.store, lock_candidate)
                     if lock_state == "locked":
                         recoverable = lock_verified_epoch > 0
+                        mfa_locked = bool(str(await self.store.get_user_pref(lock_candidate, "failed_mfa_locked_epoch") or "").strip())
+                        password_locked = bool(str(await self.store.get_user_pref(lock_candidate, "failed_password_locked_epoch") or "").strip())
                         self._log_auth_failure(
                             writer,
                             headers,
@@ -2139,7 +2251,12 @@ class PublicWebServer:
                             call,
                             "account_locked_verified" if recoverable else "account_locked_unverified",
                         )
-                        error = "account locked; use password reset" if recoverable else "account locked; contact a system operator"
+                        if not recoverable:
+                            error = "account locked; contact a system operator"
+                        elif mfa_locked and not password_locked:
+                            error = self._public_ui_strings()["mfa_reset_locked"]
+                        else:
+                            error = "account locked; use password reset"
                         await self._write_response(writer, 403, self._json({"error": error}))
                         return
                 req = await self.store.get_registration_request(call)

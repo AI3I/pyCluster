@@ -62,7 +62,8 @@ Typical deployed paths:
 ├── config/
 │   ├── pycluster.toml            # active base node config
 │   ├── pycluster.local.toml      # optional untracked local override
-│   └── strings.toml              # hot-reloadable operator text
+│   ├── strings.toml              # hot-reloadable operator text
+│   └── strings.defaults.toml     # managed baseline for upgrade merges
 ├── data/
 │   └── pycluster.db              # live SQLite database
 ├── logs/
@@ -87,7 +88,7 @@ The System Operator console upgrade button queues a request under the live runti
 
 The version check runs read-only Git commands against the recorded source checkout as the web-service account. Failures include Git's actual diagnostic in **Remote Check**. `/usr/src/pyCluster` remains the preferred source layout, but install, upgrade, and repair now record and configure the actual checkout path so a deliberately nonstandard source location uses the same path for checking and for the root-owned upgrade worker.
 
-Upgrade, repair, and uninstall operations preserve the runtime `config/`, `data/`, and `logs/` directories and create timestamped archives under `/root/pycluster-backups/` before making destructive changes. They stop live writers before archiving so SQLite and its WAL are captured consistently; a failed preflight or maintenance run restores services that were active before shutdown. Upgrade and repair then restart gracefully through systemd. If an older installed checkout does not yet include automatic preflight backups, create one manually first:
+Upgrade, repair, and uninstall operations preserve the runtime `config/`, `data/`, and `logs/` directories and create timestamped archives under `/root/pycluster-backups/` before making destructive changes. Upgrade and repair three-way merge bundled text changes into `config/strings.toml`, preserving operator-edited values and extra keys against the managed `config/strings.defaults.toml` baseline. Do not edit the baseline file. The scripts stop live writers before archiving so SQLite and its WAL are captured consistently; a failed preflight or maintenance run restores services that were active before shutdown. Upgrade and repair then restart gracefully through systemd. If an older installed checkout does not yet include automatic preflight backups, create one manually first:
 
 ```bash
 sudo install -d -m 0700 /root/pycluster-backups
@@ -284,7 +285,7 @@ Installed jail names:
 - `pycluster-web-auth`
 - `pycluster-telnet-scanner`
 
-The SysOp-web and telnet jails each use a five-failure threshold and affect only their respective service ports. Password failures for an account with verified email and configured recovery mail use pyCluster's durable account lock instead of an IP ban, preserving immediate public reset and telnet reconnection. Malformed, unverified, and mail-unrecoverable attempts remain bannable. Password reset and all failure state are scoped to the exact callsign-SSID; reset additionally requires its matching verified email address. The aggressive scanner jail matches malformed callsigns only; normal registration requests and policy-denied logins do not count as scanner traffic. Installation does not alter the host's SSH jail policy.
+The SysOp-web and telnet jails each use a five-failure threshold and affect only their respective service ports. Password failures for an account with verified email and configured recovery mail use pyCluster's durable account lock instead of an IP ban, preserving immediate public reset and telnet reconnection. Malformed, unverified, and mail-unrecoverable attempts remain bannable. Password and MFA recovery are scoped to the exact callsign-SSID and require its matching verified email address plus a purpose-bound code. MFA recovery preserves passwords, unrelated locks, and node-wide MFA policy. The aggressive scanner jail matches malformed callsigns only; normal registration requests and policy-denied logins do not count as scanner traffic. Installation does not alter the host's SSH jail policy.
 
 Useful checks:
 

@@ -323,6 +323,10 @@ write_deployment_state() {
   chown "$PYCLUSTER_USER:$PYCLUSTER_GROUP" "$tmp"
   chmod 0640 "$tmp"
   mv -f "$tmp" "$PYCLUSTER_DEPLOYMENT_STATE"
+  if [ "$action" = "upgrade" ]; then
+    # A successful manual upgrade supersedes any failed/running console attempt.
+    rm -f "$PYCLUSTER_APP_DIR/data/upgrade-status.json"
+  fi
 }
 
 backup_runtime_snapshot() {
@@ -396,13 +400,15 @@ install_optional_config_if_missing() {
 }
 
 validate_or_refresh_strings_toml() {
-  local root src dest backup ts
+  local root src dest baseline backup merged ts
   root="$(repo_root)"
   src="$root/config/strings.toml"
   dest="$(dirname "$PYCLUSTER_CONFIG_DEST")/strings.toml"
+  baseline="$(dirname "$PYCLUSTER_CONFIG_DEST")/strings.defaults.toml"
   [ -f "$src" ] || return 0
   if [ ! -f "$dest" ]; then
     install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$src" "$dest"
+    install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$src" "$baseline"
     return 0
   fi
   if "$PYCLUSTER_PYTHON_LINK" - "$dest" >/dev/null 2>&1 <<'PY'; then
@@ -412,6 +418,21 @@ from pathlib import Path
 
 tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 PY
+    ts="$(timestamp_utc)"
+    backup="$dest.preupgrade_$ts"
+    merged="$dest.merged_$ts"
+    if ! "$PYCLUSTER_PYTHON_LINK" "$root/scripts/merge_strings_catalog.py" \
+      --bundled "$src" --runtime "$dest" --baseline "$baseline" --output "$merged"; then
+      rm -f "$merged"
+      die "unable to merge bundled strings into $dest"
+    fi
+    if ! cmp -s "$dest" "$merged"; then
+      log "backing up the operator string catalog to $backup"
+      cp -a "$dest" "$backup"
+      install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$merged" "$dest"
+    fi
+    rm -f "$merged"
+    install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$src" "$baseline"
     return 0
   fi
   ts="$(timestamp_utc)"
@@ -419,6 +440,7 @@ PY
   warn "invalid strings.toml detected; backing it up to $backup and installing bundled defaults"
   cp -a "$dest" "$backup"
   install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$src" "$dest"
+  install -o "$PYCLUSTER_USER" -g "$PYCLUSTER_GROUP" -m 0640 "$src" "$baseline"
 }
 
 normalize_country_data_config_paths() {

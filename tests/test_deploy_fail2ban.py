@@ -152,6 +152,9 @@ def test_upgrade_and_repair_refresh_invalid_strings_catalog() -> None:
     assert "validate_or_refresh_strings_toml()" in lib
     assert "tomllib.loads(Path(sys.argv[1]).read_text" in lib
     assert "invalid strings.toml detected" in lib
+    assert "scripts/merge_strings_catalog.py" in lib
+    assert "strings.defaults.toml" in lib
+    assert 'cp -a "$dest" "$backup"' in lib
     assert "cp -a \"$dest\" \"$backup\"" in lib
     assert "install -o \"$PYCLUSTER_USER\" -g \"$PYCLUSTER_GROUP\" -m 0640 \"$src\" \"$dest\"" in lib
     assert "validate_or_refresh_strings_toml" in upgrade
@@ -323,6 +326,26 @@ def test_deploy_lifecycle_writes_support_receipt_and_has_safe_collector(tmp_path
     assert state["action"] == "test"
     assert state["version"] == __version__
     assert len(state["source_commit"]) == 40
+
+    runtime = tmp_path / "runtime"
+    runtime_data = runtime / "data"
+    runtime_data.mkdir(parents=True, exist_ok=True)
+    stale_status = runtime_data / "upgrade-status.json"
+    stale_status.write_text('{"state":"failed"}\n', encoding="utf-8")
+    upgrade_env = {
+        **receipt_env,
+        "PYCLUSTER_APP_DIR": str(runtime),
+        "PYCLUSTER_DEPLOYMENT_STATE": str(runtime_data / "deployment-state.toml"),
+    }
+    subprocess.run(
+        ["bash", "-c", ". deploy/lib.sh; write_deployment_state upgrade"],
+        cwd=root,
+        env=upgrade_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert not stale_status.exists()
 
 
 def test_nginx_setup_validates_hosts_and_rolls_back_failed_changes() -> None:

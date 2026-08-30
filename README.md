@@ -88,9 +88,9 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current release: `1.0.13`
+Current release: `1.0.14`
 
-Recent highlights in `1.0.13`:
+Recent highlights in `1.0.14`:
 
 - RBN feed ingestion is live-only and local, with bounded in-memory delivery, ten-second aggregation, nearby-frequency grouping, and respot suppression; it neither grows the historical spot database nor forwards RBN reports to cluster peers
 - System Operator user management includes a locked-account view alongside blocked users
@@ -107,7 +107,7 @@ Recent highlights in `1.0.13`:
 - node-link peers receive fresh PC18 identity advertisements on outbound reconnects without duplicating the DXSpider transport handshake
 - optional pyCluster-only capability negotiation, decentralized topology, and read-only health/dataset/RBN/policy/clock summaries are isolated to authenticated pyCluster peers and disabled by default
 - the System Operator protocol view manages field-level sharing privacy, structured expiring network notices, and direct/reported known-node visibility without a central registry
-- upgrade and repair paths protect runtime string catalogs by backing up invalid `strings.toml` files and restoring bundled defaults
+- upgrade and repair paths three-way merge new string defaults while preserving operator customizations, and back up invalid catalogs before restoring bundled defaults
 - persistent `set/ve7cc` compatibility emits structured CC11 history and live spots for Ham Radio Deluxe while leaving normal user and peer output unchanged
 
 ## 🖥️ Interfaces
@@ -228,7 +228,8 @@ Typical deployed layout:
 ├── config/
 │   ├── pycluster.toml              # active node configuration
 │   ├── pycluster.local.toml        # optional untracked local override
-│   └── strings.toml                # hot-reloadable operator text
+│   ├── strings.toml                # hot-reloadable operator text
+│   └── strings.defaults.toml       # managed baseline for upgrade merges
 ├── data/
 │   └── pycluster.db                # live SQLite database
 ├── logs/
@@ -257,7 +258,7 @@ The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh
 - `run_upgrade_1_0_6`
   - moves any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
 
-The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. The source tree is synced into the runtime directory with those paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy.
+The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. The source tree is synced into the runtime directory with those paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy. Bundled additions and changed defaults are three-way merged into `config/strings.toml`; operator-edited values and extra keys are retained. The managed `config/strings.defaults.toml` baseline records the prior bundled defaults and should not be edited.
 
 `deploy/upgrade.sh`, `deploy/repair.sh`, and `deploy/uninstall.sh` also create timestamped runtime backups under `/root/pycluster-backups/` before making destructive changes to the live tree. On older deployments whose local `deploy/upgrade.sh` predates automatic preflight backups, take a manual backup before pulling or running the upgrade:
 

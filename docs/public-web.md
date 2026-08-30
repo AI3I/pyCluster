@@ -149,6 +149,7 @@ Features:
 - footer `Log In` popup for authentication
 - footer `Register` popup for verified account setup or new registration requests
 - login-modal password reset for verified accounts; the exact callsign/SSID and its matching verified email address are both required
+- login-modal MFA reset using the same exact-account and verified-email proof without changing the password or bypassing node policy
 - footer `Edit Profile` popup after login
 
 Profile fields:
@@ -177,6 +178,16 @@ Password reset:
 - sends a reset code through the configured SMTP path
 - requires the reset code plus matching new-password fields
 - clears the failed-password lock state after a successful reset
+
+MFA reset:
+
+- is a separate action in the web login popup
+- requires the exact callsign/SSID, matching verified email, and an emailed recovery code
+- removes authenticator secrets, MFA failure state, and outstanding challenges without changing the password
+- does not clear password or administrative locks
+- retains verified email OTP when node policy requires MFA
+
+The spot map uses the standard OpenStreetMap tile service with visible contributor attribution. Dark mode is derived from the same tiles in the browser, so node operators do not need a third-party map API key.
 
 When node policy requires registration, the verified `Register` submission remains pending until a System Operator approves it. When registration approval is disabled, the same email-verification flow creates the account immediately. Existing telnet identities without a web password may complete web account setup only by verifying the email already stored on that callsign.
 
