@@ -2,6 +2,14 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## Unreleased
+
+- Added action-specific `clear/accept` and `clear/reject` filter commands, with `clear/acc` and `clear/rej` aliases, so one accept or reject slot can be removed without deleting the opposite action.
+- Improved `show/moon` with topocentric altitude, principal lunar perturbations, refraction and semidiameter-aware rise/set calculations, lunar distance, dated events, and event azimuths.
+- Exposed protocol-trace retention under System Operator Node Settings > Maintenance; daily pruning remains independent of database cleanup and defaults to 14 days.
+- Added full-frame, events-only, and disabled protocol trace detail levels for high-volume nodes.
+- Fixed System Operator upgrade checks against root-owned source repositories, preserved actionable Git stderr, distinguished an empty tag list from a failed check, and aligned nonstandard deployment source paths across status checks and the root-owned worker.
+
 ## 1.0.13 - 2026-08-21
 
 - Added persistent `set/ve7cc`, `show/ve7cc`, and `unset/ve7cc` user preferences with structured CC11 history, live spot, and RBN output for VE7CC-compatible clients such as Ham Radio Deluxe.

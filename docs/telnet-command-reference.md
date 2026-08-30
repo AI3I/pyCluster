@@ -185,6 +185,8 @@ Startup commands run after login and before the final prompt. Their output is li
 | `accept/spots <expr>` | Add an accept rule for spots. Supports expressions such as `on 20m`, `by K1*`, `call_zone 5`, `call_dxcc canada`, and compound web-generated rules such as `on 20m and spotter_cont NA`. |
 | `reject/spots <expr>` | Add a reject rule for spots. |
 | `clear/spots` | Clear spot filter rules. |
+| `clear/accept <family> [slot]` | Clear only accept rules in a filter family; `clear/acc` is an alias. |
+| `clear/reject <family> [slot]` | Clear only reject rules in a filter family; `clear/rej` is an alias. |
 | `accept/rbn [slot] <expr>` | Add an accept rule for RBN/Skimmer spot traffic, for example `accept/rbn 1 call N9JR`. |
 | `reject/rbn [slot] [expr]` | Add a reject rule for RBN/Skimmer spot traffic. With only a slot, for example `reject/rbn 2`, it rejects all RBN spots in that slot. |
 | `clear/rbn` | Clear RBN-focused filter rules. |
@@ -364,7 +366,7 @@ queued.
 |---|---|
 | `show/sun` | Show sun status. |
 | `show/grayline` | Show grayline status. |
-| `show/moon` | Show moon status. |
+| `show/moon` | Show topocentric moon status, distance, and dated rise/set times with event azimuths. |
 | `show/muf` | Show MUF estimate. |
 | `show/contest` | Show contest-oriented information. |
 | `show/satellite [target]` | Show satellite spots, or predict passes for a named TLE target when a keps file is configured. |

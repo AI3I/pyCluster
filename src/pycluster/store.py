@@ -1297,23 +1297,43 @@ class SpotStore:
             )
             self._conn.commit()
 
-    async def clear_filter_rules(self, call: str, family: str, slot: int | str = "all") -> None:
+    async def clear_filter_rules(
+        self,
+        call: str,
+        family: str,
+        slot: int | str = "all",
+        *,
+        action: str | None = None,
+    ) -> None:
         c = call.strip().upper()
         fam = family.strip().lower()
-        if not c or not fam:
+        act = str(action or "").strip().lower()
+        if not c or not fam or (act and act not in {"accept", "reject"}):
             return
         async with self._lock:
             if slot == "all":
-                self._conn.execute(
-                    "DELETE FROM filter_rules WHERE call = ? AND family = ?",
-                    (c, fam),
-                )
+                if act:
+                    self._conn.execute(
+                        "DELETE FROM filter_rules WHERE call = ? AND family = ? AND action = ?",
+                        (c, fam, act),
+                    )
+                else:
+                    self._conn.execute(
+                        "DELETE FROM filter_rules WHERE call = ? AND family = ?",
+                        (c, fam),
+                    )
             else:
                 s = max(0, min(int(slot), 9))
-                self._conn.execute(
-                    "DELETE FROM filter_rules WHERE call = ? AND family = ? AND slot = ?",
-                    (c, fam, s),
-                )
+                if act:
+                    self._conn.execute(
+                        "DELETE FROM filter_rules WHERE call = ? AND family = ? AND action = ? AND slot = ?",
+                        (c, fam, act, s),
+                    )
+                else:
+                    self._conn.execute(
+                        "DELETE FROM filter_rules WHERE call = ? AND family = ? AND slot = ?",
+                        (c, fam, s),
+                    )
             self._conn.commit()
 
     async def list_filter_rules(self, call: str) -> list[sqlite3.Row]:

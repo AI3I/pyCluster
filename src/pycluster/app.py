@@ -212,9 +212,12 @@ class ClusterApp:
         }
         self._node_ingest_stop = asyncio.Event()
         self._proto_trace_lock = asyncio.Lock()
+        self._proto_trace_level = "full"
+        self._proto_trace_level_checked_monotonic = 0.0
         self._public_web_started = False
 
     def _apply_runtime_config(self) -> None:
+        self._proto_trace_level_checked_monotonic = 0.0
         public_ips = self._runtime_public_ip_addresses()
         self.node_link.set_public_ip_address(public_ips["ipv4"], public_ips["ipv6"])
         self.node_link.set_py_protocol_policy(
@@ -3616,6 +3619,28 @@ class ClusterApp:
                 LOG.exception("node-link ingest failed peer=%s pc=%s", peer_name, frame.pc_type)
 
     async def _trace_protocol_line(self, peer_name: str, direction: str, text: str) -> None:
+        now = time.monotonic()
+        if now - self._proto_trace_level_checked_monotonic >= 5.0:
+            self._proto_trace_level_checked_monotonic = now
+            try:
+                configured = await self.store.get_user_pref(
+                    self.config.node.node_call,
+                    "retention.proto_log_level",
+                )
+            except Exception:
+                LOG.exception("protocol trace preference lookup failed")
+            else:
+                level = str(configured or "full").strip().lower()
+                self._proto_trace_level = level if level in {"full", "events", "off"} else "full"
+
+        if self._proto_trace_level == "off":
+            return
+        if self._proto_trace_level == "events":
+            if direction in {"rx", "tx"}:
+                return
+            if direction == "drop" and text.startswith(("profile_rx_block ", "profile_tx_block ")):
+                text = text.split(" ", 1)[0]
+
         ts = datetime.now(timezone.utc)
         line = f"{ts.isoformat()} {peer_name} {direction} {text}\n"
         base = Path(self.config.store.sqlite_path).resolve().parent.parent / "logs" / "proto" / ts.strftime("%Y")

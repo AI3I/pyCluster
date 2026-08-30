@@ -346,6 +346,7 @@ class WebAdminServer:
         return data
 
     def _upgrade_status_json(self) -> dict[str, object]:
+        self.upgrade_source_root = source_repo_root(self.repo_root)
         state = read_upgrade_status(self._upgrade_paths.status_path)
         availability = detect_upgrade_availability(self.upgrade_source_root, __version__)
         return {
@@ -409,6 +410,12 @@ class WebAdminServer:
             "retention_spots_days": max(1, min(3650, _to_int(_pref("retention.spots_days", "retention_spots_days", default="30"), 30))),
             "retention_messages_days": max(1, min(3650, _to_int(_pref("retention.messages_days", "retention_messages_days", default="90"), 90))),
             "retention_bulletins_days": max(1, min(3650, _to_int(_pref("retention.bulletins_days", "retention_bulletins_days", default="30"), 30))),
+            "retention_proto_logs_days": max(1, min(3650, _to_int(_pref("retention.proto_logs_days", "retention_proto_logs_days", default="14"), 14))),
+            "retention_proto_log_level": (
+                _pref("retention.proto_log_level", "retention_proto_log_level", default="full")
+                if _pref("retention.proto_log_level", "retention_proto_log_level", default="full") in {"full", "events", "off"}
+                else "full"
+            ),
             "retention_stale_users_enabled": _pref("retention.stale_users_enabled", "retention_stale_users_enabled", default="off").lower() in {"1", "on", "yes", "true"},
             "retention_stale_users_days": max(1, min(3650, _to_int(_pref("retention.stale_users_days", "retention_stale_users_days", default="365"), 365))),
             "retention_last_run_epoch": _to_int(_pref("retention.last_run_epoch", "retention_last_run_epoch", default="0"), 0),
@@ -3058,6 +3065,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="field"><label for="retention_spots_days" title="Keep DX spots for this many days before purging old rows.">Keep Spots For (days)</label><input id="retention_spots_days" type="number" min="1" max="3650" value="30" title="Older spots are removed during the daily cleanup run."></div>
               <div class="field"><label for="retention_messages_days" title="Keep private messages for this many days before purging old rows.">Keep Messages For (days)</label><input id="retention_messages_days" type="number" min="1" max="3650" value="90" title="Older messages are removed during the daily cleanup run."></div>
               <div class="field"><label for="retention_bulletins_days" title="Keep bulletins for this many days before purging old rows.">Keep Bulletins For (days)</label><input id="retention_bulletins_days" type="number" min="1" max="3650" value="30" title="Older bulletins are removed during the daily cleanup run."></div>
+              <div class="field"><label for="retention_proto_logs_days" title="Keep daily peer protocol trace files for this many days.">Keep Protocol Logs For (days)</label><input id="retention_proto_logs_days" type="number" min="1" max="3650" value="14" title="Protocol trace files older than this are removed by the daily retention timer even when database cleanup is disabled."></div>
+              <div class="field"><label for="retention_proto_log_level" title="Choose whether peer protocol logs contain complete frames, operational events only, or no new entries.">Protocol Log Detail</label><select id="retention_proto_log_level" title="Events Only retains connection, disconnection, and dropped-frame diagnostics without recording every received and transmitted frame."><option value="full">Full Frames</option><option value="events">Events Only</option><option value="off">Disabled</option></select></div>
               <div class="field"><label for="retention_stale_users_days" title="Inactive local users older than this threshold are removed during cleanup when stale-user pruning is enabled.">Keep User Records For (days)</label><input id="retention_stale_users_days" type="number" min="1" max="3650" value="365" title="Based on last login when available, otherwise the last local record update."></div>
             </div>
             <div class="user-status-detail" id="maintenanceStatus" style="margin-top:12px">
@@ -4801,10 +4810,14 @@ function fillNodeForm(data) {
   if (data.retention_spots_days !== undefined) byId('retention_spots_days').value = data.retention_spots_days;
   if (data.retention_messages_days !== undefined) byId('retention_messages_days').value = data.retention_messages_days;
   if (data.retention_bulletins_days !== undefined) byId('retention_bulletins_days').value = data.retention_bulletins_days;
+  if (data.retention_proto_logs_days !== undefined) byId('retention_proto_logs_days').value = data.retention_proto_logs_days;
+  if (data.retention_proto_log_level !== undefined) byId('retention_proto_log_level').value = data.retention_proto_log_level;
   if (data.retention_stale_users_days !== undefined) byId('retention_stale_users_days').value = data.retention_stale_users_days;
   if (data.initial_grace_logins !== undefined) byId('initial_grace_logins').value = data.initial_grace_logins;
   const lastRun = Number(data.retention_last_run_epoch || 0);
-  let status = byId('retention_enabled').checked ? 'Automatic cleanup is enabled.' : 'Automatic cleanup is disabled.';
+  let status = byId('retention_enabled').checked ? 'Automatic database cleanup is enabled.' : 'Automatic database cleanup is disabled.';
+  const protoLevel = {full: 'full frames', events: 'events only', off: 'disabled'}[data.retention_proto_log_level] || 'full frames';
+  status += ` Protocol logging is ${protoLevel}; retained files are kept for ${Number(data.retention_proto_logs_days || 14)} days.`;
   if (byId('retention_stale_users_enabled').checked) {
     status += ` Stale-user pruning is enabled at ${Number(data.retention_stale_users_days || 365)} days.`;
   }
@@ -4892,7 +4905,7 @@ function renderUpgradeStatus(payload) {
   setText('upgradeMetaLog', status.log_path ? `Log: ${status.log_path}` : '-');
   setText('upgradeMetaRemote', availability.remote_error ? `Remote check note: ${availability.remote_error}` : '-');
   const runBtn = byId('runUpgrade');
-  if (runBtn) runBtn.disabled = status.state === 'running';
+  if (runBtn) runBtn.disabled = status.state === 'running' || !availability.source_checkout;
 }
 function setJsonEditor(id, value) {
   const el = byId(id);
@@ -5262,6 +5275,8 @@ async function saveNodeSettings(actionId) {
         retention_spots_days: parseInt(byId('retention_spots_days').value.trim(), 10) || 30,
         retention_messages_days: parseInt(byId('retention_messages_days').value.trim(), 10) || 90,
         retention_bulletins_days: parseInt(byId('retention_bulletins_days').value.trim(), 10) || 30,
+        retention_proto_logs_days: parseInt(byId('retention_proto_logs_days').value.trim(), 10) || 14,
+        retention_proto_log_level: byId('retention_proto_log_level').value,
         retention_stale_users_enabled: byId('retention_stale_users_enabled').checked,
         retention_stale_users_days: parseInt(byId('retention_stale_users_days').value.trim(), 10) || 365,
         support_contact: byId('support_contact').value.trim(),
@@ -5293,6 +5308,7 @@ byId('checkUpgrade').onclick = async () => {
   const availability = (r && r.availability) || {};
   if (availability.available) say(`Upgrade available: pyCluster ${availability.available_version || '?'}.`);
   else if (availability.remote_checked) say(`No newer upgrade is available. Current version is ${availability.current_version || '-'}.`);
+  else if (availability.remote_error) say(`Upgrade check failed: ${availability.remote_error}`, false);
   else say('Upgrade status refreshed.');
 };
 byId('saveTaxonomy').onclick = async () => {
@@ -5918,6 +5934,8 @@ if (restoreWebSession()) {
                         "retention_spots_days": "30",
                         "retention_messages_days": "90",
                         "retention_bulletins_days": "30",
+                        "retention_proto_logs_days": "14",
+                        "retention_proto_log_level": "full",
                         "retention_stale_users_enabled": "off",
                         "retention_stale_users_days": "365",
                         "support_contact": "",
@@ -5932,6 +5950,8 @@ if (restoreWebSession()) {
                         "retention_spots_days": "retention.spots_days",
                         "retention_messages_days": "retention.messages_days",
                         "retention_bulletins_days": "retention.bulletins_days",
+                        "retention_proto_logs_days": "retention.proto_logs_days",
+                        "retention_proto_log_level": "retention.proto_log_level",
                         "retention_stale_users_enabled": "retention.stale_users_enabled",
                         "retention_stale_users_days": "retention.stale_users_days",
                     }
@@ -5959,7 +5979,7 @@ if (restoreWebSession()) {
                                 rbn_updates[key[4:]] = flag
                             elif key.startswith("mfa_"):
                                 mfa_updates[key[4:]] = flag
-                        elif key in {"initial_grace_logins", "retention_spots_days", "retention_messages_days", "retention_bulletins_days", "retention_stale_users_days", "smtp_port", "smtp_timeout_seconds", "satellite_prediction_hours", "satellite_pass_step_seconds", "satellite_min_elevation_deg", "rbn_port", "rbn_reconnect_seconds", "mfa_otp_ttl_seconds", "mfa_otp_length", "mfa_max_attempts", "mfa_resend_cooldown_seconds"}:
+                        elif key in {"initial_grace_logins", "retention_spots_days", "retention_messages_days", "retention_bulletins_days", "retention_proto_logs_days", "retention_stale_users_days", "smtp_port", "smtp_timeout_seconds", "satellite_prediction_hours", "satellite_pass_step_seconds", "satellite_min_elevation_deg", "rbn_port", "rbn_reconnect_seconds", "mfa_otp_ttl_seconds", "mfa_otp_length", "mfa_max_attempts", "mfa_resend_cooldown_seconds"}:
                             try:
                                 number = float(payload.get(key, fields[key])) if key == "satellite_min_elevation_deg" else int(payload.get(key, fields[key]))
                             except Exception:
@@ -6013,6 +6033,9 @@ if (restoreWebSession()) {
                             cfg_updates[key] = tuple(ports)
                         else:
                             val = str(payload.get(key, "")).strip()
+                            if key == "retention_proto_log_level" and val not in {"full", "events", "off"}:
+                                await self._write_response(writer, 400, self._json({"error": "invalid retention_proto_log_level"}))
+                                return
                             if key in {"node_call", "node_alias", "node_locator"}:
                                 val = val.upper()
                             if key == "public_ip_address" and val:
@@ -6227,6 +6250,7 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 409, self._json({"error": "upgrade already running"}))
                     return
                 requested_by = self._web_call_from_headers(headers) or "SYSOP"
+                self.upgrade_source_root = source_repo_root(self.repo_root)
                 request = queue_upgrade_request(
                     self._upgrade_paths.request_path,
                     requested_by=requested_by,

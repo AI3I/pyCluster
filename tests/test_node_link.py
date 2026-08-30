@@ -393,6 +393,40 @@ def test_app_protocol_trace_writes_rx_tx_lines(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_app_protocol_trace_honors_detail_preference(tmp_path) -> None:
+    async def run() -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        db = str(data_dir / "trace.db")
+        app = ClusterApp(_mk_config(db))
+        path = tmp_path / "logs" / "proto" / datetime.now(timezone.utc).strftime("%Y") / f"{datetime.now(timezone.utc).timetuple().tm_yday:03d}.log"
+        try:
+            await app.store.set_user_pref(app.config.node.node_call, "retention.proto_log_level", "events", int(time.time()))
+            app._proto_trace_level_checked_monotonic = 0.0
+            await app._trace_protocol_line("PEER1", "rx", "PC51^AI3I-16^AI3I-15^1^")
+            assert not path.exists()
+
+            await app._trace_protocol_line("PEER1", "connect", "configured endpoint")
+            assert "PEER1 connect configured endpoint" in path.read_text(encoding="utf-8")
+            await app._trace_protocol_line("PEER1", "drop", "profile_rx_block PC61^private payload^")
+            event_text = path.read_text(encoding="utf-8")
+            assert "PEER1 drop profile_rx_block" in event_text
+            assert "private payload" not in event_text
+
+            await app.store.set_user_pref(app.config.node.node_call, "retention.proto_log_level", "off", int(time.time()))
+            app._proto_trace_level_checked_monotonic = 0.0
+            before = path.read_text(encoding="utf-8")
+            await app._trace_protocol_line("PEER1", "disconnect", "requested")
+            assert path.read_text(encoding="utf-8") == before
+        finally:
+            await app.stop()
+
+    from datetime import datetime, timezone
+    import time
+
+    asyncio.run(run())
+
+
 def test_node_link_reconnect_replaces_peer_session_and_resets_counters() -> None:
     async def run() -> None:
         listener = NodeLinkEngine()

@@ -446,8 +446,9 @@ PY
 }
 
 install_or_refresh_service() {
-  local root
+  local root escaped_root
   root="$(repo_root)"
+  escaped_root="$(printf '%s' "$root" | sed 's/[\\&|]/\\&/g')"
   install -o root -g root -m 0644 \
     "$root/deploy/systemd/pycluster.service" \
     "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_SERVICE_NAME"
@@ -468,6 +469,8 @@ install_or_refresh_service() {
     "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_RETENTION_TIMER_NAME"
   install -o root -g root -m 0644 \
     "$root/deploy/systemd/pycluster-upgrade.service" \
+    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_SERVICE_NAME"
+  sed -i "s|/usr/src/pyCluster|$escaped_root|g" \
     "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_SERVICE_NAME"
   install -o root -g root -m 0644 \
     "$root/deploy/systemd/pycluster-upgrade.path" \

@@ -85,6 +85,8 @@ Supported operational scripts:
 
 The System Operator console upgrade button queues a request under the live runtime tree, then the `pycluster-upgrade.path` unit runs the worker from `/usr/src/pyCluster`. The worker advances that source checkout before running `deploy/upgrade.sh`, which syncs the updated tree into `/home/pycluster/pyCluster`. The console shows the target release separately from migration hooks; hooks such as `run_upgrade_1_0_6` are data migrations, not the maximum available release.
 
+The version check runs read-only Git commands against the recorded source checkout as the web-service account. Failures include Git's actual diagnostic in **Remote Check**. `/usr/src/pyCluster` remains the preferred source layout, but install, upgrade, and repair now record and configure the actual checkout path so a deliberately nonstandard source location uses the same path for checking and for the root-owned upgrade worker.
+
 Upgrade, repair, and uninstall operations preserve the runtime `config/`, `data/`, and `logs/` directories and create timestamped archives under `/root/pycluster-backups/` before making destructive changes. They stop live writers before archiving so SQLite and its WAL are captured consistently; a failed preflight or maintenance run restores services that were active before shutdown. Upgrade and repair then restart gracefully through systemd. If an older installed checkout does not yet include automatic preflight backups, create one manually first:
 
 ```bash
@@ -308,6 +310,8 @@ pyCluster deploys logrotate coverage for:
 - `/var/log/pycluster/authfail.log`
 
 That keeps the auth-failure log from growing without bound on long-running systems.
+
+Peer protocol traces under `/home/pycluster/pyCluster/logs/proto/` are pruned separately by `pycluster-retention.timer`. The default is 14 days and the System Operator can shorten it with **Keep Protocol Logs For (days)** under Node Settings > Maintenance. **Protocol Log Detail** can retain full frames, retain connection/error events without high-volume RX/TX payloads, or disable new protocol trace entries.
 
 ### Sysop Security View
 

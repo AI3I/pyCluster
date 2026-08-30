@@ -355,7 +355,7 @@ The scheduler is installed as:
 
 - `pycluster-retention.timer`
 
-You can manage retention from the System Operator web UI or run cleanup manually through the UI action.
+You can manage retention from the System Operator web UI or run database cleanup manually through the UI action. Peer protocol traces under `logs/proto/` are pruned by the daily timer independently of database cleanup and default to 14 days; configure **Keep Protocol Logs For (days)** under Node Settings > Maintenance for smaller disks. Use **Protocol Log Detail** to select full frames, operational events only, or disabled logging.
 
 ## Log Rotation
 
@@ -364,6 +364,8 @@ The deploy scripts install logrotate coverage for:
 - `/var/log/pycluster/authfail.log`
 
 That policy rotates weekly, keeps compressed history, and prevents the auth-failure log from growing without bound on long-running nodes.
+
+Peer protocol traces under `/home/pycluster/pyCluster/logs/proto/` use pyCluster's daily retention timer instead of logrotate. They are kept for 14 days by default; change **Keep Protocol Logs For (days)** under Node Settings > Maintenance when storage is constrained. Selecting **Events Only** prevents routine RX/TX frames from growing these files while preserving peer lifecycle and dropped-frame diagnostics.
 
 ## Default Ports
 
