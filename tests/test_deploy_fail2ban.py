@@ -186,6 +186,7 @@ def test_deploy_lifecycle_writes_support_receipt_and_has_safe_collector(tmp_path
     collector_text = collector.read_text(encoding="utf-8")
 
     assert "write_deployment_state()" in lib
+    assert 'sed -i "s|/usr/src/pyCluster|$escaped_root|g"' in lib
     assert 'write_deployment_state install' in install
     assert 'write_deployment_state upgrade' in upgrade
     assert 'write_deployment_state repair' in repair

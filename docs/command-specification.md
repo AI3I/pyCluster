@@ -192,6 +192,8 @@ These are stable only if they are backed by stored local data and visible behavi
 - `reject/rbn <expr>`
 - `clear/spots`
 - `clear/rbn`
+- `clear/accept <family> [slot]` (`clear/acc`)
+- `clear/reject <family> [slot]` (`clear/rej`)
 - `show/filter`
 
 ## Stable Sysop Commands

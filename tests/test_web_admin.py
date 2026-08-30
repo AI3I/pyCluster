@@ -206,6 +206,8 @@ def test_web_admin_static_uses_clearer_statusline_and_maintenance_actions() -> N
         'id="retention_spots_days"',
         'id="retention_messages_days"',
         'id="retention_bulletins_days"',
+        'id="retention_proto_logs_days"',
+        'id="retention_proto_log_level"',
         'id="retention_stale_users_days"',
     )
     assert maintenance_idx < cleanup_idx
@@ -2210,6 +2212,8 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["rbn_status"]["state"] == "connected"
             assert data["retention_stale_users_enabled"] is False
             assert data["retention_stale_users_days"] == 365
+            assert data["retention_proto_logs_days"] == 14
+            assert data["retention_proto_log_level"] == "full"
 
             payload = {
                 "node_call": "AI3I-7",
@@ -2265,6 +2269,8 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
                 "mfa_resend_cooldown_seconds": 45,
                 "retention_stale_users_enabled": True,
                 "retention_stale_users_days": 180,
+                "retention_proto_logs_days": 3,
+                "retention_proto_log_level": "events",
                 "support_contact": "dxcluster@ai3i.net",
                 "website_url": "https://github.com/AI3I/pyCluster",
                 "public_ip_address": "44.1.2.3",
@@ -2329,6 +2335,10 @@ def test_web_admin_node_presentation_round_trip(tmp_path) -> None:
             assert data["mfa_resend_cooldown_seconds"] == 45
             assert data["retention_stale_users_enabled"] is True
             assert data["retention_stale_users_days"] == 180
+            assert data["retention_proto_logs_days"] == 3
+            assert data["retention_proto_log_level"] == "events"
+            assert await store.get_user_pref("AI3I-7", "retention.proto_logs_days") == "3"
+            assert await store.get_user_pref("AI3I-7", "retention.proto_log_level") == "events"
             assert data["public_ip_address"] == "44.1.2.3"
             assert data["public_ipv6_address"] == "2606:4700:4700::1111"
             assert data["motd"] == "Warm MOTD"
@@ -2470,6 +2480,7 @@ def test_web_admin_console_page_includes_software_version_slot(tmp_path) -> None
             assert 'id="node-group-maintenance"' in html
             assert 'id="taxonomy"' in html
             assert 'id="upgradeStatus"' in html
+            assert 'id="retention_proto_logs_days"' in html
             assert 'id="checkUpgrade"' in html
             assert 'id="runUpgrade"' in html
             assert 'class="tablewrap compact"' in html

@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 import subprocess
 import time
+import tomllib
 
 
 _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
@@ -31,6 +32,14 @@ def repo_root_from_config(config_path: str | Path | None) -> Path:
 def source_repo_root(runtime_root: str | Path) -> Path:
     configured = str(os.environ.get("PYCLUSTER_SOURCE_ROOT", "")).strip()
     candidates = [Path(configured)] if configured else []
+    receipt = Path(runtime_root) / "data" / "deployment-state.toml"
+    if receipt.exists():
+        try:
+            recorded = str(tomllib.loads(receipt.read_text(encoding="utf-8")).get("source_root", "")).strip()
+            if recorded:
+                candidates.append(Path(recorded))
+        except Exception:
+            pass
     candidates.append(Path("/usr/src/pyCluster"))
     candidates.append(Path(runtime_root))
     for candidate in candidates:
@@ -61,11 +70,15 @@ def _version_tuple(raw: str) -> tuple[int, int, int] | None:
 
 def _run_git(repo_root: Path, *args: str) -> str:
     proc = subprocess.run(
-        ["git", "-C", str(repo_root), *args],
-        check=True,
+        ["git", "-c", f"safe.directory={repo_root}", "-C", str(repo_root), *args],
+        check=False,
         capture_output=True,
         text=True,
     )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"git {' '.join(args)} failed with exit {proc.returncode}{suffix}")
     return proc.stdout.strip()
 
 
@@ -93,15 +106,29 @@ def detect_upgrade_availability(repo_root: str | Path, current_version: str) -> 
     local_tag = ""
     remote_tag = ""
     remote_error = ""
-    try:
-        local_tag = _latest_tag_from_lines(_run_git(root, "tag", "--list", "v*").splitlines())
-    except Exception:
-        local_tag = ""
-    try:
-        remote_tag = _latest_tag_from_lines(_run_git(root, "ls-remote", "--tags", "--refs", "origin", "v*").splitlines())
-    except Exception as exc:
-        remote_error = str(exc)
-        remote_tag = ""
+    remote_checked = False
+    source_checkout = (root / ".git").exists()
+    origin_url = ""
+    if source_checkout:
+        try:
+            origin_url = _run_git(root, "remote", "get-url", "origin")
+            origin_url = re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1", origin_url)
+        except Exception as exc:
+            remote_error = str(exc)
+    else:
+        remote_error = f"upgrade source {root} is not a git checkout"
+    if source_checkout:
+        try:
+            local_tag = _latest_tag_from_lines(_run_git(root, "tag", "--list", "v*").splitlines())
+        except Exception:
+            local_tag = ""
+    if source_checkout and not remote_error:
+        try:
+            remote_tag = _latest_tag_from_lines(_run_git(root, "ls-remote", "--tags", "--refs", "origin", "v*").splitlines())
+            remote_checked = True
+        except Exception as exc:
+            remote_error = str(exc)
+            remote_tag = ""
     candidate = remote_tag or local_tag
     candidate_tuple = _version_tuple(candidate)
     available = bool(candidate_tuple and current_tuple and candidate_tuple > current_tuple)
@@ -112,8 +139,11 @@ def detect_upgrade_availability(repo_root: str | Path, current_version: str) -> 
         "latest_remote_tag": remote_tag,
         "available": available,
         "available_version": candidate.lstrip("v") if available and candidate else "",
-        "remote_checked": bool(remote_tag),
+        "remote_checked": remote_checked,
         "remote_error": remote_error,
+        "source_checkout": source_checkout,
+        "source_repo_root": str(root),
+        "origin_url": origin_url,
     }
 
 

@@ -1697,6 +1697,8 @@ def test_filter_commands_roundtrip(tmp_path) -> None:
             assert "Accept filter for spots saved" in out
             _, out = await srv._execute_command("N0CALL", "reject/spots 2 by K1")
             assert "Reject filter for spots saved" in out
+            _, out = await srv._execute_command("N0CALL", "accept/spots 2 on 20m")
+            assert "Accept filter for spots saved" in out
 
             _, out = await srv._execute_command("N0CALL", "show/filter")
             assert "Filters for N0CALL" in out
@@ -1704,11 +1706,24 @@ def test_filter_commands_roundtrip(tmp_path) -> None:
             assert "accept/spots 1 on 40m" in out
             assert "reject/spots 2 by K1" in out
 
+            _, out = await srv._execute_command("N0CALL", "clear/rej spots 2")
+            assert "Cleared reject spots filters for N0CALL (slot 2)." in out
+            _, out = await srv._execute_command("N0CALL", "show/filter")
+            assert "reject/spots 2 by K1" not in out
+            assert "accept/spots 2 on 20m" in out
+
+            _, out = await srv._execute_command("N0CALL", "reject/rbn 3 call K1ABC")
+            assert "Reject filter for rbn saved" in out
+            _, out = await srv._execute_command("N0CALL", "clear/reject rbn 3")
+            assert "Cleared reject rbn filters for N0CALL (slot 3)." in out
+            _, out = await srv._execute_command("N0CALL", "show/filter")
+            assert "reject/rbn 3 call K1ABC" not in out
+
             _, out = await srv._execute_command("N0CALL", "clear/spots 1")
             assert "Cleared spots filters for N0CALL (slot 1)." in out
             _, out = await srv._execute_command("N0CALL", "show/filter")
             assert "accept/spots 1 on 40m" not in out
-            assert "reject/spots 2 by K1" in out
+            assert "accept/spots 2 on 20m" in out
         finally:
             await store.close()
 
@@ -3509,7 +3524,7 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             _, out = await srv._execute_command("N0CALL", "show/moon")
             assert "Reference: QRA FN42" in out and "Age:" in out and "Illumination:" in out
             assert "Elevation:" in out and "Azimuth:" in out
-            assert "Moonrise:" in out and "Moonset:" in out
+            assert "Distance:" in out and "Moonrise:" in out and "Moonset:" in out
             _, out = await srv._execute_command("N0CALL", "show/heading G")
             assert "Heading to " in out or "No heading data for G." in out
             if "Heading to " in out:
@@ -3524,6 +3539,26 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             await store.close()
 
     asyncio.run(run())
+
+
+def test_moon_events_use_topocentric_horizon_and_include_azimuth(tmp_path) -> None:
+    db = str(tmp_path / "moon_events.db")
+    cfg = _mk_config(db)
+    store = SpotStore(db)
+    srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+    try:
+        start = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+        rise = srv._moon_event(start, 43.0389, -87.9065, rising=True)
+        setting = srv._moon_event(start, 43.0389, -87.9065, rising=False)
+        assert rise is not None and setting is not None
+        assert rise[0].strftime("%Y-%m-%d %H:%M") == "2026-08-20 19:57"
+        assert setting[0].strftime("%Y-%m-%d %H:%M") == "2026-08-21 04:28"
+        assert 0.0 <= rise[1] < 360.0
+        assert 0.0 <= setting[1] < 360.0
+        _, _, distance_km = srv._moon_position(start, 43.0389, -87.9065)
+        assert 350_000.0 < distance_km < 410_000.0
+    finally:
+        asyncio.run(store.close())
 
 
 def test_show_moon_supports_dxcc_target_with_rise_set_and_elevation(tmp_path) -> None:

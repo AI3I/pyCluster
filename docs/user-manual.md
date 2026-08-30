@@ -280,6 +280,8 @@ unset/rbn
 accept/rbn 1 call N9JR
 reject/rbn 2 info TEST
 clear/rbn
+clear/reject spots 2
+clear/rej rbn 2
 show/rbn
 show/rbn N9JR 20
 ```
@@ -302,6 +304,8 @@ Filters are useful when:
 RBN live delivery is opt-in for telnet users. Run `set/rbn` when you want RBN/Skimmer reports in your live stream, and `unset/rbn` to turn them off. `show/rbn` remains available for recent RBN history even when live delivery is off.
 
 `accept/rbn` and `reject/rbn` are separate RBN filter-family commands. For example, `accept/rbn 1 call N9JR` allows only RBN/Skimmer spots whose spotted DX call matches `N9JR`; it does not affect ordinary human-posted spots. `reject/rbn 2` remains a shorthand for rejecting all RBN spots in slot 2.
+
+`clear/spots 2` and `clear/rbn 2` remove both accept and reject rules in slot 2. Use `clear/accept spots 2` or `clear/reject spots 2` when only one action should be removed; the shorter `clear/acc` and `clear/rej` forms work for `spots`, `rbn`, `announce`, and `route` families.
 
 Legacy rules such as `accept/spots 1 rbn call N9JR` are interpreted as RBN-scoped rules. When any RBN-scoped rule exists, ordinary `accept/spots ... by ...` rules do not open the full automated RBN stream; general reject rules still apply to both sources.
 

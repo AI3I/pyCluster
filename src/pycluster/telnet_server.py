@@ -5036,7 +5036,7 @@ class TelnetClusterServer:
     def _julian_day(self, when: datetime) -> float:
         return when.astimezone(timezone.utc).timestamp() / 86400.0 + 2440587.5
 
-    def _moon_ra_dec_deg(self, when: datetime) -> tuple[float, float]:
+    def _moon_ra_dec_distance(self, when: datetime) -> tuple[float, float, float]:
         days = self._julian_day(when) - 2451543.5
         node = math.radians((125.1228 - 0.0529538083 * days) % 360.0)
         inclination = math.radians(5.1454)
@@ -5059,16 +5059,55 @@ class TelnetClusterServer:
         yh = radius * (math.sin(node) * math.cos(arg) + math.cos(node) * math.sin(arg) * math.cos(inclination))
         zh = radius * (math.sin(arg) * math.sin(inclination))
 
+        moon_lon = math.degrees(math.atan2(yh, xh)) % 360.0
+        moon_lat = math.degrees(math.atan2(zh, math.hypot(xh, yh)))
+        sun_perigee = (282.9404 + 4.70935e-5 * days) % 360.0
+        sun_anomaly = (356.0470 + 0.9856002585 * days) % 360.0
+        sun_longitude = (sun_perigee + sun_anomaly) % 360.0
+        moon_longitude = (math.degrees(node + perigee) + mean_anomaly_deg) % 360.0
+        elongation = math.radians((moon_longitude - sun_longitude) % 360.0)
+        argument_latitude = math.radians((moon_longitude - math.degrees(node)) % 360.0)
+        sun_anomaly_r = math.radians(sun_anomaly)
+
+        moon_lon += (
+            -1.274 * math.sin(mean_anomaly - 2.0 * elongation)
+            + 0.658 * math.sin(2.0 * elongation)
+            - 0.186 * math.sin(sun_anomaly_r)
+            - 0.059 * math.sin(2.0 * mean_anomaly - 2.0 * elongation)
+            - 0.057 * math.sin(mean_anomaly - 2.0 * elongation + sun_anomaly_r)
+            + 0.053 * math.sin(mean_anomaly + 2.0 * elongation)
+            + 0.046 * math.sin(2.0 * elongation - sun_anomaly_r)
+            + 0.041 * math.sin(mean_anomaly - sun_anomaly_r)
+            - 0.035 * math.sin(elongation)
+            - 0.031 * math.sin(mean_anomaly + sun_anomaly_r)
+            - 0.015 * math.sin(2.0 * argument_latitude - 2.0 * elongation)
+            + 0.011 * math.sin(mean_anomaly - 4.0 * elongation)
+        )
+        moon_lat += (
+            -0.173 * math.sin(argument_latitude - 2.0 * elongation)
+            - 0.055 * math.sin(mean_anomaly - argument_latitude - 2.0 * elongation)
+            - 0.046 * math.sin(mean_anomaly + argument_latitude - 2.0 * elongation)
+            + 0.033 * math.sin(argument_latitude + 2.0 * elongation)
+            + 0.017 * math.sin(2.0 * mean_anomaly + argument_latitude)
+        )
+        radius += -0.58 * math.cos(mean_anomaly - 2.0 * elongation) - 0.46 * math.cos(2.0 * elongation)
+
+        moon_lon_r = math.radians(moon_lon)
+        moon_lat_r = math.radians(moon_lat)
+        xh = radius * math.cos(moon_lon_r) * math.cos(moon_lat_r)
+        yh = radius * math.sin(moon_lon_r) * math.cos(moon_lat_r)
+        zh = radius * math.sin(moon_lat_r)
+
         obliquity = math.radians(23.4393 - 3.563e-7 * days)
         xe = xh
         ye = yh * math.cos(obliquity) - zh * math.sin(obliquity)
         ze = yh * math.sin(obliquity) + zh * math.cos(obliquity)
         ra = math.degrees(math.atan2(ye, xe)) % 360.0
         dec = math.degrees(math.atan2(ze, math.hypot(xe, ye)))
-        return ra, dec
+        return ra, dec, radius * 6378.137
 
-    def _moon_alt_az(self, when: datetime, lat: float, lon: float) -> tuple[float, float]:
-        ra, dec = self._moon_ra_dec_deg(when)
+    def _moon_position(self, when: datetime, lat: float, lon: float) -> tuple[float, float, float]:
+        ra, dec, distance_km = self._moon_ra_dec_distance(when)
         days = self._julian_day(when) - 2451545.0
         gmst_hours = (18.697374558 + 24.06570982441908 * days) % 24.0
         lst_deg = (gmst_hours * 15.0 + lon) % 360.0
@@ -5091,23 +5130,33 @@ class TelnetClusterServer:
                 math.tan(dec_r) * math.cos(lat_r) - math.sin(lat_r) * math.cos(hour_angle),
             )
         )
-        return math.degrees(altitude), (azimuth + 360.0) % 360.0
+        distance_earth_radii = max(distance_km / 6378.137, 1.01)
+        topocentric_altitude = math.atan2(
+            math.sin(altitude) - 1.0 / distance_earth_radii,
+            math.cos(altitude),
+        )
+        return math.degrees(topocentric_altitude), (azimuth + 360.0) % 360.0, distance_km
 
-    def _moon_event_time(self, start: datetime, lat: float, lon: float, *, rising: bool) -> str | None:
-        threshold = -0.3
+    @staticmethod
+    def _moon_horizon_delta(position: tuple[float, float, float]) -> float:
+        altitude, _azimuth, distance_km = position
+        semidiameter = math.degrees(math.asin(min(1.0, 1737.4 / distance_km)))
+        return altitude + 0.5667 + semidiameter
+
+    def _moon_event(self, start: datetime, lat: float, lon: float, *, rising: bool) -> tuple[datetime, float] | None:
         step = timedelta(minutes=10)
         prev_t = start
-        prev_alt = self._moon_alt_az(prev_t, lat, lon)[0] - threshold
+        prev_alt = self._moon_horizon_delta(self._moon_position(prev_t, lat, lon))
         for idx in range(1, int((48 * 60) / 10) + 1):
             cur_t = start + step * idx
-            cur_alt = self._moon_alt_az(cur_t, lat, lon)[0] - threshold
+            cur_alt = self._moon_horizon_delta(self._moon_position(cur_t, lat, lon))
             crossed = prev_alt <= 0.0 < cur_alt if rising else prev_alt >= 0.0 > cur_alt
             if crossed:
                 lo = prev_t
                 hi = cur_t
                 for _ in range(12):
                     mid = lo + (hi - lo) / 2
-                    mid_alt = self._moon_alt_az(mid, lat, lon)[0] - threshold
+                    mid_alt = self._moon_horizon_delta(self._moon_position(mid, lat, lon))
                     if rising:
                         if mid_alt >= 0.0:
                             hi = mid
@@ -5118,7 +5167,7 @@ class TelnetClusterServer:
                             hi = mid
                         else:
                             lo = mid
-                return hi.strftime("%H:%M UTC")
+                return hi, self._moon_position(hi, lat, lon)[1]
             prev_t = cur_t
             prev_alt = cur_alt
         return None
@@ -5223,9 +5272,22 @@ class TelnetClusterServer:
         else:
             phase_name = "new"
         now_dt = datetime.now(timezone.utc)
-        elevation, azimuth = self._moon_alt_az(now_dt, lat, lon)
-        moonrise = self._moon_event_time(now_dt, lat, lon, rising=True)
-        moonset = self._moon_event_time(now_dt, lat, lon, rising=False)
+        elevation, azimuth, distance_km = self._moon_position(now_dt, lat, lon)
+        moonrise = self._moon_event(now_dt, lat, lon, rising=True)
+        moonset = self._moon_event(now_dt, lat, lon, rising=False)
+        event_format = self._string("show.moon.event_format", "{date} {time} UTC at {azimuth:.1f} deg")
+
+        def _event_text(event: tuple[datetime, float] | None) -> str:
+            if not event:
+                return ""
+            return event_format.format(
+                date=event[0].strftime("%Y-%m-%d"),
+                time=event[0].strftime("%H:%M"),
+                azimuth=event[1],
+            )
+
+        moonrise_text = _event_text(moonrise)
+        moonset_text = _event_text(moonset)
         missing_event = self._string("show.moon.event_missing", "not in next 48h")
         lines = [
             self._string("show.moon.title", "Moon status:"),
@@ -5237,8 +5299,9 @@ class TelnetClusterServer:
             self._render_string("show.moon.phase_name", "  Phase: {phase}", phase=phase_name),
             self._render_string("show.moon.elevation", "  Elevation: {elevation:.1f} deg", elevation=elevation),
             self._render_string("show.moon.azimuth", "  Azimuth: {azimuth:.1f} deg", azimuth=azimuth),
-            self._render_string("show.moon.moonrise", "  Moonrise: {value}", value=moonrise or missing_event),
-            self._render_string("show.moon.moonset", "  Moonset: {value}", value=moonset or missing_event),
+            self._render_string("show.moon.distance", "  Distance: {distance:,.0f} km", distance=distance_km),
+            self._render_string("show.moon.moonrise", "  Moonrise: {value}", value=moonrise_text or missing_event),
+            self._render_string("show.moon.moonset", "  Moonset: {value}", value=moonset_text or missing_event),
         ]
         return await self._format_console_lines(call, lines)
 
@@ -8420,6 +8483,40 @@ class TelnetClusterServer:
         scope = "all slots" if slot == "all" else f"slot {slot}"
         return self._render_string("filters.clear_done", "Cleared {family} filters for {target} ({scope}).", family=family, target=target, scope=scope) + "\r\n"
 
+    async def _cmd_filter_clear_action(self, call: str, arg: str | None, action: str) -> str:
+        tokens = [token for token in str(arg or "").split() if token]
+        if not tokens or tokens[0].lower() not in {"spots", "rbn", "announce", "route"}:
+            return self._render_string(
+                "filters.clear_action_usage",
+                "Usage: clear/{action} <spots|rbn|announce|route> [<call>] [input] [<slot>|all]",
+                action=action,
+            ) + "\r\n"
+        family = tokens.pop(0).lower()
+        parsed = self._parse_filter_target_and_slot(call, " ".join(tokens) or None)
+        if not parsed:
+            return self._render_string(
+                "filters.clear_action_usage",
+                "Usage: clear/{action} <spots|rbn|announce|route> [<call>] [input] [<slot>|all]",
+                action=action,
+            ) + "\r\n"
+        target, slot = parsed
+        await self.store.clear_filter_rules(target, family, slot, action=action)
+        rules = self._ensure_filter_store(target, family, action)
+        if slot == "all":
+            rules.clear()
+        else:
+            rules[:] = [rule for rule in rules if rule.slot != slot]
+        self._log_event("filter", f"clear/{action} {family} {target} {slot}")
+        scope = "all slots" if slot == "all" else f"slot {slot}"
+        return self._render_string(
+            "filters.clear_action_done",
+            "Cleared {action} {family} filters for {target} ({scope}).",
+            action=action,
+            family=family,
+            target=target,
+            scope=scope,
+        ) + "\r\n"
+
     async def _cmd_filter_clear_expr(self, call: str, arg: str | None, family: str, expr: str, label: str) -> str:
         parsed = self._parse_filter_target_and_slot(call, arg)
         if not parsed:
@@ -10903,6 +11000,10 @@ class TelnetClusterServer:
             "clear/rbn": lambda c, a: self._cmd_filter_clear(c, a, "rbn"),
             "clear/announce": lambda c, a: self._cmd_filter_clear(c, a, "announce"),
             "clear/route": lambda c, a: self._cmd_filter_clear(c, a, "route"),
+            "clear/accept": lambda c, a: self._cmd_filter_clear_action(c, a, "accept"),
+            "clear/acc": lambda c, a: self._cmd_filter_clear_action(c, a, "accept"),
+            "clear/reject": lambda c, a: self._cmd_filter_clear_action(c, a, "reject"),
+            "clear/rej": lambda c, a: self._cmd_filter_clear_action(c, a, "reject"),
             "clear/dupefile": self._cmd_clear_dupefile,
             "clear/protohistory": self._cmd_clear_protohistory,
             "clear/prhist": self._cmd_clear_protohistory,
