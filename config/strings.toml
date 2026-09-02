@@ -1048,10 +1048,10 @@ illumination = "  Illumination: {illumination:.1f}%"
 phase_name = "  Phase: {phase}"
 elevation = "  Elevation: {elevation:.1f} deg"
 azimuth = "  Azimuth: {azimuth:.1f} deg"
-distance = "  Distance: {distance:,.0f} km"
+distance = "  Distance: {distance_km:,.0f} km / {distance_miles:,.0f} mi"
 moonrise = "  Moonrise: {value}"
 moonset = "  Moonset: {value}"
-event_format = "{date} {time} UTC at {azimuth:.1f} deg"
+event_format = "{time} UTC at {azimuth:.1f} deg"
 event_missing = "not in next 48h"
 
 [show.muf]

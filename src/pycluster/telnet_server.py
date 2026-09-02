@@ -5275,7 +5275,7 @@ class TelnetClusterServer:
         elevation, azimuth, distance_km = self._moon_position(now_dt, lat, lon)
         moonrise = self._moon_event(now_dt, lat, lon, rising=True)
         moonset = self._moon_event(now_dt, lat, lon, rising=False)
-        event_format = self._string("show.moon.event_format", "{date} {time} UTC at {azimuth:.1f} deg")
+        event_format = self._string("show.moon.event_format", "{time} UTC at {azimuth:.1f} deg")
 
         def _event_text(event: tuple[datetime, float] | None) -> str:
             if not event:
@@ -5299,7 +5299,13 @@ class TelnetClusterServer:
             self._render_string("show.moon.phase_name", "  Phase: {phase}", phase=phase_name),
             self._render_string("show.moon.elevation", "  Elevation: {elevation:.1f} deg", elevation=elevation),
             self._render_string("show.moon.azimuth", "  Azimuth: {azimuth:.1f} deg", azimuth=azimuth),
-            self._render_string("show.moon.distance", "  Distance: {distance:,.0f} km", distance=distance_km),
+            self._render_string(
+                "show.moon.distance",
+                "  Distance: {distance_km:,.0f} km / {distance_miles:,.0f} mi",
+                distance=distance_km,
+                distance_km=distance_km,
+                distance_miles=distance_km * 0.621371192237334,
+            ),
             self._render_string("show.moon.moonrise", "  Moonrise: {value}", value=moonrise_text or missing_event),
             self._render_string("show.moon.moonset", "  Moonset: {value}", value=moonset_text or missing_event),
         ]
