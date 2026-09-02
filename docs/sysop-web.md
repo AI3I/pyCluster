@@ -310,13 +310,13 @@ Peer password note:
 
 Peer rows distinguish:
 
-- `Dial-out`
-- `Accepted`
+- `Outbound`
+- `Inbound`
 
 Meaning:
 
-- `Dial-out`: this node initiates the connection and can retry it
-- `Accepted`: the remote node connects inbound, so no local DSN or retry is used
+- `Outbound`: this node initiates the connection and can retry it
+- `Inbound`: the remote node connects inbound, so no local DSN or retry is used
 
 ### Main Actions
 
@@ -337,32 +337,23 @@ Meaning:
 Columns:
 
 - `Peer`
-- `Role`
-- `Status`
+- `Connection`
+- `Activity`
 - `Traffic`
-- `Health`
 
-The `Role` cell now carries:
+The `Peer` cell carries:
 
 - peer family
-- retry mode
-- host / transport endpoint
 - learned peer software/version when it has been seen from `PC18`
 
-The `Status` cell answers the simple transport question first:
+The `Connection` cell answers the simple transport question first:
 
 - `connected`: a live socket exists
 - `disconnected`: no live socket exists
 
-The detail text then describes recent activity:
+It also shows inbound/outbound direction, automatic retry state, and the most recent connection error when applicable. The `Activity` cell shows the last PC frame type and the last receive/transmit times. `Traffic` keeps frame/type counts and queued-mail or route warnings together.
 
-- `bidirectional`
-- `receive active`
-- `transmit active`
-- `idle`
-- `connected quiet`
-
-This is intentionally separate from protocol-health freshness. A connected inbound node can be `transmit active` and `receive quiet` when pyCluster is still sending keepalives or traffic but has not recently received PC protocol frames from the remote node. In that case, the transport is connected; the protocol-health view is where stale/degraded/flapping protocol state is investigated.
+Detailed transport addresses, counters, errors, and protocol state remain in the peer modal. Stale, degraded, and flapping analysis remains on the separate Protocol Health page instead of duplicating a second health label in this operational table.
 
 This view is intended to make peer operations understandable without dropping into raw counters or logs.
 

@@ -46,6 +46,7 @@ _BULLETIN_DEDUPE_WINDOW_SECONDS = 900
 _TALK_DEDUPE_WINDOW_SECONDS = 30
 _PC93_PREFIX_RE = re.compile(r"^\[(ANNOUNCE|WCY|WWV|WX)/(LOCAL|FULL|SYSOP)\]\s*(.*)$", re.IGNORECASE)
 _VIA_SUFFIX_RE = re.compile(r"\s*\[via:[^\]]+\]\s*$", re.IGNORECASE)
+_TRUSTED_WCY_SOURCES = frozenset({"DK0WCY"})
 _DXSPIDER_PC19_VERSION = "5457"
 _PEER_PREF_PREFIX = "peer.outbound."
 _RECONNECT_BASE_SECS = 5
@@ -63,6 +64,11 @@ _PROTO_FLAP_KEYS = {
 
 
 class ClusterApp:
+    @staticmethod
+    def _is_trusted_wcy_source(sender: str) -> bool:
+        base_call = normalize_call(sender).split("-", 1)[0]
+        return base_call in _TRUSTED_WCY_SOURCES
+
     @staticmethod
     def _split_peer_password(dsn: str) -> tuple[str, str]:
         raw = str(dsn or "").strip()
@@ -1158,6 +1164,9 @@ class ClusterApp:
         duplicate_reason: str,
     ) -> None:
         if not body:
+            return
+        if category == "wcy" and not self._is_trusted_wcy_source(sender):
+            await self.node_link.mark_policy_drop(peer_name, "ingest_wcy_untrusted_source")
             return
         if not await self._ingest_peer_enabled(peer_name, category):
             await self.node_link.mark_policy_drop(peer_name, f"ingest_{category}_disabled")

@@ -206,9 +206,10 @@ Important distinction:
 Health distinction:
 
 - connected/disconnected answers whether the transport socket is live
-- inbound/accepted versus dial-out answers who initiated the socket
-- traffic labels such as bidirectional, receive active, transmit active, idle, and connected quiet describe recent traffic direction
-- protocol-health labels such as stale, degraded, or flapping are based on received PC protocol freshness and thresholds
+- inbound versus outbound answers who initiated the socket
+- activity shows the last PC frame and receive/transmit times
+- traffic shows frame/type counts plus mail queue and route warnings
+- protocol-health labels such as stale, degraded, or flapping remain on Protocol Health and are based on received PC protocol freshness and thresholds
 
 See:
 

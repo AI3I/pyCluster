@@ -251,11 +251,13 @@ def test_web_admin_static_uses_full_width_user_action_bar() -> None:
     assert "flex-wrap:wrap;" in text
 
 
-def test_web_admin_static_peer_table_uses_content_width_columns() -> None:
+def test_web_admin_static_peer_table_uses_compact_fixed_columns() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert ".peer-table{" in text
-    assert "width:max-content;" in text
-    assert "table-layout:auto;" in text
+    assert "table-layout:fixed;" in text
+    assert ".peer-table th:nth-child(4){width:25%}" in text
+    assert '<thead><tr><th>Peer</th><th>Connection</th><th>Activity</th><th>Traffic</th></tr></thead>' in text
+    assert '<th>Role</th><th>Status</th><th>Traffic</th><th>Health</th>' not in text
     assert 'class="peer-table"' in text
     assert 'class="peer-toolbar"' in text
     assert 'id="peerModal"' in text

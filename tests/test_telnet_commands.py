@@ -3525,6 +3525,8 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             assert "Reference: QRA FN42" in out and "Age:" in out and "Illumination:" in out
             assert "Elevation:" in out and "Azimuth:" in out
             assert "Distance:" in out and "Moonrise:" in out and "Moonset:" in out
+            assert " km / " in out and " mi" in out
+            assert not re.search(r"Moon(?:rise|set):\s+\d{4}-\d{2}-\d{2}", out)
             _, out = await srv._execute_command("N0CALL", "show/heading G")
             assert "Heading to " in out or "No heading data for G." in out
             if "Heading to " in out:

@@ -66,7 +66,7 @@ show/grayline
 show/moon
 ```
 
-Solar and lunar views use stored QRA/grid information when available. If no grid is known, the node grid square is used as a fallback. `show/moon` reports topocentric elevation and azimuth, geocentric distance, and the next dated rise and set events with their azimuths.
+Solar and lunar views use stored QRA/grid information when available. If no grid is known, the node grid square is used as a fallback. `show/moon` reports topocentric elevation and azimuth, geocentric distance in kilometers and miles, and the next UTC rise and set times with their azimuths.
 
 ## Operator Commands
 

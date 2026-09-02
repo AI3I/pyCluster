@@ -2546,20 +2546,20 @@ table{
   background:var(--panel);
 }
 .peer-table{
-  width:max-content;
+  width:100%;
   min-width:100%;
-  table-layout:auto;
+  table-layout:fixed;
 }
 .peer-table th,
 .peer-table td{
-  white-space:nowrap;
-}
-.peer-table td:nth-child(2),
-.peer-table td:nth-child(3),
-.peer-table td:nth-child(5),
-.peer-table td:nth-child(6){
   white-space:normal;
+  overflow-wrap:anywhere;
+  vertical-align:top;
 }
+.peer-table th:nth-child(1){width:20%}
+.peer-table th:nth-child(2){width:30%}
+.peer-table th:nth-child(3){width:25%}
+.peer-table th:nth-child(4){width:25%}
 .proto-peer-table{
   table-layout:fixed;
 }
@@ -3270,8 +3270,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
           <div class="tablewrap" style="margin-top:14px">
             <table class="peer-table">
-              <thead><tr><th>Peer</th><th>Role</th><th>Status</th><th>Traffic</th><th>Health</th></tr></thead>
-              <tbody id="peerRows"><tr><td colspan="5">Loading peers...</td></tr></tbody>
+              <thead><tr><th>Peer</th><th>Connection</th><th>Activity</th><th>Traffic</th></tr></thead>
+              <tbody id="peerRows"><tr><td colspan="4">Loading peers...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -3952,6 +3952,7 @@ function fillPeerForm(peer) {
   const protoText = data.proto
     ? `${proto.health || 'unknown'}${proto.age_min >= 0 ? ` • ${proto.age_min}m since inbound PC` : ' • no inbound PC age'} • last ${proto.last_pc_type || 'unknown'}`
     : 'no protocol data';
+  const versionText = String((proto.pc18_summary || proto.pc18_software) || 'not advertised');
   const transport = String(data.transport || data.profile || '-').trim() || '-';
   const dsnText = String(auth.dsn || data.path_hint || '').trim() || (data.inbound ? 'inbound peer' : '-');
   const retryText = data.inbound ? 'no local retry' : (data.reconnect_enabled === false ? 'manual retry' : 'auto retry');
@@ -3962,6 +3963,7 @@ function fillPeerForm(peer) {
     <div class="status-cell"><label>Direction</label><span>${esc(direction)}</span></div>
     <div class="status-cell"><label>Link Health</label><span>${esc(linkHealth)}</span></div>
     <div class="status-cell"><label>Family</label><span>${esc(data.profile || '-')}</span></div>
+    <div class="status-cell"><label>Software</label><span>${esc(versionText)}</span></div>
     <div class="status-cell"><label>Transport</label><span>${esc(transport)}</span></div>
     <div class="status-cell"><label>Retry</label><span>${esc(retryText)}</span></div>
     <div class="status-cell"><label>Frames</label><span>${esc(frames)}</span></div>
@@ -4027,7 +4029,7 @@ function bindSelectablePeerRows(body, rows) {
 function setPeerRows(peers) {
   const body = byId('peerRows');
   if (!Array.isArray(peers) || !peers.length) {
-    body.innerHTML = '<tr><td colspan="5">No peers configured.</td></tr>';
+    body.innerHTML = '<tr><td colspan="4">No peers configured.</td></tr>';
     return;
   }
   body.innerHTML = peers.map((peer) => {
@@ -4035,12 +4037,8 @@ function setPeerRows(peers) {
     const frames = `${peer.parsed_frames || 0} in / ${peer.sent_frames || 0} out`;
     const rxTypes = summarizeTypes(peer.rx_by_type);
     const txTypes = summarizeTypes(peer.tx_by_type);
-    const proto = peer.proto ? `${peer.proto.health || 'unknown'}${peer.proto.age_min >= 0 ? `, ${peer.proto.age_min}m` : ''}` : 'unknown';
     const status = peer.connected === false ? 'Disconnected' : 'Connected';
-    const statusMeta = peer.connected === false ? (peer.inbound ? 'waiting for remote node' : 'waiting for outbound link') : `${direction} • active`;
-    const pathHint = String(peer.path_hint || '').trim();
     const transport = String(peer.transport || '').trim();
-    const desired = peer.desired ? '<div class="mini">configured peer</div>' : '';
     const reconnect = peer.inbound ? 'no local retry' : (peer.reconnect_enabled ? 'auto retry' : 'manual retry');
     const retry = peer.inbound ? 'n/a' : (peer.next_retry_epoch ? `next ${fmtEpoch(peer.next_retry_epoch)}` : 'ready');
     const queue = peer.inbound ? 'mail n/a' : `mail ${esc(String(peer.pending_mail || 0))} queued`;
@@ -4057,31 +4055,23 @@ function setPeerRows(peers) {
       }
       err = `<div class="mini">${esc(errText)}</div>`;
     }
-    const link = peer.link || {};
-    const linkHealth = peer.connected === false ? 'disconnected' : (link.health || 'connected');
-    const linkSummary = peer.connected === false
-      ? 'transport disconnected'
-      : `${link.summary || 'transport connected'}${link.rx_age_min >= 0 ? ` • rx ${link.rx_age_min}m ago` : ' • rx quiet'}${link.tx_age_min >= 0 ? ` • tx ${link.tx_age_min}m ago` : ' • tx quiet'}`;
-    const healthText = peer.connected === false
-      ? (peer.proto
-          ? `last known ${peer.proto.health || 'unknown'}${peer.proto.age_min >= 0 ? ` • ${peer.proto.age_min}m ago` : ''}${peer.proto.last_pc_type ? ` • last ${peer.proto.last_pc_type}` : ''}`
-          : 'no protocol data')
-      : (peer.proto
-          ? `protocol ${peer.proto.health || 'unknown'}${peer.proto.age_min >= 0 ? ` • ${peer.proto.age_min}m since inbound PC` : ' • no inbound PC age'} • last ${peer.proto.last_pc_type || 'unknown'}`
-          : 'no protocol data');
     const normalizedProfile = String(peer.profile || 'dxspider').trim().toLowerCase();
     const normalizedTransport = transport.toLowerCase();
-    const transportMeta = transport && normalizedTransport !== normalizedProfile ? `<div class="mini">${esc(transport)}</div>` : '';
-    const pathMeta = pathHint ? `<div class="mini">${esc(pathHint)}</div>` : '';
+    const transportMeta = transport && normalizedTransport !== normalizedProfile ? ` • ${esc(transport)}` : '';
     const learnedVersion = String((peer.proto && (peer.proto.pc18_summary || peer.proto.pc18_software)) || '').trim();
     const learnedVersionMeta = learnedVersion ? `<div class="mini">${esc(learnedVersion)}</div>` : '';
-    const familyMeta = `<div class="mini"><strong>${esc(String(peer.profile || 'dxspider'))}</strong> • ${esc(reconnect)}</div>`;
+    const familyMeta = `<div class="mini"><strong>${esc(String(peer.profile || 'dxspider'))}</strong>${transportMeta}</div>`;
+    const lastPc = String(peer.last_pc_type || (peer.proto && peer.proto.last_pc_type) || '-');
+    const rxTime = peer.last_rx_epoch ? fmtEpoch(peer.last_rx_epoch) : 'none';
+    const txTime = peer.last_tx_epoch ? fmtEpoch(peer.last_tx_epoch) : 'none';
+    const connectionMeta = peer.connected === false
+      ? (peer.inbound ? 'waiting for remote node' : `${reconnect} • ${retry}`)
+      : `${direction} • ${peer.desired ? 'configured' : 'observed'}`;
     return `<tr data-peer="${esc(peer.peer || '')}">
-      <td><strong>${peer.peer}</strong></td>
-      <td>${esc(direction)}<div class="mini">${peer.desired ? 'configured peer' : 'observed live peer'}</div>${familyMeta}${transportMeta}${pathMeta}${learnedVersionMeta}</td>
-      <td><strong>${status}</strong><div class="mini">${esc(statusMeta)}</div><div class="mini">${peer.inbound ? 'inbound link' : `retry ${esc(String(peer.retry_count || 0))} • ${esc(retry)}`}</div>${desired}${err}</td>
-      <td>${frames}<div class="mini">rx ${esc(rxTypes)}</div><div class="mini">tx ${esc(txTypes)}</div></td>
-      <td>${healthBadge(linkHealth)} <div class="mini">${esc(linkSummary)}</div><div class="mini">${esc(healthText)}</div><div class="mini">${queue}</div>${routeIssues}</td>
+      <td><strong>${esc(peer.peer || '')}</strong>${familyMeta}${learnedVersionMeta}</td>
+      <td>${healthBadge(status)}<div class="mini">${esc(connectionMeta)}</div>${err}</td>
+      <td><strong>${esc(lastPc)}</strong><div class="mini">RX ${esc(rxTime)}</div><div class="mini">TX ${esc(txTime)}</div></td>
+      <td>${frames}<div class="mini">rx ${esc(rxTypes)}</div><div class="mini">tx ${esc(txTypes)}</div><div class="mini">${queue}</div>${routeIssues}</td>
     </tr>`;
   }).join('');
   bindSelectablePeerRows(body, peers);

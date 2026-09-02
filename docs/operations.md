@@ -371,14 +371,13 @@ The peer model distinguishes:
 
 That is about who initiated the link, not whether traffic is bidirectional.
 
-The web peer table keeps transport state and protocol freshness separate:
+The web surfaces keep transport state and protocol freshness separate:
 
-- `connected` means a socket is live
-- `disconnected` means no socket is live
-- `bidirectional`, `receive active`, `transmit active`, `idle`, and `connected quiet` describe recent traffic direction
-- protocol stale/degraded/flapping labels describe whether fresh PC protocol traffic has been received inside the configured thresholds
+- Peers and Links uses `connected` or `disconnected` for the live socket and shows direction, retry state, last RX/TX time, and traffic counts.
+- The peer modal carries detailed transport, error, queue, and protocol information.
+- Protocol Health owns stale/degraded/flapping labels based on received PC protocol freshness and configured thresholds.
 
-An inbound link can be connected and transmit-active/receive-quiet when the remote node is still connected but has not sent recent protocol traffic. That should not be shown to operators as a broken transport.
+A live socket and fresh inbound protocol traffic are related but distinct. Diagnose a disconnected row as transport/DNS/listener failure first; diagnose a connected but stale row on Protocol Health as a protocol-activity problem.
 
 When spot ingest sees a callsign that is syntactically plausible but not recognized by the currently loaded prefix data, pyCluster ingests it and logs a `spot call review: ...` line instead of dropping it. The System Console spot table marks those rows with a `Review` badge.
 

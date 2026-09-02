@@ -234,6 +234,8 @@ queued.
 | `set/badword <expr>` | Add a blocked word rule. |
 | `unset/badword <expr>` | Remove a blocked word rule. |
 
+Global bad-call rules apply to DX spot ingress fields; `set/badspotter` is not a general author ban for announcement or propagation bulletins. Peer WCY ingestion separately requires the report source to identify as the trusted `DK0WCY` publisher before pyCluster stores or relays it.
+
 ## Traffic and Messaging
 
 | Command | Purpose |
@@ -366,7 +368,7 @@ queued.
 |---|---|
 | `show/sun` | Show sun status. |
 | `show/grayline` | Show grayline status. |
-| `show/moon` | Show topocentric moon status, distance, and dated rise/set times with event azimuths. |
+| `show/moon` | Show topocentric moon status, distance in kilometers and miles, and UTC rise/set times with event azimuths. |
 | `show/muf` | Show MUF estimate. |
 | `show/contest` | Show contest-oriented information. |
 | `show/satellite [target]` | Show satellite spots, or predict passes for a named TLE target when a keps file is configured. |

@@ -350,6 +350,8 @@ The public web UI gives users a browser interface for:
 
 Logged-in public web filters are stored in the same database-backed filter table used by telnet. Common filter combinations are saved as a compound `accept/spots` rule so the web and telnet views make the same filtering decision for that user. The public web exposes band, mode, activity, continent, CQ-zone, spotter-continent, spotter-CQ, and comment-tag filters; ITU-zone filters are not exposed in the web UI.
 
+Peer WCY bulletins are accepted only when their source identifies as the trusted `DK0WCY` publisher. Parseable propagation text from another callsign is not promoted to WCY, stored, or relayed. The global `badspotter` list remains specific to DX spot ingress and does not act as a general bulletin-author block list.
+
 The profile modal lets logged-in users update name, QTH, grid square, home node, and email address. It also exposes MFA settings for switching between email and authenticator-app codes, enabling an app with a QR code, verifying the active method, and disabling user-level MFA.
 
 The login modal provides separate **Reset Password** and **Reset MFA** recovery actions. MFA recovery requires the exact callsign/SSID and matching verified email, removes the unusable authenticator and outstanding MFA challenges, preserves the password and unrelated locks, and sends a confirmation notice. If node policy requires MFA, verified email OTP remains enabled after recovery.

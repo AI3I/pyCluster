@@ -4,6 +4,10 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Reject WCY bulletins from untrusted publishers before storage or relay; official `DK0WCY` reports remain accepted across PC12, PC73, and prefixed PC93 paths.
+- `show/moon` now reports distance in kilometers and miles and presents the next rise/set as concise UTC times without a potentially confusing calendar date.
+- Simplified the System Operator Peers and Links table into Peer, Connection, Activity, and Traffic columns; detailed protocol health and transport diagnostics remain in the peer modal and Protocol Health page.
+
 ## 1.0.14 - 2026-08-30
 
 - Replaced CARTO map tiles, which now render an API-key watermark, with attributed OpenStreetMap tiles and theme-aware client-side styling.

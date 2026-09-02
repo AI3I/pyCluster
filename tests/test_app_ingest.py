@@ -2065,7 +2065,7 @@ def test_ingest_pc93_respects_category_policy_and_empty_body(tmp_path) -> None:
             await app.store.set_user_pref(app.config.node.node_call, "ingest.peer.peer2.wcy", "off", now)
 
             blocked = Pc93Message.from_fields(
-                ["N0NODE-1", "0", "*", "W1AW", "*", "[WCY/LOCAL] A=8 K=2", "", "127.0.0.1", "H1", ""]
+                ["N0NODE-1", "0", "*", "DK0WCY", "*", "[WCY/LOCAL] A=8 K=2", "", "127.0.0.1", "H1", ""]
             )
             await app._handle_node_link_item("PEER2", WirePcFrame("PC93", blocked.to_fields()), blocked)
 
@@ -2091,15 +2091,48 @@ def test_ingest_pc93_prefixed_wcy_maps_to_wcy_bulletin(tmp_path) -> None:
         app = ClusterApp(_mk_config(db))
         try:
             msg = Pc93Message.from_fields(
-                ["N0NODE-1", "0", "*", "W1AW", "*", "[WCY/LOCAL] A=8 K=2 [via:PEER2]", "", "127.0.0.1", "H1", ""]
+                ["N0NODE-1", "0", "*", "DK0WCY", "*", "[WCY/LOCAL] A=8 K=2 [via:PEER2]", "", "127.0.0.1", "H1", ""]
             )
             frame = WirePcFrame("PC93", msg.to_fields())
             await app._handle_node_link_item("PEER2", frame, msg)
             rows = await app.store.list_bulletins("wcy", limit=5)
             assert len(rows) == 1
-            assert rows[0]["sender"] == "W1AW"
+            assert rows[0]["sender"] == "DK0WCY"
             assert rows[0]["scope"] == "LOCAL"
             assert "A=8 K=2" in str(rows[0]["body"])
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_rejects_untrusted_pc93_wcy_source(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc93_untrusted_wcy.db")
+        app = ClusterApp(_mk_config(db))
+        policy_drops: list[tuple[str, str]] = []
+        try:
+            async def _mark_policy_drop(peer: str, reason: str) -> None:
+                policy_drops.append((peer, reason))
+
+            app.node_link.mark_policy_drop = _mark_policy_drop  # type: ignore[method-assign]
+            msg = Pc93Message.from_fields(
+                [
+                    "IZ3MEZ-6",
+                    "0",
+                    "*",
+                    "EA3CV-2",
+                    "*",
+                    "[WCY/FULL] SFI=116 A=15 K=2 ExpK=1 R=82 SA=eru GMF=qui Aurora=no",
+                    "",
+                    "127.0.0.1",
+                    "H1",
+                    "",
+                ]
+            )
+            await app._handle_node_link_item("IZ3MEZ-6", WirePcFrame("PC93", msg.to_fields()), msg)
+            assert await app.store.list_bulletins("wcy", limit=5) == []
+            assert policy_drops == [("IZ3MEZ-6", "ingest_wcy_untrusted_source")]
         finally:
             await app.store.close()
 
@@ -2343,6 +2376,28 @@ def test_ingest_pc73_maps_to_wcy_bulletin(tmp_path) -> None:
             assert rows[0]["sender"] == "DK0WCY"
             assert rows[0]["scope"] == "FULL"
             assert "SFI=120 A=18 K=3 ExpK=2 R=105 SA=qui GMF=maj Aurora=no" == str(rows[0]["body"])
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_rejects_untrusted_pc73_wcy_source(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ingest_pc73_untrusted_wcy.db")
+        app = ClusterApp(_mk_config(db))
+        policy_drops: list[tuple[str, str]] = []
+        try:
+            async def _mark_policy_drop(peer: str, reason: str) -> None:
+                policy_drops.append((peer, reason))
+
+            app.node_link.mark_policy_drop = _mark_policy_drop  # type: ignore[method-assign]
+            msg = Pc73Message.from_fields(
+                ["2-Sep-2026", "00", "101", "7", "2", "1", "55", "eru", "qui", "no", "EA3CV-2", "AI3I-15", "H1", ""]
+            )
+            await app._handle_node_link_item("PEER2", WirePcFrame("PC73", msg.to_fields()), msg)
+            assert await app.store.list_bulletins("wcy", limit=5) == []
+            assert policy_drops == [("PEER2", "ingest_wcy_untrusted_source")]
         finally:
             await app.store.close()
 
@@ -3255,7 +3310,7 @@ def test_ingest_peer_policy_blocks_prefixed_category_from_peer(tmp_path) -> None
             now = int(datetime.now(timezone.utc).timestamp())
             await app.store.set_user_pref(cfg.node.node_call, "ingest.peer.peer2.wcy", "off", now)
             msg = Pc93Message.from_fields(
-                ["N0NODE-1", "0", "*", "W1AW", "*", "[WCY/LOCAL] blocked wcy", "", "127.0.0.1", "H1", ""]
+                ["N0NODE-1", "0", "*", "DK0WCY", "*", "[WCY/LOCAL] blocked wcy", "", "127.0.0.1", "H1", ""]
             )
             frame = WirePcFrame("PC93", msg.to_fields())
             await app._handle_node_link_item("peer2", frame, msg)
