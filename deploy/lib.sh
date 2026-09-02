@@ -756,6 +756,15 @@ run_upgrade_1_0_6() {
   ensure_runtime_ownership
 }
 
+apply_py_protocol_defaults() {
+  (
+    cd "$PYCLUSTER_APP_DIR" &&
+    PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/apply_py_protocol_defaults.py \
+      --config "$PYCLUSTER_CONFIG_DEST"
+  )
+  ensure_runtime_ownership
+}
+
 cleanup_persisted_rbn_history() {
   (
     cd "$PYCLUSTER_APP_DIR" &&

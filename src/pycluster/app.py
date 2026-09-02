@@ -615,6 +615,12 @@ class ClusterApp:
         wire_profile = "spider" if clean_dsn.strip().lower().startswith("dxspider://") and profile == "dxspider" else profile
         await self.node_link.connect_dsn(name, effective_dsn, profile=wire_profile)
         await self._begin_py_peer_session(name)
+        peer_key = normalize_call(name) or name.upper()
+        if normalize_profile(wire_profile) == "pycluster":
+            # A configured pyCluster family is an authenticated operator
+            # assertion. Initiate PY immediately; the reply still has to prove
+            # the expected peer callsign and negotiate compatible capabilities.
+            self._pycluster_identified_peers.add(peer_key)
         await self._reset_mail_transport_state(name, "peer session refreshed")
         now = int(datetime.now(timezone.utc).timestamp())
         await self.store.set_user_pref(self.config.node.node_call, self._peer_pref_key(name, "last_connect_epoch"), str(now), now)
@@ -628,6 +634,8 @@ class ClusterApp:
             pc18 = parse_wire_pc_frame(pycluster_pc18())
             if pc18 is not None:
                 await self.node_link.send(name, pc18)
+        if normalize_profile(wire_profile) == "pycluster":
+            await self._send_py_hello(name)
         if wire_profile in {"spider", "dxspider", "pycluster"} and not is_dxspider_dsn:
             await self.node_link.send(name, WirePcFrame("PC20", [""]))
         if is_dxspider_dsn:
@@ -765,13 +773,13 @@ class ClusterApp:
                     },
                 )
         conn = DxSpiderInboundConnection(peer_key, reader, writer, initial_lines=initial_lines)
-        if pycluster_identified and profile == "pycluster":
+        if profile == "pycluster":
             self._pycluster_identified_peers.add(peer_key)
         await self.node_link.accept_inbound(peer_key, conn, profile=profile)
         await conn.send_line(pycluster_pc18())
-        await conn.send_line("PC20^")
-        if pycluster_identified and profile == "pycluster":
+        if profile == "pycluster":
             await self._send_py_hello(peer_key)
+        await conn.send_line("PC20^")
         if profile == "dxspider":
             self._legacy_dxspider_peers.add(peer_key)
             try:
@@ -787,6 +795,13 @@ class ClusterApp:
 
     async def start(self, *, with_public_web: bool = True) -> None:
         self._node_ingest_stop.clear()
+        if self._rbn_web_socket is None:
+            try:
+                self._rbn_web_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                self._rbn_web_socket.setblocking(False)
+            except OSError:
+                self._rbn_web_socket = None
+                LOG.warning("unable to initialize the local public-web RBN socket")
         await self.telnet.start()
         await self.web.start()
         self._public_web_started = False
@@ -939,8 +954,7 @@ class ClusterApp:
 
     def _publish_rbn_to_public_web(self, spot: Spot) -> None:
         if self._rbn_web_socket is None:
-            self._rbn_web_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            self._rbn_web_socket.setblocking(False)
+            return
         try:
             self._rbn_web_socket.sendto(encode_rbn_spot(spot), rbn_socket_address(self.config))
         except (BlockingIOError, ConnectionRefusedError, FileNotFoundError, OSError):

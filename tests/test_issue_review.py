@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pycluster.telnet_server as telnet_server_mod
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
-from pycluster.maidenhead import coords_to_locator
 from pycluster.store import SpotStore
 from pycluster.telnet_server import Session, TelnetClusterServer
 
@@ -47,8 +46,6 @@ def test_telnet_profile_commands_update_registry_and_console(tmp_path) -> None:
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N9JR-5", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
-        orig = telnet_server_mod.estimate_location_from_locator
-        telnet_server_mod.estimate_location_from_locator = lambda locator: "Milwaukee, WI"
         try:
             _, out = await srv._execute_command("N9JR-5", "set/name Joe")
             assert "Name set to Joe for N9JR-5." in out
@@ -65,7 +62,6 @@ def test_telnet_profile_commands_update_registry_and_console(tmp_path) -> None:
             assert "Name: Joe" in station[1]
             assert "Grid Square (QRA): EN63AA" in station[1]
         finally:
-            telnet_server_mod.estimate_location_from_locator = orig
             await store.close()
 
     asyncio.run(run())
@@ -105,8 +101,6 @@ def test_show_heading_reports_bearing(tmp_path) -> None:
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N9JR-5", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
-        orig = telnet_server_mod.estimate_location_from_locator
-        telnet_server_mod.estimate_location_from_locator = lambda locator: "Grid EN63AA"
         try:
             await srv._execute_command("N9JR-5", "set/qra EN63AA")
             _, out = await srv._execute_command("N9JR-5", "show/heading G")
@@ -114,57 +108,47 @@ def test_show_heading_reports_bearing(tmp_path) -> None:
             assert "deg" in out
             assert "Reference: QRA EN63AA" in out
         finally:
-            telnet_server_mod.estimate_location_from_locator = orig
             await store.close()
 
     asyncio.run(run())
 
 
-def test_set_qra_backfills_location_when_unset(tmp_path) -> None:
+def test_set_qra_does_not_invent_location_when_unset(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "issue_qra_backfill.db")
         cfg = _mk_config(db)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N9JR-5", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
-        orig = telnet_server_mod.estimate_location_from_locator
-        telnet_server_mod.estimate_location_from_locator = lambda locator: "Milwaukee, WI"
         try:
             _, out = await srv._execute_command("N9JR-5", "set/qra EN63AA")
             assert "QRA set to EN63AA" in out
-            _, station = await srv._execute_command("N9JR-5", "show/station")
-            assert "Location Detail: Milwaukee, WI" in station
-            assert "Grid Square (QRA): EN63AA" in station
+            assert await store.get_user_pref("N9JR-5", "location") is None
+            row = await store.get_user_registry("N9JR-5")
+            assert row is not None and str(row["qra"]) == "EN63AA"
         finally:
-            telnet_server_mod.estimate_location_from_locator = orig
             await store.close()
 
     asyncio.run(run())
 
 
-def test_set_location_updates_qra_and_takes_precedence(tmp_path) -> None:
+def test_set_location_preserves_stored_qra_and_takes_display_precedence(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "issue_location_precedence.db")
         cfg = _mk_config(db)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N9JR-5", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
-        orig = telnet_server_mod.resolve_location_to_coords
-        orig_est = telnet_server_mod.estimate_location_from_locator
-        telnet_server_mod.resolve_location_to_coords = lambda text: (42.3601, -71.0589)
-        telnet_server_mod.estimate_location_from_locator = lambda locator: "Milwaukee, WI"
         try:
             await srv._execute_command("N9JR-5", "set/qra EN63AA")
             _, out = await srv._execute_command("N9JR-5", "set/location Boston, MA")
             assert "Location set to Boston, MA" in out
             row = await store.get_user_registry("N9JR-5")
             assert row is not None
-            assert str(row["qra"]) == coords_to_locator(42.3601, -71.0589)
+            assert str(row["qra"]) == "EN63AA"
             _, heading = await srv._execute_command("N9JR-5", "show/heading G")
             assert "Reference: location Boston, MA" in heading
         finally:
-            telnet_server_mod.resolve_location_to_coords = orig
-            telnet_server_mod.estimate_location_from_locator = orig_est
             await store.close()
 
     asyncio.run(run())
@@ -177,10 +161,6 @@ def test_show_field_aliases_read_back_set_values(tmp_path) -> None:
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N9JR-5", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
-        orig_est = telnet_server_mod.estimate_location_from_locator
-        orig_res = telnet_server_mod.resolve_location_to_coords
-        telnet_server_mod.estimate_location_from_locator = lambda locator: "Milwaukee, WI"
-        telnet_server_mod.resolve_location_to_coords = lambda text: (42.3601, -71.0589) if text == "Boston, MA" else None
         try:
             assert "Name set to Joe for N9JR-5." in (await srv._execute_command("N9JR-5", "set/name Joe"))[1]
             assert "QTH set to Milwaukee, WI for N9JR-5." in (await srv._execute_command("N9JR-5", "set/qth Milwaukee, WI"))[1]
@@ -196,8 +176,6 @@ def test_show_field_aliases_read_back_set_values(tmp_path) -> None:
             assert "Email for N9JR-5: joe@example.net" in (await srv._execute_command("N9JR-5", "show/email"))[1]
             assert "Location for N9JR-5: Boston, MA" in (await srv._execute_command("N9JR-5", "show/location"))[1]
         finally:
-            telnet_server_mod.estimate_location_from_locator = orig_est
-            telnet_server_mod.resolve_location_to_coords = orig_res
             await store.close()
 
     asyncio.run(run())

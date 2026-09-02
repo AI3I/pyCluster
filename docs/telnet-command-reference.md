@@ -120,7 +120,7 @@ Spotter-based filters match the station that posted the spot. They do not match 
 | `set/name <text>` | Set display name. |
 | `set/qth <text>` | Set location/QTH. |
 | `set/qra <text>` | Set QRA or grid-style field used by this node. |
-| `set/location <text>` | Set location text and update QRA automatically when the location resolves to coordinates. |
+| `set/location <text>` | Set the stored location text without changing the stored QRA. |
 | `set/address <text>` | Set address/contact text. |
 | `set/email <addr>` | Set email address. |
 | `unset/email` | Clear email address. |

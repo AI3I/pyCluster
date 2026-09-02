@@ -131,20 +131,21 @@ class MFAConfig:
 
 @dataclass(slots=True)
 class PyProtocolConfig:
-    enabled: bool = False
+    defaults_version: int = 1
+    enabled: bool = True
     public_web_url: str = ""
     share_node_info: bool = True
     share_public_web_url: bool = True
-    share_locator: bool = False
-    share_qth: bool = False
-    share_sysop_contact: bool = False
-    share_topology: bool = False
-    share_health: bool = False
-    share_datasets: bool = False
-    share_rbn_status: bool = False
-    share_policy: bool = False
-    share_clock: bool = False
-    share_notices: bool = False
+    share_locator: bool = True
+    share_qth: bool = True
+    share_sysop_contact: bool = True
+    share_topology: bool = True
+    share_health: bool = True
+    share_datasets: bool = True
+    share_rbn_status: bool = True
+    share_policy: bool = True
+    share_clock: bool = True
+    share_notices: bool = True
     notice_severity: str = "normal"
     notice_message: str = ""
     notice_expires_epoch: int = 0
@@ -156,6 +157,7 @@ class PyProtocolConfig:
     record_ttl_seconds: int = 86400
 
     def __post_init__(self) -> None:
+        self.defaults_version = max(0, int(self.defaults_version or 0))
         self.notice_severity = str(self.notice_severity or "normal").strip().lower()
         if self.notice_severity not in {"normal", "maintenance", "upgrading", "degraded", "testing"}:
             self.notice_severity = "normal"

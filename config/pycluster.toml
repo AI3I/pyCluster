@@ -73,22 +73,24 @@ startup_commands = []
 reconnect_seconds = 60
 
 [py_protocol]
-# Decentralized pyCluster metadata exchange is opt-in. PY00 negotiation occurs
-# only on authenticated links whose peer identifies as pyCluster.
-enabled = false
+# Decentralized metadata exchange is enabled only on authenticated links whose
+# peer positively identifies as pyCluster. Disable individual sharing controls
+# below when a node should advertise less metadata.
+defaults_version = 1
+enabled = true
 public_web_url = ""
 share_node_info = true
 share_public_web_url = true
-share_locator = false
-share_qth = false
-share_sysop_contact = false
-share_topology = false
-share_health = false
-share_datasets = false
-share_rbn_status = false
-share_policy = false
-share_clock = false
-share_notices = false
+share_locator = true
+share_qth = true
+share_sysop_contact = true
+share_topology = true
+share_health = true
+share_datasets = true
+share_rbn_status = true
+share_policy = true
+share_clock = true
+share_notices = true
 notice_severity = "normal"
 notice_message = ""
 notice_expires_epoch = 0

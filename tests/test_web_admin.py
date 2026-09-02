@@ -914,6 +914,7 @@ def test_api_spots_can_filter_cluster_vs_rbn_sources(tmp_path) -> None:
 def test_proto_state_counts_pc18_handshake_as_known(tmp_path) -> None:
     db = str(tmp_path / "web_proto_pc18.db")
     cfg = _mk_config(db, admin_token="adm")
+    cfg.py_protocol.enabled = False
     store = SpotStore(db)
     srv = WebAdminServer(
         config=cfg,

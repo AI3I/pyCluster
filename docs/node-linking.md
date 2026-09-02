@@ -108,7 +108,9 @@ Steady-state DXSpider liveness uses PC51 ping requests and replies. pyCluster do
 
 ## pyCluster Protocol Discovery
 
-pyCluster reserves the `PY` frame family for pyCluster-to-pyCluster extensions. The feature is disabled by default through `[py_protocol].enabled`. A node never sends a `PY` frame merely because a peer is configured as pyCluster. The remote peer must first identify itself with a pyCluster PC18 software string on an authenticated node link, and the local operator must enable the protocol. Link policy rejects `PY` traffic on every non-pyCluster peer profile.
+pyCluster reserves the `PY` frame family for pyCluster-to-pyCluster extensions. The feature is enabled by default through `[py_protocol].enabled` and is attempted only on an authenticated link whose configured peer family is pyCluster or whose remote PC18 positively identifies pyCluster. A System Operator can disable the protocol or any sharing category, and link policy rejects `PY` traffic on every non-pyCluster peer profile.
+
+For links between capable pyCluster nodes, PY is the preferred protocol for every capability it defines. An explicitly configured `pycluster` peer family is treated as an authenticated operator assertion: the node sends its PC18 identity and immediately initiates PY00 without waiting for the remote PC18. The returned PY00 must still match the authenticated peer callsign and advertise compatible capabilities. Unconfigured inbound and unknown-family peers must positively identify through PC18 before PY is attempted. PC remains the fallback when PY is disabled, unsupported, or fails negotiation, and remains the operational transport for spots, announcements, chat, mail, and routing families that do not yet have a PY equivalent. pyCluster does not suppress those PC families until a negotiated PY replacement provides equivalent behavior and delivery guarantees.
 
 Protocol version 1 begins with a direct-peer hello:
 

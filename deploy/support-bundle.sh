@@ -396,7 +396,9 @@ if [ "$include_network" -eq 1 ]; then
   if command -v ip6tables-save >/dev/null 2>&1; then run_network_shell "ip6tables rules" "ip6tables-save 2>/dev/null"; fi
 else
   if command -v ufw >/dev/null 2>&1; then run "UFW service state" systemctl is-active ufw.service; fi
-  if command -v firewall-cmd >/dev/null 2>&1; then run "firewalld state" firewall-cmd --state; fi
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    printf '\nfirewalld detected; use --include-network to query its state and rules.\n'
+  fi
 fi
 
 section "pyCluster Deployment Layout"

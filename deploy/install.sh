@@ -18,6 +18,7 @@ install_config_if_missing
 normalize_country_data_config_paths
 install_optional_config_if_missing "config/strings.toml" "strings.toml"
 install_optional_config_if_missing "config/pycluster.local.toml.example" "pycluster.local.toml.example"
+apply_py_protocol_defaults
 install_or_refresh_service
 ensure_fail2ban_packages
 install_or_refresh_fail2ban

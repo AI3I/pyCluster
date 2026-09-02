@@ -24,7 +24,6 @@ from .config import AppConfig, node_presentation_defaults, parse_telnet_ports
 from .ctydat import load_cty, lookup
 from .wpxloc import load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
-from .geocode import estimate_location_from_locator, resolve_location_to_coords
 from .geomag import canonicalize_wcy_text, canonicalize_wwv_text, derive_wcy_from_wwv, parse_wcy_text, parse_wwv_text
 from .models import Spot, display_call, is_valid_call, is_valid_registration_call, normalize_call
 from .pathmeta import describe_session_path, describe_transport_dsn, normalize_recorded_path
@@ -4904,31 +4903,6 @@ class TelnetClusterServer:
             parts.append(note)
         return " | ".join(parts)
 
-    def _resolve_location_coords(self, text: str) -> tuple[float, float] | None:
-        started = time.monotonic()
-        try:
-            coords = resolve_location_to_coords(text)
-        except Exception:
-            LOG.exception("location resolve failed call_text=%r", text)
-            return None
-        elapsed_ms = (time.monotonic() - started) * 1000.0
-        if coords is None:
-            LOG.info("location resolve miss text=%r elapsed_ms=%.1f", text, elapsed_ms)
-            return None
-        LOG.info("location resolve ok text=%r lat=%.4f lon=%.4f elapsed_ms=%.1f", text, coords[0], coords[1], elapsed_ms)
-        return coords
-
-    def _estimate_location_label(self, locator: str) -> str:
-        started = time.monotonic()
-        try:
-            label = estimate_location_from_locator(locator)
-        except Exception:
-            LOG.exception("location estimate failed locator=%r", locator)
-            return self._render_string("location.estimated_grid", "Grid {locator}", locator=extract_locator(locator))
-        elapsed_ms = (time.monotonic() - started) * 1000.0
-        LOG.info("location estimate locator=%r label=%r elapsed_ms=%.1f", locator, label, elapsed_ms)
-        return label
-
     async def _sync_locator_defaults(self, call: str, locator: str, *, overwrite_coords: bool = False) -> None:
         loc = extract_locator(locator)
         if not loc:
@@ -4947,41 +4921,6 @@ class TelnetClusterServer:
         if not str(cur_lat or "").strip() and not str(cur_lon or "").strip():
             await self.store.set_user_pref(call, "forward_lat", f"{coords[0]:.4f}", now)
             await self.store.set_user_pref(call, "forward_lon", f"{coords[1]:.4f}", now)
-
-    async def _sync_location_defaults(self, call: str, text: str) -> str | None:
-        coords = self._resolve_location_coords(text)
-        if coords is None:
-            return None
-        lat, lon = coords
-        loc = coords_to_locator(lat, lon)
-        now = int(datetime.now(timezone.utc).timestamp())
-        await self.store.set_user_pref(call, "qra", loc, now)
-        await self.store.set_user_pref(call, "forward_lat", f"{lat:.4f}", now)
-        await self.store.set_user_pref(call, "forward_lon", f"{lon:.4f}", now)
-        await self.store.set_user_pref(call, "location_source", "user", now)
-        await self.store.upsert_user_registry(call, now, qra=loc)
-        s = self._find_session(call)
-        if s:
-            s.vars["qra"] = loc
-            s.vars["forward_lat"] = f"{lat:.4f}"
-            s.vars["forward_lon"] = f"{lon:.4f}"
-            s.vars["location_source"] = "user"
-        return loc
-
-    async def _backfill_location_from_qra(self, call: str, locator: str) -> str | None:
-        existing = await self.store.get_user_pref(call, "location")
-        if str(existing or "").strip():
-            return None
-        label = self._estimate_location_label(locator)
-        label = label.strip() or f"Grid {extract_locator(locator)}"
-        now = int(datetime.now(timezone.utc).timestamp())
-        await self.store.set_user_pref(call, "location", label, now)
-        await self.store.set_user_pref(call, "location_source", "qra_estimate", now)
-        s = self._find_session(call)
-        if s:
-            s.vars["location"] = label
-            s.vars["location_source"] = "qra_estimate"
-        return label
 
     def _solar_hour(self, now: datetime, lon: float) -> float:
         return (now.hour + now.minute / 60.0 + now.second / 3600.0 + lon / 15.0) % 24.0
@@ -7051,16 +6990,11 @@ class TelnetClusterServer:
             elif name == "qra":
                 await self.store.upsert_user_registry(call, now, qra=value)
                 await self._sync_locator_defaults(call, value, overwrite_coords=False)
-                await self._backfill_location_from_qra(call, value)
         elif name == "location":
             now = int(datetime.now(timezone.utc).timestamp())
             await self.store.set_user_pref(call, "location_source", "user", now)
             for session in sessions:
                 session.vars["location_source"] = "user"
-            loc = await self._sync_location_defaults(call, value)
-            if loc:
-                for session in sessions:
-                    session.vars["qra"] = loc
         self._log_event("set", f"{call} {name}={value}")
         if name == "password":
             return self._render_string("set.password_updated", "Password updated for {call}.", call=call) + "\r\n"
