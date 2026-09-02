@@ -72,6 +72,8 @@ sysop_web_host="unset"
 sysop_web_port="8080"
 public_web_host="unset"
 public_web_enabled="unknown"
+py_protocol_enabled="unknown"
+py_sharing_count="unknown"
 public_web_probe_url="http://127.0.0.1:8081"
 if [ -f "$PYCLUSTER_CONFIG_DEST" ]; then
   cfg_output="$(
@@ -108,6 +110,13 @@ elif probe_host == "::":
 elif ":" in probe_host and not probe_host.startswith("["):
     probe_host = f"[{probe_host}]"
 print(f"http://{probe_host}:{cfg.public_web.port}")
+print("yes" if cfg.py_protocol.enabled else "no")
+sharing_fields = (
+    "share_node_info", "share_public_web_url", "share_locator", "share_qth",
+    "share_sysop_contact", "share_topology", "share_health", "share_datasets",
+    "share_rbn_status", "share_policy", "share_clock", "share_notices",
+)
+print(f"{sum(bool(getattr(cfg.py_protocol, key)) for key in sharing_fields)}/{len(sharing_fields)}")
 PY
   )" || config_ok="invalid"
   if [ "$config_ok" = "yes" ]; then
@@ -124,6 +133,8 @@ PY
     public_web_host="${cfg_values[9]:-unset}"
     public_web_enabled="${cfg_values[10]:-unknown}"
     public_web_probe_url="${cfg_values[11]:-http://127.0.0.1:${public_web_port}}"
+    py_protocol_enabled="${cfg_values[12]:-unknown}"
+    py_sharing_count="${cfg_values[13]:-unknown}"
   fi
 fi
 
@@ -183,6 +194,11 @@ status "config" "$PYCLUSTER_CONFIG_DEST ($config_ok)"
 status "telnet listener" "$telnet_host:$telnet_ports"
 status "sysop web listener" "$sysop_web_host:$sysop_web_port"
 status "public web listener" "$public_web_host:$public_web_port (enabled=$public_web_enabled)"
+if [ "$py_protocol_enabled" = "no" ]; then
+  status "PY protocol" "disabled; enable it under Node Settings > pyCluster Protocol"
+else
+  status "PY protocol" "$py_protocol_enabled ($py_sharing_count sharing controls enabled)"
+fi
 status "database" "${db_path:-unset} ($db_ok)"
 status "cty.dat" "${cty_path:-unset} ($cty_ok)"
 status "wpxloc.raw" "${wpx_path:-unset} ($wpx_ok)${wpx_note:+ [$wpx_note]}"

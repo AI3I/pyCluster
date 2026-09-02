@@ -105,7 +105,7 @@ Recent highlights in `1.0.14`:
 - public web and telnet self-registration validate ham-style callsigns before creating registration records
 - telnet self-registration verifies email before sysop approval when SMTP is configured, and expired verification codes tell the user to rerun `REGISTER`
 - node-link peers receive fresh PC18 identity advertisements on outbound reconnects without duplicating the DXSpider transport handshake
-- optional pyCluster-only capability negotiation, decentralized topology, and read-only health/dataset/RBN/policy/clock summaries are isolated to authenticated pyCluster peers and disabled by default
+- authenticated pyCluster peers negotiate PY by default and prefer it for supported metadata, topology, health, dataset, RBN, policy, clock, and notice capabilities; PC remains the fallback and carries operational families without a PY equivalent
 - the System Operator protocol view manages field-level sharing privacy, structured expiring network notices, and direct/reported known-node visibility without a central registry
 - upgrade and repair paths three-way merge new string defaults while preserving operator customizations, and back up invalid catalogs before restoring bundled defaults
 - persistent `set/ve7cc` compatibility emits structured CC11 history and live spots for Ham Radio Deluxe while leaving normal user and peer output unchanged
@@ -257,6 +257,9 @@ The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh
   - seeds `config/strings.toml` if it is missing
 - `run_upgrade_1_0_6`
   - moves any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
+- `apply_py_protocol_defaults`
+  - enables PY and all read-only sharing controls once on installations that predate the default-on policy, then preserves later System Operator opt-outs
+  - inherits NODEINFO identity from existing node settings and seeds the PY public URL from a valid non-project Website URL when public web is enabled
 
 The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. The source tree is synced into the runtime directory with those paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy. Bundled additions and changed defaults are three-way merged into `config/strings.toml`; operator-edited values and extra keys are retained. The managed `config/strings.defaults.toml` baseline records the prior bundled defaults and should not be edited.
 

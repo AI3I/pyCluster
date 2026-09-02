@@ -162,7 +162,7 @@ def test_connect_peer_sends_legacy_dxspider_init_frames(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_connect_pycluster_peer_waits_for_remote_pc18_before_py_hello(tmp_path) -> None:
+def test_connect_pycluster_peer_initiates_py_before_waiting_for_remote_pc18(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "connect_pycluster_identity.db")
         cfg = _mk_config(db)
@@ -176,8 +176,12 @@ def test_connect_pycluster_peer_waits_for_remote_pc18_before_py_hello(tmp_path) 
             async def _send(_peer: str, frame: WirePcFrame) -> None:
                 sent.append(frame)
 
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
             app.node_link.connect_dsn = _connect  # type: ignore[method-assign]
             app.node_link.send = _send  # type: ignore[method-assign]
+            app.node_link.stats = _stats  # type: ignore[method-assign]
 
             await app.connect_peer(
                 "AI3I-90",
@@ -186,9 +190,9 @@ def test_connect_pycluster_peer_waits_for_remote_pc18_before_py_hello(tmp_path) 
                 persist=False,
             )
 
-            assert [frame.pc_type for frame in sent] == ["PC18", "PC20"]
-            assert "AI3I-90" not in app._pycluster_identified_peers
-            assert "AI3I-90" not in app._py_hello_sent
+            assert [frame.pc_type for frame in sent] == ["PC18", "PY00", "PC20"]
+            assert "AI3I-90" in app._pycluster_identified_peers
+            assert "AI3I-90" in app._py_hello_sent
         finally:
             await app.store.close()
 
@@ -303,6 +307,48 @@ def test_inbound_pycluster_identity_is_registered_before_queued_py_frames(tmp_pa
     asyncio.run(run())
 
 
+def test_configured_inbound_pycluster_initiates_py_without_remote_pc18(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "inbound_py_configured.db")
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = True
+        app = ClusterApp(cfg)
+        sent: list[WirePcFrame] = []
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            await app.store.set_user_pref("AI3I-90", "node_family", "pycluster", now)
+
+            async def _accept(name: str, _conn, profile: str = "dxspider") -> None:
+                assert name == "AI3I-90"
+                assert profile == "pycluster"
+                assert "AI3I-90" in app._pycluster_identified_peers
+
+            async def _stats() -> dict[str, dict[str, object]]:
+                return {"AI3I-90": {"profile": "pycluster"}}
+
+            async def _send(_peer: str, frame: WirePcFrame) -> None:
+                sent.append(frame)
+
+            app.node_link.accept_inbound = _accept  # type: ignore[method-assign]
+            app.node_link.stats = _stats  # type: ignore[method-assign]
+            app.node_link.send = _send  # type: ignore[method-assign]
+
+            ok = await app.accept_inbound_node_login(
+                "AI3I-90",
+                "AI3I-91",
+                asyncio.StreamReader(),
+                _DummyWriter(),  # type: ignore[arg-type]
+                [],
+            )
+
+            assert ok is True
+            assert [frame.pc_type for frame in sent] == ["PY00"]
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_accept_inbound_node_login_records_protocol_under_login_identity(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "accept_inbound_peer_name.db")
@@ -344,6 +390,13 @@ def test_pycluster_pc18_negotiates_one_py_hello_and_persists_remote_hello(tmp_pa
         db = str(tmp_path / "py_hello.db")
         cfg = _mk_config(db)
         cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_topology = False
+        cfg.py_protocol.share_health = False
+        cfg.py_protocol.share_datasets = False
+        cfg.py_protocol.share_rbn_status = False
+        cfg.py_protocol.share_notices = False
+        cfg.py_protocol.share_policy = False
+        cfg.py_protocol.share_clock = False
         app = ClusterApp(cfg)
         sent: list[tuple[str, WirePcFrame]] = []
         try:
@@ -476,6 +529,13 @@ def test_py_node_info_is_not_advertised_when_operator_disables_sharing(tmp_path)
         cfg = _mk_config(db)
         cfg.py_protocol.enabled = True
         cfg.py_protocol.share_node_info = False
+        cfg.py_protocol.share_topology = False
+        cfg.py_protocol.share_health = False
+        cfg.py_protocol.share_datasets = False
+        cfg.py_protocol.share_rbn_status = False
+        cfg.py_protocol.share_notices = False
+        cfg.py_protocol.share_policy = False
+        cfg.py_protocol.share_clock = False
         app = ClusterApp(cfg)
         sent: list[WirePcFrame] = []
         try:
@@ -976,6 +1036,12 @@ def test_py_operational_families_are_opt_in_sent_and_persisted(tmp_path) -> None
 def test_py_operational_families_are_not_advertised_when_disabled(tmp_path) -> None:
     cfg = _mk_config(str(tmp_path / "py_operational_disabled.db"))
     cfg.py_protocol.enabled = True
+    cfg.py_protocol.share_health = False
+    cfg.py_protocol.share_datasets = False
+    cfg.py_protocol.share_rbn_status = False
+    cfg.py_protocol.share_notices = False
+    cfg.py_protocol.share_policy = False
+    cfg.py_protocol.share_clock = False
     app = ClusterApp(cfg)
     try:
         capabilities = app._local_py_capabilities()
@@ -1046,7 +1112,9 @@ def test_py_hello_is_rejected_before_pc18_identity_and_on_call_mismatch(tmp_path
 def test_py_protocol_disabled_does_not_negotiate_after_pycluster_pc18(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "py_disabled.db")
-        app = ClusterApp(_mk_config(db))
+        cfg = _mk_config(db)
+        cfg.py_protocol.enabled = False
+        app = ClusterApp(cfg)
         sent: list[WirePcFrame] = []
         try:
             async def _stats() -> dict[str, dict[str, object]]:

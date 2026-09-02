@@ -4,6 +4,10 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Enable the authenticated pyCluster-only `PY` protocol and all read-only sharing capabilities by default for new configurations; capable pyCluster peers prefer negotiated PY families while PC remains the fallback and carries operational families without a PY equivalent. System Operators can still disable the protocol, individual metadata families, or NODEINFO fields.
+- Initiate `PY00` immediately after sending PC18 on authenticated peers explicitly configured as pyCluster, instead of waiting for the remote PC18; unknown-family links retain PC18-first discovery and every returned hello remains identity-validated.
+- Prevent default regression runs from reaching network or host-firewall services by marking listener/socket tests regardless of variable name, rejecting unmarked socket creation, bind/connect/datagram/DNS operations before their syscalls, and replacing address discovery and Fail2Ban status with deterministic fixtures; integration remains available explicitly through `-m socket_listener`. Routine support bundles no longer query firewalld unless the operator explicitly requests `--include-network`.
+- Stop profile updates from geocoding `set/qra` or `set/location`: the stored QRA and location fields remain independent sources of truth, while locator-derived coordinates remain local deterministic calculations. Initialize the best-effort RBN public-web datagram sender only when the application starts.
 - Reject WCY bulletins from untrusted publishers before storage or relay; official `DK0WCY` reports remain accepted across PC12, PC73, and prefixed PC93 paths.
 - `show/moon` now reports distance in kilometers and miles and presents the next rise/set as concise UTC times without a potentially confusing calendar date.
 - Simplified the System Operator Peers and Links table into Peer, Connection, Activity, and Traffic columns; detailed protocol health and transport diagnostics remain in the peer modal and Protocol Health page.

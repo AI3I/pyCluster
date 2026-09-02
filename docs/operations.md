@@ -19,6 +19,14 @@ environments still request listener authorization when they run:
 pytest -q -m socket_listener
 ```
 
+Collection marks any test that awaits a server `start()` call, opens a socket,
+or creates a datagram endpoint, regardless of the local variable name. Autouse
+runtime guards reject any unmarked test before a socket bind, connect, datagram
+send, or DNS lookup can reach the host. Host address discovery and Fail2Ban
+status are replaced with deterministic fixtures. This keeps new or renamed
+network tests and host-service probes from silently reintroducing desktop
+firewall prompts into the default regression command.
+
 ## Services
 
 Typical production services:
@@ -99,6 +107,8 @@ If a manual backup races with actively written logs, stop `pycluster.service` an
 
 Install, upgrade, and repair runs keep the current `pycluster-data-refresh.*` units and remove the old CTY-only `pycluster-cty-refresh.*` units from earlier deployments. Non-dry-run DXSpider migrations also create a `migration-preflight` backup before writing to the live store.
 
+Install, upgrade, and repair also apply the versioned PY default policy. An installation without the policy marker is enabled once with every read-only PY sharing control active. The marker is then persisted in `pycluster.local.toml`, so later System Operator opt-outs are not reverted. Node call, locator, QTH, contact, services, and software version come from existing node/runtime settings; a valid non-project Website URL is inherited as the PY public URL only when public web is enabled.
+
 ## Doctor Output
 
 `deploy/doctor.sh` reports:
@@ -118,6 +128,7 @@ Install, upgrade, and repair runs keep the current `pycluster-data-refresh.*` un
 - public branding response
 - effective base-plus-local configuration paths and public web port
 - effective telnet, System Operator web, and public web listener bindings
+- effective PY protocol state and the number of enabled sharing controls; a disabled node is directed to Node Settings > pyCluster Protocol
 
 ## Support Report
 

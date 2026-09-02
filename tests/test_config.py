@@ -97,7 +97,18 @@ def test_load_config_merges_sibling_local_override(tmp_path: Path) -> None:
     assert cfg.store.sqlite_path == "./data/pycluster.db"
     assert cfg.qrz.username == "AI3I"
     assert cfg.rbn.enabled is False
-    assert cfg.py_protocol.enabled is False
+    assert cfg.py_protocol.enabled is True
+    assert cfg.py_protocol.share_node_info is True
+    assert cfg.py_protocol.share_locator is True
+    assert cfg.py_protocol.share_qth is True
+    assert cfg.py_protocol.share_sysop_contact is True
+    assert cfg.py_protocol.share_topology is True
+    assert cfg.py_protocol.share_health is True
+    assert cfg.py_protocol.share_datasets is True
+    assert cfg.py_protocol.share_rbn_status is True
+    assert cfg.py_protocol.share_policy is True
+    assert cfg.py_protocol.share_clock is True
+    assert cfg.py_protocol.share_notices is True
 
 
 def test_save_config_atomically_writes_local_override_and_preserves_base(tmp_path: Path) -> None:
@@ -165,9 +176,18 @@ def test_tracked_default_config_uses_neutral_runtime_data_paths() -> None:
     assert cfg.rbn.enabled is False
     assert cfg.rbn.port == 7000
     assert cfg.rbn.startup_commands == ()
-    assert cfg.py_protocol.enabled is False
+    assert cfg.py_protocol.enabled is True
     assert cfg.py_protocol.share_node_info is True
-    assert cfg.py_protocol.share_topology is False
+    assert cfg.py_protocol.share_locator is True
+    assert cfg.py_protocol.share_qth is True
+    assert cfg.py_protocol.share_sysop_contact is True
+    assert cfg.py_protocol.share_topology is True
+    assert cfg.py_protocol.share_health is True
+    assert cfg.py_protocol.share_datasets is True
+    assert cfg.py_protocol.share_rbn_status is True
+    assert cfg.py_protocol.share_policy is True
+    assert cfg.py_protocol.share_clock is True
+    assert cfg.py_protocol.share_notices is True
     assert cfg.py_protocol.max_frame_bytes == 2048
 
 

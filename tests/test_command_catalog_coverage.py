@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 
+from pycluster import telnet_server as telnet_server_mod
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.models import Spot
 from pycluster.store import SpotStore
@@ -14,6 +15,11 @@ from pycluster.telnet_server import Session, TelnetClusterServer
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "docs" / "dxspider-command-catalog.md"
 INVENTORY = ROOT / "docs" / "commands-inventory.txt"
+SAMPLE_TLE = (
+    "ISS (ZARYA)\n"
+    "1 25544U 98067A   24100.50000000  .00016717  00000+0  10270-3 0  9000\n"
+    "2 25544  51.6400 120.0000 0005000  40.0000 320.0000 15.50000000  9000\n"
+)
 
 
 class _DummyWriter:
@@ -188,7 +194,7 @@ def _probe_command(cmd: str) -> str:
     return cmd
 
 
-def test_dxspider_catalog_commands_execute_without_fallbacks(tmp_path) -> None:
+def test_dxspider_catalog_commands_execute_without_fallbacks(tmp_path, monkeypatch) -> None:
     async def _stats():
         return {
             "peer1": {"inbound": False, "parsed_frames": 2, "sent_frames": 3, "dropped_frames": 0, "policy_dropped": 0},
@@ -198,6 +204,8 @@ def test_dxspider_catalog_commands_execute_without_fallbacks(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "catalog.db")
         cfg = _mk_config(db)
+        cfg.satellite.keps_path = str(tmp_path / "catalog-keps.txt")
+        monkeypatch.setattr(telnet_server_mod, "_download_text_url", lambda _url: SAMPLE_TLE)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc), link_stats_fn=_stats)
         now = int(datetime.now(timezone.utc).timestamp())

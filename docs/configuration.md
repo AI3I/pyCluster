@@ -193,14 +193,17 @@ Notes:
 
 ### `[py_protocol]`
 
-Optional decentralized metadata exchange between authenticated pyCluster peers. It is disabled by default and never requires a central registry or phone-home service.
+Decentralized metadata exchange between authenticated pyCluster peers. It is enabled by default, never requires a central registry or phone-home service, and never sends `PY` traffic to other cluster families. System Operators can disable the protocol or any sharing category.
+
+On a capable pyCluster-to-pyCluster link, negotiated PY families are preferred for the features they implement. PC remains the compatibility fallback and continues to carry operational traffic, such as spots and announcements, for which no PY replacement has been negotiated.
 
 Important fields:
 
-- `enabled` - permits `PY00` negotiation after the remote peer identifies as pyCluster
+- `enabled` - permits `PY00` negotiation after the remote peer identifies as pyCluster; defaults to `true`
+- `defaults_version` - lifecycle-managed marker that applies new installation defaults once without overwriting later System Operator choices
 - `public_web_url` - optional externally reachable public-node URL; pyCluster does not infer this from bind addresses or the general project website field
 - `share_node_info`
-- `share_public_web_url`, `share_locator`, `share_qth`, and `share_sysop_contact` - field-level NODEINFO privacy controls; locator, QTH, and contact default to private
+- `share_public_web_url`, `share_locator`, `share_qth`, and `share_sysop_contact` - field-level NODEINFO privacy controls; all default to enabled and can be disabled independently
 - `share_topology` - enables bounded `PY02` digest, `PY10` selective request, and `PY03` record reconciliation
 - `share_health` - enables direct `PY04` node, service, and link-health summaries
 - `share_datasets` - enables direct `PY05` CTY.DAT, wpxloc.raw, and KEPS freshness summaries
@@ -222,7 +225,7 @@ Safety behavior:
 - Every other PY family requires a capability advertised by both peers.
 - PY traffic is rejected on DXSpider, DXNet, AR-Cluster, CLX, unknown, or unauthenticated links.
 - Frame-size and per-minute byte limits apply independently in each direction and reset on reconnect.
-- `share_node_info` enables direct `PY01` records; `share_topology` independently enables the persistent known-node catalog and anti-entropy exchange. Both remain explicit opt-ins.
+- `share_node_info` enables direct `PY01` records; `share_topology` independently enables the persistent known-node catalog and anti-entropy exchange. Both default to enabled and can be disabled independently.
 - Topology exchanges send digests before details, request only missing or newer records, enforce record/frame/hop limits, avoid returning learned records to their source peer, and expire stale reports.
 - The authenticated SysOp endpoint `GET /api/py-nodes` returns this node's current local catalog and provenance.
 - Health, datasets, RBN status, policy, and clock are direct-peer summaries refreshed at a bounded interval and persisted in peer protocol state. Each requires its explicit `share_*` setting and bilateral capability negotiation.

@@ -201,6 +201,7 @@ def test_deploy_lifecycle_writes_support_receipt_and_has_safe_collector(tmp_path
     assert "--include-instance" in collector_text
     assert "Protocol Address And Peer Diagnostics" in collector_text
     assert "Sensitive Lab-Import Archive" in collector_text
+    assert "firewalld detected; use --include-network" in collector_text
     assert "pycluster-initial-sysop.txt" not in collector_text
     assert "cat \"$PYCLUSTER_CONFIG_DEST\"" not in collector_text
 

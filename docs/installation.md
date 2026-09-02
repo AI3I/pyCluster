@@ -158,6 +158,10 @@ The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh
   - hash legacy plaintext user passwords
 - `run_upgrade_1_0_6`
   - move any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
+- `apply_py_protocol_defaults`
+  - enable PY and all read-only sharing controls once on installations that predate the default-on policy
+  - preserve subsequent System Operator opt-outs using a configuration policy-version marker
+  - inherit NODEINFO identity from the existing node configuration and use a valid non-project Website URL as the initial PY public URL when public web is enabled
 
 The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. Upgrade and repair first record which services are active, stop live writers, and take a consistent preflight backup before synchronizing code or running migrations. A failed maintenance run attempts to restore the previously active services. Successful runs restart through systemd's normal graceful stop/start behavior. The source tree is synced with runtime paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy.
 
