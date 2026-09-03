@@ -1293,6 +1293,8 @@ def test_public_static_keeps_button_icons_but_not_taxonomy_emoji_labels() -> Non
 
     assert 'id="greyline-toggle"' in text and "🌗" in text
     assert 'id="audio-icon"' in text
+    assert "const AUDIO_GAIN_BOOST = 2.5;" in text
+    assert "Math.min(0.6, Math.max(0.001, vol * AUDIO_GAIN_BOOST))" in text
     assert 'id="theme-icon"' in text
     assert "⬇ CSV" in text and "⬇ ADIF" in text
     assert 'id="spot-rbn-btn" type="button" title="Show RBN/Skimmer spots">RBN</button>' in text
