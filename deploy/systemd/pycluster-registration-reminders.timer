@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily pyCluster pending registration reminders
+
+[Timer]
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+RandomizedDelaySec=30m
+Unit=pycluster-registration-reminders.service
+
+[Install]
+WantedBy=timers.target

@@ -156,43 +156,35 @@ def main() -> int:
     satellite = cfg.get("satellite", {})
     keps_target = _resolve_data_path(config_path, str(satellite.get("keps_path", "")), "data/keps.txt")
 
-    results: list[str] = []
-    _state, message = _refresh_file(
-        label="CTY.DAT",
-        target=cty_target,
-        url=args.cty_url,
-        validator=_validate_cty,
-        prefix=".cty.",
-        suffix=".dat",
-    )
-    results.append(message)
-
+    jobs = [
+        ("CTY.DAT", cty_target, args.cty_url, _validate_cty, ".cty.", ".dat", 65536),
+    ]
     if not args.cty_only:
-        _state, message = _refresh_file(
-            label="WPXLOC.RAW",
-            target=wpx_target,
-            url=args.wpxloc_url,
-            validator=_validate_wpxloc,
-            prefix=".wpxloc.",
-            suffix=".raw",
-        )
-        results.append(message)
-
+        jobs.append(("WPXLOC.RAW", wpx_target, args.wpxloc_url, _validate_wpxloc, ".wpxloc.", ".raw", 65536))
     if not args.cty_only and not args.country_only:
-        _state, message = _refresh_file(
-            label="KEPS",
-            target=keps_target,
-            url=args.keps_url,
-            validator=_validate_keps,
-            prefix=".keps.",
-            suffix=".txt",
-            min_size=1024,
-        )
+        jobs.append(("KEPS", keps_target, args.keps_url, _validate_keps, ".keps.", ".txt", 1024))
+
+    results: list[str] = []
+    failures = 0
+    for label, target, url, validator, prefix, suffix, min_size in jobs:
+        try:
+            _state, message = _refresh_file(
+                label=label,
+                target=target,
+                url=url,
+                validator=validator,
+                prefix=prefix,
+                suffix=suffix,
+                min_size=min_size,
+            )
+        except Exception as exc:
+            failures += 1
+            message = f"{label} refresh failed ({type(exc).__name__}: {exc}); existing local copy retained"
         results.append(message)
 
     for line in results:
         print(line)
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

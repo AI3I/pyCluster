@@ -96,7 +96,7 @@ The System Operator console upgrade button queues a request under the live runti
 
 The version check runs read-only Git commands against the recorded source checkout as the web-service account. Failures include Git's actual diagnostic in **Remote Check**. `/usr/src/pyCluster` remains the preferred source layout, but install, upgrade, and repair now record and configure the actual checkout path so a deliberately nonstandard source location uses the same path for checking and for the root-owned upgrade worker.
 
-Upgrade, repair, and uninstall operations preserve the runtime `config/`, `data/`, and `logs/` directories and create timestamped archives under `/root/pycluster-backups/` before making destructive changes. Upgrade and repair three-way merge bundled text changes into `config/strings.toml`, preserving operator-edited values and extra keys against the managed `config/strings.defaults.toml` baseline. Do not edit the baseline file. The scripts stop live writers before archiving so SQLite and its WAL are captured consistently; a failed preflight or maintenance run restores services that were active before shutdown. Upgrade and repair then restart gracefully through systemd. If an older installed checkout does not yet include automatic preflight backups, create one manually first:
+Install, upgrade, repair, and uninstall operations preserve the runtime `config/`, `data/`, and `logs/` directories and create timestamped archives under `/root/pycluster-backups/` before making destructive changes. Upgrade and repair three-way merge bundled text changes into `config/strings.toml`, preserving operator-edited values and extra keys against the managed `config/strings.defaults.toml` baseline. Do not edit the baseline file. The scripts stop live writers, active maintenance jobs, and the upgrade watcher before archiving so SQLite and its WAL are captured consistently; a failed preflight or maintenance run restores services that were active before shutdown. Successful install, upgrade, and repair runs require every configured telnet port plus the System Operator and enabled public HTTP health endpoints to answer before reporting completion. If verification fails, recent systemd state and journals are printed. If an older installed checkout does not yet include automatic preflight backups, create one manually first:
 
 ```bash
 sudo install -d -m 0700 /root/pycluster-backups
@@ -119,6 +119,7 @@ Install, upgrade, and repair also apply the versioned PY default policy. An inst
 - CTY file path
 - data refresh timer state
 - retention timer and on-demand upgrade watcher state
+- registration-reminder timer state
 - wpxloc.raw path
 - whether the reported `wpxloc.raw` path is explicitly configured or derived from the `cty.dat` sibling path
 - loaded dataset version/date shown in the System Operator Console and telnet `show/configuration`
@@ -128,7 +129,12 @@ Install, upgrade, and repair also apply the versioned PY default policy. An inst
 - public branding response
 - effective base-plus-local configuration paths and public web port
 - effective telnet, System Operator web, and public web listener bindings
+- verified local reachability for every configured telnet port and each enabled HTTP `/health` endpoint
 - effective PY protocol state and the number of enabled sharing controls; a disabled node is directed to Node Settings > pyCluster Protocol
+
+Configured bindings describe intent; the separate runtime-health line confirms that processes are actually accepting connections. `doctor.sh` exits nonzero if required account, configuration, database, service, listener, or public API checks fail, making it suitable for scripted post-upgrade validation.
+
+The daily `pycluster-registration-reminders.timer` emails the applicant when a pending request reaches 1, 4, 7, 10, and 14 days old. Delivered stages are recorded in SQLite. If the timer was offline, the next run sends only the latest due reminder rather than every missed message; automatic reminders stop after day 14. Invalid/missing applicant addresses and SMTP delivery failures do not advance the stored stage, allowing correction and retry.
 
 ## Support Report
 

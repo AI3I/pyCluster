@@ -18,6 +18,7 @@ if str(SRC) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def require_loopback_test_listeners(monkeypatch, request):
+    monkeypatch.setenv("PYCLUSTER_SKIP_RUNTIME_HEALTH", "1")
     original_start_server = asyncio.start_server
     original_socket = socket.socket
     original_getaddrinfo = socket.getaddrinfo

@@ -97,3 +97,30 @@ def test_update_cty_main_honors_cty_only(tmp_path, monkeypatch, capsys) -> None:
     assert calls == ["CTY.DAT"]
     assert (tmp_path / "data" / "cty.dat").exists()
     assert not (tmp_path / "data" / "wpxloc.raw").exists()
+
+
+def test_update_cty_reports_one_dataset_failure_without_traceback(tmp_path, monkeypatch, capsys) -> None:
+    mod = _load_update_cty_module()
+    config = tmp_path / "config" / "pycluster.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[public_web]\n[satellite]\n", encoding="utf-8")
+    existing_keps = tmp_path / "data" / "keps.txt"
+    existing_keps.parent.mkdir(parents=True)
+    existing_keps.write_text("existing keps\n", encoding="ascii")
+    calls: list[str] = []
+
+    def fake_refresh_file(**kwargs):
+        calls.append(kwargs["label"])
+        if kwargs["label"] == "KEPS":
+            raise TimeoutError("timed out")
+        return "unchanged", f'{kwargs["label"]} unchanged'
+
+    monkeypatch.setattr(mod, "_refresh_file", fake_refresh_file)
+    monkeypatch.setattr("sys.argv", ["update_cty.py", "--config", str(config)])
+
+    assert mod.main() == 1
+    output = capsys.readouterr()
+    assert calls == ["CTY.DAT", "WPXLOC.RAW", "KEPS"]
+    assert "KEPS refresh failed (TimeoutError: timed out); existing local copy retained" in output.out
+    assert "Traceback" not in output.out + output.err
+    assert existing_keps.read_text(encoding="ascii") == "existing keps\n"

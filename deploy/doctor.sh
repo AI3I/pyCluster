@@ -45,6 +45,12 @@ if systemctl list-unit-files "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1; 
   [ -n "$retention_timer_state" ] || retention_timer_state="inactive"
 fi
 
+registration_reminders_timer_state="missing"
+if systemctl list-unit-files "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" >/dev/null 2>&1; then
+  registration_reminders_timer_state="$(systemctl is-active "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" 2>/dev/null || true)"
+  [ -n "$registration_reminders_timer_state" ] || registration_reminders_timer_state="inactive"
+fi
+
 upgrade_path_state="missing"
 if systemctl list-unit-files "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null 2>&1; then
   upgrade_path_state="$(systemctl is-active "$PYCLUSTER_UPGRADE_PATH_NAME" 2>/dev/null || true)"
@@ -188,12 +194,23 @@ if [ "$web_service_state" = "active" ]; then
   public_branding="$(curl -fsS "${public_web_probe_url}/api/public/branding" 2>/dev/null || printf 'unavailable')"
 fi
 
+runtime_health="unavailable"
+runtime_health_ok="no"
+if [ "$config_ok" = "yes" ] && [ -f "$SCRIPT_DIR/runtime_health.py" ]; then
+  if runtime_health="$(
+    (cd "$PYCLUSTER_APP_DIR" && PYTHONPATH="$SCRIPT_DIR/../src" "$PYCLUSTER_PYTHON_LINK" "$SCRIPT_DIR/runtime_health.py" --config "$PYCLUSTER_CONFIG_DEST" --timeout 2) 2>&1
+  )"; then
+    runtime_health_ok="yes"
+  fi
+fi
+
 status "user" "$PYCLUSTER_USER ($app_user_ok)"
 status "app dir" "$PYCLUSTER_APP_DIR"
 status "config" "$PYCLUSTER_CONFIG_DEST ($config_ok)"
-status "telnet listener" "$telnet_host:$telnet_ports"
-status "sysop web listener" "$sysop_web_host:$sysop_web_port"
-status "public web listener" "$public_web_host:$public_web_port (enabled=$public_web_enabled)"
+status "configured telnet" "$telnet_host:$telnet_ports"
+status "configured sysop web" "$sysop_web_host:$sysop_web_port"
+status "configured public web" "$public_web_host:$public_web_port (enabled=$public_web_enabled)"
+status "runtime health" "$runtime_health"
 if [ "$py_protocol_enabled" = "no" ]; then
   status "PY protocol" "disabled; enable it under Node Settings > pyCluster Protocol"
 else
@@ -207,9 +224,27 @@ status "core service" "$PYCLUSTER_SERVICE_NAME ($service_state)"
 status "web service" "$PYCLUSTER_WEB_SERVICE_NAME ($web_service_state)"
 status "data refresh timer" "$PYCLUSTER_DATA_REFRESH_TIMER_NAME ($data_timer_state)"
 status "retention timer" "$PYCLUSTER_RETENTION_TIMER_NAME ($retention_timer_state)"
+status "registration reminders" "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME ($registration_reminders_timer_state)"
 status "upgrade watcher" "$PYCLUSTER_UPGRADE_PATH_NAME ($upgrade_path_state)"
 status "fail2ban" "fail2ban.service ($fail2ban_state)"
 status "selinux" "$selinux_state"
 status "sysop bootstrap" "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE ($sysop_bootstrap)"
 status "api stats" "$api_stats"
 status "public branding" "$public_branding"
+
+doctor_failures=0
+[ "$app_user_ok" = "yes" ] || doctor_failures=$((doctor_failures + 1))
+[ "$config_ok" = "yes" ] || doctor_failures=$((doctor_failures + 1))
+[ "$db_ok" = "yes" ] || doctor_failures=$((doctor_failures + 1))
+[ "$service_state" = "active" ] || doctor_failures=$((doctor_failures + 1))
+[ "$web_service_state" = "active" ] || doctor_failures=$((doctor_failures + 1))
+[ "$runtime_health_ok" = "yes" ] || doctor_failures=$((doctor_failures + 1))
+if [ "$public_web_enabled" = "yes" ]; then
+  [ "$api_stats" != "unavailable" ] || doctor_failures=$((doctor_failures + 1))
+  [ "$public_branding" != "unavailable" ] || doctor_failures=$((doctor_failures + 1))
+fi
+if [ "$doctor_failures" -gt 0 ]; then
+  status "overall" "FAILED ($doctor_failures required check(s) unavailable)"
+  exit 1
+fi
+status "overall" "healthy"
