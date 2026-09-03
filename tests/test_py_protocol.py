@@ -2,6 +2,7 @@ import pytest
 
 from pycluster.py_protocol import (
     PY_CAPABILITIES,
+    PY_PROTOCOL_VERSION,
     PyErrorMessage,
     PyClockMessage,
     PyDatasetsMessage,
@@ -10,12 +11,14 @@ from pycluster.py_protocol import (
     PyNodeInfoMessage,
     PyNoticeMessage,
     PyPolicyMessage,
+    PyProbeMessage,
     PyRbnStatusMessage,
     PyTopologyDigestEntry,
     PyTopologyDigestMessage,
     PyTopologyRecord,
     PyTopologyRecordsMessage,
     PyTopologyRequestMessage,
+    PyWithdrawMessage,
 )
 
 
@@ -28,14 +31,7 @@ def test_py_hello_round_trip_is_canonical() -> None:
     )
 
     fields = hello.to_fields()
-    assert fields == [
-        "1",
-        "HELLO",
-        "AI3I-90",
-        "1.0.12",
-        "py99-error",
-        "1785456000",
-    ]
+    assert fields[:2] == ["2", "HELLO"]
     assert PyHelloMessage.from_fields(fields) == PyHelloMessage(
         node_call="AI3I-90",
         software_version="1.0.12",
@@ -65,7 +61,7 @@ def test_py_error_round_trip() -> None:
     error = PyErrorMessage("unsupported-type", "py42", "Capability was not negotiated", 1785456000)
     fields = error.to_fields()
     assert fields == [
-        "1",
+        PY_PROTOCOL_VERSION,
         "ERROR",
         "unsupported-type",
         "PY42",
@@ -91,11 +87,12 @@ def test_py_node_info_round_trip_is_canonical() -> None:
         capabilities=("py99-error", "node-info"),
         updated_epoch=1785456000,
         expires_epoch=1785542400,
+        direct_peers=("AI3I-91",),
     )
 
     fields = message.to_fields()
 
-    assert fields[:2] == ["1", "NODEINFO"]
+    assert fields[:2] == [PY_PROTOCOL_VERSION, "NODEINFO"]
     decoded = PyNodeInfoMessage.from_fields(fields)
     assert decoded.node_call == "AI3I-90"
     assert decoded.node_id == "12345678-1234-5678-9234-567812345678"
@@ -103,7 +100,28 @@ def test_py_node_info_round_trip_is_canonical() -> None:
     assert decoded.locator == "FN00FS"
     assert decoded.services == ("public-web", "telnet")
     assert decoded.capabilities == ("node-info", "py99-error")
+    assert decoded.direct_peers == ("AI3I-91",)
     assert decoded.to_fields() == fields
+
+
+def test_py_probe_and_withdraw_round_trip() -> None:
+    probe = PyProbeMessage(
+        "AI3I-90", "reply", "12345678-1234-4678-9234-567812345678",
+        1785456000000, 1785456000042,
+    )
+    assert PyProbeMessage.from_fields(probe.to_fields()) == probe
+
+    skewed_reply = PyProbeMessage(
+        "AI3I-90", "reply", "12345678-1234-4678-9234-567812345678",
+        1785456000000, 1785455999000,
+    )
+    assert PyProbeMessage.from_fields(skewed_reply.to_fields()) == skewed_reply
+
+    withdrawal = PyWithdrawMessage(
+        "AI3I-90", "AI3I-91", "22345678-1234-4678-9234-567812345678",
+        "disconnect", 1785456000,
+    )
+    assert PyWithdrawMessage.from_fields(withdrawal.to_fields()) == withdrawal
 
 
 def test_py_node_info_rejects_invalid_public_metadata() -> None:

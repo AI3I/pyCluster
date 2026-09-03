@@ -30,7 +30,7 @@ from .node_link import NodeLinkEngine
 from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, parse_wire_pc_frame, serialize_wire_protocol_frame
-from .py_protocol import PY_CAPABILITIES, PY_CLOCK_TYPE, PY_DATASETS_TYPE, PY_ERROR_TYPE, PY_FRAME_CAPABILITIES, PY_HEALTH_TYPE, PY_HELLO_TYPE, PY_NODEINFO_TYPE, PY_NOTICE_TYPE, PY_POLICY_TYPE, PY_RBN_STATUS_TYPE, PY_REQUEST_TYPE, PY_TOPOLOGY_DIGEST_TYPE, PY_TOPOLOGY_RECORDS_TYPE, PyClockMessage, PyDatasetsMessage, PyErrorMessage, PyHealthMessage, PyHelloMessage, PyNodeInfoMessage, PyNoticeMessage, PyPolicyMessage, PyRbnStatusMessage, PyTopologyDigestEntry, PyTopologyDigestMessage, PyTopologyRecord, PyTopologyRecordsMessage, PyTopologyRequestMessage
+from .py_protocol import PY_CAPABILITIES, PY_CLOCK_TYPE, PY_DATASETS_TYPE, PY_ERROR_TYPE, PY_FRAME_CAPABILITIES, PY_HEALTH_TYPE, PY_HELLO_TYPE, PY_NODEINFO_TYPE, PY_NOTICE_TYPE, PY_POLICY_TYPE, PY_PROBE_TYPE, PY_RBN_STATUS_TYPE, PY_REQUEST_TYPE, PY_TOPOLOGY_DIGEST_TYPE, PY_TOPOLOGY_RECORDS_TYPE, PY_WITHDRAW_TYPE, PyClockMessage, PyDatasetsMessage, PyErrorMessage, PyHealthMessage, PyHelloMessage, PyNodeInfoMessage, PyNoticeMessage, PyPolicyMessage, PyProbeMessage, PyRbnStatusMessage, PyTopologyDigestEntry, PyTopologyDigestMessage, PyTopologyRecord, PyTopologyRecordsMessage, PyTopologyRequestMessage, PyWithdrawMessage
 from .rbn import is_rbn_spot, parse_rbn_dx_line
 from .shdx import BAND_RANGES
 from .spot_filters import SpotFilterEntry, evaluate_spot_entries
@@ -116,6 +116,7 @@ class ClusterApp:
             max_py_bytes_per_minute=config.py_protocol.max_bytes_per_minute,
         )
         self.node_link.set_trace_hook(self._trace_protocol_line)
+        self.node_link.set_disconnect_hook(self._handle_unexpected_peer_disconnect)
         self._legacy_dxspider_peers: set[str] = set()
         self._pycluster_identified_peers: set[str] = set()
         self._py_hello_sent: set[str] = set()
@@ -126,6 +127,11 @@ class ClusterApp:
         self._py_topology_digest_epoch: dict[str, int] = {}
         self._py_topology_snapshots: dict[str, dict[str, object]] = {}
         self._py_metadata_epoch: dict[str, int] = {}
+        self._py_session_ids: dict[str, str] = {}
+        self._py_remote_limits: dict[str, tuple[int, int, int]] = {}
+        self._py_probe_pending: dict[str, tuple[str, int, float]] = {}
+        self._py_probe_epoch: dict[str, int] = {}
+        self._py_refresh_task: asyncio.Task[None] | None = None
         self._mail_stream_seq = 0
         self._outbound_mail: dict[tuple[str, str], dict[str, object]] = {}
         self._outbound_mail_pending_header: dict[str, list[dict[str, object]]] = {}
@@ -636,6 +642,7 @@ class ClusterApp:
                 await self.node_link.send(name, pc18)
         if normalize_profile(wire_profile) == "pycluster":
             await self._send_py_hello(name)
+            self._schedule_py_topology_refresh()
         if wire_profile in {"spider", "dxspider", "pycluster"} and not is_dxspider_dsn:
             await self.node_link.send(name, WirePcFrame("PC20", [""]))
         if is_dxspider_dsn:
@@ -733,9 +740,16 @@ class ClusterApp:
     async def disconnect_peer(self, name: str, forget: bool = True) -> bool:
         if forget:
             await self._forget_peer_target(name)
+        peer_key = normalize_call(name) or name.upper()
+        record = await self.store.get_py_node_record(peer_key)
+        if record and str(record.get("learned_from") or "").upper() == peer_key:
+            await self._broadcast_py_withdrawal(peer_key, str(record["node_id"]), "disconnect", exclude_peer=peer_key)
+            await self.store.withdraw_py_node_record(peer_key, str(record["node_id"]), peer_key)
         self._legacy_dxspider_peers.discard(name)
         self._reset_py_peer_state(name)
-        return await self.node_link.disconnect_peer(name)
+        disconnected = await self.node_link.disconnect_peer(name)
+        self._schedule_py_topology_refresh()
+        return disconnected
 
     async def accept_inbound_node_login(
         self,
@@ -773,6 +787,8 @@ class ClusterApp:
                     },
                 )
         conn = DxSpiderInboundConnection(peer_key, reader, writer, initial_lines=initial_lines)
+        if pycluster_identified:
+            profile = "pycluster"
         if profile == "pycluster":
             self._pycluster_identified_peers.add(peer_key)
         await self.node_link.accept_inbound(peer_key, conn, profile=profile)
@@ -840,11 +856,28 @@ class ClusterApp:
             except asyncio.CancelledError:
                 pass
             self._node_ingest_task = None
+        if self._py_refresh_task:
+            self._py_refresh_task.cancel()
+            try:
+                await self._py_refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._py_refresh_task = None
         if self._public_web_started:
             await self.public_web.stop()
             self._public_web_started = False
         await self.web.stop()
         await self.telnet.stop()
+        try:
+            local_record = await self.store.get_py_node_record(self.config.node.node_call)
+            if local_record:
+                await self._broadcast_py_withdrawal(
+                    self.config.node.node_call,
+                    str(local_record["node_id"]),
+                    "disconnect",
+                )
+        except Exception:
+            LOG.exception("unable to send best-effort PY topology withdrawal during shutdown")
         await self.node_link.stop()
         await self.store.close()
 
@@ -1147,6 +1180,7 @@ class ClusterApp:
                     LOG.info("PY topology refresh skipped for disconnected peer=%s", name)
             try:
                 await self._send_py_metadata(name)
+                await self._send_py_probe(name)
             except (KeyError, ConnectionError, OSError):
                 LOG.info("PY metadata refresh skipped for disconnected peer=%s", name)
         return sent
@@ -1441,9 +1475,47 @@ class ClusterApp:
         self._py_topology_digest_epoch.pop(peer_key, None)
         self._py_topology_snapshots.pop(peer_key, None)
         self._py_metadata_epoch.pop(peer_key, None)
+        self._py_remote_limits.pop(peer_key, None)
+        self._py_probe_pending.pop(peer_key, None)
+        self._py_probe_epoch.pop(peer_key, None)
+        self._py_session_ids.pop(peer_key, None)
+
+    async def _handle_unexpected_peer_disconnect(self, peer_name: str) -> None:
+        peer_key = normalize_call(peer_name) or peer_name.upper()
+        if peer_key in self._py_negotiated_capabilities:
+            await self._record_proto_state(peer_name, {
+                "py.probe.state": "disconnected",
+                "py.sync.state": "stale",
+                "py.sync.updated_epoch": str(int(time.time())),
+            })
+        self._reset_py_peer_state(peer_name)
+        self._schedule_py_topology_refresh()
+
+    def _schedule_py_topology_refresh(self) -> None:
+        if self._py_refresh_task and not self._py_refresh_task.done():
+            self._py_refresh_task.cancel()
+        self._py_refresh_task = asyncio.create_task(self._debounced_py_topology_refresh())
+
+    async def _debounced_py_topology_refresh(self) -> None:
+        try:
+            await asyncio.sleep(2)
+            stats = await self.node_link.stats()
+            for peer_name in stats:
+                peer_key = normalize_call(peer_name) or peer_name.upper()
+                if peer_key not in self._py_negotiated_capabilities:
+                    continue
+                self._py_nodeinfo_sent.discard(peer_key)
+                await self._send_py_node_info(peer_name)
+                await self._send_py_topology_digest(peer_name, force=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOG.exception("debounced PY topology refresh failed")
 
     async def _begin_py_peer_session(self, peer_name: str) -> None:
         now = int(datetime.now(timezone.utc).timestamp())
+        peer_key = normalize_call(peer_name) or peer_name.upper()
+        self._py_session_ids[peer_key] = str(uuid.uuid4())
         await self._record_proto_state(
             peer_name,
             {
@@ -1461,7 +1533,7 @@ class ClusterApp:
         if self.config.py_protocol.share_node_info:
             capabilities.add("node-info")
         if self.config.py_protocol.share_topology:
-            capabilities.update({"topology-digest", "topology-records", "request"})
+            capabilities.update({"topology-digest", "topology-records", "topology-withdraw", "request"})
         if self.config.py_protocol.share_health:
             capabilities.add("health")
         if self.config.py_protocol.share_datasets:
@@ -1475,6 +1547,59 @@ class ClusterApp:
         if self.config.py_protocol.share_clock:
             capabilities.add("clock")
         return tuple(sorted(capabilities))
+
+    def _effective_py_limits(self, peer_name: str) -> tuple[int, int, int]:
+        peer_key = normalize_call(peer_name) or peer_name.upper()
+        local = (self.config.py_protocol.max_frame_bytes,
+                 self.config.py_protocol.max_records_per_frame,
+                 self.config.py_protocol.max_hops)
+        remote = self._py_remote_limits.get(peer_key)
+        return tuple(min(a, b) for a, b in zip(local, remote)) if remote else local
+
+    async def _record_py_sync(self, peer_name: str, **values: object) -> None:
+        values["updated_epoch"] = int(time.time())
+        await self._record_proto_state(peer_name, {f"py.sync.{key}": str(value) for key, value in values.items()})
+
+    async def _send_py_probe(self, peer_name: str, *, force: bool = False) -> bool:
+        peer_key = normalize_call(peer_name) or peer_name.upper()
+        if "probe" not in self._py_negotiated_capabilities.get(peer_key, frozenset()):
+            return False
+        now = int(time.time())
+        pending = self._py_probe_pending.get(peer_key)
+        if pending:
+            if time.monotonic() - pending[2] < 120:
+                return False
+            self._py_probe_pending.pop(peer_key, None)
+            await self._record_proto_state(peer_name, {"py.probe.state": "timeout"})
+        if not force and now - self._py_probe_epoch.get(peer_key, 0) < 60:
+            return False
+        nonce = str(uuid.uuid4())
+        sent_millis = int(time.time() * 1000)
+        message = PyProbeMessage(self.config.node.node_call, "request", nonce, sent_millis)
+        if await self.node_link.send(peer_name, WirePcFrame(PY_PROBE_TYPE, message.to_fields())) is False:
+            return False
+        self._py_probe_pending[peer_key] = (nonce, sent_millis, time.monotonic())
+        self._py_probe_epoch[peer_key] = now
+        await self._record_proto_state(peer_name, {"py.probe.state": "pending", "py.probe.sent_epoch": str(now)})
+        return True
+
+    async def _broadcast_py_withdrawal(
+        self, node_call: str, node_id: str, reason: str, *, exclude_peer: str = ""
+    ) -> int:
+        message = PyWithdrawMessage(
+            self.config.node.node_call, node_call, node_id, reason, int(time.time())
+        )
+        sent = 0
+        excluded = normalize_call(exclude_peer) if exclude_peer else ""
+        for peer_key, capabilities in tuple(self._py_negotiated_capabilities.items()):
+            if peer_key == excluded or "topology-withdraw" not in capabilities:
+                continue
+            try:
+                if await self.node_link.send(peer_key, WirePcFrame(PY_WITHDRAW_TYPE, message.to_fields())) is not False:
+                    sent += 1
+            except (KeyError, ConnectionError, OSError):
+                continue
+        return sent
 
     async def _send_py_hello(self, peer_name: str) -> bool:
         peer_key = normalize_call(peer_name) or peer_name.upper()
@@ -1493,6 +1618,10 @@ class ClusterApp:
             software_version=__version__,
             capabilities=self._local_py_capabilities(),
             epoch=int(datetime.now(timezone.utc).timestamp()),
+            session_id=self._py_session_ids.setdefault(peer_key, str(uuid.uuid4())),
+            max_frame_bytes=self.config.py_protocol.max_frame_bytes,
+            max_records_per_frame=self.config.py_protocol.max_records_per_frame,
+            max_hops=self.config.py_protocol.max_hops,
         )
         if await self.node_link.send(peer_name, WirePcFrame(PY_HELLO_TYPE, hello.to_fields())) is False:
             return False
@@ -1517,6 +1646,12 @@ class ClusterApp:
         if self.config.rbn.enabled:
             services.add("rbn-feed")
         capabilities = self._local_py_capabilities()
+        link_stats = await self.node_link.stats()
+        direct_peers = tuple(sorted(
+            normalize_call(name) for name, row in link_stats.items()
+            if str(row.get("profile") or "").strip().lower() == "pycluster"
+            and normalize_call(name) != normalize_call(owner)
+        ))
         public_web_url = (
             self.config.py_protocol.public_web_url.strip()
             if self.config.public_web.enabled and self.config.py_protocol.share_public_web_url
@@ -1532,6 +1667,7 @@ class ClusterApp:
             "sysop_contact": self.config.node.support_contact.strip() if self.config.py_protocol.share_sysop_contact else "",
             "services": sorted(services),
             "capabilities": list(capabilities),
+            "direct_peers": list(direct_peers),
         }
         digest = hashlib.sha256(
             json.dumps(descriptor, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -1558,6 +1694,7 @@ class ClusterApp:
             capabilities=capabilities,
             updated_epoch=now,
             expires_epoch=now + self.config.py_protocol.record_ttl_seconds,
+            direct_peers=direct_peers,
         )
 
     async def _send_py_node_info(self, peer_name: str) -> bool:
@@ -1603,6 +1740,7 @@ class ClusterApp:
             "sysop_contact": info.sysop_contact,
             "services": list(info.services),
             "capabilities": list(info.capabilities),
+            "direct_peers": list(info.direct_peers),
             "source_node": source_node,
             "learned_from": learned_from,
             "hop_count": hop_count,
@@ -1627,6 +1765,7 @@ class ClusterApp:
             capabilities=tuple(str(item) for item in record.get("capabilities") or []),
             updated_epoch=int(record["updated_epoch"]),
             expires_epoch=int(record["expires_at"]),
+            direct_peers=tuple(str(item) for item in record.get("direct_peers") or []),
             protocol_version=str(record["protocol_version"]),
         )
 
@@ -1650,8 +1789,9 @@ class ClusterApp:
         )
         return info
 
-    def _py_frame_fits(self, frame: WirePcFrame) -> bool:
-        return len(serialize_wire_protocol_frame(frame).encode("utf-8")) <= self.config.py_protocol.max_frame_bytes
+    def _py_frame_fits(self, frame: WirePcFrame, peer_name: str = "") -> bool:
+        limit = self._effective_py_limits(peer_name)[0] if peer_name else self.config.py_protocol.max_frame_bytes
+        return len(serialize_wire_protocol_frame(frame).encode("utf-8")) <= limit
 
     async def _send_py_topology_digest(self, peer_name: str, *, force: bool = False) -> bool:
         peer_key = normalize_call(peer_name) or peer_name.upper()
@@ -1687,7 +1827,7 @@ class ClusterApp:
         bounded_entries: list[PyTopologyDigestEntry] = []
         for entry in entries:
             probe = PyTopologyDigestMessage((entry,), entry.node_call, False, now, snapshot_id, 1)
-            if self._py_frame_fits(WirePcFrame(PY_TOPOLOGY_DIGEST_TYPE, probe.to_fields())):
+            if self._py_frame_fits(WirePcFrame(PY_TOPOLOGY_DIGEST_TYPE, probe.to_fields()), peer_name):
                 bounded_entries.append(entry)
             else:
                 LOG.warning("PY02 digest entry exceeds configured frame size: %s", entry.node_call)
@@ -1697,14 +1837,14 @@ class ClusterApp:
         page_number = 1
         while offset < len(entries) or (not entries and offset == 0):
             batch: list[PyTopologyDigestEntry] = []
-            limit = min(len(entries), offset + self.config.py_protocol.max_records_per_frame)
+            limit = min(len(entries), offset + self._effective_py_limits(peer_name)[1])
             while offset + len(batch) < limit:
                 candidate = batch + [entries[offset + len(batch)]]
                 more = offset + len(candidate) < len(entries)
                 message = PyTopologyDigestMessage(
                     tuple(candidate), candidate[-1].node_call, more, now, snapshot_id, page_number
                 )
-                if not self._py_frame_fits(WirePcFrame(PY_TOPOLOGY_DIGEST_TYPE, message.to_fields())):
+                if not self._py_frame_fits(WirePcFrame(PY_TOPOLOGY_DIGEST_TYPE, message.to_fields()), peer_name):
                     break
                 batch = candidate
             if entries and not batch:
@@ -1723,10 +1863,14 @@ class ClusterApp:
         if sent:
             self._py_topology_digest_sent.add(peer_key)
             self._py_topology_digest_epoch[peer_key] = now
+            await self._record_py_sync(peer_name, state="digest-sent", digest_sent_epoch=now,
+                                       advertised_records=len(entries), pages=page_number - 1)
         return sent
 
     async def _send_py_topology_requests(self, peer_name: str, node_calls: list[str]) -> bool:
         if not node_calls:
+            await self._record_py_sync(peer_name, state="synchronized", converged_epoch=int(time.time()),
+                                       requested_records=0)
             return False
         now = int(datetime.now(timezone.utc).timestamp())
         sent = False
@@ -1734,11 +1878,11 @@ class ClusterApp:
         calls = sorted(set(node_calls))
         while offset < len(calls):
             batch: list[str] = []
-            limit = min(len(calls), offset + self.config.py_protocol.max_records_per_frame)
+            limit = min(len(calls), offset + self._effective_py_limits(peer_name)[1])
             while offset + len(batch) < limit:
                 candidate = batch + [calls[offset + len(batch)]]
                 message = PyTopologyRequestMessage(tuple(candidate), now)
-                if not self._py_frame_fits(WirePcFrame(PY_REQUEST_TYPE, message.to_fields())):
+                if not self._py_frame_fits(WirePcFrame(PY_REQUEST_TYPE, message.to_fields()), peer_name):
                     break
                 batch = candidate
             if not batch:
@@ -1750,6 +1894,8 @@ class ClusterApp:
                 return False
             sent = True
             offset += len(batch)
+        if sent:
+            await self._record_py_sync(peer_name, state="requesting", requested_records=len(calls))
         return sent
 
     async def _send_py_topology_records(self, peer_name: str, node_calls: tuple[str, ...]) -> bool:
@@ -1773,11 +1919,11 @@ class ClusterApp:
         offset = 0
         while offset < len(records):
             batch: list[PyTopologyRecord] = []
-            limit = min(len(records), offset + self.config.py_protocol.max_records_per_frame)
+            limit = min(len(records), offset + self._effective_py_limits(peer_name)[1])
             while offset + len(batch) < limit:
                 candidate = batch + [records[offset + len(batch)]]
                 message = PyTopologyRecordsMessage(tuple(candidate), now)
-                if not self._py_frame_fits(WirePcFrame(PY_TOPOLOGY_RECORDS_TYPE, message.to_fields())):
+                if not self._py_frame_fits(WirePcFrame(PY_TOPOLOGY_RECORDS_TYPE, message.to_fields()), peer_name):
                     break
                 batch = candidate
             if not batch:
@@ -2014,7 +2160,7 @@ class ClusterApp:
         for _capability, frame_type, message in builders:
             fields = message.to_fields()  # type: ignore[union-attr]
             frame = WirePcFrame(frame_type, fields)
-            if not self._py_frame_fits(frame):
+            if not self._py_frame_fits(frame, peer_name):
                 LOG.warning("%s metadata exceeds configured PY frame size", frame_type)
                 continue
             sendable += 1
@@ -2071,10 +2217,15 @@ class ClusterApp:
             except ValueError:
                 await self.node_link.mark_policy_drop(peer_name, "invalid_py_hello")
                 now = int(datetime.now(timezone.utc).timestamp())
+                advertised_version = str(frame.payload_fields[0] if frame.payload_fields else "").strip()
                 await self._record_proto_state(
                     peer_name,
                     {
-                        "py.handshake_error": "invalid_py00",
+                        "py.handshake_error": (
+                            f"unsupported_protocol_v{advertised_version}"
+                            if advertised_version and advertised_version != "2"
+                            else "invalid_py00"
+                        ),
                         "py.handshake_error_epoch": str(now),
                     },
                 )
@@ -2094,6 +2245,10 @@ class ClusterApp:
             negotiated = frozenset(set(self._local_py_capabilities()).intersection(remote_capabilities))
             self._py_remote_capabilities[peer_key] = remote_capabilities
             self._py_negotiated_capabilities[peer_key] = negotiated
+            self._py_remote_limits[peer_key] = (
+                hello.max_frame_bytes, hello.max_records_per_frame, hello.max_hops
+            )
+            effective_limits = self._effective_py_limits(peer_name)
             await self._touch_proto_activity(peer_name, frame.pc_type)
             await self._record_proto_state(
                 peer_name,
@@ -2104,6 +2259,13 @@ class ClusterApp:
                     "py.capabilities": ",".join(hello.capabilities),
                     "py.negotiated_capabilities": ",".join(sorted(negotiated)),
                     "py.announced_epoch": str(hello.epoch),
+                    "py.session_id": hello.session_id,
+                    "py.limits.remote_frame_bytes": str(hello.max_frame_bytes),
+                    "py.limits.remote_records": str(hello.max_records_per_frame),
+                    "py.limits.remote_hops": str(hello.max_hops),
+                    "py.limits.effective_frame_bytes": str(effective_limits[0]),
+                    "py.limits.effective_records": str(effective_limits[1]),
+                    "py.limits.effective_hops": str(effective_limits[2]),
                     "py.hello_received_epoch": str(int(datetime.now(timezone.utc).timestamp())),
                     "py.handshake_error": "",
                     "py.handshake_error_epoch": "",
@@ -2113,6 +2275,7 @@ class ClusterApp:
             await self._send_py_node_info(peer_name)
             await self._send_py_topology_digest(peer_name)
             await self._send_py_metadata(peer_name, force=True)
+            await self._send_py_probe(peer_name, force=True)
             return
 
         if peer_key not in self._py_remote_capabilities:
@@ -2142,6 +2305,64 @@ class ClusterApp:
                     "py.last_error.announced_epoch": str(error.epoch),
                 },
             )
+            return
+
+        if frame.pc_type == PY_PROBE_TYPE:
+            try:
+                probe = PyProbeMessage.from_fields(frame.payload_fields)
+            except ValueError:
+                await self.node_link.mark_policy_drop(peer_name, "invalid_py_probe")
+                await self._send_py_error(peer_name, "malformed", frame.pc_type, "Probe is invalid")
+                return
+            if probe.node_call != peer_key:
+                await self.node_link.mark_policy_drop(peer_name, "py_identity_mismatch")
+                return
+            now_millis = int(time.time() * 1000)
+            if abs(now_millis - probe.sent_millis) > 300000:
+                await self.node_link.mark_policy_drop(peer_name, "stale_py_probe")
+                return
+            if probe.kind == "request":
+                reply = PyProbeMessage(self.config.node.node_call, "reply", probe.nonce,
+                                       probe.sent_millis, now_millis)
+                await self.node_link.send(peer_name, WirePcFrame(PY_PROBE_TYPE, reply.to_fields()))
+            else:
+                pending = self._py_probe_pending.get(peer_key)
+                if not pending or pending[0] != probe.nonce or pending[1] != probe.sent_millis:
+                    await self.node_link.mark_policy_drop(peer_name, "unexpected_py_probe_reply")
+                    return
+                rtt_ms = max(0, round((time.monotonic() - pending[2]) * 1000))
+                self._py_probe_pending.pop(peer_key, None)
+                await self._record_proto_state(peer_name, {
+                    "py.probe.state": "responsive", "py.probe.rtt_ms": str(rtt_ms),
+                    "py.probe.reply_epoch": str(int(time.time())),
+                })
+            await self._touch_proto_activity(peer_name, frame.pc_type)
+            return
+
+        if frame.pc_type == PY_WITHDRAW_TYPE:
+            try:
+                withdrawal = PyWithdrawMessage.from_fields(frame.payload_fields)
+            except ValueError:
+                await self.node_link.mark_policy_drop(peer_name, "invalid_py_withdrawal")
+                await self._send_py_error(peer_name, "malformed", frame.pc_type, "Withdrawal is invalid")
+                return
+            now = int(time.time())
+            if withdrawal.reporter_node != peer_key or abs(now - withdrawal.epoch) > 300:
+                await self.node_link.mark_policy_drop(peer_name, "invalid_py_withdrawal_origin")
+                return
+            removed = await self.store.withdraw_py_node_record(
+                withdrawal.node_call, withdrawal.node_id, peer_key
+            )
+            await self._touch_proto_activity(peer_name, frame.pc_type)
+            await self._record_py_sync(peer_name, state="reconciling", last_withdraw_epoch=now)
+            if removed:
+                await self._broadcast_py_withdrawal(
+                    withdrawal.node_call, withdrawal.node_id, withdrawal.reason, exclude_peer=peer_key
+                )
+                for other_peer in self._py_negotiated_capabilities:
+                    if other_peer != peer_key:
+                        self._py_topology_digest_sent.discard(other_peer)
+                        self._py_topology_digest_epoch[other_peer] = 0
             return
 
         if frame.pc_type == PY_NODEINFO_TYPE:
@@ -2396,7 +2617,7 @@ class ClusterApp:
                 await self.node_link.mark_policy_drop(peer_name, "invalid_py_topology_digest")
                 await self._send_py_error(peer_name, "malformed", frame.pc_type, "Topology digest is invalid")
                 return
-            if len(digest_message.entries) > self.config.py_protocol.max_records_per_frame:
+            if len(digest_message.entries) > self._effective_py_limits(peer_name)[1]:
                 await self.node_link.mark_policy_drop(peer_name, "py_topology_digest_record_limit")
                 await self._send_py_error(peer_name, "record-limit", frame.pc_type, "Topology digest has too many entries")
                 return
@@ -2467,7 +2688,11 @@ class ClusterApp:
             snapshot["next_page"] = digest_message.page_number + 1
             if not digest_message.more:
                 self._py_topology_snapshots.pop(peer_key, None)
-                await self._send_py_topology_requests(peer_name, sorted(accumulated))
+                requested_calls = sorted(accumulated)
+                await self._send_py_topology_requests(peer_name, requested_calls)
+                if not requested_calls:
+                    await self._record_py_sync(peer_name, state="synchronized", converged_epoch=now,
+                                               received_records=len(seen))
             return
 
         if frame.pc_type == PY_REQUEST_TYPE:
@@ -2477,7 +2702,7 @@ class ClusterApp:
                 await self.node_link.mark_policy_drop(peer_name, "invalid_py_topology_request")
                 await self._send_py_error(peer_name, "malformed", frame.pc_type, "Topology request is invalid")
                 return
-            if len(request.node_calls) > self.config.py_protocol.max_records_per_frame:
+            if len(request.node_calls) > self._effective_py_limits(peer_name)[1]:
                 await self.node_link.mark_policy_drop(peer_name, "py_topology_request_record_limit")
                 await self._send_py_error(peer_name, "record-limit", frame.pc_type, "Topology request has too many entries")
                 return
@@ -2492,13 +2717,14 @@ class ClusterApp:
                 await self.node_link.mark_policy_drop(peer_name, "invalid_py_topology_records")
                 await self._send_py_error(peer_name, "malformed", frame.pc_type, "Topology records are invalid")
                 return
-            if len(record_message.records) > self.config.py_protocol.max_records_per_frame:
+            if len(record_message.records) > self._effective_py_limits(peer_name)[1]:
                 await self.node_link.mark_policy_drop(peer_name, "py_topology_records_limit")
                 await self._send_py_error(peer_name, "record-limit", frame.pc_type, "Topology frame has too many records")
                 return
             now = int(datetime.now(timezone.utc).timestamp())
             local_call = normalize_call(self.config.node.node_call)
             changed = False
+            accepted = 0
             for topology_record in record_message.records:
                 info = topology_record.node_info
                 if info.node_call == local_call:
@@ -2509,7 +2735,7 @@ class ClusterApp:
                     continue
                 direct = topology_record.origin_node == peer_key
                 hop_count = 0 if direct else topology_record.hop_count + 1
-                if hop_count > self.config.py_protocol.max_hops:
+                if hop_count > self._effective_py_limits(peer_name)[2]:
                     await self.node_link.mark_policy_drop(peer_name, "py_topology_hop_limit")
                     continue
                 result = await self.store.upsert_py_node_record(
@@ -2523,9 +2749,12 @@ class ClusterApp:
                     now,
                 )
                 changed = changed or result == "accepted"
+                accepted += int(result == "accepted")
                 if result == "rejected-conflict":
                     await self.node_link.mark_policy_drop(peer_name, "conflicting_py_topology_sequence")
             await self._touch_proto_activity(peer_name, frame.pc_type)
+            await self._record_py_sync(peer_name, state="synchronized", converged_epoch=now,
+                                       received_records=len(record_message.records), accepted_records=accepted)
             if changed:
                 for other_peer in self._py_negotiated_capabilities:
                     if other_peer != peer_key:
@@ -2549,8 +2778,11 @@ class ClusterApp:
             peer_key = normalize_call(peer_name) or peer_name.upper()
             if family == "pycluster":
                 self._pycluster_identified_peers.add(peer_key)
+                await self.node_link.set_peer_profile(peer_name, "pycluster")
             else:
                 self._reset_py_peer_state(peer_key)
+                if family:
+                    await self.node_link.set_peer_profile(peer_name, family)
             await self._record_proto_state(
                 peer_name,
                 {

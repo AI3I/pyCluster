@@ -536,7 +536,7 @@ def test_public_web_nodes_and_network_use_local_state(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_public_web_network_preserves_disconnected_inbound_peer_role(tmp_path) -> None:
+def test_public_web_network_hides_disconnected_saved_peers(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_network_inbound.db")
         cfg = _mk_config(db)
@@ -563,8 +563,36 @@ def test_public_web_network_preserves_disconnected_inbound_peer_role(tmp_path) -
             code, _, body = await _http_request(srv, "/api/network")
             assert code == 200
             nodes = {row["call"]: row for row in json.loads(body.decode("utf-8"))["nodes"]}
-            assert nodes["AI3I-90"]["inbound"] is True
-            assert nodes["AI3I-91"]["inbound"] is False
+            assert "AI3I-90" not in nodes
+            assert "AI3I-91" not in nodes
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_network_includes_unexpired_py_adjacency(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_network_py.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.upsert_py_node_record({
+                "node_call": "AI3I-90", "node_id": "12345678-1234-4678-9234-567812345678",
+                "origin_node": "AI3I-90", "sequence": 1, "software_version": "1.0.16",
+                "protocol_version": "2", "public_web_url": "", "locator": "", "qth": "",
+                "sysop_contact": "", "services": ["telnet"], "capabilities": ["node-info"],
+                "direct_peers": ["AI3I-91"], "source_node": "AI3I-90",
+                "learned_from": "AI3I-90", "hop_count": 1, "confidence": "reported",
+                "updated_epoch": now, "expires_at": now + 3600, "raw_digest": "a" * 64,
+            }, now)
+            srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+            code, _, body = await _http_request(srv, "/api/network")
+            assert code == 200
+            payload = json.loads(body.decode("utf-8"))
+            assert any(row["call"] == "AI3I-90" and row["reported"] for row in payload["nodes"])
+            assert ["AI3I-90", "AI3I-91"] in payload["links"]
         finally:
             await store.close()
 

@@ -12,7 +12,7 @@ import uuid
 from .models import is_valid_call, normalize_call
 
 
-PY_PROTOCOL_VERSION = "1"
+PY_PROTOCOL_VERSION = "2"
 PY_HELLO_TYPE = "PY00"
 PY_NODEINFO_TYPE = "PY01"
 PY_TOPOLOGY_DIGEST_TYPE = "PY02"
@@ -24,8 +24,10 @@ PY_NOTICE_TYPE = "PY07"
 PY_POLICY_TYPE = "PY08"
 PY_CLOCK_TYPE = "PY09"
 PY_REQUEST_TYPE = "PY10"
+PY_PROBE_TYPE = "PY12"
+PY_WITHDRAW_TYPE = "PY13"
 PY_ERROR_TYPE = "PY99"
-PY_CAPABILITIES = ("py99-error",)
+PY_CAPABILITIES = ("probe", "py99-error")
 PY_FRAME_CAPABILITIES = {
     "PY01": "node-info",
     "PY02": "topology-digest",
@@ -37,6 +39,8 @@ PY_FRAME_CAPABILITIES = {
     "PY08": "policy",
     "PY09": "clock",
     "PY10": "request",
+    "PY12": "probe",
+    "PY13": "topology-withdraw",
     PY_ERROR_TYPE: "py99-error",
 }
 _CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -70,41 +74,144 @@ def _decode_payload(encoded: str) -> dict[str, object]:
 
 
 @dataclass(frozen=True, slots=True)
+class PyProbeMessage:
+    node_call: str
+    kind: str
+    nonce: str
+    sent_millis: int
+    reply_millis: int = 0
+    protocol_version: str = PY_PROTOCOL_VERSION
+
+    @classmethod
+    def from_fields(cls, fields: list[str]) -> "PyProbeMessage":
+        if len(fields) != 3 or fields[1].strip().upper() != "PROBE":
+            raise ValueError("invalid PY12 PROBE field layout")
+        if fields[0].strip() != PY_PROTOCOL_VERSION:
+            raise ValueError(f"unsupported PY protocol version: {fields[0].strip()}")
+        payload = _decode_payload(fields[2])
+        if set(payload) != {"node_call", "kind", "nonce", "sent_millis", "reply_millis"}:
+            raise ValueError("PY12 PROBE contains unknown or missing fields")
+        node_call = normalize_call(str(payload["node_call"]))
+        kind = str(payload["kind"]).strip().lower()
+        try:
+            nonce = str(uuid.UUID(str(payload["nonce"])))
+            sent = int(payload["sent_millis"])
+            reply = int(payload["reply_millis"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("PY12 PROBE values are invalid") from exc
+        if not is_valid_call(node_call) or kind not in {"request", "reply"} or sent <= 0 or reply < 0:
+            raise ValueError("PY12 PROBE values are invalid")
+        if (kind == "request" and reply != 0) or (kind == "reply" and reply <= 0):
+            raise ValueError("PY12 PROBE timing is invalid")
+        return cls(node_call, kind, nonce, sent, reply, fields[0].strip())
+
+    def to_fields(self) -> list[str]:
+        payload = {"node_call": self.node_call, "kind": self.kind, "nonce": self.nonce,
+                   "sent_millis": self.sent_millis, "reply_millis": self.reply_millis}
+        fields = [self.protocol_version, "PROBE", _encode_payload(payload)]
+        valid = self.from_fields(fields)
+        return [valid.protocol_version, "PROBE", _encode_payload({
+            "node_call": valid.node_call, "kind": valid.kind, "nonce": valid.nonce,
+            "sent_millis": valid.sent_millis, "reply_millis": valid.reply_millis,
+        })]
+
+
+@dataclass(frozen=True, slots=True)
+class PyWithdrawMessage:
+    reporter_node: str
+    node_call: str
+    node_id: str
+    reason: str
+    epoch: int
+    protocol_version: str = PY_PROTOCOL_VERSION
+
+    @classmethod
+    def from_fields(cls, fields: list[str]) -> "PyWithdrawMessage":
+        if len(fields) != 3 or fields[1].strip().upper() != "WITHDRAW":
+            raise ValueError("invalid PY13 WITHDRAW field layout")
+        if fields[0].strip() != PY_PROTOCOL_VERSION:
+            raise ValueError(f"unsupported PY protocol version: {fields[0].strip()}")
+        payload = _decode_payload(fields[2])
+        if set(payload) != {"reporter_node", "node_call", "node_id", "reason", "epoch"}:
+            raise ValueError("PY13 WITHDRAW contains unknown or missing fields")
+        reporter = normalize_call(str(payload["reporter_node"]))
+        node_call = normalize_call(str(payload["node_call"]))
+        reason = str(payload["reason"]).strip().lower()
+        try:
+            node_id = str(uuid.UUID(str(payload["node_id"])))
+            epoch = int(payload["epoch"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("PY13 WITHDRAW values are invalid") from exc
+        if not is_valid_call(reporter) or not is_valid_call(node_call) or reason not in {"disconnect", "expired", "replaced"} or epoch <= 0:
+            raise ValueError("PY13 WITHDRAW values are invalid")
+        return cls(reporter, node_call, node_id, reason, epoch, fields[0].strip())
+
+    def to_fields(self) -> list[str]:
+        payload = {"reporter_node": self.reporter_node, "node_call": self.node_call,
+                   "node_id": self.node_id, "reason": self.reason, "epoch": self.epoch}
+        fields = [self.protocol_version, "WITHDRAW", _encode_payload(payload)]
+        valid = self.from_fields(fields)
+        return [valid.protocol_version, "WITHDRAW", _encode_payload({
+            "reporter_node": valid.reporter_node, "node_call": valid.node_call,
+            "node_id": valid.node_id, "reason": valid.reason, "epoch": valid.epoch,
+        })]
+
+
+@dataclass(frozen=True, slots=True)
 class PyHelloMessage:
     node_call: str
     software_version: str
     capabilities: tuple[str, ...]
     epoch: int
+    session_id: str = "00000000-0000-4000-8000-000000000000"
+    max_frame_bytes: int = 16384
+    max_records_per_frame: int = 50
+    max_hops: int = 8
     protocol_version: str = PY_PROTOCOL_VERSION
 
     @classmethod
     def from_fields(cls, fields: list[str]) -> "PyHelloMessage":
-        if len(fields) != 6 or fields[1].strip().upper() != "HELLO":
+        if len(fields) != 3 or fields[1].strip().upper() != "HELLO":
             raise ValueError("invalid PY00 HELLO field layout")
         protocol_version = fields[0].strip()
         if protocol_version != PY_PROTOCOL_VERSION:
             raise ValueError(f"unsupported PY protocol version: {protocol_version}")
-        node_call = normalize_call(fields[2])
+        payload = _decode_payload(fields[2])
+        if set(payload) != {"node_call", "software_version", "capabilities", "epoch", "session_id", "limits"}:
+            raise ValueError("PY00 HELLO contains unknown or missing fields")
+        node_call = normalize_call(str(payload["node_call"]))
         if not is_valid_call(node_call):
             raise ValueError("PY00 HELLO requires a valid node callsign")
-        software_version = fields[3].strip()
+        software_version = str(payload["software_version"]).strip()
         if not software_version or len(software_version) > 32:
             raise ValueError("PY00 HELLO requires a software version")
-        raw_capabilities = {item.strip().lower() for item in fields[4].split(",") if item.strip()}
-        if len(raw_capabilities) > 32 or any(not _CAPABILITY_RE.fullmatch(item) for item in raw_capabilities):
+        if not isinstance(payload["capabilities"], list):
+            raise ValueError("PY00 HELLO contains an invalid capability list")
+        capabilities = tuple(sorted({str(item).strip().lower() for item in payload["capabilities"]}))
+        if len(capabilities) != len(payload["capabilities"]) or len(capabilities) > 32 or any(not _CAPABILITY_RE.fullmatch(item) for item in capabilities):
             raise ValueError("PY00 HELLO contains an invalid capability")
-        capabilities = tuple(sorted(raw_capabilities))
         try:
-            epoch = int(fields[5])
-        except ValueError as exc:
-            raise ValueError("PY00 HELLO epoch must be an integer") from exc
-        if epoch <= 0:
-            raise ValueError("PY00 HELLO epoch must be positive")
+            epoch = int(payload["epoch"])
+            session_id = str(uuid.UUID(str(payload["session_id"])))
+            limits = payload["limits"]
+            if not isinstance(limits, dict) or set(limits) != {"max_frame_bytes", "max_records_per_frame", "max_hops"}:
+                raise ValueError
+            frame_bytes = int(limits["max_frame_bytes"])
+            records = int(limits["max_records_per_frame"])
+            hops = int(limits["max_hops"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("PY00 HELLO session, epoch, or limits are invalid") from exc
+        if epoch <= 0 or not 256 <= frame_bytes <= 65536 or not 1 <= records <= 100 or not 1 <= hops <= 32:
+            raise ValueError("PY00 HELLO session, epoch, or limits are invalid")
         return cls(
             node_call=node_call,
             software_version=software_version,
             capabilities=capabilities,
             epoch=epoch,
+            session_id=session_id,
+            max_frame_bytes=frame_bytes,
+            max_records_per_frame=records,
+            max_hops=hops,
             protocol_version=protocol_version,
         )
 
@@ -120,17 +227,18 @@ class PyHelloMessage:
             raise ValueError("PY00 HELLO requires a software version")
         if len(capabilities) > 32 or any(not _CAPABILITY_RE.fullmatch(item) for item in capabilities):
             raise ValueError("PY00 HELLO contains an invalid capability")
-        epoch = int(self.epoch)
-        if epoch <= 0:
-            raise ValueError("PY00 HELLO epoch must be positive")
-        return [
-            self.protocol_version,
-            "HELLO",
-            node_call,
-            software_version,
-            ",".join(capabilities),
-            str(epoch),
-        ]
+        payload = {
+            "node_call": node_call, "software_version": software_version,
+            "capabilities": list(capabilities), "epoch": int(self.epoch),
+            "session_id": self.session_id,
+            "limits": {"max_frame_bytes": int(self.max_frame_bytes),
+                       "max_records_per_frame": int(self.max_records_per_frame),
+                       "max_hops": int(self.max_hops)},
+        }
+        fields = [self.protocol_version, "HELLO", _encode_payload(payload)]
+        valid = self.from_fields(fields)
+        payload["session_id"] = valid.session_id
+        return [valid.protocol_version, "HELLO", _encode_payload(payload)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +310,7 @@ class PyNodeInfoMessage:
     capabilities: tuple[str, ...]
     updated_epoch: int
     expires_epoch: int
+    direct_peers: tuple[str, ...] = ()
     protocol_version: str = PY_PROTOCOL_VERSION
 
     @classmethod
@@ -214,6 +323,7 @@ class PyNodeInfoMessage:
         payload = _decode_payload(fields[2])
         expected_keys = {
             "capabilities",
+            "direct_peers",
             "expires_epoch",
             "locator",
             "node_call",
@@ -271,6 +381,12 @@ class PyNodeInfoMessage:
         sysop_contact = _clean_text(payload["sysop_contact"], 128)
         services = cls._tokens(payload["services"], "service")
         capabilities = cls._tokens(payload["capabilities"], "capability")
+        raw_peers = payload["direct_peers"]
+        if not isinstance(raw_peers, list) or len(raw_peers) > 100:
+            raise ValueError("PY01 NODEINFO direct peer list is invalid")
+        direct_peers = tuple(sorted({normalize_call(str(item)) for item in raw_peers}))
+        if len(direct_peers) != len(raw_peers) or any(not is_valid_call(item) or item == node_call for item in direct_peers):
+            raise ValueError("PY01 NODEINFO direct peer list is invalid")
         return cls(
             node_call,
             node_id,
@@ -284,6 +400,7 @@ class PyNodeInfoMessage:
             capabilities,
             updated_epoch,
             expires_epoch,
+            direct_peers,
             protocol_version,
         )
 
@@ -310,6 +427,7 @@ class PyNodeInfoMessage:
             "capabilities": list(self.capabilities),
             "updated_epoch": self.updated_epoch,
             "expires_epoch": self.expires_epoch,
+            "direct_peers": list(self.direct_peers),
         }
         encoded = _encode_payload(payload)
         validated = PyNodeInfoMessage.from_fields([self.protocol_version, "NODEINFO", encoded])
@@ -326,6 +444,7 @@ class PyNodeInfoMessage:
             "capabilities": list(validated.capabilities),
             "updated_epoch": validated.updated_epoch,
             "expires_epoch": validated.expires_epoch,
+            "direct_peers": list(validated.direct_peers),
         }
         return [self.protocol_version, "NODEINFO", _encode_payload(canonical_payload)]
 
@@ -340,6 +459,7 @@ class PyNodeInfoMessage:
             "sysop_contact": " ".join(self.sysop_contact.split()),
             "services": sorted(set(self.services)),
             "capabilities": sorted(set(self.capabilities)),
+            "direct_peers": sorted(set(self.direct_peers)),
         }
         return hashlib.sha256(
             json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -503,7 +623,7 @@ class PyTopologyRecord:
         if not isinstance(payload, dict):
             raise ValueError("PY03 topology record is invalid")
         info_keys = {
-            "capabilities", "expires_epoch", "locator", "node_call", "node_id",
+            "capabilities", "direct_peers", "expires_epoch", "locator", "node_call", "node_id",
             "public_web_url", "qth", "sequence", "services", "software_version",
             "sysop_contact", "updated_epoch",
         }
@@ -538,6 +658,7 @@ class PyTopologyRecord:
             "sysop_contact": info.sysop_contact,
             "services": list(info.services),
             "capabilities": list(info.capabilities),
+            "direct_peers": list(info.direct_peers),
             "updated_epoch": info.updated_epoch,
             "expires_epoch": info.expires_epoch,
             "origin_node": self.origin_node,
@@ -553,6 +674,7 @@ class PyTopologyRecord:
             "software_version": info.software_version, "public_web_url": info.public_web_url,
             "locator": info.locator, "qth": info.qth, "sysop_contact": info.sysop_contact,
             "services": list(info.services), "capabilities": list(info.capabilities),
+            "direct_peers": list(info.direct_peers),
             "updated_epoch": info.updated_epoch, "expires_epoch": info.expires_epoch,
             "origin_node": self.origin_node, "hop_count": self.hop_count, "digest": self.digest,
         }

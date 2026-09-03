@@ -2,8 +2,8 @@
 
 Updated: 2026-09-03
 
-This roadmap describes product direction after `1.0.15` during `1.0.16`
-development. It is not a release checklist. The active GitHub milestone and
+This roadmap describes product direction after the `1.0.16` release. It is not
+a release checklist. The active GitHub milestone and
 issues are the authority for scheduled work; [CHANGELOG.md](../CHANGELOG.md)
 records what has shipped.
 
@@ -41,6 +41,9 @@ The following are implemented foundations, not future roadmap items:
 - local or external reverse-proxy deployment
 - managed CTY, WPXLOC, and KEPS refresh state
 - negotiated pyCluster-only `PY` metadata and topology exchange
+- session-specific PY v2 capability and limit negotiation
+- bounded multipath topology storage, withdrawals, expiry failover, probes,
+  convergence state, and reported-link diagnostics
 
 ## 1.0.15 Delivered Focus
 
@@ -76,8 +79,8 @@ Node Settings and remain local operator policy.
 
 Near-term protocol work:
 
-- test negotiation, reconnect, expiry, and sequence handling between real nodes
-- keep digest-before-detail topology exchange bounded and rate limited
+- expand live multi-node testing as additional operators install PY v2
+- continue adversarial testing of reconnect, conflicting-sequence, and malformed-frame behavior
 - improve status and rejection diagnostics without logging sensitive payloads
 - document compatibility rules when the private protocol version changes
 - keep public topology views conservative and explicitly labeled as reported

@@ -52,13 +52,13 @@ def test_py_frames_are_limited_to_pycluster_profile() -> None:
         pycluster_conn = _DummyConn()
         eng._peers["spider"] = LinkPeer(name="spider", conn=spider_conn, inbound=False, profile="dxspider")
         eng._peers["pycluster"] = LinkPeer(name="pycluster", conn=pycluster_conn, inbound=False, profile="pycluster")
-        frame = WirePcFrame("PY00", ["1", "HELLO", "AI3I-90", "1.0.12", "py99-error", "1785456000"])
+        frame = WirePcFrame("PY00", ["2", "HELLO", "eyJub2RlX2NhbGwiOiJBSTNJLTkwIn0"])
 
         assert await eng.send("spider", frame) is False
         assert await eng.send("pycluster", frame) is True
 
         assert spider_conn.sent == []
-        assert pycluster_conn.sent == ["PY00^1^HELLO^AI3I-90^1.0.12^py99-error^1785456000"]
+        assert pycluster_conn.sent == ["PY00^2^HELLO^eyJub2RlX2NhbGwiOiJBSTNJLTkwIn0"]
         stats = await eng.stats()
         assert stats["spider"]["policy_reasons"] == {"profile_tx_block": 1}
 

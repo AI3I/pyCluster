@@ -112,27 +112,31 @@ pyCluster reserves the `PY` frame family for pyCluster-to-pyCluster extensions. 
 
 For links between capable pyCluster nodes, PY is the preferred protocol for every capability it defines. An explicitly configured `pycluster` peer family is treated as an authenticated operator assertion: the node sends its PC18 identity and immediately initiates PY00 without waiting for the remote PC18. The returned PY00 must still match the authenticated peer callsign and advertise compatible capabilities. Unconfigured inbound and unknown-family peers must positively identify through PC18 before PY is attempted. PC remains the fallback when PY is disabled, unsupported, or fails negotiation, and remains the operational transport for spots, announcements, chat, mail, and routing families that do not yet have a PY equivalent. pyCluster does not suppress those PC families until a negotiated PY replacement provides equivalent behavior and delivery guarantees.
 
-Protocol version 1 begins with a direct-peer hello:
+Protocol version 2 begins with a direct-peer hello:
 
 ```text
-PY00^1^HELLO^NODE-CALL^SOFTWARE-VERSION^CAPABILITY-LIST^EPOCH
+PY00^2^HELLO^BASE64URL-JSON
 ```
 
-`PY00` is the only bootstrap frame and is sent at most once per connection in each direction. It advertises the authenticated node callsign, pyCluster software version, capabilities actually implemented by that build, and UTC epoch. The receiving node validates the advertised callsign against the authenticated peer and stores the direct-peer metadata in the database. Both sides calculate the intersection of their advertised capabilities; every other `PY` family is rejected until that reciprocal negotiation completes. `PY00` is never relayed.
+`PY00` is the only bootstrap frame and is sent at most once per connection in each direction. Its canonical structured payload advertises the authenticated node callsign, pyCluster software version, a connection session UUID, implemented capabilities, UTC epoch, and frame-size, record-count, and hop limits. The receiving node validates the advertised callsign against the authenticated peer. Both sides calculate the capability intersection and use the minimum limits advertised by either peer; every other `PY` family is rejected until that reciprocal negotiation completes. `PY00` is never relayed.
+
+PY protocol v2 begins with pyCluster 1.0.16 and deliberately does not negotiate with the experimental v1 wire format. PC protocols keep peer links operational during a rolling upgrade; richer PY exchange starts after both peers run a v2-capable release.
 
 `PY99` carries bounded errors for unsupported or malformed post-negotiation frames when both sides advertise `py99-error`. A node does not answer malformed `PY00` or `PY99` with another error, preventing error loops.
 
-`PY01` carries a direct peer's NODEINFO record when both sides negotiate `node-info` and the sending operator enables `share_node_info`. The structured record contains the authenticated node callsign, stable installation UUID, monotonic content sequence, pyCluster version, explicitly configured public web URL, locator/QTH, configured contact, enabled-service names, capabilities, update time, and expiry. It contains no bind address or inferred URL. Lower sequences, changed content at the same sequence, expired records, excessive future timestamps, and callsign mismatches are rejected. A changed installation UUID is retained as a direct identity transition for operator review.
+`PY01` carries a direct peer's NODEINFO record when both sides negotiate `node-info` and the sending operator enables `share_node_info`. The structured record contains the authenticated node callsign, stable installation UUID, monotonic content sequence, pyCluster version, explicitly configured public web URL, locator/QTH, configured contact, enabled-service names, capabilities, direct pyCluster neighbor calls, update time, and expiry. It contains no bind address or inferred URL. Lower sequences, changed content at the same sequence, expired records, excessive future timestamps, and callsign mismatches are rejected. A changed installation UUID is retained as a direct identity transition for operator review.
 
 When `share_topology` is enabled and both peers negotiate `topology-digest`, `topology-records`, and `request`, topology reconciliation uses three additional frames:
 
 - `PY02 TOPOLOGY_DIGEST` sends paged identity, sequence, content-digest, and expiry summaries rather than full records. Each exchange has a unique snapshot ID and ordered page numbers; receivers wait for the final page before requesting details and reject missing, reordered, or duplicate pages.
 - `PY10 REQUEST` asks only for missing, changed-identity, newer-sequence, or conflicting-digest records.
 - `PY03 TOPOLOGY_RECORDS` returns only requested records in batches bounded by both `max_records_per_frame` and `max_frame_bytes`.
+- `PY12 PROBE` provides nonce-matched request/reply liveness and round-trip timing for the current session.
+- `PY13 WITHDRAW` promptly removes a departed route. It is accepted only when the reporter is the authenticated peer and both the node ID and stored `learned_from` owner match that peer.
 
-Each node persists its own known-node catalog. Direct observations outrank relayed reports while the direct record remains valid, origin sequences cannot move backward, and changed content at the same sequence is rejected. A received relayed record increments its hop count and is dropped above `max_hops`. Records expire at their origin-provided time and are pruned locally. A node does not advertise a learned record back to the peer it came from. Digests are exchanged on connection, after learned changes, and periodically at `refresh_seconds` with per-peer jitter; unchanged full records are never flooded. This provides eventual reported visibility without claiming a central or perfectly authoritative network view.
+Each node persists its own known-node catalog and up to four independently learned routes per origin. Direct observations outrank relayed reports while the direct record remains valid; otherwise the shortest, newest live alternate is promoted without waiting for another exchange. Origin sequences cannot move backward, and changed content at the same sequence is rejected. A received relayed record increments its hop count and is dropped above `max_hops`. Records expire at their origin-provided time and are pruned locally. A node does not advertise a learned record back to the peer it came from. Digests are exchanged on connection, after learned changes, and periodically at `refresh_seconds` with per-peer jitter; rapid connection changes are debounced into one refresh and unchanged full records are never flooded. This provides eventual reported visibility without claiming a central or perfectly authoritative network view. Origin-owned direct-neighbor lists let each node derive a leased, reported connectivity graph without a registry. Clean withdrawals accelerate removal; expiry remains the fallback after abrupt failures.
 
-The remaining implemented version 1 metadata families are direct-peer, read-only summaries:
+The remaining implemented version 2 metadata families are direct-peer, read-only summaries:
 
 - `PY04 HEALTH` reports aggregate node/service state and the health of the link carrying the frame. It includes bounded receive/transmit times, quiet/flapping indicators, reconnect state, and an error category, never raw errors or logs.
 - `PY05 DATASETS` reports CTY.DAT, wpxloc.raw, and KEPS version/date, modification time, stale state, and availability status. It does not transfer dataset contents or local file paths.
@@ -151,7 +155,9 @@ The `[py_protocol]` controls provide conservative boundaries for implemented and
 - `max_hops`, `max_records_per_frame`, `refresh_seconds`, and `record_ttl_seconds` constrain topology reconciliation.
 - No PY frame contains passwords, tokens, private keys, users, mail, registration records, logs, private addresses, full RBN spot streams, or remote configuration mutations.
 
-Authenticated SysOps can inspect the durable local catalog through `GET /api/py-nodes`. The response labels each record as `local`, `direct`, or `reported` and includes its source, learned-from peer, hop count, first/last seen times, and expiry.
+Authenticated SysOps can inspect the durable local catalog through `GET /api/py-nodes`. The response labels each record as `local`, `direct`, or `reported` and includes its source, learned-from peer, alternate-route count, hop count, first/last seen times, and expiry. It also identifies unknown neighbors and one-sided links reported by only one endpoint; these are diagnostics, not proof that either node is misconfigured.
+
+The public cluster endpoint publishes only live local links and unexpired, operator-enabled PY topology records. Saved/down peer configuration and old node-user login history remain private to the SysOp interface and are not presented as current network membership.
 
 The SysOp Known pyCluster Nodes table also merges direct peers positively
 identified by PC18. This lets an operator see that a connected peer is running

@@ -4,6 +4,16 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+## 1.0.16 - 2026-09-03
+
+- Replace experimental PY protocol v1 with a structured v2 handshake for 1.0.16, including session identity and negotiated minimum frame, record, and hop limits; PC traffic remains the rolling-upgrade fallback.
+- Add nonce-validated `PY12` liveness probes, RTT and topology-sync diagnostics, and source-owned `PY13` withdrawals with lease expiry as the abrupt-failure fallback.
+- Send a best-effort self-withdrawal during orderly service shutdown so upgraded peers remove the node promptly instead of waiting for its lease to expire.
+- Retain up to four independently learned routes per node, promote a live alternate on withdrawal or expiry, debounce topology refreshes after link changes, and expose route/asymmetry diagnostics to System Operators.
+- Gossip bounded direct-pyCluster adjacency in origin NODEINFO records so nodes can derive a decentralized connectivity graph, and make the public Cluster page exclude saved/down targets and stale node-user history.
+- Promote live peers to the pyCluster family when their authenticated PC18 identifies pyCluster, fixing blocked return handshakes and misleading DXSpider labels; distinguish incompatible PY versions from silent peers in diagnostics.
+- Label cluster accounts by family in Recent Logins, keep the System Operator masthead icon fully visible, and document release-tag checkouts instead of deploying the development branch.
+
 ## 1.0.15 - 2026-09-03
 
 - Fix root-owned System Operator upgrades from source checkouts owned by the deploying administrator by applying Git's scoped `safe.directory` setting in the upgrade worker.

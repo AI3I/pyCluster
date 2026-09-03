@@ -2675,6 +2675,9 @@ def test_web_admin_security_endpoint_reads_authfail_log(tmp_path, monkeypatch) -
             now = int(datetime.now(timezone.utc).timestamp())
             await store.upsert_user_registry("AI3I", now - 60, display_name="John", privilege="sysop")
             await store.record_login("AI3I", now, "sysop-web proxied ipv4 203.0.113.10")
+            await store.upsert_user_registry("AI3I-90", now - 120, display_name="Peer", privilege="")
+            await store.set_user_pref("AI3I-90", "node_family", "pycluster", now)
+            await store.record_login("AI3I-90", now - 30, "node-link")
             auth_log.write_text(
                 "2026-03-14 13:08:29,406 WARNING AUTHFAIL channel=sysop-web ip=198.51.100.24 call=AI3I reason=bad_password\n"
                 "2026-03-14 13:08:29,517 WARNING AUTHFAIL channel=public-web ip=203.0.113.77 call=AI3I reason=invalid_credentials\n",
@@ -2692,8 +2695,10 @@ def test_web_admin_security_endpoint_reads_authfail_log(tmp_path, monkeypatch) -
             assert data["auth_failures"][0]["ip"] == "203.0.113.77"
             assert data["auth_failures"][1]["channel"] == "sysop-web"
             assert data["logins"][0]["call"] == "AI3I"
+            assert data["logins"][0]["role"] == "system operator"
             assert data["logins"][0]["name"] == "John"
             assert data["logins"][0]["path"] == "sysop-web proxied ipv4 203.0.113.10"
+            assert data["logins"][1]["role"] == "cluster / pycluster"
             assert isinstance(data["bans"], list)
         finally:
             await store.close()
@@ -3057,8 +3062,12 @@ def test_web_py_nodes_endpoint_is_authorized_and_prunes_expired_records(tmp_path
             assert code == 200
             payload = json.loads(body.decode("utf-8"))
             assert payload["count"] == 1
+            assert payload["diagnostics"] == {"one_sided_links": 0, "unknown_neighbors": 0}
             assert payload["nodes"][0]["node_call"] == "AI3I-92"
             assert payload["nodes"][0]["services"] == ["telnet"]
+            assert payload["nodes"][0]["route_count"] == 1
+            assert payload["nodes"][0]["one_sided_peers"] == []
+            assert payload["nodes"][0]["unknown_peers"] == []
             assert await store.get_py_node_record("AI3I-93") is None
         finally:
             await store.close()
@@ -3185,7 +3194,7 @@ def test_web_admin_contains_py_topology_and_notice_controls() -> None:
     assert "Direct peers identified as pyCluster by PC18" in text
     assert "PC18 identified; PY00 not sent yet" in text
     assert "PC18 identified; PY disabled locally" in text
-    assert "PY00 sent; no valid response received" in text
+    assert "PY00 sent; no compatible response received" in text
     assert "PY00 sent; peer disconnected before a valid response" in text
     assert "negotiated; NODEINFO not received" in text
     assert "confidence:'identified'" in text

@@ -88,12 +88,15 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current release: `1.0.15`
+Current release: `1.0.16`
 
 Development version: `1.0.16`
 
-Recent highlights in `1.0.15`:
+Recent highlights through `1.0.16`:
 
+- PY protocol v2 negotiates capabilities and conservative per-link limits with a session-specific handshake while retaining PC as the rolling-upgrade fallback
+- decentralized topology exchange retains bounded alternate routes, promotes live fallbacks after withdrawal or expiry, and debounces rapid link changes
+- PY liveness probes, RTT, convergence state, direct-neighbor reports, route counts, and asymmetry diagnostics improve System Operator visibility without a central registry
 - web login submits consistently with Enter, and public alert tones have a stronger bounded output level
 - deployment health gates verify configured telnet and web listeners before install, repair, or upgrade reports success
 - pending registration requests receive persisted applicant reminders at 1, 4, 7, 10, and 14 days
@@ -155,6 +158,8 @@ Get the code with SSH:
 cd /usr/src
 git clone git@github.com:AI3I/pyCluster.git
 cd pyCluster
+git fetch --tags --force
+git checkout "$(git tag --sort=-v:refname | head -n 1)"
 ```
 
 Or with HTTPS:
@@ -163,12 +168,18 @@ Or with HTTPS:
 cd /usr/src
 git clone https://github.com/AI3I/pyCluster.git
 cd pyCluster
+git fetch --tags --force
+git checkout "$(git tag --sort=-v:refname | head -n 1)"
 ```
 
-Update an existing checkout:
+Install and upgrade production nodes from release tags. The `main` branch is active
+development and may contain incomplete work for the next version; do not deploy it
+by routinely pulling the latest commit. Update an existing source checkout to the
+latest release tag with:
 
 ```bash
-git pull --ff-only
+git fetch --tags --force
+git checkout "$(git tag --sort=-v:refname | head -n 1)"
 ```
 
 For production-style installs, start from a clean host. Do not treat pyCluster as a sidecar package to be dropped into an already crowded server with other unrelated products.
@@ -245,15 +256,16 @@ Typical deployed layout:
 /root/pycluster-initial-sysop.txt   # bootstrap SYSOP credentials note (needed post-install!)
 ```
 
-Upgrade an existing deployment:
+Upgrade an existing deployment from the latest release tag:
 
 ```bash
-git pull --ff-only
+git fetch --tags --force
+git checkout "$(git tag --sort=-v:refname | head -n 1)"
 sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
 
-For git-based upgrades, move site-local changes out of the tracked `config/pycluster.toml` file and into `config/pycluster.local.toml` first. That keeps `git pull --ff-only` clean while preserving local runtime settings.
+For git-based upgrades, move site-local changes out of the tracked `config/pycluster.toml` file and into `config/pycluster.local.toml` first. That keeps release checkouts clean while preserving local runtime settings. The System Operator upgrade action performs this release-tag selection automatically.
 
 The supported scripted upgrade path covers maintained Git installations. `deploy/upgrade.sh` performs one idempotent legacy-state migration before services restart:
 

@@ -63,12 +63,12 @@ def test_wire_frame_parse_serialize() -> None:
 
 
 def test_py_frame_requires_generic_wire_parser() -> None:
-    raw = "PY00^1^HELLO^AI3I-90^1.0.12^py99-error^1785456000"
+    raw = "PY00^2^HELLO^eyJub2RlX2NhbGwiOiJBSTNJLTkwIn0"
     assert parse_wire_pc_frame(raw) is None
     frame = parse_wire_protocol_frame(raw)
     assert frame is not None
     assert frame.pc_type == "PY00"
-    assert frame.payload_fields[2] == "AI3I-90"
+    assert frame.payload_fields[1] == "HELLO"
     assert serialize_wire_pc_frame(frame) == raw
 
 
