@@ -348,7 +348,9 @@ The public web UI gives users a browser interface for:
 - posting after login
 - editing their profile
 
-Logged-in public web filters are stored in the same database-backed filter table used by telnet. Common filter combinations are saved as a compound `accept/spots` rule so the web and telnet views make the same filtering decision for that user. The public web exposes band, mode, activity, continent, CQ-zone, spotter-continent, spotter-CQ, and comment-tag filters; ITU-zone filters are not exposed in the web UI.
+Logged-in public web filters are stored in the same database-backed filter table used by telnet. Common quick-filter combinations are saved as a compound `accept/spots` rule in slot 8. The authenticated `Rules` panel can inspect, add, edit, and remove slot-preserving accept/reject rules for normal spots and RBN, including callsign, band, CQ/ITU zone, continent, DXCC entity, comment/mode, and advanced expressions. Web changes apply immediately to web requests and within two seconds to an already-connected telnet session because there is no second web-only rule store. System Operators additionally see separately labeled node-wide bad-DX, bad-spotter, bad-node, and bad-word controls.
+
+State/province filtering is intentionally not inferred from a callsign. It requires reliable state metadata in the shared spot model before it can be offered consistently on telnet and web.
 
 Peer WCY bulletins are accepted only when their source identifies as the trusted `DK0WCY` publisher. Parseable propagation text from another callsign is not promoted to WCY, stored, or relayed. The global `badspotter` list remains specific to DX spot ingress and does not act as a general bulletin-author block list.
 

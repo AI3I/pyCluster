@@ -204,6 +204,8 @@ RBN live delivery is off for telnet users by default. Use `set/rbn` to opt in to
 
 Logged-in public web spot views use the same database-backed RBN preference and filter state: `unset/rbn` hides RBN/Skimmer spots there as well, while `set/rbn` plus `accept/rbn` or `reject/rbn` controls which RBN spots pass.
 
+The public web `Rules` panel reads and writes these same family/action/slot records. System Operators can also maintain the node-wide `baddx`, `badspotter`, `badnode`, and `badword` records there; those controls are not available to ordinary users. Multi-word DXCC entity names such as `call_dxcc United States` and entity prefixes are supported consistently on both surfaces.
+
 RBN display is summarized into compact skimmer-style text such as `CW 8dB Q:9* Z:3,4,5`, where `Q` is the bounded report quality and `Z` lists observed CQ zones. Live reports collect for ten seconds, combine the same call and mode within 0.5 kHz, and suppress equivalent respots for three minutes.
 
 ## Registration
@@ -369,7 +371,7 @@ Global bad-call rules apply to DX spot ingress fields; `set/badspotter` is not a
 | `show/sun` | Show sun status. |
 | `show/grayline` | Show grayline status. |
 | `show/moon` | Show topocentric moon status, distance in kilometers and miles, and UTC rise/set times with event azimuths. |
-| `show/muf` | Show MUF estimate. |
+| `show/muf` | Show a MINIMUF 3.5 path estimate using the latest stored WWV solar-flux data. This is an hourly planning estimate, not a VOACAP prediction. `LT` is the destination-local solar hour. |
 | `show/contest` | Show contest-oriented information. |
 | `show/satellite [target]` | Show satellite spots, or predict passes for a named TLE target when a keps file is configured. |
 | `show/talk` | Show talk/chat status. |

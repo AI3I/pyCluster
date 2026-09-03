@@ -4,6 +4,11 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Added an authenticated public-web Rules panel that directly manages the same slot-preserving spot and RBN accept/reject records used by telnet. System Operators can separately maintain node-wide bad-DX, bad-spotter, bad-node, and bad-word records; the API enforces sysop authorization.
+- Aligned public-web filter matching with telnet for callsigns, CQ/ITU zones, continents, and DXCC entities, including multi-word entity names such as `United States`.
+- Corrected `show/muf` destination-local hour calculations and added frozen Wisconsin-to-England reference vectors verified against DXSpider's MINIMUF 3.5 routine; the current path MUF values match its routine through the tested precision and remain nonzero across UTC midnight.
+- Preserve live DX/RBN timestamps inside a conservative 79-column terminal line by fitting comment text around the reserved timestamp and optional suffix.
+- Report accounts with an empty privilege as `non-authenticated` in `sysop/showuser` instead of misleading System Operators with a displayed `user` privilege.
 - Enable the authenticated pyCluster-only `PY` protocol and all read-only sharing capabilities by default for new configurations; capable pyCluster peers prefer negotiated PY families while PC remains the fallback and carries operational families without a PY equivalent. System Operators can still disable the protocol, individual metadata families, or NODEINFO fields.
 - Initiate `PY00` immediately after sending PC18 on authenticated peers explicitly configured as pyCluster, instead of waiting for the remote PC18; unknown-family links retain PC18-first discovery and every returned hello remains identity-validated.
 - Prevent default regression runs from reaching network or host-firewall services by marking listener/socket tests regardless of variable name, rejecting unmarked socket creation, bind/connect/datagram/DNS operations before their syscalls, and replacing address discovery and Fail2Ban status with deterministic fixtures; integration remains available explicitly through `-m socket_listener`. Routine support bundles no longer query firewalld unless the operator explicitly requests `--include-network`.

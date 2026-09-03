@@ -16,6 +16,8 @@ System Operator console:
 - public filter presets, watch profiles, local watch rules, and recent watch matches are stored in the user's `public.presets` preference
 - watch seeds are derived from database-backed buddy entries and positive spot filters
 - common spot filter controls write a single compound rule to the same stored spot-filter table used by telnet `accept/spots` and `reject/spots`
+- the authenticated `Rules` panel lists and edits slot-preserving `accept`/`reject` records for both spots and RBN; it does not maintain a separate browser-only rule model
+- system operators also see separately labeled node-wide `baddx`, `badspotter`, `badnode`, and `badword` controls backed by the global deny-rule table
 - registration requests validate the callsign before creating registry or review-queue records
 - RBN visibility is controlled through the same access matrix and stored user preferences used elsewhere
 - spots sourced from the configured RBN source node are treated as RBN traffic even when the comment text does not include a Skimmer-style marker
@@ -51,7 +53,9 @@ Features:
 - filter by band, mode, activity, DX continent, spotter continent, DX CQ zone, spotter CQ zone, comment tags, and text
 - time-range filtering for `1h`, `3h`, `6h`, `12h`, `18h`, and `24h`
 
-The web UI intentionally does not expose ITU-zone filtering. Logged-in filter choices are persisted into `filter_rules` as database-backed `accept/spots` rules so telnet and web sessions share the same effective spot filter.
+The quick-filter panel intentionally omits ITU-zone controls. The authenticated `Rules` panel supports the shared telnet expressions for callsign, band, CQ zone, ITU zone, continent, DXCC entity, comment/mode, and advanced compound rules. Rules retain their family, action, and slot in `filter_rules`, so telnet and web sessions share the same effective state. An already-connected telnet session refreshes externally edited rules within two seconds. Slot 8 is also used by the quick-filter panel and may be replaced when those controls change.
+
+State/province filtering is not inferred from callsign call areas. It will only be exposed when the shared spot record and evaluator have a reliable state field; guessing would make web and telnet results disagree.
 - filter by spotter continent for logged-in operators; this is based on the station that posted the spot, not the spotted DX entity
 - saved filter presets for logged-in users
 - count of filtered vs total spots
