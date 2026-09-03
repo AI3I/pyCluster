@@ -5894,8 +5894,12 @@ document.querySelectorAll('#bulletin-toolbar [data-bcat]').forEach(btn => {
     renderBulletinsPage();
   });
 });
-document.getElementById('login-pass')?.addEventListener('keydown', e => {
-  if (e.key === 'Enter') loginOperatorFromModal();
+document.querySelectorAll('#login-call, #login-pass, #login-otp').forEach(field => {
+  field.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    loginOperatorFromModal();
+  });
 });
 document.getElementById('post-info')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') submitPublicAction('spot');
