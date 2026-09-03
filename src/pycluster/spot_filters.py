@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Callable, Iterable
 
 
@@ -10,6 +11,20 @@ class SpotFilterEntry:
     action: str
     slot: int
     expr: str
+
+
+def entity_matches_filter(entity: object | None, expression: str) -> bool:
+    if entity is None:
+        return False
+    rest = str(expression or "").strip()
+    if not rest:
+        return False
+    phrases = [part.strip().upper() for part in rest.split(",") if part.strip()]
+    tokens = [part.strip().upper() for part in re.split(r"[,\s]+", rest) if part.strip()]
+    wanted = phrases + tokens
+    name = re.sub(r"[^A-Z0-9]+", "", str(getattr(entity, "name", "") or "").upper())
+    prefix = str(getattr(entity, "prefix", "") or "").strip().upper()
+    return any(item == prefix or re.sub(r"[^A-Z0-9]+", "", item) == name for item in wanted)
 
 
 def is_legacy_rbn_expr(expr: str) -> bool:

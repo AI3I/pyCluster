@@ -698,6 +698,28 @@ td:first-child { border-left:3px solid var(--bc); padding-left:8px; }
 .sb-panel { display:none; flex-direction:column; gap:10px; }
 .sb-panel.active { display:flex; }
 
+/* ================================================================ stored filter rules */
+.rule-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.rule-grid label { display:flex; flex-direction:column; gap:3px; color:var(--text-dim); font-size:.62rem; text-transform:uppercase; }
+.rule-grid select,.rule-grid input {
+  min-width:0; width:100%; box-sizing:border-box; background:var(--bg-search); color:var(--text-primary);
+  border:1px solid var(--border-btn); border-radius:5px; padding:6px; font:inherit; font-size:.7rem;
+}
+.rule-grid .rule-wide { grid-column:1 / -1; }
+.rule-actions { display:flex; justify-content:flex-end; gap:5px; }
+.rule-actions button,.rule-delete {
+  border:1px solid var(--border-btn); border-radius:5px; background:var(--bg-btn); color:var(--text-secondary);
+  padding:5px 8px; cursor:pointer; font:inherit; font-size:.68rem;
+}
+.rule-actions button:hover,.rule-delete:hover { border-color:var(--accent); color:var(--accent); }
+.rule-list { display:flex; flex-direction:column; gap:5px; }
+.rule-item { display:grid; grid-template-columns:auto auto 1fr auto; align-items:center; gap:6px; border-bottom:1px solid var(--border); padding:5px 0; }
+.rule-key { color:var(--text-secondary); font:600 .66rem ui-monospace,SFMono-Regular,Consolas,monospace; }
+.rule-expression { min-width:0; overflow-wrap:anywhere; color:var(--text-primary); font:.66rem ui-monospace,SFMono-Regular,Consolas,monospace; }
+.rule-empty,.rule-status { color:var(--text-dim); font-size:.66rem; }
+.rule-status.ok { color:#3fb950; }
+.rule-status.err { color:#f85149; }
+
 /* ================================================================ watchlist */
 .watch-input-row { display:flex; gap:4px; align-items:center; }
 .watch-type {
@@ -1381,6 +1403,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
       <div class="sb-tabs">
         <button class="sb-tab active" data-panel="filters">Filters</button>
         <button class="sb-tab" data-panel="metrics">Metrics</button>
+        <button class="sb-tab auth-locked" id="tab-rules" data-panel="rules" disabled aria-disabled="true" title="Log in to manage rules">Rules</button>
         <button class="sb-tab auth-locked" id="tab-watch" data-panel="watch" disabled aria-disabled="true" title="Log in to use Watch">Watch</button>
         <button class="sb-tab auth-locked" id="tab-operate" data-panel="operate" disabled aria-disabled="true" title="Log in to use Operate">Operate</button>
       </div>
@@ -1517,6 +1540,47 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         </div>
 
       </div><!-- sb-panel-metrics -->
+
+      <!-- Stored filter rules panel -->
+      <div class="sb-panel" id="sb-panel-rules">
+        <div class="filter-section">
+          <span class="filter-label">Spot Delivery Rules</span>
+          <div class="rule-grid">
+            <label>Stream<select id="rule-family"><option value="spots">Spots</option><option value="rbn">RBN</option></select></label>
+            <label>Decision<select id="rule-action"><option value="accept">Accept</option><option value="reject">Reject</option></select></label>
+            <label>Slot<select id="rule-slot"></select></label>
+            <label>Condition<select id="rule-condition">
+              <option value="call">DX Callsign</option><option value="by">Spotter Callsign</option>
+              <option value="on">Band</option><option value="call_zone">DX CQ Zone</option>
+              <option value="spotter_zone">Spotter CQ Zone</option><option value="call_itu">DX ITU Zone</option>
+              <option value="spotter_itu">Spotter ITU Zone</option><option value="call_cont">DX Continent</option>
+              <option value="spotter_cont">Spotter Continent</option><option value="call_dxcc">DXCC Entity</option>
+              <option value="info">Comment / Mode</option><option value="raw">Advanced Expression</option>
+            </select></label>
+            <label class="rule-wide">Value<input id="rule-value" maxlength="160" autocomplete="off" placeholder="Call, zones, entity, band, or text"></label>
+          </div>
+          <div class="rule-actions"><button id="rule-reset" type="button">New</button><button id="rule-save" type="button">Save Rule</button></div>
+          <div id="rule-status" class="rule-status"></div>
+        </div>
+        <hr class="sidebar-divider">
+        <div class="filter-section">
+          <span class="filter-label">Effective Stored Rules</span>
+          <div id="rule-list" class="rule-list"></div>
+        </div>
+        <div id="deny-rule-section" hidden>
+          <hr class="sidebar-divider">
+          <div class="filter-section">
+            <span class="filter-label">Node-wide Deny Rules</span>
+            <div class="rule-grid">
+              <label>Type<select id="deny-kind"><option value="baddx">DX Callsign</option><option value="badspotter">Spotter</option><option value="badnode">Source Node</option><option value="badword">Blocked Word</option></select></label>
+              <label>Pattern<input id="deny-pattern" maxlength="160" autocomplete="off"></label>
+            </div>
+            <div class="rule-actions"><button id="deny-save" type="button">Add Rule</button></div>
+            <div id="deny-status" class="rule-status"></div>
+            <div id="deny-list" class="rule-list"></div>
+          </div>
+        </div>
+      </div><!-- sb-panel-rules -->
 
       <!-- ── Watch panel ── -->
       <div class="sb-panel" id="sb-panel-watch">
@@ -2101,6 +2165,8 @@ const PASSWORD_RESET_CONFIRM = '/api/auth/password-reset/confirm';
 const MFA_RESET_REQUEST = '/api/auth/mfa-reset/request';
 const MFA_RESET_CONFIRM = '/api/auth/mfa-reset/confirm';
 const FILTER_SPOTS = '/api/filters/spots';
+const FILTER_RULES = '/api/filters';
+const FILTER_DENY = '/api/filters/deny';
 const REGISTER_REQUEST = '/api/register/request';
 const PROFILE_SAVE = '/api/profile';
 const PROFILE_MFA = '/api/profile/mfa';
@@ -2306,6 +2372,8 @@ let webToken    = '';
 let webCall     = '';
 let webAccess   = {};
 let webProfile  = {};
+let storedFilterRules = [];
+let storedDenyRules = [];
 let opBusyCount = 0;
 let registerChallengeId = '';
 let passwordResetChallengeId = '';
@@ -2388,8 +2456,10 @@ function activateMainPage(page) {
 function activateSidebarPanel(panel) {
   const operateTab = document.getElementById('tab-operate');
   const watchTab = document.getElementById('tab-watch');
+  const rulesTab = document.getElementById('tab-rules');
   if (panel === 'operate' && operateTab && operateTab.disabled) panel = 'filters';
   if (panel === 'watch' && watchTab && watchTab.disabled) panel = 'filters';
+  if (panel === 'rules' && rulesTab && rulesTab.disabled) panel = 'filters';
   document.querySelectorAll('.sb-tab').forEach(t => t.classList.toggle('active', t.dataset.panel === panel));
   document.querySelectorAll('.sb-panel').forEach(p => p.classList.toggle('active', p.id === `sb-panel-${panel}`));
 }
@@ -2523,6 +2593,7 @@ function loadWebSession() {
     webCall = '';
     webAccess = {};
     webProfile = {};
+    storedFilterRules = [];
   }
 }
 
@@ -2898,6 +2969,7 @@ async function saveProfile() {
     syncQthFromProfile();
     syncServerWatchSeedFromProfile();
     renderWatchlist();
+    renderStoredFilterRules();
     applyOperatorState();
     setProfileStatus(uiText('profile_updated'), 'ok');
     setTimeout(closeProfileModal, 500);
@@ -2969,10 +3041,13 @@ function applyOperatorState() {
   const loggedIn = !!(webToken && webCall);
   const operateTab = document.getElementById('tab-operate');
   const watchTab = document.getElementById('tab-watch');
+  const rulesTab = document.getElementById('tab-rules');
+  const denyRuleSection = document.getElementById('deny-rule-section');
   const busy = opBusyCount > 0;
   [
     [operateTab, 'Log in to use Operate'],
     [watchTab, 'Log in to use Watch'],
+    [rulesTab, 'Log in to manage Rules'],
   ].forEach(([tab, lockedTitle]) => {
     if (!tab) return;
     tab.disabled = !loggedIn;
@@ -2980,9 +3055,10 @@ function applyOperatorState() {
     tab.classList.toggle('auth-locked', !loggedIn);
     tab.title = loggedIn ? '' : lockedTitle;
   });
+  if (denyRuleSection) denyRuleSection.hidden = !(loggedIn && webProfile?.is_sysop);
   if (!loggedIn) {
     const activeRestricted = document.querySelector(
-      '.sb-tab.active[data-panel="operate"], .sb-panel.active#sb-panel-operate, .sb-tab.active[data-panel="watch"], .sb-panel.active#sb-panel-watch'
+      '.sb-tab.active[data-panel="operate"], .sb-panel.active#sb-panel-operate, .sb-tab.active[data-panel="watch"], .sb-panel.active#sb-panel-watch, .sb-tab.active[data-panel="rules"], .sb-panel.active#sb-panel-rules'
     );
     if (activeRestricted) activateSidebarPanel('filters');
   }
@@ -3101,7 +3177,11 @@ async function webJson(url, opts={}) {
     webCall = '';
     webAccess = {};
     webProfile = {};
+    storedFilterRules = [];
+    storedDenyRules = [];
     saveWebSession();
+    renderStoredFilterRules();
+    renderStoredDenyRules();
     syncServerWatchSeedFromProfile();
     renderWatchlist();
     applyOperatorState();
@@ -3138,10 +3218,159 @@ async function saveCurrentSpotFilters() {
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(payload)
     });
+    await loadStoredFilterRules();
     await fetchSpots();
   } catch (err) {
     opSetWarn('Saving spot filters failed: ' + (err.message || err));
   }
+}
+
+function resetStoredRuleEditor() {
+  document.getElementById('rule-family').value = 'spots';
+  document.getElementById('rule-action').value = 'accept';
+  document.getElementById('rule-slot').value = '1';
+  document.getElementById('rule-condition').value = 'call';
+  document.getElementById('rule-value').value = '';
+  document.getElementById('rule-status').textContent = '';
+}
+
+function fillUiText(key, values={}) {
+  return Object.entries(values).reduce(
+    (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
+    uiText(key)
+  );
+}
+
+function parseStoredRuleExpression(expr) {
+  const text = String(expr || '').trim();
+  const match = text.match(/^(call|callsign|by|on|call_zone|spotter_zone|by_zone|call_itu|spotter_itu|by_itu|call_cont|dx_cont|spotter_cont|by_cont|call_dxcc|info)\s+(.+)$/i);
+  return match ? {condition:match[1].toLowerCase(), value:match[2]} : {condition:'raw', value:text};
+}
+
+function renderStoredFilterRules() {
+  const list = document.getElementById('rule-list');
+  if (!list) return;
+  if (!storedFilterRules.length) {
+    list.innerHTML = `<div class="rule-empty">${esc(uiText('filter_rules_empty'))}</div>`;
+    return;
+  }
+  list.innerHTML = storedFilterRules.map((row, index) => `
+    <div class="rule-item" data-rule-index="${index}">
+      <span class="rule-key">${esc(String(row.family || '').toUpperCase())}</span>
+      <span class="rule-key">${esc(String(row.action || '').toUpperCase())} ${Number(row.slot)}</span>
+      <span class="rule-expression">${esc(row.expr || '')}</span>
+      <button class="rule-delete" type="button" data-rule-delete="${index}" title="Delete this rule" aria-label="Delete rule">×</button>
+    </div>`).join('');
+  list.querySelectorAll('[data-rule-index]').forEach(el => el.addEventListener('click', event => {
+    if (event.target.closest('[data-rule-delete]')) return;
+    const row = storedFilterRules[Number(el.dataset.ruleIndex)];
+    const parsed = parseStoredRuleExpression(row.expr);
+    document.getElementById('rule-family').value = row.family;
+    document.getElementById('rule-action').value = row.action;
+    document.getElementById('rule-slot').value = String(row.slot);
+    document.getElementById('rule-condition').value = parsed.condition;
+    document.getElementById('rule-value').value = parsed.value;
+  }));
+  list.querySelectorAll('[data-rule-delete]').forEach(button => button.addEventListener('click', async () => {
+    const row = storedFilterRules[Number(button.dataset.ruleDelete)];
+    if (!row || !window.confirm(fillUiText('filter_rule_delete_confirm', row))) return;
+    await updateStoredFilterRule({operation:'delete', family:row.family, action:row.action, slot:row.slot});
+  }));
+}
+
+async function loadStoredFilterRules() {
+  if (!webToken) { storedFilterRules = []; renderStoredFilterRules(); return; }
+  try {
+    const data = await webJson(FILTER_RULES);
+    storedFilterRules = Array.isArray(data.rules) ? data.rules : [];
+    renderStoredFilterRules();
+  } catch (err) {
+    const status = document.getElementById('rule-status');
+    if (status) { status.textContent = `${uiText('filter_rules_load_failed')} ${err.message || err}`; status.className = 'rule-status err'; }
+  }
+}
+
+async function updateStoredFilterRule(payload) {
+  const status = document.getElementById('rule-status');
+  try {
+    const data = await webJson(FILTER_RULES, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    storedFilterRules = Array.isArray(data.rules) ? data.rules : [];
+    renderStoredFilterRules();
+    if (status) { status.textContent = uiText(payload.operation === 'delete' ? 'filter_rule_deleted' : 'filter_rule_saved'); status.className = 'rule-status ok'; }
+    await fetchSpots();
+  } catch (err) {
+    if (status) { status.textContent = `${uiText('filter_rule_update_failed')} ${err.message || err}`; status.className = 'rule-status err'; }
+  }
+}
+
+async function saveStoredFilterRule() {
+  const condition = document.getElementById('rule-condition').value;
+  const value = document.getElementById('rule-value').value.trim();
+  if (!value) {
+    const status = document.getElementById('rule-status');
+    status.textContent = uiText('filter_rule_value_required'); status.className = 'rule-status err';
+    return;
+  }
+  await updateStoredFilterRule({
+    operation:'save', family:document.getElementById('rule-family').value,
+    action:document.getElementById('rule-action').value, slot:Number(document.getElementById('rule-slot').value),
+    expr:condition === 'raw' ? value : `${condition} ${value}`
+  });
+}
+
+function renderStoredDenyRules() {
+  const list = document.getElementById('deny-list');
+  if (!list) return;
+  if (!storedDenyRules.length) {
+    list.innerHTML = `<div class="rule-empty">${esc(uiText('deny_rules_empty'))}</div>`;
+    return;
+  }
+  list.innerHTML = storedDenyRules.map((row, index) => `
+    <div class="rule-item">
+      <span class="rule-key">${esc(String(row.kind || '').toUpperCase())}</span>
+      <span class="rule-expression" style="grid-column:2 / 4">${esc(row.pattern || '')}</span>
+      <button class="rule-delete" type="button" data-deny-delete="${index}" title="Delete this rule" aria-label="Delete deny rule">×</button>
+    </div>`).join('');
+  list.querySelectorAll('[data-deny-delete]').forEach(button => button.addEventListener('click', async () => {
+    const row = storedDenyRules[Number(button.dataset.denyDelete)];
+    if (!row || !window.confirm(fillUiText('deny_rule_delete_confirm', row))) return;
+    await updateStoredDenyRule({operation:'delete', kind:row.kind, pattern:row.pattern});
+  }));
+}
+
+async function loadStoredDenyRules() {
+  if (!webToken || !webProfile?.is_sysop) { storedDenyRules = []; renderStoredDenyRules(); return; }
+  try {
+    const data = await webJson(FILTER_DENY);
+    storedDenyRules = Array.isArray(data.rules) ? data.rules : [];
+    renderStoredDenyRules();
+  } catch (err) {
+    const status = document.getElementById('deny-status');
+    if (status) { status.textContent = `${uiText('deny_rules_load_failed')} ${err.message || err}`; status.className = 'rule-status err'; }
+  }
+}
+
+async function updateStoredDenyRule(payload) {
+  const status = document.getElementById('deny-status');
+  try {
+    const data = await webJson(FILTER_DENY, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    storedDenyRules = Array.isArray(data.rules) ? data.rules : [];
+    renderStoredDenyRules();
+    if (status) { status.textContent = uiText(payload.operation === 'delete' ? 'deny_rule_deleted' : 'deny_rule_saved'); status.className = 'rule-status ok'; }
+  } catch (err) {
+    if (status) { status.textContent = `${uiText('deny_rule_update_failed')} ${err.message || err}`; status.className = 'rule-status err'; }
+  }
+}
+
+async function saveStoredDenyRule() {
+  const pattern = document.getElementById('deny-pattern').value.trim();
+  if (!pattern) {
+    const status = document.getElementById('deny-status');
+    status.textContent = uiText('deny_rule_value_required'); status.className = 'rule-status err';
+    return;
+  }
+  await updateStoredDenyRule({operation:'save', kind:document.getElementById('deny-kind').value, pattern});
+  document.getElementById('deny-pattern').value = '';
 }
 
 async function restoreWebSession() {
@@ -3157,13 +3386,19 @@ async function restoreWebSession() {
     saveWebSession();
     syncQthFromProfile();
     await loadAccountPresets();
+    await loadStoredFilterRules();
+    await loadStoredDenyRules();
   } catch {
     webToken = '';
     webCall = '';
     webAccess = {};
     webProfile = {};
+    storedFilterRules = [];
+    storedDenyRules = [];
     accountPresetsLoaded = false;
     saveWebSession();
+    renderStoredFilterRules();
+    renderStoredDenyRules();
   }
   syncServerWatchSeedFromProfile();
   renderWatchlist();
@@ -3198,6 +3433,8 @@ async function performOperatorLogin(call, password, setStatus, clearPassword, ex
     saveWebSession();
     syncQthFromProfile();
     await loadAccountPresets();
+    await loadStoredFilterRules();
+    await loadStoredDenyRules();
     syncServerWatchSeedFromProfile();
     renderWatchlist();
     applyOperatorState();
@@ -3259,10 +3496,14 @@ async function logoutOperator() {
   webCall = '';
   webAccess = {};
   webProfile = {};
+  storedFilterRules = [];
+  storedDenyRules = [];
   accountPresetsLoaded = false;
   saveWebSession();
   syncServerWatchSeedFromProfile();
   renderWatchlist();
+  renderStoredFilterRules();
+  renderStoredDenyRules();
   applyOperatorState();
   opSetStatus('Logged out.', true);
   setOperateBusy(false);
@@ -3659,6 +3900,8 @@ async function loadBranding() {
     return;
   }
   if (!brandingData) return;
+  renderStoredFilterRules();
+  renderStoredDenyRules();
   const passwordResetHelp = document.getElementById('password-reset-help');
   if (passwordResetHelp) passwordResetHelp.textContent = uiText('password_reset_help');
   const loginResetMfa = document.getElementById('login-reset-mfa');
@@ -3740,6 +3983,11 @@ document.querySelectorAll('.sb-tab').forEach(tab => {
     activateSidebarPanel(tab.dataset.panel);
   });
 });
+const ruleSlot = document.getElementById('rule-slot');
+if (ruleSlot) ruleSlot.innerHTML = Array.from({length:10}, (_, slot) => `<option value="${slot}">${slot}</option>`).join('');
+document.getElementById('rule-reset')?.addEventListener('click', resetStoredRuleEditor);
+document.getElementById('rule-save')?.addEventListener('click', saveStoredFilterRule);
+document.getElementById('deny-save')?.addEventListener('click', saveStoredDenyRule);
 
 // ================================================================ Flags
 const ENTITY_ISO = {

@@ -36,7 +36,7 @@ from .models import Spot, display_call, is_valid_call, is_valid_registration_cal
 from .pathmeta import describe_session_path
 from .propagation import latest_wwv_snapshot, merge_solar_snapshots, parse_hamqsl_solar_xml, snapshot_payload
 from .registration import has_valid_email, mark_email_verified, registration_state
-from .spot_filters import SpotFilterEntry, evaluate_spot_entries
+from .spot_filters import SpotFilterEntry, entity_matches_filter, evaluate_spot_entries
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
 
@@ -811,6 +811,20 @@ class PublicWebServer:
             "presets_login_required": "Log in to save presets.",
             "presets_save_failed": "Saving presets failed:",
             "presets_load_failed": "Loading presets failed:",
+            "filter_rules_empty": "No stored spot or RBN rules.",
+            "filter_rules_load_failed": "Loading rules failed:",
+            "filter_rule_saved": "Rule saved.",
+            "filter_rule_deleted": "Rule deleted.",
+            "filter_rule_update_failed": "Rule update failed:",
+            "filter_rule_value_required": "Enter a filter value or expression.",
+            "filter_rule_delete_confirm": "Delete {action}/{family} slot {slot}?",
+            "deny_rules_empty": "No node-wide deny rules.",
+            "deny_rules_load_failed": "Loading deny rules failed:",
+            "deny_rule_saved": "Deny rule saved.",
+            "deny_rule_deleted": "Deny rule deleted.",
+            "deny_rule_update_failed": "Deny rule update failed:",
+            "deny_rule_value_required": "Enter a deny pattern.",
+            "deny_rule_delete_confirm": "Delete {kind} rule {pattern}?",
         }
         if not self._strings_path:
             return defaults
@@ -1278,6 +1292,7 @@ class PublicWebServer:
     async def _web_profile_snapshot(self, call: str) -> dict[str, object]:
         reg = await self.store.get_user_registry(call)
         row = dict(reg) if reg is not None else {}
+        privilege, _blocked = await self._access_subject(call)
         return {
             "name": str(row.get("display_name") or "").strip(),
             "qth": str(row.get("qth") or "").strip(),
@@ -1286,6 +1301,7 @@ class PublicWebServer:
             "homenode": str(await self.store.get_user_pref(call, "homenode") or "").strip().upper(),
             "mfa": await self._mfa_snapshot(call),
             "watch_seed": await self._watch_seed_for_call(call),
+            "is_sysop": privilege in {"sysop", "admin"},
         }
 
     def _sanitize_named_presets(self, value: object, *, max_items: int = 40) -> list[dict[str, object]]:
@@ -1403,18 +1419,28 @@ class PublicWebServer:
         spotter = str(spot.get("spotter") or "").upper()
         comment = str(spot.get("comment") or "")
 
+        if first in {"all", "*"}:
+            return True
         if first == "on" and rest:
             wanted = {tok.strip().lower() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
             return str(spot.get("band") or "").lower() in wanted
         if first == "by" and rest:
             pat = rest.upper()
             return fnmatch.fnmatchcase(spotter, pat) if any(ch in pat for ch in "*?") else spotter.startswith(pat)
-        if first in {"dx", "call"} and rest:
+        if first in {"dx", "call", "callsign"} and rest:
             pat = rest.upper()
             return fnmatch.fnmatchcase(dx_call, pat) if any(ch in pat for ch in "*?") else dx_call.startswith(pat)
         if first == "call_zone" and rest:
             wanted = self._parse_zone_spec(rest, 1, 40)
             return bool(wanted) and int(spot.get("dx_cqz") or 0) in wanted
+        if first == "call_itu" and rest:
+            wanted = self._parse_zone_spec(rest, 1, 90)
+            return bool(wanted) and int(spot.get("dx_ituz") or 0) in wanted
+        if first == "call_dxcc" and rest:
+            ent = lookup(dx_call) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(dx_call)
+            return entity_matches_filter(ent, rest)
         if first in {"call_cont", "dx_cont"} and rest:
             wanted = {tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
             return bool(wanted) and str(spot.get("dx_continent") or "").upper() in wanted
@@ -1427,6 +1453,12 @@ class PublicWebServer:
                 ent = wpx_lookup(spotter)
             wanted = self._parse_zone_spec(rest, 1, 40)
             return bool(ent and wanted) and ent.cq_zone in wanted
+        if first in {"spotter_itu", "by_itu"} and rest:
+            ent = lookup(spotter) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(spotter)
+            wanted = self._parse_zone_spec(rest, 1, 90)
+            return bool(ent and wanted) and ent.itu_zone in wanted
         if first == "rbn":
             if not bool(spot.get("is_rbn")):
                 return False
@@ -2626,11 +2658,12 @@ class PublicWebServer:
                     return
                 await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                 return
-            if path == "/api/filters/spots":
+            if path in {"/api/filters", "/api/filters/spots"}:
                 call = self._web_call_from_headers(headers)
                 if not call:
                     await self._write_response(writer, 401, self._json({"error": "web login required"}))
                     return
+                legacy_spots_path = path == "/api/filters/spots"
                 if method == "GET":
                     rows = [
                         {
@@ -2640,14 +2673,19 @@ class PublicWebServer:
                             "expr": str(row["expr"] or ""),
                         }
                         for row in await self.store.list_filter_rules(call)
-                        if str(row["family"] or "").strip().lower() == "spots"
+                        if str(row["family"] or "").strip().lower() in ({"spots"} if legacy_spots_path else {"spots", "rbn"})
                     ]
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "rules": rows}))
                     return
                 if method == "POST":
                     payload = self._parse_json_body(body)
+                    family = "spots" if legacy_spots_path else str(payload.get("family", "spots")).strip().lower()
+                    if family not in {"spots", "rbn"}:
+                        await self._write_response(writer, 400, self._json({"error": "invalid filter family"}))
+                        return
+                    operation = str(payload.get("operation", "save")).strip().lower()
                     action = str(payload.get("action", "accept")).strip().lower()
-                    if action not in {"accept", "reject", "clear"}:
+                    if operation not in {"save", "delete"} or action not in {"accept", "reject", "clear"}:
                         await self._write_response(writer, 400, self._json({"error": "invalid filter action"}))
                         return
                     try:
@@ -2659,14 +2697,19 @@ class PublicWebServer:
                         await self._write_response(writer, 400, self._json({"error": "filter slot must be 0-9"}))
                         return
                     now = int(time.time())
-                    if action == "clear":
-                        await self.store.clear_filter_rules(call, "spots", slot)
+                    if operation == "delete":
+                        if action not in {"accept", "reject"}:
+                            await self._write_response(writer, 400, self._json({"error": "delete requires accept or reject"}))
+                            return
+                        await self.store.clear_filter_rules(call, family, slot, action=action)
+                    elif action == "clear":
+                        await self.store.clear_filter_rules(call, family, slot)
                     else:
                         expr = str(payload.get("expr", "")).strip()[:160]
                         if not expr:
                             await self._write_response(writer, 400, self._json({"error": "filter expression is required"}))
                             return
-                        await self.store.set_filter_rule(call, "spots", action, slot, expr, now)
+                        await self.store.set_filter_rule(call, family, action, slot, expr, now)
                     rows = [
                         {
                             "family": str(row["family"] or ""),
@@ -2675,11 +2718,43 @@ class PublicWebServer:
                             "expr": str(row["expr"] or ""),
                         }
                         for row in await self.store.list_filter_rules(call)
-                        if str(row["family"] or "").strip().lower() == "spots"
+                        if str(row["family"] or "").strip().lower() in ({"spots"} if legacy_spots_path else {"spots", "rbn"})
                     ]
                     await self._write_response(writer, 200, self._json({"ok": True, "call": call, "rules": rows}))
                     return
                 await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                return
+            if path == "/api/filters/deny":
+                call = self._web_call_from_headers(headers)
+                if not call:
+                    await self._write_response(writer, 401, self._json({"error": "web login required"}))
+                    return
+                privilege, blocked_login = await self._access_subject(call)
+                if blocked_login or privilege not in {"sysop", "admin"}:
+                    await self._write_response(writer, 403, self._json({"error": "system operator access required"}))
+                    return
+                kinds = ("baddx", "badspotter", "badnode", "badword")
+                if method == "POST":
+                    payload = self._parse_json_body(body)
+                    operation = str(payload.get("operation", "save")).strip().lower()
+                    kind = str(payload.get("kind", "")).strip().lower()
+                    pattern = str(payload.get("pattern", "")).strip()[:160]
+                    if operation not in {"save", "delete"} or kind not in kinds or not pattern:
+                        await self._write_response(writer, 400, self._json({"error": "valid operation, deny type, and pattern are required"}))
+                        return
+                    if operation == "save":
+                        await self.store.add_deny_rule(kind, pattern, int(time.time()))
+                    else:
+                        await self.store.remove_deny_rule(kind, pattern)
+                elif method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                rows = [
+                    {"kind": kind, "pattern": pattern}
+                    for kind in kinds
+                    for pattern in await self.store.list_deny_rules(kind)
+                ]
+                await self._write_response(writer, 200, self._json({"ok": True, "rules": rows}))
                 return
             if path == "/api/stats":
                 if method != "GET":

@@ -74,10 +74,14 @@ def format_live_dx_line_for_profile(
     suffix: str = "",
 ) -> str:
     _ = normalize_profile(profile)
-    suffix_text = f" {(suffix or '').strip()}".rstrip()
     spot = (spotter or "")[:11]
     dx = (dx_call or "")[:12]
-    info_width = max(0, 31 - len(suffix_text))
-    inf = _normalize_dx_info(info)[:info_width]
     prefix = f"DX de {spot}:"
-    return f"{prefix:<19}{freq_khz:8.1f}  {dx:<12}  {inf:<{info_width}} {when:>5}{suffix_text}"[:80]
+    head = f"{prefix:<19}{freq_khz:8.1f}  {dx:<12}  "
+    max_suffix = max(0, 79 - len(head) - 6)
+    suffix_value = (suffix or "").strip()[:max_suffix]
+    suffix_text = f" {suffix_value}" if suffix_value else ""
+    tail = f" {when:>5}{suffix_text}"
+    info_width = max(0, 79 - len(head) - len(tail))
+    inf = _normalize_dx_info(info)[:info_width]
+    return f"{head}{inf:<{info_width}}{tail}"

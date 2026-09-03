@@ -641,7 +641,12 @@ def test_public_dxweb_static_includes_spotter_continent_filter_controls() -> Non
     assert 'data-ftype="spotterCont"' in text
     assert text.index('<span class="filter-label">CQ Zone</span>') < text.index('<span class="filter-label">Spotter Continent</span>')
     assert 'id="cqz-input" class="cqz-input" type="text"' in text
-    assert "ITU Zone" not in text
+    assert '<span class="filter-label">ITU Zone</span>' not in text
+    assert 'id="tab-rules"' in text
+    assert 'id="rule-family"' in text
+    assert 'id="deny-rule-section" hidden' in text
+    assert "const FILTER_RULES = '/api/filters';" in text
+    assert "const FILTER_DENY = '/api/filters/deny';" in text
     assert "ituzone" not in text
     assert "ituFilter" not in text
     assert "dxZones.has(Number(s.dx_cqz || 0))" in text
@@ -1593,6 +1598,94 @@ def test_public_web_spot_filters_are_persisted_and_applied_to_logged_in_spots(tm
     asyncio.run(run())
 
 
+def test_public_web_graphical_filter_api_shares_rules_and_protects_node_deny_lists(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "public_web_graphical_filters.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        for call, privilege in (("AI3I-90", "user"), ("AI3I-99", "sysop")):
+            await store.upsert_user_registry(call, now, privilege=privilege, email=f"{call.lower()}@example.test")
+            await store.set_user_pref(call, "password", "secret", now)
+            await store.set_user_pref(call, "email_verified_epoch", str(now), now)
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            tokens: dict[str, str] = {}
+            for call in ("AI3I-90", "AI3I-99"):
+                code, _, body = await _http_request_ex(
+                    srv,
+                    "POST",
+                    "/api/auth/login",
+                    json.dumps({"call": call, "password": "secret"}).encode("utf-8"),
+                    {"Content-Type": "application/json"},
+                )
+                assert code == 200
+                data = json.loads(body.decode("utf-8"))
+                tokens[call] = data["token"]
+                assert data["profile"]["is_sysop"] is (call == "AI3I-99")
+
+            user_headers = {"Content-Type": "application/json", "X-Web-Token": tokens["AI3I-90"]}
+            for payload in (
+                {"family": "spots", "action": "accept", "slot": 4, "expr": "spotter_cont NA"},
+                {"family": "spots", "action": "reject", "slot": 4, "expr": "by AI3I-98"},
+                {"family": "rbn", "action": "accept", "slot": 2, "expr": "call AI3I-97"},
+            ):
+                code, _, _ = await _http_request_ex(
+                    srv, "POST", "/api/filters", json.dumps(payload).encode("utf-8"), user_headers
+                )
+                assert code == 200
+
+            code, _, body = await _http_request_ex(
+                srv, "GET", "/api/filters", headers={"X-Web-Token": tokens["AI3I-90"]}
+            )
+            assert code == 200
+            assert {(row["family"], row["action"], row["slot"]) for row in json.loads(body)["rules"]} == {
+                ("spots", "accept", 4), ("spots", "reject", 4), ("rbn", "accept", 2)
+            }
+
+            code, _, body = await _http_request_ex(
+                srv, "GET", "/api/filters/spots", headers={"X-Web-Token": tokens["AI3I-90"]}
+            )
+            assert code == 200
+            assert {row["family"] for row in json.loads(body)["rules"]} == {"spots"}
+
+            code, _, _ = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/filters",
+                json.dumps({"operation": "delete", "family": "spots", "action": "accept", "slot": 4}).encode("utf-8"),
+                user_headers,
+            )
+            assert code == 200
+            remaining = await store.list_filter_rules("AI3I-90")
+            assert {(row["family"], row["action"], row["slot"]) for row in remaining} == {
+                ("spots", "reject", 4), ("rbn", "accept", 2)
+            }
+
+            deny_payload = json.dumps({"operation": "save", "kind": "badspotter", "pattern": "AI3I-96"}).encode("utf-8")
+            code, _, _ = await _http_request_ex(srv, "POST", "/api/filters/deny", deny_payload, user_headers)
+            assert code == 403
+            sysop_headers = {"Content-Type": "application/json", "X-Web-Token": tokens["AI3I-99"]}
+            code, _, body = await _http_request_ex(srv, "POST", "/api/filters/deny", deny_payload, sysop_headers)
+            assert code == 200
+            assert json.loads(body)["rules"] == [{"kind": "badspotter", "pattern": "AI3I-96"}]
+            assert await store.list_deny_rules("badspotter") == ["AI3I-96"]
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/filters/deny",
+                json.dumps({"operation": "delete", "kind": "badspotter", "pattern": "AI3I-96"}).encode("utf-8"),
+                sysop_headers,
+            )
+            assert code == 200
+            assert json.loads(body)["rules"] == []
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_public_web_spot_filter_expressions_accept_zone_ranges(tmp_path, monkeypatch) -> None:
     def _lookup(call: str):
         if call.upper().startswith("W6"):
@@ -1618,9 +1711,15 @@ def test_public_web_spot_filter_expressions_accept_zone_ranges(tmp_path, monkeyp
         }
         assert srv._spot_payload_matches_expr(spot, "spotter_zone 3-5")
         assert srv._spot_payload_matches_expr(spot, "call_zone 3-5")
+        assert srv._spot_payload_matches_expr(spot, "call_itu 6-8")
+        assert srv._spot_payload_matches_expr(spot, "spotter_itu 6")
+        assert srv._spot_payload_matches_expr(spot, "call_dxcc United States")
+        assert srv._spot_payload_matches_expr(spot, "call_dxcc Canada, United States")
+        assert srv._spot_payload_matches_expr(spot, "callsign K1")
         assert srv._spot_payload_matches_expr(spot, "on 20m,40m")
         assert not srv._spot_payload_matches_expr(spot, "spotter_zone 6-8")
         assert not srv._spot_payload_matches_expr(spot, "on 40m,80m")
+        assert not srv._spot_payload_matches_expr(spot, "call_itu 9-12")
     finally:
         asyncio.run(store.close())
 

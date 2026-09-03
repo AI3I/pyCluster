@@ -144,6 +144,32 @@ def test_show_muf_path_report_defaults_to_forward_hourly_rows(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_show_muf_local_hour_uses_destination_longitude(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "muf_destination_local_hour.db")
+        cty_path = _write_cty(tmp_path)
+        cfg = AppConfig(
+            node=NodeConfig(node_call="AI3I-96", node_locator="EN63"),
+            telnet=TelnetConfig(),
+            web=WebConfig(),
+            public_web=PublicWebConfig(cty_dat_path=cty_path),
+            store=StoreConfig(sqlite_path=db),
+        )
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            sample = datetime(2026, 6, 29, 17, tzinfo=timezone.utc)
+            await store.add_bulletin("wwv", "WWV", "LOCAL", int(sample.timestamp()), "SFI=150 A=6 K=2 Quiet")
+            _, out = await srv._execute_command("AI3I-96", "show/muf JA 2")
+            rows = [line.split() for line in out.splitlines() if line.strip().startswith(("17 ", "18 "))]
+            assert rows[0][:2] == ["17", "8"]
+            assert rows[1][:2] == ["18", "9"]
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_show_commands_uses_hot_reloaded_strings_catalog(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "strings_cmd.db")
@@ -5236,6 +5262,30 @@ def test_filter_rules_persist_across_server_instances(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_active_telnet_filter_cache_refreshes_web_database_edits(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "filter_web_refresh.db")
+        cfg = _mk_config(db)
+        telnet_store = SpotStore(db)
+        web_store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, telnet_store, datetime.now(timezone.utc))
+        try:
+            await srv._load_filters_for_call("AI3I-90")
+            assert await srv._spot_passes_filters("AI3I-90", 14074.0, "W1AW", "N9JR", "FT8") is True
+
+            now = int(datetime.now(timezone.utc).timestamp())
+            await web_store.set_filter_rule("AI3I-90", "spots", "accept", 8, "by AI3I-99", now)
+            srv._filters_loaded_at["AI3I-90"] -= 3.0
+
+            assert await srv._spot_passes_filters("AI3I-90", 14074.0, "W1AW", "N9JR", "FT8") is False
+            assert await srv._spot_passes_filters("AI3I-90", 14074.0, "W1AW", "AI3I-99", "FT8") is True
+        finally:
+            await web_store.close()
+            await telnet_store.close()
+
+    asyncio.run(run())
+
+
 def test_bad_rule_commands_and_show_lists(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "badrules.db")
@@ -5622,6 +5672,13 @@ def test_sysop_namespace_handles_user_management(tmp_path) -> None:
             assert "Registered user K1ABC" in out
             assert "Home Node: AI3I-16" in out
             assert "Login Access: blocked" in out
+
+            await store.upsert_user_registry("AI3I-90", now, privilege="")
+            _, out = await srv._execute_command("AI3I", "sysop/showuser AI3I-90")
+            assert "Privilege: non-authenticated" in out
+            await store.upsert_user_registry("AI3I-90", now, privilege="user")
+            _, out = await srv._execute_command("AI3I", "sysop/showuser AI3I-90")
+            assert "Privilege: user" in out
 
             _, out = await srv._execute_command("AI3I", "sysop/sysops")
             assert "System Operators:" in out

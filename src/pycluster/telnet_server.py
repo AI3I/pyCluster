@@ -48,7 +48,7 @@ from .spot_throttle import (
     check_spot_throttle,
     load_spot_throttle_policy,
 )
-from .spot_filters import SpotFilterEntry, evaluate_spot_entries, is_legacy_rbn_expr
+from .spot_filters import SpotFilterEntry, entity_matches_filter, evaluate_spot_entries, is_legacy_rbn_expr
 from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
@@ -77,6 +77,7 @@ def _download_text_url(url: str, *, timeout: float = 30.0, max_bytes: int = 2_00
     return data.decode("utf-8", errors="replace")
 _AUTH_FAILURE_LOCK_THRESHOLD = 5
 _TOTP_FAILURE_FALLBACK_THRESHOLD = 3
+_FILTER_CACHE_SECONDS = 2.0
 
 _US_STATE_CQ_ZONE = {
     "CT": 5, "MA": 5, "ME": 5, "NH": 5, "RI": 5, "VT": 5,
@@ -302,6 +303,7 @@ class TelnetClusterServer:
         self._on_sessions_changed_fn = on_sessions_changed_fn
         self._on_node_login_fn = on_node_login_fn
         self._filters: dict[str, dict[str, dict[str, list[FilterRule]]]] = {}
+        self._filters_loaded_at: dict[str, float] = {}
         self._events: list[EventLogEntry] = []
         self._users: set[str] = set()
         self._strings = StringCatalog(strings_path)
@@ -806,6 +808,13 @@ class TelnetClusterServer:
                 FilterRule(slot=int(r["slot"]), expr=str(r["expr"]))
             )
         self._filters[c] = fams
+        self._filters_loaded_at[c] = time.monotonic()
+
+    async def _refresh_filters_for_call(self, call: str) -> None:
+        c = call.upper()
+        loaded_at = self._filters_loaded_at.get(c, 0.0)
+        if c not in self._filters or time.monotonic() - loaded_at >= _FILTER_CACHE_SECONDS:
+            await self._load_filters_for_call(c)
 
     def _log_event(self, category: str, text: str) -> None:
         self._events.append(EventLogEntry(epoch=int(datetime.now(timezone.utc).timestamp()), category=category, text=text))
@@ -1099,17 +1108,7 @@ class TelnetClusterServer:
             ent = lookup(dx_call) if self._cty_loaded else None
             if not ent:
                 return False
-            wanted = [tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()]
-            if not wanted:
-                return False
-            ent_name = re.sub(r"[^A-Z0-9]+", "", ent.name.upper())
-            ent_prefix = (ent.prefix or "").strip().upper()
-            return any(
-                tok == ent_prefix
-                or tok == ent_name
-                or re.sub(r"[^A-Z0-9]+", "", tok) == ent_name
-                for tok in wanted
-            )
+            return entity_matches_filter(ent, rest)
 
         if first in {"call_cont", "dx_cont"} and rest:
             ent = lookup(dx_call) if self._cty_loaded else None
@@ -1188,8 +1187,7 @@ class TelnetClusterServer:
         is_rbn = self._is_rbn_spot(dx_call, spotter, info)
         if not await self._spot_passes_rbn_pref(target, dx_call, spotter, info):
             return False
-        if target not in self._filters:
-            await self._load_filters_for_call(target)
+        await self._refresh_filters_for_call(target)
         entries: list[SpotFilterEntry] = []
         for family, actions in self._filters.get(target, {}).items():
             if family not in {"spots", "rbn"}:
@@ -1204,8 +1202,7 @@ class TelnetClusterServer:
 
     async def _has_rbn_history_filters(self, call: str) -> bool:
         target = call.upper()
-        if target not in self._filters:
-            await self._load_filters_for_call(target)
+        await self._refresh_filters_for_call(target)
         fams = self._filters.get(target, {})
         rbn_fam = fams.get("rbn", {})
         if any(rules for rules in rbn_fam.values()):
@@ -1563,8 +1560,7 @@ class TelnetClusterServer:
     async def _text_family_passes_filters(self, call: str, family: str, sender: str, text: str) -> bool:
         target = call.upper()
         fam_name = family.lower()
-        if target not in self._filters:
-            await self._load_filters_for_call(target)
+        await self._refresh_filters_for_call(target)
         fam = self._filters.get(target, {}).get(fam_name, {})
         return self._eval_filter_family(
             fam,
@@ -5377,7 +5373,7 @@ class TelnetClusterServer:
         for hour_offset in range(forecast_hours):
             ts = now_hour + timedelta(hours=hour_offset)
             ut = ts.hour
-            local = int((ut + round(path_mid_lon / 15.0)) % 24)
+            local = int((ut + round(lon2 / 15.0)) % 24)
             muf = latest_muf
             zen = self._solar_zenith_angle(ts, path_mid_lat, path_mid_lon)
             path_zen_samples = (
@@ -6652,7 +6648,11 @@ class TelnetClusterServer:
                 self._render_string("show.registered.email", "  Email: {value}", value=row["email"] or "not set"),
                 self._render_string("show.registered.location", "  Location Detail: {value}", value=prefs.get("location", "") or "not set"),
                 self._render_string("show.registered.usstate", "  US State: {value}", value=prefs.get("usstate", "") or "not set"),
-                self._render_string("show.registered.privilege", "  Privilege: {value}", value=row["privilege"] or "user"),
+                self._render_string(
+                    "show.registered.privilege",
+                    "  Privilege: {value}",
+                    value=row["privilege"] or self._string("show.registered.privilege_unset", "non-authenticated"),
+                ),
                 self._render_string("show.registered.homebbs", "  Home BBS: {value}", value=prefs.get("homebbs", "") or "not set"),
                 self._render_string("show.registered.homenode", "  Home Node: {value}", value=prefs.get("homenode", "") or row["home_node"] or "not set"),
                 self._render_string("show.registered.node", "  Node: {value}", value=prefs.get("node", "") or "not set"),

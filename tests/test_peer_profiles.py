@@ -67,7 +67,22 @@ def test_format_live_dx_line_keeps_suffix_within_80_columns() -> None:
     )
     assert line.startswith("DX de JA1AAA:")
     assert line.endswith("2152Z CQ5 ITU8")
-    assert len(line) <= 80
+    assert len(line) <= 79
+
+
+def test_format_live_dx_line_reserves_rbn_timestamp_inside_79_columns() -> None:
+    line = format_live_dx_line_for_profile(
+        "pycluster",
+        freq_khz=7019.0,
+        dx_call="N9JR",
+        when="0332Z",
+        info="CW 8dB Q:9* Z:5,7,11,14,15,20",
+        spotter="NG7M-#",
+    )
+
+    assert line.endswith("0332Z")
+    assert len(line) == 79
+    assert "Q:9*" in line
 
 
 def test_format_dx_line_normalizes_nbsp_mojibake() -> None:
