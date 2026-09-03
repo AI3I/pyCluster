@@ -41,6 +41,17 @@ repo_root() {
   cd "$(dirname "$src")/.." && pwd
 }
 
+refresh_source_tags_best_effort() {
+  local root
+  root="$(repo_root)"
+  [ -d "$root/.git" ] || return 0
+  if git -c "safe.directory=$root" -C "$root" fetch --tags --prune --force origin >/dev/null 2>&1; then
+    log "release tags refreshed from origin"
+  else
+    warn "release tags could not be refreshed; continuing with the existing checkout"
+  fi
+}
+
 log() {
   printf '[pycluster] %s\n' "$*"
 }
@@ -784,19 +795,10 @@ bootstrap_sysop_account() {
   fi
 }
 
-run_upgrade_1_0_1() {
+run_legacy_state_migrations() {
   (
     cd "$PYCLUSTER_APP_DIR" &&
-    PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/upgrade_1_0_1.py \
-      --config "$PYCLUSTER_CONFIG_DEST"
-  )
-  ensure_runtime_ownership
-}
-
-run_upgrade_1_0_6() {
-  (
-    cd "$PYCLUSTER_APP_DIR" &&
-    PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/upgrade_1_0_6.py \
+    PYTHONPATH=src "$PYCLUSTER_PYTHON_LINK" scripts/migrate_legacy_state.py \
       --config "$PYCLUSTER_CONFIG_DEST"
   )
   ensure_runtime_ownership

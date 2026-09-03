@@ -4,6 +4,15 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Fix root-owned System Operator upgrades from source checkouts owned by the deploying administrator by applying Git's scoped `safe.directory` setting in the upgrade worker.
+
+## 1.0.15 - 2026-09-03
+
+- Raise public-web alert amplitude while preserving relative sound patterns and capping generated gain below clipping.
+- Submit System Operator and public-web login from the Enter key in callsign, password, and applicable MFA fields.
+- Consolidate the old 1.0.1 and 1.0.6 state-upgrade scripts into one idempotent legacy-state migration, while retaining password hashing and peer-credential cleanup for older databases.
+- Refresh release tags during install, upgrade, and repair when origin is reachable, and clarify in the System Operator console that the local value is the source checkout's cached tag.
+
 - Send database-backed applicant reminders for pending registration requests after 1, 4, 7, 10, and 14 days, with no further automatic mail after the final reminder. A daily systemd timer records each delivered stage so restarts and missed runs do not duplicate or flood reminders.
 - Harden install, upgrade, repair, and doctor diagnostics: deployments now wait for every configured telnet listener and both local HTTP health endpoints, print recent service state on failure, and do not report completion from systemd state alone. Doctor distinguishes configured bindings from verified runtime health and exits nonzero when required services, storage, or APIs are unavailable.
 - Keep runtime dataset refresh failures concise and isolated per source; a CTY, WPXLOC, or KEPS timeout retains the existing file, continues the remaining refresh jobs, and no longer emits a misleading Python traceback during a best-effort upgrade refresh.

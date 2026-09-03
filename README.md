@@ -88,10 +88,13 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current release: `1.0.14`
+Current release: `1.0.15`
 
-Recent highlights in `1.0.14`:
+Recent highlights in `1.0.15`:
 
+- web login submits consistently with Enter, and public alert tones have a stronger bounded output level
+- deployment health gates verify configured telnet and web listeners before install, repair, or upgrade reports success
+- pending registration requests receive persisted applicant reminders at 1, 4, 7, 10, and 14 days
 - RBN feed ingestion is live-only and local, with bounded in-memory delivery, ten-second aggregation, nearby-frequency grouping, and respot suppression; it neither grows the historical spot database nor forwards RBN reports to cluster peers
 - System Operator user management includes a locked-account view alongside blocked users
 - registration-required nodes keep telnet and public requests in the approval queue until a System Operator approves them; nodes without that requirement activate public accounts after email verification
@@ -250,18 +253,17 @@ sudo ./deploy/doctor.sh
 
 For git-based upgrades, move site-local changes out of the tracked `config/pycluster.toml` file and into `config/pycluster.local.toml` first. That keeps `git pull --ff-only` clean while preserving local runtime settings.
 
-The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh` performs the required cumulative migration chain before services restart:
+The supported scripted upgrade path covers maintained Git installations. `deploy/upgrade.sh` performs one idempotent legacy-state migration before services restart:
 
-- `run_upgrade_1_0_1`
-  - hashes any legacy plaintext passwords still stored in `user_prefs`
-  - seeds `config/strings.toml` if it is missing
-- `run_upgrade_1_0_6`
-  - moves any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
+- hashes any plaintext passwords left by early releases
+- moves embedded outbound peer `password=` values out of old DSNs and into the separate peer-password preference path
 - `apply_py_protocol_defaults`
   - enables PY and all read-only sharing controls once on installations that predate the default-on policy, then preserves later System Operator opt-outs
   - inherits NODEINFO identity from existing node settings and seeds the PY public URL from a valid non-project Website URL when public web is enabled
 
-The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. The source tree is synced into the runtime directory with those paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy. Bundled additions and changed defaults are three-way merged into `config/strings.toml`; operator-edited values and extra keys are retained. The managed `config/strings.defaults.toml` baseline records the prior bundled defaults and should not be edited. Install, upgrade, and repair do not report success until every configured telnet port and local HTTP health endpoint responds; `deploy/doctor.sh` performs the same runtime checks and exits nonzero on required failures.
+The legacy migration remains as a safety net for databases that skipped intermediate releases, but the old release-specific scripts are no longer exposed or maintained separately.
+
+The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. The source tree is synced into the runtime directory with those paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy. Bundled additions and changed defaults are three-way merged into `config/strings.toml`; operator-edited values and extra keys are retained. The managed `config/strings.defaults.toml` baseline records the prior bundled defaults and should not be edited. Install, upgrade, and repair refresh release tags when origin is reachable and do not report success until every configured telnet port and local HTTP health endpoint responds; `deploy/doctor.sh` performs the same runtime checks and exits nonzero on required failures.
 
 Pending registration applicants receive paced email reminders after 1, 4, 7, 10, and 14 days through `pycluster-registration-reminders.timer`. Delivery state is stored in SQLite so restarts do not duplicate messages, and reminders stop after day 14.
 

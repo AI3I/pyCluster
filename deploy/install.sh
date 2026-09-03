@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 require_root
 ensure_base_packages
 ensure_supported_python
+refresh_source_tags_best_effort
 log "installing pyCluster into $PYCLUSTER_APP_DIR"
 arm_maintenance_failure_recovery
 stop_service

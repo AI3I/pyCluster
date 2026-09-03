@@ -326,6 +326,9 @@ Services:
 - `pycluster.service`
 - `pyclusterweb.service`
 - `pycluster-data-refresh.timer`
+- `pycluster-retention.timer`
+- `pycluster-registration-reminders.timer`
+- `pycluster-upgrade.path`
 
 Healthy baseline:
 
@@ -333,6 +336,8 @@ Healthy baseline:
 - public web service active
 - nginx active when the host is publishing web UI on `80/443`
 - country/Keps data refresh timer active
+- retention and registration-reminder timers active
+- on-demand upgrade watcher active
 - wpxloc.raw configured and current if you use DXSpider-style WPX/location data
 - database present
 - security logging and `fail2ban` functioning

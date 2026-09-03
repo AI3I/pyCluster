@@ -2940,7 +2940,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid compact-controls">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.14" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.15" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>
@@ -4885,17 +4885,24 @@ function renderUpgradeStatus(payload) {
   setText('upgradeStatus', lead);
   const tags = [];
   if (availability.latest_remote_tag) tags.push(`Latest remote tag: ${availability.latest_remote_tag}`);
-  if (availability.latest_local_tag) tags.push(`Latest local tag: ${availability.latest_local_tag}`);
+  if (availability.latest_local_tag) tags.push(`Cached source tag: ${availability.latest_local_tag}`);
   setText('upgradeMetaTag', tags.join(' • ') || 'No upgrade metadata is available.');
   const target = availability.available
     ? `${availability.current_version || '-'} → ${availability.available_version || '-'}`
     : `${availability.current_version || '-'} current`;
-  const hookText = migrations.length ? `Migration hooks: ${migrations.join(', ')}` : 'Migration hooks: none required';
+  const hookText = migrations.length ? `State migration: ${migrations.join(', ')}` : 'State migration: none required';
   setText('upgradeMetaPath', `${target}; ${hookText}`);
   setText('upgradeMetaLog', status.log_path ? `Log: ${status.log_path}` : '-');
   setText('upgradeMetaRemote', availability.remote_error ? `Remote check note: ${availability.remote_error}` : '-');
   const runBtn = byId('runUpgrade');
-  if (runBtn) runBtn.disabled = status.state === 'running' || !availability.source_checkout;
+  if (runBtn) {
+    runBtn.disabled = status.state === 'running' || !availability.source_checkout || !availability.source_secure || !!availability.source_dirty;
+    runBtn.title = !availability.source_secure
+      ? 'The upgrade source must be root-owned and not group/world-writable.'
+      : availability.source_dirty
+      ? 'The upgrade source checkout has local changes. Commit or clean them before upgrading.'
+      : 'Queue a root-owned upgrade job that survives restarting this console.';
+  }
 }
 function setJsonEditor(id, value) {
   const el = byId(id);
