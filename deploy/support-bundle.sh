@@ -546,6 +546,7 @@ run "pyCluster unit inventory" systemctl list-unit-files 'pycluster*' --no-pager
 for unit in \
   "$PYCLUSTER_SERVICE_NAME" "$PYCLUSTER_WEB_SERVICE_NAME" \
   "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" "$PYCLUSTER_RETENTION_TIMER_NAME" \
+  "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" \
   "$PYCLUSTER_UPGRADE_PATH_NAME" fail2ban.service nginx.service; do
   run "$unit state" systemctl show "$unit" --no-pager \
     --property=Id,LoadState,ActiveState,SubState,UnitFileState,FragmentPath,User,Group,WorkingDirectory,ExecMainStatus,ExecMainStartTimestamp,ExecStart,Result,NRestarts,MemoryCurrent,MemoryPeak,CPUUsageNSec,TasksCurrent,LimitNOFILE,OOMPolicy
@@ -559,6 +560,7 @@ unit_mismatches=0
 for unit in \
   pycluster.service pyclusterweb.service pycluster-data-refresh.service \
   pycluster-data-refresh.timer pycluster-retention.service pycluster-retention.timer \
+  pycluster-registration-reminders.service pycluster-registration-reminders.timer \
   pycluster-upgrade.service pycluster-upgrade.path; do
   expected="$source_root/deploy/systemd/$unit"
   installed="$PYCLUSTER_SYSTEMD_DIR/$unit"
@@ -621,6 +623,7 @@ if [ "$include_journal" -eq 1 ]; then
   run_network_shell "Core journal" "journalctl -u '$PYCLUSTER_SERVICE_NAME' -n 200 --no-pager -o short-iso"
   run_network_shell "Public web journal" "journalctl -u '$PYCLUSTER_WEB_SERVICE_NAME' -n 200 --no-pager -o short-iso"
   run_network_shell "Data refresh journal" "journalctl -u '$PYCLUSTER_DATA_REFRESH_SERVICE_NAME' -n 100 --no-pager -o short-iso"
+  run_network_shell "Registration reminder journal" "journalctl -u '$PYCLUSTER_REGISTRATION_REMINDERS_SERVICE_NAME' -n 100 --no-pager -o short-iso"
   run_network_shell "Upgrade journal" "journalctl -u '$PYCLUSTER_UPGRADE_SERVICE_NAME' -n 100 --no-pager -o short-iso"
   run_network_shell "nginx journal" "journalctl -u nginx.service -n 100 --no-pager -o short-iso"
   run_network_shell "fail2ban journal" "journalctl -u fail2ban.service -n 100 --no-pager -o short-iso"

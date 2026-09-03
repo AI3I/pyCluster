@@ -13,6 +13,8 @@ PYCLUSTER_DATA_REFRESH_SERVICE_NAME="${PYCLUSTER_DATA_REFRESH_SERVICE_NAME:-pycl
 PYCLUSTER_DATA_REFRESH_TIMER_NAME="${PYCLUSTER_DATA_REFRESH_TIMER_NAME:-pycluster-data-refresh.timer}"
 PYCLUSTER_RETENTION_SERVICE_NAME="${PYCLUSTER_RETENTION_SERVICE_NAME:-pycluster-retention.service}"
 PYCLUSTER_RETENTION_TIMER_NAME="${PYCLUSTER_RETENTION_TIMER_NAME:-pycluster-retention.timer}"
+PYCLUSTER_REGISTRATION_REMINDERS_SERVICE_NAME="${PYCLUSTER_REGISTRATION_REMINDERS_SERVICE_NAME:-pycluster-registration-reminders.service}"
+PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME="${PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME:-pycluster-registration-reminders.timer}"
 PYCLUSTER_UPGRADE_SERVICE_NAME="${PYCLUSTER_UPGRADE_SERVICE_NAME:-pycluster-upgrade.service}"
 PYCLUSTER_UPGRADE_PATH_NAME="${PYCLUSTER_UPGRADE_PATH_NAME:-pycluster-upgrade.path}"
 PYCLUSTER_SYSTEMD_DIR="${PYCLUSTER_SYSTEMD_DIR:-/etc/systemd/system}"
@@ -468,35 +470,50 @@ PY
 }
 
 install_or_refresh_service() {
-  local root escaped_root
+  local root escaped_root escaped_app escaped_python unit target
   root="$(repo_root)"
   escaped_root="$(printf '%s' "$root" | sed 's/[\\&|]/\\&/g')"
-  install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pycluster.service" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_SERVICE_NAME"
-  install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pyclusterweb.service" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_WEB_SERVICE_NAME"
-  install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pycluster-data-refresh.service" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_DATA_REFRESH_SERVICE_NAME"
-  install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pycluster-data-refresh.timer" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_DATA_REFRESH_TIMER_NAME"
-  install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pycluster-retention.service" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_RETENTION_SERVICE_NAME"
-  install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pycluster-retention.timer" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_RETENTION_TIMER_NAME"
-  install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pycluster-upgrade.service" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_SERVICE_NAME"
-  sed -i "s|/usr/src/pyCluster|$escaped_root|g" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_SERVICE_NAME"
-  install -o root -g root -m 0644 \
-    "$root/deploy/systemd/pycluster-upgrade.path" \
-    "$PYCLUSTER_SYSTEMD_DIR/$PYCLUSTER_UPGRADE_PATH_NAME"
+  escaped_app="$(printf '%s' "$PYCLUSTER_APP_DIR" | sed 's/[\\&|]/\\&/g')"
+  escaped_python="$(printf '%s' "$PYCLUSTER_PYTHON_LINK" | sed 's/[\\&|]/\\&/g')"
+  for unit in \
+    pycluster.service \
+    pyclusterweb.service \
+    pycluster-data-refresh.service \
+    pycluster-data-refresh.timer \
+    pycluster-retention.service \
+    pycluster-retention.timer \
+    pycluster-registration-reminders.service \
+    pycluster-registration-reminders.timer \
+    pycluster-upgrade.service \
+    pycluster-upgrade.path
+  do
+    case "$unit" in
+      pycluster.service) target="$PYCLUSTER_SERVICE_NAME" ;;
+      pyclusterweb.service) target="$PYCLUSTER_WEB_SERVICE_NAME" ;;
+      pycluster-data-refresh.service) target="$PYCLUSTER_DATA_REFRESH_SERVICE_NAME" ;;
+      pycluster-data-refresh.timer) target="$PYCLUSTER_DATA_REFRESH_TIMER_NAME" ;;
+      pycluster-retention.service) target="$PYCLUSTER_RETENTION_SERVICE_NAME" ;;
+      pycluster-retention.timer) target="$PYCLUSTER_RETENTION_TIMER_NAME" ;;
+      pycluster-registration-reminders.service) target="$PYCLUSTER_REGISTRATION_REMINDERS_SERVICE_NAME" ;;
+      pycluster-registration-reminders.timer) target="$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" ;;
+      pycluster-upgrade.service) target="$PYCLUSTER_UPGRADE_SERVICE_NAME" ;;
+      pycluster-upgrade.path) target="$PYCLUSTER_UPGRADE_PATH_NAME" ;;
+    esac
+    install -o root -g root -m 0644 "$root/deploy/systemd/$unit" "$PYCLUSTER_SYSTEMD_DIR/$target"
+    sed -i \
+      -e "s|/usr/src/pyCluster|$escaped_root|g" \
+      -e "s|/home/pycluster/pyCluster|$escaped_app|g" \
+      -e "s|/usr/local/bin/pycluster-python|$escaped_python|g" \
+      -e "s|pycluster.service|$PYCLUSTER_SERVICE_NAME|g" \
+      -e "s|pyclusterweb.service|$PYCLUSTER_WEB_SERVICE_NAME|g" \
+      -e "s|pycluster-data-refresh.service|$PYCLUSTER_DATA_REFRESH_SERVICE_NAME|g" \
+      -e "s|pycluster-retention.service|$PYCLUSTER_RETENTION_SERVICE_NAME|g" \
+      -e "s|pycluster-registration-reminders.service|$PYCLUSTER_REGISTRATION_REMINDERS_SERVICE_NAME|g" \
+      -e "s|pycluster-upgrade.service|$PYCLUSTER_UPGRADE_SERVICE_NAME|g" \
+      -e "s|^User=pycluster$|User=$PYCLUSTER_USER|" \
+      -e "s|^Group=pycluster$|Group=$PYCLUSTER_GROUP|" \
+      "$PYCLUSTER_SYSTEMD_DIR/$target"
+  done
   remove_legacy_cty_refresh_units
   systemctl daemon-reload
 }
@@ -532,6 +549,22 @@ wait_for_systemd_active() {
   done
 }
 
+wait_for_runtime_ready() {
+  local timeout="${1:-45}" root
+  root="$(repo_root)"
+  (
+    cd "$PYCLUSTER_APP_DIR" &&
+    PYTHONPATH="$root/src" "$PYCLUSTER_PYTHON_LINK" "$root/deploy/runtime_health.py" \
+      --config "$PYCLUSTER_CONFIG_DEST" --timeout "$timeout"
+  )
+}
+
+report_runtime_failure() {
+  warn "runtime health verification failed; recent service state follows"
+  systemctl --no-pager --full status "$PYCLUSTER_SERVICE_NAME" "$PYCLUSTER_WEB_SERVICE_NAME" >&2 || true
+  journalctl --no-pager -n 80 -u "$PYCLUSTER_SERVICE_NAME" -u "$PYCLUSTER_WEB_SERVICE_NAME" >&2 || true
+}
+
 restart_service_hard() {
   systemctl restart "$PYCLUSTER_SERVICE_NAME"
 }
@@ -545,6 +578,7 @@ enable_service() {
   systemctl enable "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null
+  systemctl enable --now "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" >/dev/null
   systemctl enable --now "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null
 }
 
@@ -554,15 +588,21 @@ disable_service() {
   systemctl disable --now "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl disable --now "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl disable --now "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl disable --now "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl disable --now "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null 2>&1 || true
 }
 
 stop_service() {
   systemctl stop "$PYCLUSTER_SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl stop "$PYCLUSTER_DATA_REFRESH_SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl stop "$PYCLUSTER_RETENTION_SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl stop "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl stop "$PYCLUSTER_REGISTRATION_REMINDERS_SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl stop "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl stop "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null 2>&1 || true
 }
 
 capture_maintenance_service_state() {
@@ -570,10 +610,14 @@ capture_maintenance_service_state() {
   PYCLUSTER_WEB_WAS_ACTIVE=0
   PYCLUSTER_DATA_TIMER_WAS_ACTIVE=0
   PYCLUSTER_RETENTION_TIMER_WAS_ACTIVE=0
+  PYCLUSTER_REGISTRATION_REMINDERS_TIMER_WAS_ACTIVE=0
+  PYCLUSTER_UPGRADE_PATH_WAS_ACTIVE=0
   systemctl is-active --quiet "$PYCLUSTER_SERVICE_NAME" && PYCLUSTER_CORE_WAS_ACTIVE=1 || true
   systemctl is-active --quiet "$PYCLUSTER_WEB_SERVICE_NAME" && PYCLUSTER_WEB_WAS_ACTIVE=1 || true
   systemctl is-active --quiet "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" && PYCLUSTER_DATA_TIMER_WAS_ACTIVE=1 || true
   systemctl is-active --quiet "$PYCLUSTER_RETENTION_TIMER_NAME" && PYCLUSTER_RETENTION_TIMER_WAS_ACTIVE=1 || true
+  systemctl is-active --quiet "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" && PYCLUSTER_REGISTRATION_REMINDERS_TIMER_WAS_ACTIVE=1 || true
+  systemctl is-active --quiet "$PYCLUSTER_UPGRADE_PATH_NAME" && PYCLUSTER_UPGRADE_PATH_WAS_ACTIVE=1 || true
 }
 
 restore_maintenance_service_state() {
@@ -585,6 +629,8 @@ restore_maintenance_service_state() {
     [ "${PYCLUSTER_WEB_WAS_ACTIVE:-0}" = "1" ] && systemctl start "$PYCLUSTER_WEB_SERVICE_NAME" >/dev/null 2>&1 || true
     [ "${PYCLUSTER_DATA_TIMER_WAS_ACTIVE:-0}" = "1" ] && systemctl start "$PYCLUSTER_DATA_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
     [ "${PYCLUSTER_RETENTION_TIMER_WAS_ACTIVE:-0}" = "1" ] && systemctl start "$PYCLUSTER_RETENTION_TIMER_NAME" >/dev/null 2>&1 || true
+    [ "${PYCLUSTER_REGISTRATION_REMINDERS_TIMER_WAS_ACTIVE:-0}" = "1" ] && systemctl start "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" >/dev/null 2>&1 || true
+    [ "${PYCLUSTER_UPGRADE_PATH_WAS_ACTIVE:-0}" = "1" ] && systemctl start "$PYCLUSTER_UPGRADE_PATH_NAME" >/dev/null 2>&1 || true
   fi
   exit "$rc"
 }

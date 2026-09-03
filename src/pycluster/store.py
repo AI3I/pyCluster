@@ -167,6 +167,8 @@ CREATE TABLE IF NOT EXISTS registration_requests (
     reviewed_epoch INTEGER NOT NULL DEFAULT 0,
     reviewer TEXT NOT NULL DEFAULT '',
     review_note TEXT NOT NULL DEFAULT '',
+    reminder_stage INTEGER NOT NULL DEFAULT 0,
+    reminder_epoch INTEGER NOT NULL DEFAULT 0,
     updated_epoch INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_registration_requests_status_epoch ON registration_requests(status, requested_epoch DESC);
@@ -233,6 +235,14 @@ class SpotStore:
             "ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'local'",
             "ALTER TABLE messages ADD COLUMN delivered_epoch INTEGER",
             "ALTER TABLE messages ADD COLUMN error_text TEXT NOT NULL DEFAULT ''",
+        ):
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        for stmt in (
+            "ALTER TABLE registration_requests ADD COLUMN reminder_stage INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE registration_requests ADD COLUMN reminder_epoch INTEGER NOT NULL DEFAULT 0",
         ):
             try:
                 self._conn.execute(stmt)
@@ -1472,7 +1482,7 @@ class SpotStore:
         async with self._lock:
             cur = self._conn.execute(
                 """
-                SELECT requested_epoch
+                SELECT requested_epoch, status, reminder_stage, reminder_epoch
                 FROM registration_requests
                 WHERE call = ?
                 LIMIT 1
@@ -1480,14 +1490,17 @@ class SpotStore:
                 (c,),
             )
             row = cur.fetchone()
-            requested_epoch = int(row["requested_epoch"]) if row is not None else int(epoch)
+            keep_pending_state = row is not None and str(row["status"] or "").lower() == "pending" and stat == "pending"
+            requested_epoch = int(row["requested_epoch"]) if keep_pending_state else int(epoch)
+            reminder_stage = int(row["reminder_stage"] or 0) if keep_pending_state else 0
+            reminder_epoch = int(row["reminder_epoch"] or 0) if keep_pending_state else 0
             self._conn.execute(
                 """
                 INSERT INTO registration_requests(
                     call, display_name, home_node, qth, qra, email, note, source,
                     email_verified, status, requested_epoch, reviewed_epoch,
-                    reviewer, review_note, updated_epoch
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reviewer, review_note, reminder_stage, reminder_epoch, updated_epoch
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(call)
                 DO UPDATE SET
                     display_name = excluded.display_name,
@@ -1503,6 +1516,8 @@ class SpotStore:
                     reviewed_epoch = excluded.reviewed_epoch,
                     reviewer = excluded.reviewer,
                     review_note = excluded.review_note,
+                    reminder_stage = excluded.reminder_stage,
+                    reminder_epoch = excluded.reminder_epoch,
                     updated_epoch = excluded.updated_epoch
                 """,
                 (
@@ -1520,6 +1535,8 @@ class SpotStore:
                     int(reviewed_epoch or 0),
                     reviewer.strip().upper(),
                     review_note.strip(),
+                    reminder_stage,
+                    reminder_epoch,
                     int(epoch),
                 ),
             )
@@ -1534,7 +1551,7 @@ class SpotStore:
                 """
                 SELECT call, display_name, home_node, qth, qra, email, note, source,
                        email_verified, status, requested_epoch, reviewed_epoch,
-                       reviewer, review_note, updated_epoch
+                       reviewer, review_note, reminder_stage, reminder_epoch, updated_epoch
                 FROM registration_requests
                 WHERE call = ?
                 LIMIT 1
@@ -1557,7 +1574,7 @@ class SpotStore:
                 f"""
                 SELECT call, display_name, home_node, qth, qra, email, note, source,
                        email_verified, status, requested_epoch, reviewed_epoch,
-                       reviewer, review_note, updated_epoch
+                       reviewer, review_note, reminder_stage, reminder_epoch, updated_epoch
                 FROM registration_requests
                 {where}
                 ORDER BY requested_epoch DESC, call
@@ -1566,6 +1583,23 @@ class SpotStore:
                 (*params, lim, off),
             )
             return cur.fetchall()
+
+    async def mark_registration_reminder_sent(self, call: str, *, stage: int, epoch: int) -> bool:
+        c = call.strip().upper()
+        target_stage = max(0, int(stage))
+        if not c or target_stage <= 0:
+            return False
+        async with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE registration_requests
+                SET reminder_stage = ?, reminder_epoch = ?, updated_epoch = ?
+                WHERE call = ? AND status = 'pending' AND reminder_stage < ?
+                """,
+                (target_stage, int(epoch), int(epoch), c, target_stage),
+            )
+            self._conn.commit()
+            return bool(cur.rowcount)
 
     async def set_registration_request_status(
         self,

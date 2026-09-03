@@ -133,13 +133,17 @@ def test_data_refresh_service_uses_generic_names_and_migrates_legacy_timer() -> 
     assert "systemctl disable --now \"$PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME\"" in lib
     assert "data refresh timer" in doctor
     assert "retention timer" in doctor
+    assert "registration reminders" in doctor
     assert "upgrade watcher" in doctor
     assert "from pycluster.config import load_config" in doctor
-    assert 'status "telnet listener"' in doctor
-    assert 'status "sysop web listener"' in doctor
-    assert 'status "public web listener"' in doctor
+    assert 'status "configured telnet"' in doctor
+    assert 'status "runtime health"' in doctor
+    assert '"$SCRIPT_DIR/runtime_health.py" --config "$PYCLUSTER_CONFIG_DEST" --timeout 2' in doctor
+    assert 'status "configured sysop web"' in doctor
+    assert 'status "configured public web"' in doctor
     assert "public_web_probe_url" in doctor
     assert "PYCLUSTER_LEGACY_CTY_REFRESH_TIMER_NAME" in uninstall
+    assert "PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME" in uninstall
     assert "pycluster-auth-scanner.conf" in uninstall
     assert "pycluster-scanner.local" in uninstall
 
@@ -189,7 +193,14 @@ def test_deploy_lifecycle_writes_support_receipt_and_has_safe_collector(tmp_path
     collector_text = collector.read_text(encoding="utf-8")
 
     assert "write_deployment_state()" in lib
-    assert 'sed -i "s|/usr/src/pyCluster|$escaped_root|g"' in lib
+    assert 's|/usr/src/pyCluster|$escaped_root|g' in lib
+    assert 's|/home/pycluster/pyCluster|$escaped_app|g' in lib
+    assert 's|/usr/local/bin/pycluster-python|$escaped_python|g' in lib
+    for lifecycle in (install, upgrade, repair):
+        assert "wait_for_runtime_ready 45" in lifecycle
+        assert "report_runtime_failure" in lifecycle
+    assert "arm_maintenance_failure_recovery" in install
+    assert "backup_runtime_snapshot install-preflight" in install
     assert 'write_deployment_state install' in install
     assert 'write_deployment_state upgrade' in upgrade
     assert 'write_deployment_state repair' in repair
@@ -357,3 +368,54 @@ def test_nginx_setup_validates_hosts_and_rolls_back_failed_changes() -> None:
     assert "trap rollback_nginx_setup ERR EXIT INT TERM" in setup
     assert setup.index("backup_nginx_target") < setup.index('rm -f "$NGINX_CONFIG_DIR/default.conf"')
     assert setup.rindex("nginx -t") < setup.rindex("trap - ERR EXIT INT TERM")
+
+
+def test_systemd_units_render_configured_runtime_identity_and_paths(tmp_path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    runtime = tmp_path / "runtime"
+    python_link = tmp_path / "bin" / "pycluster-python"
+    command = f"""
+      . deploy/lib.sh
+      repo_root() {{ printf '%s' '{root}'; }}
+      systemctl() {{ :; }}
+      install() {{
+        local -a paths=()
+        while [ "$#" -gt 0 ]; do
+          case "$1" in -o|-g|-m) shift 2 ;; *) paths+=("$1"); shift ;; esac
+        done
+        command cp "${{paths[@]}}"
+      }}
+      PYCLUSTER_USER=clusteracct
+      PYCLUSTER_GROUP=clustergroup
+      PYCLUSTER_APP_DIR='{runtime}'
+      PYCLUSTER_PYTHON_LINK='{python_link}'
+      PYCLUSTER_SYSTEMD_DIR='{systemd_dir}'
+      PYCLUSTER_SERVICE_NAME=custom-core.service
+      PYCLUSTER_WEB_SERVICE_NAME=custom-web.service
+      PYCLUSTER_DATA_REFRESH_SERVICE_NAME=custom-refresh.service
+      PYCLUSTER_DATA_REFRESH_TIMER_NAME=custom-refresh.timer
+      PYCLUSTER_RETENTION_SERVICE_NAME=custom-retention.service
+      PYCLUSTER_RETENTION_TIMER_NAME=custom-retention.timer
+      PYCLUSTER_REGISTRATION_REMINDERS_SERVICE_NAME=custom-reminders.service
+      PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME=custom-reminders.timer
+      PYCLUSTER_UPGRADE_SERVICE_NAME=custom-upgrade.service
+      PYCLUSTER_UPGRADE_PATH_NAME=custom-upgrade.path
+      install_or_refresh_service
+    """
+    result = subprocess.run(["bash", "-c", command], cwd=root, text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+    core = (systemd_dir / "custom-core.service").read_text(encoding="utf-8")
+    web = (systemd_dir / "custom-web.service").read_text(encoding="utf-8")
+    reminders = (systemd_dir / "custom-reminders.service").read_text(encoding="utf-8")
+    reminder_timer = (systemd_dir / "custom-reminders.timer").read_text(encoding="utf-8")
+    upgrade = (systemd_dir / "custom-upgrade.service").read_text(encoding="utf-8")
+    assert "User=clusteracct" in core and "Group=clustergroup" in core
+    assert f"WorkingDirectory={runtime}" in core
+    assert f"ExecStart={python_link}" in core
+    assert "After=network-online.target custom-core.service" in web
+    assert f"WorkingDirectory={runtime}" in reminders
+    assert "Unit=custom-reminders.service" in reminder_timer
+    assert f"WorkingDirectory={root}" in upgrade

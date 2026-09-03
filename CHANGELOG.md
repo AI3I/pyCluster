@@ -4,6 +4,10 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Send database-backed applicant reminders for pending registration requests after 1, 4, 7, 10, and 14 days, with no further automatic mail after the final reminder. A daily systemd timer records each delivered stage so restarts and missed runs do not duplicate or flood reminders.
+- Harden install, upgrade, repair, and doctor diagnostics: deployments now wait for every configured telnet listener and both local HTTP health endpoints, print recent service state on failure, and do not report completion from systemd state alone. Doctor distinguishes configured bindings from verified runtime health and exits nonzero when required services, storage, or APIs are unavailable.
+- Keep runtime dataset refresh failures concise and isolated per source; a CTY, WPXLOC, or KEPS timeout retains the existing file, continues the remaining refresh jobs, and no longer emits a misleading Python traceback during a best-effort upgrade refresh.
+- Stop active maintenance jobs and the upgrade watcher during lifecycle synchronization, protect repeat install runs with the same preflight backup/failure recovery used by upgrades, and render systemd units with configured runtime paths, account, group, and Python launcher.
 - Added an authenticated public-web Rules panel that directly manages the same slot-preserving spot and RBN accept/reject records used by telnet. System Operators can separately maintain node-wide bad-DX, bad-spotter, bad-node, and bad-word records; the API enforces sysop authorization.
 - Aligned public-web filter matching with telnet for callsigns, CQ/ITU zones, continents, and DXCC entities, including multi-word entity names such as `United States`.
 - Corrected `show/muf` destination-local hour calculations and added frozen Wisconsin-to-England reference vectors verified against DXSpider's MINIMUF 3.5 routine; the current path MUF values match its routine through the tested precision and remain nonzero across UTC midnight.

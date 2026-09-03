@@ -1111,6 +1111,13 @@ command_after_checklist = "When those items are complete, run REGISTER again to 
 no_profile = "No registration profile exists for {call}."
 command_submitted = "Registration request submitted for {call}. Watch your email for updates."
 command_no_email = "Email delivery is not configured, so a sysop must review it locally."
+reminder_subject = "pyCluster registration request still pending for {call}"
+reminder_body = """Your pyCluster registration request for {call} has been pending for {age_days} day(s).
+
+A system operator still needs to review it. Contact {support_contact} if you need assistance.
+
+This is reminder {stage} of {total}; automatic reminders stop after 14 days.
+"""
 valid_email_required = "A valid email address is required for {call}. Contact a sysop to update your account."
 locked = "Account {call} is locked pending email verification. Contact a sysop."
 verify_prompt = "verification code: "
