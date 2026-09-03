@@ -5144,7 +5144,7 @@ byId('themeToggle').onclick = () => {
 byId('logout').onclick = async () => {
   await logoutSysop();
 };
-byId('login').onclick = async () => {
+async function loginSysop() {
   try {
     sayLogin('');
     const call = byId('call').value.trim();
@@ -5204,7 +5204,15 @@ byId('login').onclick = async () => {
       say('Login failed: ' + message, false);
     }
   }
-};
+}
+byId('login').onclick = loginSysop;
+[byId('call'), byId('pass')].forEach((field) => {
+  field.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    loginSysop();
+  });
+});
 async function saveNodeSettings(actionId) {
   try {
     await runButtonAction(actionId, async () => {

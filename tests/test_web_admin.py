@@ -16,14 +16,22 @@ from pycluster.mfa import SMTPMailer, totp_code
 from pycluster.models import Spot
 from pycluster.registration import registration_state
 from pycluster.store import SpotStore
+from pycluster.telnet_server import TelnetClusterServer
+from pycluster.web_admin import WebAdminServer
+
+
+def test_sysop_login_fields_submit_on_enter() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+
+    assert "async function loginSysop()" in text
+    assert "[byId('call'), byId('pass')].forEach((field) =>" in text
+    assert "event.preventDefault();\n    loginSysop();" in text
 
 
 def test_sysop_welcome_title_warns_about_hrd_compatibility() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
     assert "Keep this set to Hello for Ham Radio Deluxe (HRD) compatibility." in text
     assert "changing it can prevent HRD from completing session initialization" in text
-from pycluster.telnet_server import TelnetClusterServer
-from pycluster.web_admin import WebAdminServer
 
 
 def _assert_text_order(text: str, *needles: str) -> None:
