@@ -204,7 +204,7 @@ Important fields:
 - `public_web_url` - optional externally reachable public-node URL; pyCluster does not infer this from bind addresses or the general project website field
 - `share_node_info`
 - `share_public_web_url`, `share_locator`, `share_qth`, and `share_sysop_contact` - field-level NODEINFO privacy controls; all default to enabled and can be disabled independently
-- `share_topology` - enables bounded `PY02` digest, `PY10` selective request, and `PY03` record reconciliation
+- `share_topology` - enables bounded `PY02` digest, `PY10` selective request, `PY03` record reconciliation, and source-owned `PY13` withdrawals
 - `share_health` - enables direct `PY04` node, service, and link-health summaries
 - `share_datasets` - enables direct `PY05` CTY.DAT, wpxloc.raw, and KEPS freshness summaries
 - `share_rbn_status` - enables direct `PY06` RBN mode, connection, activity-rate, and queue summaries
@@ -221,13 +221,14 @@ Important fields:
 
 Safety behavior:
 
-- `PY00` is the only pre-negotiation bootstrap frame.
+- `PY00` is the only pre-negotiation bootstrap frame. Protocol v2 includes a connection session UUID and local frame, record, and hop limits; each link uses the lower values advertised by either peer.
 - Every other PY family requires a capability advertised by both peers.
 - PY traffic is rejected on DXSpider, DXNet, AR-Cluster, CLX, unknown, or unauthenticated links.
 - Frame-size and per-minute byte limits apply independently in each direction and reset on reconnect.
 - `share_node_info` enables direct `PY01` records; `share_topology` independently enables the persistent known-node catalog and anti-entropy exchange. Both default to enabled and can be disabled independently.
-- Topology exchanges send digests before details, request only missing or newer records, enforce record/frame/hop limits, avoid returning learned records to their source peer, and expire stale reports.
-- The authenticated SysOp endpoint `GET /api/py-nodes` returns this node's current local catalog and provenance.
+- Topology exchanges send digests before details, request only missing or newer records, enforce record/frame/hop limits, avoid returning learned records to their source peer, and expire stale reports. Each origin retains up to four candidate routes; withdrawal or expiry of the selected route promotes the best live alternate.
+- NODEINFO direct-neighbor lists provide a leased reported connectivity graph. `PY12` probes expose link responsiveness and RTT, while `PY13` withdrawals accelerate clean removal without allowing one peer to delete a route learned from another.
+- The authenticated SysOp endpoint `GET /api/py-nodes` returns this node's current local catalog, provenance, route counts, and one-sided or unknown-neighbor diagnostics.
 - Health, datasets, RBN status, policy, and clock are direct-peer summaries refreshed at a bounded interval and persisted in peer protocol state. Each requires its explicit `share_*` setting and bilateral capability negotiation.
 - `PY06` shares named modes and aggregate activity only; feed endpoints, ports, passwords, startup commands, and individual RBN spots remain local.
 - `PY07` notices are limited to 240 characters and 30 days, carry an explicit cancellation state, and are not derived from the MOTD.

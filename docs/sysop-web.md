@@ -411,6 +411,15 @@ has not been received. Locator, services, public URL, health, dataset, RBN, and
 topology metadata remain unavailable until both nodes enable compatible `PY`
 capabilities and exchange the corresponding records.
 
+PY v2 peers also expose their negotiated frame, record, and hop limits, current
+probe responsiveness and RTT, and topology synchronization state. Origin-owned
+direct-neighbor lists support the reported network graph; clean withdrawals
+remove owned routes promptly and abrupt failures remain bounded by record expiry.
+The catalog retains bounded alternate routes and promotes a live alternate when
+the preferred path disappears. Route counts, one-sided links, and neighbors not
+yet present in the catalog are shown as diagnostic context, not authoritative
+network faults.
+
 Lists local, directly observed, and relayed pyCluster node records with version, location, provenance, services, and freshness. These records are reported topology observations, not a central registry.
 
 #### Protocol Alerts

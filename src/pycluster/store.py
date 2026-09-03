@@ -6,8 +6,9 @@ from typing import Iterable
 import asyncio
 import fnmatch
 import json
+import time
 
-from .models import Spot
+from .models import Spot, normalize_call
 from .shdx import ShDxQuery
 
 
@@ -186,6 +187,7 @@ CREATE TABLE IF NOT EXISTS py_nodes (
     sysop_contact TEXT NOT NULL DEFAULT '',
     services_json TEXT NOT NULL DEFAULT '[]',
     capabilities_json TEXT NOT NULL DEFAULT '[]',
+    direct_peers_json TEXT NOT NULL DEFAULT '[]',
     source_node TEXT NOT NULL,
     learned_from TEXT NOT NULL,
     hop_count INTEGER NOT NULL DEFAULT 0,
@@ -198,6 +200,19 @@ CREATE TABLE IF NOT EXISTS py_nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_py_nodes_expires ON py_nodes(expires_at);
 CREATE INDEX IF NOT EXISTS idx_py_nodes_learned_from ON py_nodes(learned_from);
+CREATE TABLE IF NOT EXISTS py_node_routes (
+    node_call TEXT NOT NULL,
+    learned_from TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    hop_count INTEGER NOT NULL,
+    sequence INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY(node_call, learned_from)
+);
+CREATE INDEX IF NOT EXISTS idx_py_node_routes_expiry ON py_node_routes(expires_at);
 """
 
 
@@ -240,6 +255,10 @@ class SpotStore:
                 self._conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
+        try:
+            self._conn.execute("ALTER TABLE py_nodes ADD COLUMN direct_peers_json TEXT NOT NULL DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass
         for stmt in (
             "ALTER TABLE registration_requests ADD COLUMN reminder_stage INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE registration_requests ADD COLUMN reminder_epoch INTEGER NOT NULL DEFAULT 0",
@@ -336,6 +355,7 @@ class SpotStore:
             "sysop_contact": str(record.get("sysop_contact") or ""),
             "services_json": json.dumps(sorted(set(record.get("services") or [])), separators=(",", ":")),
             "capabilities_json": json.dumps(sorted(set(record.get("capabilities") or [])), separators=(",", ":")),
+            "direct_peers_json": json.dumps(sorted(set(record.get("direct_peers") or [])), separators=(",", ":")),
             "source_node": str(record.get("source_node") or "").strip().upper(),
             "learned_from": str(record.get("learned_from") or "").strip().upper(),
             "hop_count": int(record.get("hop_count") or 0),
@@ -346,6 +366,35 @@ class SpotStore:
             "raw_digest": str(record["raw_digest"]).strip().lower(),
         }
         async with self._lock:
+            route_record = dict(record)
+            for key in ("services", "capabilities", "direct_peers"):
+                route_record[key] = sorted(set(route_record.get(key) or []))
+            self._conn.execute(
+                """INSERT INTO py_node_routes(node_call, learned_from, node_id, confidence, hop_count,
+                       sequence, expires_at, last_seen, record_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(node_call, learned_from) DO UPDATE SET
+                       node_id=excluded.node_id, confidence=excluded.confidence,
+                       hop_count=excluded.hop_count, sequence=excluded.sequence,
+                       expires_at=excluded.expires_at, last_seen=excluded.last_seen,
+                       record_json=excluded.record_json
+                   WHERE excluded.sequence > py_node_routes.sequence
+                      OR (excluded.sequence = py_node_routes.sequence
+                          AND excluded.node_id = py_node_routes.node_id
+                          AND excluded.record_json = py_node_routes.record_json)""",
+                (node_call, values["learned_from"], values["node_id"], confidence,
+                 values["hop_count"], values["sequence"], values["expires_at"], int(now_epoch),
+                 json.dumps(route_record, sort_keys=True, separators=(",", ":"))),
+            )
+            self._conn.execute(
+                """DELETE FROM py_node_routes WHERE rowid IN (
+                       SELECT rowid FROM py_node_routes WHERE node_call = ?
+                       ORDER BY CASE confidence WHEN 'local' THEN 3 WHEN 'direct' THEN 2 ELSE 1 END DESC,
+                                hop_count ASC, sequence DESC, expires_at DESC, learned_from ASC
+                       LIMIT -1 OFFSET 4)""",
+                (node_call,),
+            )
+            self._conn.commit()
             existing = self._conn.execute(
                 "SELECT * FROM py_nodes WHERE node_call = ? LIMIT 1", (node_call,)
             ).fetchone()
@@ -400,12 +449,12 @@ class SpotStore:
                 """
                 INSERT INTO py_nodes(
                     node_call, node_id, origin_node, sequence, software_version, protocol_version,
-                    public_web_url, locator, qth, sysop_contact, services_json, capabilities_json,
+                    public_web_url, locator, qth, sysop_contact, services_json, capabilities_json, direct_peers_json,
                     source_node, learned_from, hop_count, confidence, first_seen, last_seen,
                     updated_epoch, expires_at, raw_digest
                 ) VALUES (
                     :node_call, :node_id, :origin_node, :sequence, :software_version, :protocol_version,
-                    :public_web_url, :locator, :qth, :sysop_contact, :services_json, :capabilities_json,
+                    :public_web_url, :locator, :qth, :sysop_contact, :services_json, :capabilities_json, :direct_peers_json,
                     :source_node, :learned_from, :hop_count, :confidence, :first_seen, :last_seen,
                     :updated_epoch, :expires_at, :raw_digest
                 )
@@ -415,6 +464,7 @@ class SpotStore:
                     protocol_version=excluded.protocol_version, public_web_url=excluded.public_web_url,
                     locator=excluded.locator, qth=excluded.qth, sysop_contact=excluded.sysop_contact,
                     services_json=excluded.services_json, capabilities_json=excluded.capabilities_json,
+                    direct_peers_json=excluded.direct_peers_json,
                     source_node=excluded.source_node, learned_from=excluded.learned_from,
                     hop_count=excluded.hop_count, confidence=excluded.confidence,
                     first_seen=excluded.first_seen, last_seen=excluded.last_seen,
@@ -429,7 +479,8 @@ class SpotStore:
     @staticmethod
     def _py_node_row(row: sqlite3.Row) -> dict[str, object]:
         out = dict(row)
-        for source, target in (("services_json", "services"), ("capabilities_json", "capabilities")):
+        for source, target in (("services_json", "services"), ("capabilities_json", "capabilities"),
+                               ("direct_peers_json", "direct_peers")):
             try:
                 out[target] = json.loads(str(out.pop(source)))
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -473,6 +524,16 @@ class SpotStore:
                 """,
                 (expiry, expiry, now, call, str(node_id), int(sequence), str(raw_digest).strip().lower()),
             )
+            if cur.rowcount:
+                selected = self._conn.execute(
+                    "SELECT learned_from FROM py_nodes WHERE node_call = ?", (call,)
+                ).fetchone()
+                if selected:
+                    self._conn.execute(
+                        "UPDATE py_node_routes SET expires_at = MAX(expires_at, ?), last_seen = ? "
+                        "WHERE node_call = ? AND learned_from = ? AND node_id = ? AND sequence = ?",
+                        (expiry, now, call, str(selected["learned_from"]), str(node_id), int(sequence)),
+                    )
             self._conn.commit()
             return bool(cur.rowcount)
 
@@ -485,11 +546,71 @@ class SpotStore:
             ).fetchall()
         return [self._py_node_row(row) for row in rows]
 
-    async def prune_expired_py_nodes(self, now_epoch: int) -> int:
+    async def withdraw_py_node_record(
+        self, node_call: str, node_id: str, learned_from: str, now_epoch: int | None = None
+    ) -> bool:
+        """Remove only the exact topology route owned by the reporting peer."""
+        call = normalize_call(node_call)
+        source = normalize_call(learned_from)
+        now = int(time.time()) if now_epoch is None else int(now_epoch)
+        replacement: dict[str, object] | None = None
         async with self._lock:
-            cur = self._conn.execute("DELETE FROM py_nodes WHERE expires_at <= ?", (int(now_epoch),))
+            cur = self._conn.execute(
+                "DELETE FROM py_node_routes WHERE node_call = ? AND node_id = ? AND learned_from = ?",
+                (call, str(node_id), source),
+            )
+            if cur.rowcount:
+                self._conn.execute(
+                    "DELETE FROM py_nodes WHERE node_call = ? AND node_id = ? AND learned_from = ?",
+                    (call, str(node_id), source),
+                )
+                row = self._conn.execute(
+                    """SELECT record_json FROM py_node_routes WHERE node_call = ? AND expires_at > ?
+                       ORDER BY CASE confidence WHEN 'local' THEN 3 WHEN 'direct' THEN 2 ELSE 1 END DESC,
+                                hop_count ASC, sequence DESC, expires_at DESC, learned_from ASC LIMIT 1""",
+                    (call, now),
+                ).fetchone()
+                if row:
+                    replacement = json.loads(str(row["record_json"]))
             self._conn.commit()
-            return int(cur.rowcount or 0)
+        if replacement:
+            await self.upsert_py_node_record(replacement, now)
+        return bool(cur.rowcount)
+
+    async def prune_expired_py_nodes(self, now_epoch: int) -> int:
+        replacements: list[dict[str, object]] = []
+        async with self._lock:
+            now = int(now_epoch)
+            expired_calls = [
+                str(row["node_call"])
+                for row in self._conn.execute(
+                    "SELECT node_call FROM py_nodes WHERE expires_at <= ?", (now,)
+                ).fetchall()
+            ]
+            self._conn.execute("DELETE FROM py_node_routes WHERE expires_at <= ?", (now,))
+            cur = self._conn.execute("DELETE FROM py_nodes WHERE expires_at <= ?", (now,))
+            for call in expired_calls:
+                row = self._conn.execute(
+                    """SELECT record_json FROM py_node_routes WHERE node_call = ? AND expires_at > ?
+                       ORDER BY CASE confidence WHEN 'local' THEN 3 WHEN 'direct' THEN 2 ELSE 1 END DESC,
+                                hop_count ASC, sequence DESC, expires_at DESC, learned_from ASC LIMIT 1""",
+                    (call, now),
+                ).fetchone()
+                if row:
+                    replacements.append(json.loads(str(row["record_json"])))
+            self._conn.commit()
+            removed = int(cur.rowcount or 0)
+        for replacement in replacements:
+            await self.upsert_py_node_record(replacement, int(now_epoch))
+        return removed
+
+    async def py_node_route_counts(self, now_epoch: int) -> dict[str, int]:
+        async with self._lock:
+            rows = self._conn.execute(
+                "SELECT node_call, COUNT(*) AS n FROM py_node_routes WHERE expires_at > ? GROUP BY node_call",
+                (int(now_epoch),),
+            ).fetchall()
+        return {str(row["node_call"]): int(row["n"]) for row in rows}
 
     async def add_spot(self, spot: Spot) -> bool:
         async with self._lock:

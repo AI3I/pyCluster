@@ -951,11 +951,16 @@ class WebAdminServer:
         rows = await self.store.recent_logins(limit)
         out: list[dict[str, object]] = []
         for row in rows:
+            call = str(row["call"] or "")
+            node_family = str(await self.store.get_user_pref(call, "node_family") or "").strip().lower()
+            privilege = str(row["privilege"] or "").strip().lower()
+            role = f"cluster / {node_family}" if node_family else ("system operator" if privilege == "sysop" else "standard user")
             out.append(
                 {
-                    "call": str(row["call"] or ""),
+                    "call": call,
                     "name": str(row["display_name"] or ""),
-                    "privilege": str(row["privilege"] or ""),
+                    "privilege": privilege,
+                    "role": role,
                     "when_epoch": int(row["last_login_epoch"] or 0),
                     "path": str(row["last_login_peer"] or ""),
                 }
@@ -1293,6 +1298,25 @@ class WebAdminServer:
                     item for item in str(state["py_negotiated_capabilities"]).split(",") if item
                 ],
                 "announced_epoch": state["py_announced_epoch"],
+                "session_id": node_cfg.get(pfx + "py.session_id", ""),
+                "limits": {
+                    "frame_bytes": _to_int(node_cfg.get(pfx + "py.limits.effective_frame_bytes", "0")),
+                    "records": _to_int(node_cfg.get(pfx + "py.limits.effective_records", "0")),
+                    "hops": _to_int(node_cfg.get(pfx + "py.limits.effective_hops", "0")),
+                },
+                "probe": {
+                    "state": node_cfg.get(pfx + "py.probe.state", ""),
+                    "rtt_ms": _to_int(node_cfg.get(pfx + "py.probe.rtt_ms", "0")),
+                    "reply_epoch": _to_int(node_cfg.get(pfx + "py.probe.reply_epoch", "0")),
+                },
+                "sync": {
+                    "state": node_cfg.get(pfx + "py.sync.state", ""),
+                    "updated_epoch": _to_int(node_cfg.get(pfx + "py.sync.updated_epoch", "0")),
+                    "converged_epoch": _to_int(node_cfg.get(pfx + "py.sync.converged_epoch", "0")),
+                    "advertised_records": _to_int(node_cfg.get(pfx + "py.sync.advertised_records", "0")),
+                    "requested_records": _to_int(node_cfg.get(pfx + "py.sync.requested_records", "0")),
+                    "accepted_records": _to_int(node_cfg.get(pfx + "py.sync.accepted_records", "0")),
+                },
                 "last_error": {
                     "code": state["py_last_error_code"],
                     "offending_type": state["py_last_error_type"],
@@ -1593,7 +1617,7 @@ body{
 .mast h1{
   margin:0;
   font-size:30px;
-  line-height:1.05;
+  line-height:1.25;
   letter-spacing:.02em;
   background:linear-gradient(90deg,#58a6ff 20%,#c8e4ff 48%,#ffffff 52%,#c8e4ff 57%,#58a6ff 80%);
   background-size:400% auto;
@@ -2940,7 +2964,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid compact-controls">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/1.0.16" title="Optional QRZ XML agent string. Leave blank to use pyCluster's default agent."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/current-version" title="Optional QRZ XML agent string. Leave blank to use pyCluster's current runtime version automatically."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>
@@ -4055,12 +4079,13 @@ function setPeerRows(peers) {
       }
       err = `<div class="mini">${esc(errText)}</div>`;
     }
-    const normalizedProfile = String(peer.profile || 'dxspider').trim().toLowerCase();
+    const observedFamily = String((peer.proto && peer.proto.pc18_family) || '').trim().toLowerCase();
+    const normalizedProfile = observedFamily || String(peer.profile || 'dxspider').trim().toLowerCase();
     const normalizedTransport = transport.toLowerCase();
     const transportMeta = transport && normalizedTransport !== normalizedProfile ? ` • ${esc(transport)}` : '';
     const learnedVersion = String((peer.proto && (peer.proto.pc18_summary || peer.proto.pc18_software)) || '').trim();
     const learnedVersionMeta = learnedVersion ? `<div class="mini">${esc(learnedVersion)}</div>` : '';
-    const familyMeta = `<div class="mini"><strong>${esc(String(peer.profile || 'dxspider'))}</strong>${transportMeta}</div>`;
+    const familyMeta = `<div class="mini"><strong>${esc(normalizedProfile)}</strong>${transportMeta}</div>`;
     const lastPc = String(peer.last_pc_type || (peer.proto && peer.proto.last_pc_type) || '-');
     const rxTime = peer.last_rx_epoch ? fmtEpoch(peer.last_rx_epoch) : 'none';
     const txTime = peer.last_tx_epoch ? fmtEpoch(peer.last_tx_epoch) : 'none';
@@ -4137,10 +4162,12 @@ function setKnownNodeRows(payload, peers) {
       discovery_state:peerPy.negotiation_state === 'local_disabled'
         ? 'PC18 identified; PY disabled locally'
         : peerPy.negotiation_state === 'invalid_response'
-          ? `Invalid PY00 received: ${String(peerPy.handshake_error || 'invalid response')}`
+          ? String(peerPy.handshake_error || '').startsWith('unsupported_protocol_v')
+            ? `Incompatible ${String(peerPy.handshake_error).replace('unsupported_protocol_v', 'PY v')} response; PC fallback active`
+            : `Invalid PY00 received: ${String(peerPy.handshake_error || 'invalid response')}`
           : peerPy.negotiation_state === 'hello_sent'
             ? peer.connected
-              ? 'PY00 sent; no valid response received'
+              ? 'PY00 sent; no compatible response received'
               : 'PY00 sent; peer disconnected before a valid response'
           : peerPy.negotiation_state === 'awaiting_py00'
               ? String(peer.profile || '').toLowerCase() === 'pycluster'
@@ -4164,6 +4191,8 @@ function setKnownNodeRows(payload, peers) {
     const peerPy = directPeer && directPeer.proto ? (directPeer.proto.py || {}) : {};
     const health = peerPy.health || {};
     const rbn = peerPy.rbn_status || {};
+    const probe = peerPy.probe || {};
+    const sync = peerPy.sync || {};
     const location = [row.locator, row.qth].filter(Boolean).join(' • ') || '-';
     const learned = confidence === 'local'
       ? 'This node'
@@ -4174,7 +4203,7 @@ function setKnownNodeRows(payload, peers) {
     const serviceMeta = row.discovery_state
       ? `<div class="mini">${esc(row.discovery_state)}</div>`
       : directPeer
-        ? `<div class="mini">health ${esc(health.state || 'unknown')} • RBN ${esc(rbn.state || 'unknown')}</div>`
+        ? `<div class="mini">health ${esc(health.state || 'unknown')} • RBN ${esc(rbn.state || 'unknown')} • sync ${esc(sync.state || 'pending')} • RTT ${probe.state === 'responsive' ? esc(String(probe.rtt_ms || 0)) + ' ms' : esc(probe.state || 'pending')}</div>`
       : '';
     const publicUrl = String(row.public_web_url || '').trim();
     const callText = publicUrl
@@ -4185,7 +4214,7 @@ function setKnownNodeRows(payload, peers) {
       <td><span class="tag">${esc(confidence)}</span></td>
       <td>${esc(row.software_version || '-')}<div class="mini">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div></td>
       <td>${esc(location)}</td>
-      <td>${esc(learned)}</td>
+      <td>${esc(learned)}<div class="mini">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div></td>
       <td>${esc(services)}${serviceMeta}</td>
       <td>Seen ${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
     </tr>`;
@@ -4309,7 +4338,7 @@ function setLoginRows(rows) {
     <td>${esc(fmtEpoch(row.when_epoch || 0))}</td>
     <td><strong>${esc(row.call || '-')}</strong></td>
     <td>${esc(row.name || '-')}</td>
-    <td><span class="tag">${esc(row.privilege || 'standard')}</span></td>
+    <td><span class="tag">${esc(row.role || 'standard user')}</span></td>
     <td>${esc(row.path || '-')}</td>
   </tr>`).join('');
 }
@@ -7043,6 +7072,27 @@ if (restoreWebSession()) {
                 now_epoch = int(time.time())
                 await self.store.prune_expired_py_nodes(now_epoch)
                 rows = await self.store.list_py_node_records(now_epoch)
+                route_counts = await self.store.py_node_route_counts(now_epoch)
+                known_calls = {str(row.get("node_call") or "").upper() for row in rows}
+                peer_sets = {
+                    str(row.get("node_call") or "").upper(): {
+                        str(peer).upper() for peer in (row.get("direct_peers") or [])
+                    }
+                    for row in rows
+                }
+                one_sided_edges: set[tuple[str, str]] = set()
+                unknown_edges: set[tuple[str, str]] = set()
+                for row in rows:
+                    call = str(row.get("node_call") or "").upper()
+                    neighbors = peer_sets.get(call, set())
+                    row["route_count"] = route_counts.get(call, 1)
+                    row["unknown_peers"] = sorted(peer for peer in neighbors if peer not in known_calls)
+                    row["one_sided_peers"] = sorted(
+                        peer for peer in neighbors
+                        if peer in known_calls and call not in peer_sets.get(peer, set())
+                    )
+                    unknown_edges.update((call, peer) for peer in row["unknown_peers"])
+                    one_sided_edges.update(tuple(sorted((call, peer))) for peer in row["one_sided_peers"])
                 await self._write_response(
                     writer,
                     200,
@@ -7050,6 +7100,10 @@ if (restoreWebSession()) {
                         {
                             "generated_epoch": now_epoch,
                             "count": len(rows),
+                            "diagnostics": {
+                                "one_sided_links": len(one_sided_edges),
+                                "unknown_neighbors": len(unknown_edges),
+                            },
                             "nodes": rows,
                         }
                     ),
@@ -7207,6 +7261,9 @@ if (restoreWebSession()) {
                     profile = normalize_profile(str(desired.get("profile") or st.get("profile") or "pycluster"))
                     inbound = bool(st.get("inbound", False)) or (bool(desired) and not str(desired.get("dsn", "")).strip())
                     proto = self._proto_state_for_peer(node_cfg, name, now_epoch)
+                    observed_family = str(proto.get("pc18_family") or "").strip().lower()
+                    if observed_family:
+                        profile = normalize_profile(observed_family)
                     link_activity = self._link_activity_for_peer(st, now_epoch) if name in stats else {}
                     out.append(
                         {

@@ -1883,7 +1883,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
           </tr></thead>
           <tbody id="direct-peer-tbody"></tbody>
         </table>
-        <div class="cluster-note">Direct links are the peers this node is connected to now, or saved targets waiting to reconnect.</div>
+        <div class="cluster-note">Direct links are peers connected to this node now. Saved or expired peers are not published.</div>
       </div>
 
       <div class="stat-card">
@@ -5775,7 +5775,7 @@ function renderClusterPage() {
     const linkCount = adj[n.call]?.size || 0;
     const typeHtml = isHome ? '<span class="cluster-role-home">Home</span>'
       : isPeer ? '<span class="cluster-role-peer">Peer</span>'
-      : '<span class="cluster-role-node">Node</span>';
+      : '<span class="cluster-role-node">Reported</span>';
     const family = n.family || 'unknown';
     const familyHtml = isPyCluster
       ? `<span class="cluster-fam-pycluster">pyCluster</span>`
@@ -5783,7 +5783,7 @@ function renderClusterPage() {
     const versionHtml = n.version
       ? `<span style="color:var(--text-secondary)">${n.version}</span>`
       : `<span style="color:var(--text-muted)">—</span>`;
-    const statusHtml = n.connected ? '<span class="cluster-status-up">Connected</span>' : (n.desired ? '<span class="cluster-status-saved">Saved / Down</span>' : '<span class="cluster-status-down">Down</span>');
+    const statusHtml = n.connected ? '<span class="cluster-status-up">Connected</span>' : (n.reported ? '<span class="cluster-status-saved">Reported</span>' : '<span class="cluster-status-down">Unknown</span>');
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td style="font-weight:700;color:${isPyCluster?'#58a6ff':isHome?'#ffd32a':isPeer?'#3fb950':'var(--accent)'}"><a href="https://www.qrz.com/db/${n.call.replace(/-\d+$/,'')}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none" onclick="event.stopPropagation()">${n.call}</a></td>

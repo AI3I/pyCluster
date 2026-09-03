@@ -61,6 +61,7 @@ class NodeLinkEngine:
         self._lock = asyncio.Lock()
         self._frame_queue: asyncio.Queue[tuple[str, WirePcFrame, object | None]] = asyncio.Queue(maxsize=10000)
         self._trace_hook: Callable[[str, str, str], Awaitable[None]] | None = None
+        self._disconnect_hook: Callable[[str], Awaitable[None]] | None = None
         self._reader_tasks: set[asyncio.Task[None]] = set()
         self.public_ip_address = str(public_ip_address or "").strip()
         self.public_ipv6_address = str(public_ipv6_address or "").strip()
@@ -96,6 +97,9 @@ class NodeLinkEngine:
 
     def set_trace_hook(self, hook: Callable[[str, str, str], Awaitable[None]] | None) -> None:
         self._trace_hook = hook
+
+    def set_disconnect_hook(self, hook: Callable[[str], Awaitable[None]] | None) -> None:
+        self._disconnect_hook = hook
 
     async def start_listener(self, host: str, port: int) -> None:
         await self.start_listener_dsn(f"tcp://{host}:{port}")
@@ -401,14 +405,21 @@ class NodeLinkEngine:
         except Exception:
             LOG.exception("node-link peer reader failed: %s", peer.name)
         finally:
+            removed = False
             async with self._lock:
                 current = self._peers.get(peer.name)
                 if current is peer:
                     self._peers.pop(peer.name, None)
+                    removed = True
             try:
                 await asyncio.wait_for(peer.conn.close(), timeout=1.0)
             except Exception:
                 pass
+            if removed and self._disconnect_hook:
+                try:
+                    await self._disconnect_hook(peer.name)
+                except Exception:
+                    LOG.exception("node-link disconnect hook failed: %s", peer.name)
 
     async def _trace(self, peer_name: str, direction: str, text: str) -> None:
         if not self._trace_hook:

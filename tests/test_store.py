@@ -576,8 +576,31 @@ def test_py_node_catalog_enforces_confidence_sequence_and_expiry(tmp_path: Path)
             assert row is not None
             assert row["confidence"] == "direct"
             assert row["services"] == ["telnet"]
+            assert await store.py_node_route_counts(1785456004) == {"AI3I-92": 2}
+            assert await store.withdraw_py_node_record(
+                "AI3I-92", str(base["node_id"]), "AI3I-92", 1785456004
+            )
+            promoted = await store.get_py_node_record("AI3I-92")
+            assert promoted is not None
+            assert promoted["learned_from"] == "AI3I-93"
+            assert promoted["confidence"] == "reported"
             assert await store.prune_expired_py_nodes(1785459600) == 1
             assert await store.list_py_node_records(1785459600) == []
+
+            expiring_direct = {**base, "node_call": "AI3I-95", "origin_node": "AI3I-95",
+                               "node_id": "52345678-1234-5678-9234-567812345678",
+                               "learned_from": "AI3I-95", "expires_at": 1785456100}
+            live_alternate = {**expiring_direct, "confidence": "reported", "learned_from": "AI3I-94",
+                              "source_node": "AI3I-94", "hop_count": 1,
+                              "sequence": 3, "raw_digest": "d" * 64,
+                              "expires_at": 1785459700}
+            assert await store.upsert_py_node_record(expiring_direct, 1785456000) == "accepted"
+            assert await store.upsert_py_node_record(live_alternate, 1785456001) == "rejected-confidence"
+            assert await store.prune_expired_py_nodes(1785456100) == 1
+            promoted_after_expiry = await store.get_py_node_record("AI3I-95")
+            assert promoted_after_expiry is not None
+            assert promoted_after_expiry["learned_from"] == "AI3I-94"
+            assert promoted_after_expiry["confidence"] == "reported"
 
             reported_first = {
                 **base,

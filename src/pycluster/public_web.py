@@ -1815,6 +1815,8 @@ class PublicWebServer:
                 connected = int(last_epoch or "0") > 0 and (int(datetime.now(timezone.utc).timestamp()) - int(last_epoch or "0")) <= 600
             except ValueError:
                 connected = False
+            if not connected:
+                continue
             peer_rows.append(
                 {
                     "call": name,
@@ -1858,6 +1860,8 @@ class PublicWebServer:
             connected = last_epoch > 0 and (now_epoch - last_epoch) <= 600
             if not connected and last_login_epoch > 0 and (now_epoch - last_login_epoch) <= 600:
                 connected = True
+            if not connected:
+                continue
             peer_rows.append(
                 {
                     "call": call,
@@ -1875,6 +1879,36 @@ class PublicWebServer:
             if connected:
                 links.append([self.config.node.node_call, call])
             seen_calls.add(call)
+        try:
+            learned_nodes = await self.store.list_py_node_records(now_epoch)
+        except Exception:
+            learned_nodes = []
+        for row in learned_nodes:
+            call = str(row.get("node_call") or "").strip().upper()
+            if not call or call == self.config.node.node_call.upper():
+                continue
+            if call not in seen_calls:
+                peer_rows.append({
+                    "call": call,
+                    "entity": "",
+                    "lat": 0.0,
+                    "lon": 0.0,
+                    "family": "pycluster",
+                    "version": f"pyCluster {str(row.get('software_version') or '').strip()}".strip(),
+                    "connected": False,
+                    "desired": False,
+                    "last_pc_type": "PY",
+                    "inbound": False,
+                    "reported": True,
+                    "last_seen": int(row.get("last_seen") or 0),
+                })
+                seen_calls.add(call)
+            for neighbor in row.get("direct_peers") or []:
+                peer_call = str(neighbor or "").strip().upper()
+                if peer_call and peer_call != call:
+                    edge = sorted((call, peer_call))
+                    if not any(sorted(existing) == edge for existing in links):
+                        links.append(edge)
         return {"nodes": sorted(nodes + peer_rows, key=node_sort_key), "links": links, "home": self.config.node.node_call}
 
     async def _api_solar(self) -> tuple[dict[str, object], int]:
