@@ -173,7 +173,9 @@ The controls are local policy settings. Existing pyCluster links must reconnect 
 
 ### Maintenance
 
-The Maintenance action row contains `Save Node Settings`, `Run Cleanup Now`, `Check for Upgrade`, and `Run Upgrade`. Upgrade and repair stop live writers before taking a consistent runtime backup and restore previously active services if maintenance fails.
+The Maintenance action row contains `Save Node Settings`, `Run Cleanup Now`, `Check for Upgrade`, and `Run Upgrade`. `Check for Upgrade` compares the running version with semantic-version tags advertised by the configured Git origin. **Latest remote tag** is the release available from origin; **Cached source tag** is the newest tag already present in the local source checkout and may lag until a fetch or lifecycle run refreshes it.
+
+`Run Upgrade` writes a request for the root-owned `pycluster-upgrade.path` watcher. Because that worker executes deployment code as root, the action requires the source root, its `.git` directory, and `deploy/upgrade.sh` to be root-owned and not group/world-writable. It is also disabled when the source checkout has local changes. The worker independently checks both conditions before it fetches release tags, selects only a newer semantic-version release, checks out that tag, and invokes the same `deploy/upgrade.sh` path used from a shell. Upgrade and repair stop live writers, create a timestamped preflight backup, preserve runtime configuration/data/log directories during code synchronization, and require every configured telnet and local web health endpoint to respond before reporting success. If maintenance fails, services that were active are restarted and the backup remains available for deliberate recovery; database restoration is not attempted automatically.
 
 ## Users
 

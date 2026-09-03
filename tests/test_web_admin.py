@@ -174,7 +174,11 @@ def test_web_admin_static_groups_users_and_telemetry_into_subtabs() -> None:
     assert "detected_public_ip_address" in text
     assert "detected_public_ipv6_address" in text
     assert "Upgrade Target" in text
-    assert "Migration hooks:" in text
+    assert "State migration:" in text
+    assert "Cached source tag:" in text
+    assert "!!availability.source_dirty" in text
+    assert "!availability.source_secure" in text
+    assert "The upgrade source checkout has local changes." in text
     assert "data-toggle-capability" in text
 
 
@@ -2530,8 +2534,10 @@ def test_web_admin_upgrade_status_and_request(tmp_path, monkeypatch) -> None:
             "available_version": "1.0.9",
             "remote_checked": True,
             "remote_error": "",
+            "source_dirty": False,
+            "source_secure": True,
         })
-        monkeypatch.setattr("pycluster.web_admin.migration_hooks", lambda repo_root: ["run_upgrade_1_0_1"])
+        monkeypatch.setattr("pycluster.web_admin.migration_hooks", lambda repo_root: ["run_legacy_state_migrations"])
         try:
             code, _, body = await _http_request(
                 srv,
@@ -2543,7 +2549,7 @@ def test_web_admin_upgrade_status_and_request(tmp_path, monkeypatch) -> None:
             data = json.loads(body.decode("utf-8"))
             assert data["availability"]["available"] is True
             assert data["availability"]["available_version"] == "1.0.9"
-            assert data["migrations"] == ["run_upgrade_1_0_1"]
+            assert data["migrations"] == ["run_legacy_state_migrations"]
             assert data["status"]["state"] == "idle"
 
             code, _, body = await _http_request(

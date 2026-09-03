@@ -165,6 +165,23 @@ def test_upgrade_and_repair_refresh_invalid_strings_catalog() -> None:
     assert "validate_or_refresh_strings_toml" in repair
 
 
+def test_lifecycle_refreshes_tags_and_uses_one_legacy_state_migration() -> None:
+    root = Path("/home/jdlewis/GitHub/pyCluster")
+    lib = (root / "deploy/lib.sh").read_text(encoding="utf-8")
+    install = (root / "deploy/install.sh").read_text(encoding="utf-8")
+    upgrade = (root / "deploy/upgrade.sh").read_text(encoding="utf-8")
+    repair = (root / "deploy/repair.sh").read_text(encoding="utf-8")
+
+    assert "refresh_source_tags_best_effort()" in lib
+    assert 'fetch --tags --prune --force origin' in lib
+    for lifecycle in (install, upgrade, repair):
+        assert "refresh_source_tags_best_effort" in lifecycle
+    for lifecycle in (upgrade, repair):
+        assert "run_legacy_state_migrations" in lifecycle
+        assert "run_upgrade_1_0_1" not in lifecycle
+        assert "run_upgrade_1_0_6" not in lifecycle
+
+
 def test_deploy_lifecycle_stops_live_services_and_removes_upgrade_units() -> None:
     lib = Path("/home/jdlewis/GitHub/pyCluster/deploy/lib.sh").read_text(encoding="utf-8")
     upgrade = Path("/home/jdlewis/GitHub/pyCluster/deploy/upgrade.sh").read_text(encoding="utf-8")

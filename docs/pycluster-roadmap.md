@@ -1,9 +1,9 @@
 # pyCluster Roadmap
 
-Updated: 2026-08-30
+Updated: 2026-09-03
 
-This roadmap describes product direction after `1.0.14` and during development
-of `1.0.15`. It is not a release checklist. The active GitHub milestone and
+This roadmap describes product direction after `1.0.15`. It is not a release
+checklist. The active GitHub milestone and
 issues are the authority for scheduled work; [CHANGELOG.md](../CHANGELOG.md)
 records what has shipped.
 
@@ -42,9 +42,9 @@ The following are implemented foundations, not future roadmap items:
 - managed CTY, WPXLOC, and KEPS refresh state
 - negotiated pyCluster-only `PY` metadata and topology exchange
 
-## 1.0.15 Focus
+## 1.0.15 Delivered Focus
 
-The `1.0.15` milestone continues hardening behavior that spans several
+The `1.0.15` release focused on behavior spanning several
 interfaces and protocols:
 
 1. Authentication and registration recovery, including consistent web and
@@ -59,8 +59,8 @@ interfaces and protocols:
 7. VE7CC/CC11 client compatibility, including Ham Radio Deluxe login,
    historical spot initialization, and live spot delivery.
 
-See the [open `1.0.15` issues](https://github.com/AI3I/pyCluster/issues?q=is%3Aissue%20is%3Aopen%20milestone%3A1.0.15)
-for the current acceptance details. Issue state can change more quickly than
+See the [1.0.15 milestone](https://github.com/AI3I/pyCluster/milestone/12)
+for issue-level acceptance details. Issue state can change more quickly than
 this document.
 
 ## pyCluster Protocol

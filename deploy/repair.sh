@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 require_root
 ensure_base_packages
 ensure_supported_python
+refresh_source_tags_best_effort
 log "repairing pyCluster deployment in $PYCLUSTER_APP_DIR"
 arm_maintenance_failure_recovery
 stop_service
@@ -28,8 +29,7 @@ ensure_fail2ban_packages
 install_or_refresh_fail2ban
 install_or_refresh_logrotate
 enable_service
-run_upgrade_1_0_1
-run_upgrade_1_0_6
+run_legacy_state_migrations
 cleanup_persisted_rbn_history
 refresh_runtime_data_best_effort
 bootstrap_sysop_account

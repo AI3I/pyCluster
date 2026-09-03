@@ -6,6 +6,8 @@
 - Python 3.11+
 - systemd for the supported deployment path
 
+Deployment selects the newest supported Python 3.11+ interpreter installed on the host.
+
 Recommended:
 
 - reverse proxy for public exposure
@@ -152,18 +154,18 @@ sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
 
-The supported scripted upgrade path covers `1.0.0` and later. `deploy/upgrade.sh` runs the cumulative migration chain required by older installs before services restart. The current chain includes:
+The supported scripted upgrade path covers maintained Git installations. `deploy/upgrade.sh` runs one idempotent legacy-state migration before services restart. It hashes any plaintext passwords left by early releases and moves embedded outbound peer `password=` values out of old DSNs and into the separate peer-password preference path.
 
-- `run_upgrade_1_0_1`
-  - hash legacy plaintext user passwords
-- `run_upgrade_1_0_6`
-  - move any embedded outbound peer `password=` values out of DSNs and into the separate peer-password preference path used by current pyCluster
+Other lifecycle reconciliation includes:
+
 - `apply_py_protocol_defaults`
   - enable PY and all read-only sharing controls once on installations that predate the default-on policy
   - preserve subsequent System Operator opt-outs using a configuration policy-version marker
   - inherit NODEINFO identity from the existing node configuration and use a valid non-project Website URL as the initial PY public URL when public web is enabled
 
-The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. Install, upgrade, and repair first record which services are active, stop live writers and active maintenance jobs, and take a consistent preflight backup before synchronizing code or running migrations. A failed maintenance run attempts to restore the previously active services. Successful runs restart through systemd and verify every configured telnet listener plus the local System Operator and enabled public web health endpoints before reporting completion. The source tree is synced with runtime paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy.
+The legacy migration remains as a safety net for databases that skipped intermediate releases, but old release-specific migration scripts are no longer exposed independently.
+
+The upgrade path preserves the existing runtime `config/`, `data/`, and `logs/` directories in place. Install, upgrade, and repair first refresh release tags when origin is reachable, record which services are active, stop live writers and active maintenance jobs, and take a consistent preflight backup before synchronizing code or running migrations. A failed maintenance run attempts to restore the previously active services. Successful runs restart through systemd and verify every configured telnet listener plus the local System Operator and enabled public web health endpoints before reporting completion. The source tree is synced with runtime paths excluded, so local `config/pycluster.toml`, `config/pycluster.local.toml`, SQLite data, imported country data, and operational logs are not overwritten by the repo copy.
 
 Current install, upgrade, and repair runs install `pycluster-data-refresh.timer` and `pycluster-registration-reminders.timer`, and remove the older CTY-only `pycluster-cty-refresh.*` units if they exist from an earlier deployment. Applicant reminders are sent for pending requests at 1, 4, 7, 10, and 14 days, then stop.
 
@@ -401,6 +403,8 @@ Installed services load configuration from:
 - `/home/pycluster/pyCluster/config/pycluster.local.toml`
 
 The checkout under `/usr/src/pyCluster` is the upgrade source. Editing its `config/` directory does not change the running services.
+
+Keep the managed source checkout owned by `root:root` and not writable by the `pycluster` service account. The System Operator web upgrader executes this checkout through a root-owned systemd unit and refuses an insecure source tree. Runtime configuration and data belong under `/home/pycluster/pyCluster`; do not move the managed Git checkout there.
 
 To run telnet on `7373`, publish the public/user web interface on `8081`, and make the System Operator interface available to a trusted proxy or management LAN on `8080`, create or edit `/home/pycluster/pyCluster/config/pycluster.local.toml`:
 

@@ -9,6 +9,7 @@ PYCLUSTER_PKG_AUTO_INSTALL="${PYCLUSTER_PKG_AUTO_INSTALL:-0}"
 require_root
 ensure_base_packages
 ensure_supported_python
+refresh_source_tags_best_effort
 log "upgrading pyCluster in $PYCLUSTER_APP_DIR"
 arm_maintenance_failure_recovery
 stop_service
@@ -29,8 +30,7 @@ ensure_fail2ban_packages
 install_or_refresh_fail2ban
 install_or_refresh_logrotate
 enable_service
-run_upgrade_1_0_1
-run_upgrade_1_0_6
+run_legacy_state_migrations
 cleanup_persisted_rbn_history
 refresh_runtime_data_best_effort
 restart_service_hard

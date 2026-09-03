@@ -82,6 +82,15 @@ def _run_git(repo_root: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def source_checkout_is_secure(repo_root: str | Path) -> bool:
+    root = Path(repo_root).resolve()
+    required = (root, root / ".git", root / "deploy" / "upgrade.sh")
+    try:
+        return all(path.exists() and path.stat().st_uid == 0 and not (path.stat().st_mode & 0o022) for path in required)
+    except OSError:
+        return False
+
+
 def _latest_tag_from_lines(lines: list[str]) -> str:
     tags: list[tuple[tuple[int, int, int], str]] = []
     for line in lines:
@@ -108,11 +117,14 @@ def detect_upgrade_availability(repo_root: str | Path, current_version: str) -> 
     remote_error = ""
     remote_checked = False
     source_checkout = (root / ".git").exists()
+    source_secure = source_checkout_is_secure(root) if source_checkout else False
+    source_dirty = False
     origin_url = ""
     if source_checkout:
         try:
             origin_url = _run_git(root, "remote", "get-url", "origin")
             origin_url = re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1", origin_url)
+            source_dirty = bool(_run_git(root, "status", "--porcelain"))
         except Exception as exc:
             remote_error = str(exc)
     else:
@@ -142,6 +154,8 @@ def detect_upgrade_availability(repo_root: str | Path, current_version: str) -> 
         "remote_checked": remote_checked,
         "remote_error": remote_error,
         "source_checkout": source_checkout,
+        "source_dirty": source_dirty,
+        "source_secure": source_secure,
         "source_repo_root": str(root),
         "origin_url": origin_url,
     }

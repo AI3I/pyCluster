@@ -78,7 +78,7 @@ def _run_git(repo_root: Path, args: list[str], logf) -> str:
     logf.write(f"[pycluster-upgrade] git {' '.join(args)}\n")
     logf.flush()
     proc = subprocess.run(
-        ["git", "-C", str(repo_root), *args],
+        ["git", "-c", f"safe.directory={repo_root}", "-C", str(repo_root), *args],
         check=False,
         capture_output=True,
         text=True,
@@ -104,11 +104,26 @@ def _read_source_version(repo_root: Path) -> str:
     return match.group(1).strip() if match else __version__
 
 
+def _require_secure_source(repo_root: Path, run_script: Path) -> None:
+    # The installed worker runs as root. Matching the current UID keeps this
+    # invariant testable without granting the test process elevated access.
+    required_uid = 0 if os.geteuid() == 0 else os.geteuid()
+    for path in (repo_root, repo_root / ".git", run_script):
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise RuntimeError(f"upgrade source security check failed for {path}: {exc}") from exc
+        if stat.st_uid != required_uid or stat.st_mode & 0o022:
+            raise RuntimeError(f"upgrade source {path} must be root-owned and not group/world-writable")
+
+
 def _advance_checkout(repo_root: Path, request: dict[str, object], logf) -> str:
     if not (repo_root / ".git").exists():
         raise RuntimeError(f"upgrade source {repo_root} is not a git checkout")
+    if _run_git(repo_root, ["status", "--porcelain"], logf):
+        raise RuntimeError(f"upgrade source {repo_root} has local changes; clean or commit them before upgrading")
     current_version = str(request.get("current_version") or __version__).strip()
-    _run_git(repo_root, ["fetch", "--tags", "--prune", "origin"], logf)
+    _run_git(repo_root, ["fetch", "--tags", "--prune", "--force", "origin"], logf)
     tags = _run_git(repo_root, ["tag", "--list", "v*"], logf).splitlines()
     target = _latest_upgrade_tag(tags, current_version)
     if target:
@@ -172,6 +187,7 @@ def main() -> int:
             logf.write(f"[pycluster-upgrade] start {started} requested_by={running['requested_by']}\n")
             logf.flush()
             try:
+                _require_secure_source(paths.repo_root, run_script)
                 target_tag = _advance_checkout(paths.repo_root, request, logf)
                 if target_tag:
                     running["target_tag"] = target_tag
