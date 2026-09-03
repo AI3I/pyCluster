@@ -4,10 +4,9 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
-- Fix root-owned System Operator upgrades from source checkouts owned by the deploying administrator by applying Git's scoped `safe.directory` setting in the upgrade worker.
-
 ## 1.0.15 - 2026-09-03
 
+- Fix root-owned System Operator upgrades from source checkouts owned by the deploying administrator by applying Git's scoped `safe.directory` setting in the upgrade worker.
 - Raise public-web alert amplitude while preserving relative sound patterns and capping generated gain below clipping.
 - Submit System Operator and public-web login from the Enter key in callsign, password, and applicable MFA fields.
 - Consolidate the old 1.0.1 and 1.0.6 state-upgrade scripts into one idempotent legacy-state migration, while retaining password hashing and peer-credential cleanup for older databases.

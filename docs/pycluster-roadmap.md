@@ -2,8 +2,8 @@
 
 Updated: 2026-09-03
 
-This roadmap describes product direction after `1.0.15`. It is not a release
-checklist. The active GitHub milestone and
+This roadmap describes product direction after `1.0.15` during `1.0.16`
+development. It is not a release checklist. The active GitHub milestone and
 issues are the authority for scheduled work; [CHANGELOG.md](../CHANGELOG.md)
 records what has shipped.
 

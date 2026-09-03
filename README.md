@@ -90,6 +90,8 @@ pyCluster is usable today as a single-node cluster with web and telnet access, p
 
 Current release: `1.0.15`
 
+Development version: `1.0.16`
+
 Recent highlights in `1.0.15`:
 
 - web login submits consistently with Enter, and public alert tones have a stronger bounded output level
