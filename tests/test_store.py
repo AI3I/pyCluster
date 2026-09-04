@@ -577,6 +577,12 @@ def test_py_node_catalog_enforces_confidence_sequence_and_expiry(tmp_path: Path)
             assert row["confidence"] == "direct"
             assert row["services"] == ["telnet"]
             assert await store.py_node_route_counts(1785456004) == {"AI3I-92": 2}
+            routes = await store.list_py_node_routes("AI3I-92", 1785456004)
+            assert len(routes) == 2
+            assert routes[0]["selected"] is True
+            assert routes[0]["learned_from"] == "AI3I-92"
+            assert routes[1]["selected"] is False
+            assert routes[1]["learned_from"] == "AI3I-93"
             assert await store.withdraw_py_node_record(
                 "AI3I-92", str(base["node_id"]), "AI3I-92", 1785456004
             )

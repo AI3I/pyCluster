@@ -124,17 +124,31 @@ PY protocol v2 begins with pyCluster 1.0.16 and deliberately does not negotiate 
 
 `PY99` carries bounded errors for unsupported or malformed post-negotiation frames when both sides advertise `py99-error`. A node does not answer malformed `PY00` or `PY99` with another error, preventing error loops.
 
+Peers that both advertise `session-binding` carry every post-handshake family
+inside a `PY11 FRAME` envelope. The envelope identifies the sender's current
+PY00 session UUID and a strictly increasing connection-local sequence number.
+Frames from an earlier session, duplicate or reordered sequences, nested
+envelopes, and unwrapped post-handshake frames are rejected. A 1.0.16 peer does
+not advertise this capability, so both sides continue using ordinary PY v2
+frames and retain rolling-upgrade compatibility.
+
 `PY01` carries a direct peer's NODEINFO record when both sides negotiate `node-info` and the sending operator enables `share_node_info`. The structured record contains the authenticated node callsign, stable installation UUID, monotonic content sequence, pyCluster version, explicitly configured public web URL, locator/QTH, configured contact, enabled-service names, capabilities, direct pyCluster neighbor calls, update time, and expiry. It contains no bind address or inferred URL. Lower sequences, changed content at the same sequence, expired records, excessive future timestamps, and callsign mismatches are rejected. A changed installation UUID is retained as a direct identity transition for operator review.
 
 When `share_topology` is enabled and both peers negotiate `topology-digest`, `topology-records`, and `request`, topology reconciliation uses three additional frames:
 
 - `PY02 TOPOLOGY_DIGEST` sends paged identity, sequence, content-digest, and expiry summaries rather than full records. Each exchange has a unique snapshot ID and ordered page numbers; receivers wait for the final page before requesting details and reject missing, reordered, or duplicate pages.
 - `PY10 REQUEST` asks only for missing, changed-identity, newer-sequence, or conflicting-digest records.
+- `PY11 FRAME` binds post-handshake traffic to the negotiated connection session when both peers support it.
 - `PY03 TOPOLOGY_RECORDS` returns only requested records in batches bounded by both `max_records_per_frame` and `max_frame_bytes`.
 - `PY12 PROBE` provides nonce-matched request/reply liveness and round-trip timing for the current session.
 - `PY13 WITHDRAW` promptly removes a departed route. It is accepted only when the reporter is the authenticated peer and both the node ID and stored `learned_from` owner match that peer.
 
 Each node persists its own known-node catalog and up to four independently learned routes per origin. Direct observations outrank relayed reports while the direct record remains valid; otherwise the shortest, newest live alternate is promoted without waiting for another exchange. Origin sequences cannot move backward, and changed content at the same sequence is rejected. A received relayed record increments its hop count and is dropped above `max_hops`. Records expire at their origin-provided time and are pruned locally. A node does not advertise a learned record back to the peer it came from. Digests are exchanged on connection, after learned changes, and periodically at `refresh_seconds` with per-peer jitter; rapid connection changes are debounced into one refresh and unchanged full records are never flooded. This provides eventual reported visibility without claiming a central or perfectly authoritative network view. Origin-owned direct-neighbor lists let each node derive a leased, reported connectivity graph without a registry. Clean withdrawals accelerate removal; expiry remains the fallback after abrupt failures.
+
+Digest reconciliation is route-owner-aware. When a second peer advertises an
+identical current origin record, the receiver requests it unless that exact
+peer-owned candidate already exists; an advertisement from one peer never
+refreshes a different peer's route lease.
 
 The remaining implemented version 2 metadata families are direct-peer, read-only summaries:
 
@@ -157,6 +171,8 @@ The `[py_protocol]` controls provide conservative boundaries for implemented and
 
 Authenticated SysOps can inspect the durable local catalog through `GET /api/py-nodes`. The response labels each record as `local`, `direct`, or `reported` and includes its source, learned-from peer, alternate-route count, hop count, first/last seen times, and expiry. It also identifies unknown neighbors and one-sided links reported by only one endpoint; these are diagnostics, not proof that either node is misconfigured.
 
+`GET /api/py-nodes/routes?call=NODE-CALL` returns the live bounded route set for one node and marks the materialized selection. The route-detail endpoint is authenticated and does not expose the route catalog on the public web surface.
+
 The public cluster endpoint publishes only live local links and unexpired, operator-enabled PY topology records. Saved/down peer configuration and old node-user login history remain private to the SysOp interface and are not presented as current network membership.
 
 The SysOp Known pyCluster Nodes table also merges direct peers positively
@@ -173,6 +189,12 @@ response rather than being misclassified as proof that the remote node disabled
 or rejected PY. The identified-only row is
 not inserted into the durable topology catalog until a validated NODEINFO
 record is received.
+
+On a later valid handshake, pyCluster compares the peer's advertised capability
+set with its preceding session and reports capabilities that disappeared. A
+change to the stable NODEINFO node UUID is separately retained and warned as an
+identity replacement; the per-connection PY session UUID is expected to change
+and does not trigger that warning.
 
 The SysOp Node Settings > pyCluster Protocol view provides PY sharing controls, field-level NODEINFO privacy, a shared-metadata preview, and the structured network-notice editor. Protocol Health provides the Known pyCluster Nodes catalog and live protocol diagnostics. Sharing-policy changes apply locally immediately; existing links renegotiate newly enabled capabilities after reconnect.
 

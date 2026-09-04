@@ -4,6 +4,12 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Prevent an inaccessible administrator-owned source checkout recorded by a nonstandard installation from crashing the core service; System Operator upgrades now fall back to unavailable while telnet and web continue running.
+- Add authenticated PY topology route details and a System Operator drill-down for selected and alternate route provenance, sequence, hops, and lease freshness.
+- Detect and surface PY capability downgrades and stable node-identity changes across reconnects without treating normal session IDs as persistent identity.
+- Make topology reconciliation route-owner-aware so identical records advertised by independent peers are retained as real alternate paths, with a socket-free four-node diamond regression covering convergence and withdrawal failover.
+- Add capability-negotiated `PY11` session envelopes that bind post-handshake frames to the current connection and reject stale-session, replayed, reordered, nested, or unexpectedly unwrapped traffic while preserving 1.0.16 compatibility.
+
 ## 1.0.16 - 2026-09-03
 
 - Replace experimental PY protocol v1 with a structured v2 handshake for 1.0.16, including session identity and negotiated minimum frame, record, and hop limits; PC traffic remains the rolling-upgrade fallback.

@@ -419,6 +419,9 @@ The catalog retains bounded alternate routes and promotes a live alternate when
 the preferred path disappears. Route counts, one-sided links, and neighbors not
 yet present in the catalog are shown as diagnostic context, not authoritative
 network faults.
+Select a route count to inspect the selected and alternate live routes, including
+their learned-from peer, source, confidence, hop count, sequence, last-seen time,
+and lease expiry. This detail is available only to authenticated System Operators.
 
 Lists local, directly observed, and relayed pyCluster node records with version, location, provenance, services, and freshness. These records are reported topology observations, not a central registry.
 

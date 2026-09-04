@@ -2662,6 +2662,11 @@ tbody tr.filler td{
   font-size:12px;
   color:var(--muted);
 }
+.py-route-detail{
+  padding:1px 6px;
+  min-height:0;
+  font-size:11px;
+}
 .health{
   display:inline-block;
   padding:3px 8px;
@@ -3351,6 +3356,23 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               </table>
             </div>
           </section>
+          <div class="user-modal hidden" id="pyRouteModal" role="dialog" aria-modal="true" aria-labelledby="pyRouteTitle">
+            <div class="users-editor-side user-modal-panel">
+              <section>
+                <div class="user-modal-head">
+                  <h3 id="pyRouteTitle">Topology Routes</h3>
+                  <button class="secondary" id="closePyRouteModal" type="button" title="Close topology route details">Close</button>
+                </div>
+                <div class="subtle" id="pyRouteSummary">Live routes retained for this reported node.</div>
+                <div class="tablewrap" style="margin-top:12px">
+                  <table>
+                    <thead><tr><th>Selection</th><th>Learned From</th><th>Confidence</th><th>Hops</th><th>Sequence</th><th>Last Seen</th><th>Expires</th></tr></thead>
+                    <tbody id="pyRouteRows"><tr><td colspan="7">Select a known node to inspect routes.</td></tr></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </div>
           <div class="split" style="margin-top:14px">
             <section>
               <h3>Protocol Alerts</h3>
@@ -4112,6 +4134,8 @@ function setProtoPeerRows(peers) {
     const proto = row.proto || {};
     const link = row.link || {};
     const pc18 = String(proto.pc18_summary || proto.pc18_software || '').trim();
+    const py = proto.py || {};
+    const pyWarning = py.identity_warning || py.capability_warning || py.handshake_error || '';
     const linkText = link.summary || (row.connected ? 'connected' : 'down');
     const lastPc = row.last_pc_type || proto.last_pc_type || '-';
     return `<tr>
@@ -4119,7 +4143,7 @@ function setProtoPeerRows(peers) {
       <td>${esc(linkText)}</td>
       <td><span class="health ${esc(proto.health || 'unknown')}">${esc(proto.health || 'unknown')}</span></td>
       <td><strong>RX</strong> ${esc(fmtEpoch(row.last_rx_epoch || 0))}<div class="mini"><strong>TX</strong> ${esc(fmtEpoch(row.last_tx_epoch || 0))}</div></td>
-      <td><strong>${esc(lastPc)}</strong><div class="mini">${esc(pc18 || 'No version advertised')}</div></td>
+      <td><strong>${esc(lastPc)}</strong><div class="mini">${esc(pc18 || 'No version advertised')}</div>${pyWarning ? `<div class="mini warntext">${esc(pyWarning)}</div>` : ''}</td>
     </tr>`;
   }).join('');
 }
@@ -4214,11 +4238,37 @@ function setKnownNodeRows(payload, peers) {
       <td><span class="tag">${esc(confidence)}</span></td>
       <td>${esc(row.software_version || '-')}<div class="mini">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div></td>
       <td>${esc(location)}</td>
-      <td>${esc(learned)}<div class="mini">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div></td>
+      <td>${esc(learned)}<div class="mini">${row.node_id ? `<button class="secondary py-route-detail" type="button" data-call="${esc(call)}" title="Inspect retained topology routes">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}</button>` : 'No retained routes'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div></td>
       <td>${esc(services)}${serviceMeta}</td>
       <td>Seen ${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
     </tr>`;
   }).join('');
+  body.querySelectorAll('.py-route-detail').forEach((button) => {
+    button.addEventListener('click', () => openPyRouteModal(button.dataset.call || ''));
+  });
+}
+async function openPyRouteModal(call) {
+  const nodeCall = String(call || '').trim().toUpperCase();
+  if (!nodeCall) return;
+  setText('pyRouteTitle', `Topology Routes • ${nodeCall}`);
+  setText('pyRouteSummary', 'Loading retained routes...');
+  byId('pyRouteRows').innerHTML = '<tr><td colspan="7">Loading...</td></tr>';
+  byId('pyRouteModal').classList.remove('hidden');
+  try {
+    const payload = await j('/api/py-nodes/routes?call=' + encodeURIComponent(nodeCall));
+    const routes = Array.isArray(payload.routes) ? payload.routes : [];
+    setText('pyRouteSummary', `${routes.length} live route${routes.length === 1 ? '' : 's'} retained. The selected route is used for topology reporting.`);
+    byId('pyRouteRows').innerHTML = routes.length ? routes.map((route) => `<tr>
+      <td><span class="${route.selected ? 'health ok' : 'tag'}">${route.selected ? 'Selected' : 'Alternate'}</span></td>
+      <td>${esc(route.learned_from || '-')}<div class="mini">Source ${esc(route.source_node || '-')}</div></td>
+      <td>${esc(route.confidence || '-')}</td><td>${esc(String(route.hop_count ?? '-'))}</td>
+      <td>${esc(String(route.sequence || '-'))}</td><td>${esc(fmtEpoch(route.last_seen || 0))}</td>
+      <td>${esc(fmtEpoch(route.expires_at || 0))}</td>
+    </tr>`).join('') : '<tr><td colspan="7">No live retained routes.</td></tr>';
+  } catch (err) {
+    setText('pyRouteSummary', 'Unable to load topology routes: ' + errText(err));
+    byId('pyRouteRows').innerHTML = '<tr><td colspan="7">Route details unavailable.</td></tr>';
+  }
 }
 function localDateTimeValue(epoch) {
   const date = new Date(Number(epoch || 0) * 1000);
@@ -5382,9 +5432,14 @@ byId('closeUserModal').onclick = () => {
 byId('userModal').addEventListener('click', (event) => {
   if (event.target === byId('userModal')) closeUserModal();
 });
+byId('closePyRouteModal').onclick = () => byId('pyRouteModal').classList.add('hidden');
+byId('pyRouteModal').addEventListener('click', (event) => {
+  if (event.target === byId('pyRouteModal')) byId('pyRouteModal').classList.add('hidden');
+});
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !byId('userModal').classList.contains('hidden')) closeUserModal();
   if (event.key === 'Escape' && byId('rbnAdvancedModal') && !byId('rbnAdvancedModal').classList.contains('hidden')) byId('rbnAdvancedModal').classList.add('hidden');
+  if (event.key === 'Escape' && !byId('pyRouteModal').classList.contains('hidden')) byId('pyRouteModal').classList.add('hidden');
 });
 byId('user_node_family').onchange = () => {
   applyClusterEditorRules();
@@ -7108,6 +7163,28 @@ if (restoreWebSession()) {
                         }
                     ),
                 )
+                return
+
+            if path == "/api/py-nodes/routes":
+                if method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                call = normalize_call(str(q.get("call", [""])[0]))
+                if not is_valid_call(call):
+                    await self._write_response(writer, 400, self._json({"error": "invalid node callsign"}))
+                    return
+                now_epoch = int(time.time())
+                await self.store.prune_expired_py_nodes(now_epoch)
+                routes = await self.store.list_py_node_routes(call, now_epoch)
+                await self._write_response(writer, 200, self._json({
+                    "generated_epoch": now_epoch,
+                    "node_call": call,
+                    "count": len(routes),
+                    "routes": routes,
+                }))
                 return
 
             if path == "/api/py-notice":

@@ -106,7 +106,7 @@ Highlights:
   lab-instance exports for trusted maintainers
 - supported local nginx helper plus documented external reverse-proxy deployments
 - configurable IPv4, IPv6, and dual-stack listeners
-- validated deployment on Debian 12/13, Ubuntu 24.04/25.10, Fedora 42/43, and SELinux-enforcing EL-family hosts
+- validated deployment on Debian 12/13, Ubuntu 24.04/25.10/26.04 LTS, Fedora 42/43/44, and SELinux-enforcing EL-family hosts
 - Python 3.11+ baseline, with older distro generations intentionally left out of the supported path
 
 ### CTY Data Management

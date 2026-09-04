@@ -222,6 +222,7 @@ Important fields:
 Safety behavior:
 
 - `PY00` is the only pre-negotiation bootstrap frame. Protocol v2 includes a connection session UUID and local frame, record, and hop limits; each link uses the lower values advertised by either peer.
+- Bilateral `session-binding` wraps post-handshake frames with the current session UUID and a monotonic sequence, rejecting replay, stale-session, nested, and unwrapped traffic while remaining compatible with peers that do not advertise it.
 - Every other PY family requires a capability advertised by both peers.
 - PY traffic is rejected on DXSpider, DXNet, AR-Cluster, CLX, unknown, or unauthenticated links.
 - Frame-size and per-minute byte limits apply independently in each direction and reset on reconnect.

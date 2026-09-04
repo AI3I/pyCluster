@@ -503,6 +503,7 @@ class SpotStore:
         raw_digest: str,
         expires_at: int,
         now_epoch: int,
+        learned_from: str = "",
     ) -> bool:
         """Refresh expiry only when a digest exactly identifies the stored origin record."""
         call = str(node_call or "").strip().upper()
@@ -511,6 +512,39 @@ class SpotStore:
         if expiry <= now or expiry > now + 30 * 86400:
             return False
         async with self._lock:
+            source = normalize_call(learned_from) if learned_from else ""
+            if source:
+                candidate = self._conn.execute(
+                    """SELECT record_json FROM py_node_routes
+                       WHERE node_call = ? AND learned_from = ? AND node_id = ? AND sequence = ?""",
+                    (call, source, str(node_id), int(sequence)),
+                ).fetchone()
+                if candidate is None:
+                    return False
+                try:
+                    candidate_digest = str(json.loads(str(candidate["record_json"])).get("raw_digest") or "")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return False
+                if candidate_digest != str(raw_digest).strip().lower():
+                    return False
+                route_cur = self._conn.execute(
+                    """UPDATE py_node_routes SET expires_at = MAX(expires_at, ?), last_seen = ?
+                       WHERE node_call = ? AND learned_from = ? AND node_id = ? AND sequence = ?""",
+                    (expiry, now, call, source, str(node_id), int(sequence)),
+                )
+                selected = self._conn.execute(
+                    "SELECT learned_from FROM py_nodes WHERE node_call = ?", (call,)
+                ).fetchone()
+                if selected and str(selected["learned_from"]) == source:
+                    self._conn.execute(
+                        """UPDATE py_nodes SET updated_epoch = MAX(
+                               updated_epoch, ? - MIN(2592000, MAX(1, expires_at - updated_epoch))
+                           ), expires_at = MAX(expires_at, ?), last_seen = ?
+                           WHERE node_call = ? AND node_id = ? AND sequence = ? AND raw_digest = ?""",
+                        (expiry, expiry, now, call, str(node_id), int(sequence), str(raw_digest).strip().lower()),
+                    )
+                self._conn.commit()
+                return bool(route_cur.rowcount)
             cur = self._conn.execute(
                 """
                 UPDATE py_nodes
@@ -611,6 +645,38 @@ class SpotStore:
                 (int(now_epoch),),
             ).fetchall()
         return {str(row["node_call"]): int(row["n"]) for row in rows}
+
+    async def list_py_node_routes(self, node_call: str, now_epoch: int) -> list[dict[str, object]]:
+        """Return live candidate routes with the currently materialized route marked."""
+        call = normalize_call(node_call)
+        async with self._lock:
+            selected = self._conn.execute(
+                "SELECT learned_from, node_id FROM py_nodes WHERE node_call = ? LIMIT 1", (call,)
+            ).fetchone()
+            rows = self._conn.execute(
+                """SELECT * FROM py_node_routes WHERE node_call = ? AND expires_at > ?
+                   ORDER BY CASE confidence WHEN 'local' THEN 3 WHEN 'direct' THEN 2 ELSE 1 END DESC,
+                            hop_count ASC, sequence DESC, expires_at DESC, learned_from ASC""",
+                (call, int(now_epoch)),
+            ).fetchall()
+        out: list[dict[str, object]] = []
+        for row in rows:
+            route = dict(row)
+            try:
+                record = json.loads(str(route.pop("record_json")))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                record = {}
+            route["selected"] = bool(
+                selected
+                and str(selected["learned_from"]) == str(route["learned_from"])
+                and str(selected["node_id"]) == str(route["node_id"])
+            )
+            route["source_node"] = str(record.get("source_node") or "")
+            route["origin_node"] = str(record.get("origin_node") or call)
+            route["updated_epoch"] = int(record.get("updated_epoch") or 0)
+            route["raw_digest"] = str(record.get("raw_digest") or "")
+            out.append(route)
+        return out
 
     async def add_spot(self, spot: Spot) -> bool:
         async with self._lock:

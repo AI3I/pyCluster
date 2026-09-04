@@ -3068,6 +3068,16 @@ def test_web_py_nodes_endpoint_is_authorized_and_prunes_expired_records(tmp_path
             assert payload["nodes"][0]["route_count"] == 1
             assert payload["nodes"][0]["one_sided_peers"] == []
             assert payload["nodes"][0]["unknown_peers"] == []
+            code, _, body = await _http_request(
+                srv, "GET", "/api/py-nodes/routes?call=AI3I-92",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 200
+            route_payload = json.loads(body.decode("utf-8"))
+            assert route_payload["node_call"] == "AI3I-92"
+            assert route_payload["count"] == 1
+            assert route_payload["routes"][0]["selected"] is True
+            assert route_payload["routes"][0]["learned_from"] == "AI3I-92"
             assert await store.get_py_node_record("AI3I-93") is None
         finally:
             await store.close()
@@ -3178,6 +3188,7 @@ def test_web_admin_contains_py_topology_and_notice_controls() -> None:
     text = Path(web_admin_mod.__file__).read_text(encoding="utf-8")
     for element_id in (
         "knownNodeRows", "knownNodesReload", "pyEnabled", "pySharingSave", "pySharingPreview",
+        "pyRouteModal", "pyRouteRows", "closePyRouteModal",
         "pyNoticeShare", "pyNoticeSeverity", "pyNoticeExpires", "pyNoticeMessage", "pyNoticeSave",
         "pyNoticeClear", "pyNoticeStatus",
     ):

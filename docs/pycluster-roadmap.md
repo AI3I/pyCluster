@@ -2,8 +2,8 @@
 
 Updated: 2026-09-03
 
-This roadmap describes product direction after the `1.0.16` release. It is not
-a release checklist. The active GitHub milestone and
+This roadmap describes product direction after the `1.0.16` release during
+`1.0.17` development. It is not a release checklist. The active GitHub milestone and
 issues are the authority for scheduled work; [CHANGELOG.md](../CHANGELOG.md)
 records what has shipped.
 
@@ -44,6 +44,8 @@ The following are implemented foundations, not future roadmap items:
 - session-specific PY v2 capability and limit negotiation
 - bounded multipath topology storage, withdrawals, expiry failover, probes,
   convergence state, and reported-link diagnostics
+- route-owner-aware reconciliation, authenticated alternate-route inspection,
+  and reconnect warnings for capability or stable-identity changes
 
 ## 1.0.15 Delivered Focus
 

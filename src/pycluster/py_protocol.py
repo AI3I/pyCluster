@@ -24,10 +24,11 @@ PY_NOTICE_TYPE = "PY07"
 PY_POLICY_TYPE = "PY08"
 PY_CLOCK_TYPE = "PY09"
 PY_REQUEST_TYPE = "PY10"
+PY_SESSION_FRAME_TYPE = "PY11"
 PY_PROBE_TYPE = "PY12"
 PY_WITHDRAW_TYPE = "PY13"
 PY_ERROR_TYPE = "PY99"
-PY_CAPABILITIES = ("probe", "py99-error")
+PY_CAPABILITIES = ("probe", "py99-error", "session-binding")
 PY_FRAME_CAPABILITIES = {
     "PY01": "node-info",
     "PY02": "topology-digest",
@@ -39,12 +40,58 @@ PY_FRAME_CAPABILITIES = {
     "PY08": "policy",
     "PY09": "clock",
     "PY10": "request",
+    "PY11": "session-binding",
     "PY12": "probe",
     "PY13": "topology-withdraw",
     PY_ERROR_TYPE: "py99-error",
 }
 _CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+
+
+@dataclass(frozen=True, slots=True)
+class PySessionFrameMessage:
+    session_id: str
+    sequence: int
+    inner_type: str
+    inner_fields: tuple[str, ...]
+    protocol_version: str = PY_PROTOCOL_VERSION
+
+    @classmethod
+    def from_fields(cls, fields: list[str]) -> "PySessionFrameMessage":
+        if len(fields) != 3 or fields[0].strip() != PY_PROTOCOL_VERSION or fields[1].strip().upper() != "FRAME":
+            raise ValueError("invalid PY11 FRAME field layout")
+        payload = _decode_payload(fields[2])
+        if set(payload) != {"session_id", "sequence", "inner_type", "inner_fields"}:
+            raise ValueError("PY11 FRAME contains unknown or missing fields")
+        try:
+            session_id = str(uuid.UUID(str(payload["session_id"])))
+            sequence = int(payload["sequence"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("PY11 FRAME session or sequence is invalid") from exc
+        inner_type = str(payload["inner_type"]).strip().upper()
+        inner_fields_raw = payload["inner_fields"]
+        if (
+            sequence <= 0
+            or not re.fullmatch(r"PY\d{2}", inner_type)
+            or inner_type in {PY_HELLO_TYPE, PY_SESSION_FRAME_TYPE}
+            or not isinstance(inner_fields_raw, list)
+            or not 1 <= len(inner_fields_raw) <= 16
+            or any(not isinstance(item, str) or len(item) > 16384 for item in inner_fields_raw)
+        ):
+            raise ValueError("PY11 FRAME inner frame is invalid")
+        return cls(session_id, sequence, inner_type, tuple(inner_fields_raw), fields[0].strip())
+
+    def to_fields(self) -> list[str]:
+        payload = {
+            "session_id": self.session_id,
+            "sequence": self.sequence,
+            "inner_type": self.inner_type,
+            "inner_fields": list(self.inner_fields),
+        }
+        fields = [self.protocol_version, "FRAME", _encode_payload(payload)]
+        valid = self.from_fields(fields)
+        return [valid.protocol_version, "FRAME", _encode_payload(payload)]
 
 
 def _clean_text(value: object, max_length: int) -> str:
