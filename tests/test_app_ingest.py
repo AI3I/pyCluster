@@ -3852,7 +3852,7 @@ def test_app_rbn_feed_can_ingest_multiple_public_rbn_ports(tmp_path, monkeypatch
             mode = "CW    31 dB  22 WPM  CQ" if port == 7000 else "FT8   -08 dB"
             self.lines = [
                 b"Please enter your call: ",
-                f"AI3I-15 de RELAY 10-May-2026 1637Z >\r\n".encode(),
+                b"AI3I-15 de RELAY 10-May-2026 1637Z >\r\n",
                 f"DX de OE9GHV-#:  7029.70  {dx_call:<13} {mode}      1637Z\r\n".encode(),
                 b"",
             ]

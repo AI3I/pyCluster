@@ -114,7 +114,7 @@ def _migrate_peer_passwords(conn: sqlite3.Connection, columns: tuple[str, str, s
 
 
 def migrate(sqlite_path: str) -> dict[str, int]:
-    conn = sqlite3.connect(sqlite_path)
+    conn = sqlite3.connect(sqlite_path, timeout=5.0)
     try:
         columns = _preference_columns(conn)
         if columns is None:

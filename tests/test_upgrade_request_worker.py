@@ -67,6 +67,7 @@ def test_upgrade_systemd_worker_uses_source_checkout_and_live_runtime_paths() ->
 
     assert "WorkingDirectory=/usr/src/pyCluster" in unit
     assert "/usr/src/pyCluster/scripts/run_upgrade_request.py" in unit
+    assert "ExecStartPre=/usr/local/libexec/pycluster-check-upgrade-source /usr/src/pyCluster" in unit
     assert "--repo-root /usr/src/pyCluster" in unit
     assert "--request /home/pycluster/pyCluster/data/upgrade-request.json" in unit
     assert "--status /home/pycluster/pyCluster/data/upgrade-status.json" in unit

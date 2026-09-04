@@ -4,6 +4,16 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+## 1.0.17 - 2026-09-04
+
+- Require a stored password for every System Operator web login, including the bootstrap `SYSOP` account, and move PBKDF2 hashing and verification off the asyncio event loop.
+- Harden MFA by pruning abandoned challenges and atomically rejecting replayed authenticator codes while allowing clean re-enrollment with a new secret.
+- Bound public and System Operator HTTP request headers and bodies, enforce whole-header read deadlines, and reject malformed or oversized request bodies explicitly.
+- Protect the root-run web upgrade worker from service-account-controlled Python imports by requiring a fully root-owned, non-writable, symlink-free source checkout before execution.
+- Restore live Fail2Ban status collection, add SQLite lock wait timeouts to the daemon and shipped maintenance tools, and warn when a legacy plaintext password is upgraded during authentication.
+- Escape peer- and user-controlled text in System Operator and public-web HTML attribute contexts, and remove duplicate definitions and missing imports found during the security review.
+- Label inbound PC-protocol connections as telnet transport instead of DXSpider software, so PC18-identified pyCluster peers no longer appear as both pyCluster and DXSpider in the console.
+- Treat ordinary abrupt telnet disconnects as debug-level session closure instead of emitting misleading exception tracebacks during health probes and client reconnects.
 - Fix a rendered SysOp JavaScript syntax error in the topology-export control that prevented login and all other console actions from binding; add a generated-script parse regression.
 - Add connection-session frame and byte counters by wire family, structured PY conformance verdicts with rejection details, and an authenticated sanitized JSON export of known-node topology and retained routes.
 - Prevent an inaccessible administrator-owned source checkout recorded by a nonstandard installation from crashing the core service; System Operator upgrades now fall back to unavailable while telnet and web continue running.

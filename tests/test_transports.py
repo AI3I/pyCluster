@@ -1,4 +1,5 @@
 from pycluster.transports import (
+    DxSpiderInboundConnection,
     connect_from_dsn,
     kiss_encode_data_frame,
     kiss_extract_data_payloads,
@@ -7,6 +8,20 @@ from pycluster.transports import (
 )
 import asyncio
 import pytest
+
+
+class _InboundWriter:
+    def get_extra_info(self, _name, default=None):
+        return default
+
+
+def test_inbound_pc_adapter_reports_transport_without_claiming_a_software_family() -> None:
+    connection = DxSpiderInboundConnection(
+        "AI3I-90",
+        object(),  # type: ignore[arg-type]
+        _InboundWriter(),  # type: ignore[arg-type]
+    )
+    assert connection.transport == "telnet"
 
 
 def test_parse_tcp_dsn() -> None:

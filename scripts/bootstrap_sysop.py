@@ -62,7 +62,7 @@ async def _run(config_path: str, output_path: str) -> int:
         "\n".join(
             [
                 "pyCluster initial System Operator account",
-                f"Callsign: SYSOP",
+                "Callsign: SYSOP",
                 f"Password: {password}",
                 f"Config: {config_path}",
                 "",

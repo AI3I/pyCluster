@@ -115,7 +115,7 @@ def _database_report(config: object, db_path: Path, privacy: str) -> None:
         print("saved_peer_count=unavailable (database missing)")
         return
     try:
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0) as connection:
             quick_check = connection.execute("PRAGMA quick_check").fetchone()
             schema_version = connection.execute("PRAGMA user_version").fetchone()
             rows = connection.execute(
@@ -239,8 +239,8 @@ def backup_database(config_path: Path, runtime_root: Path, destination: Path) ->
     if not source.is_file():
         raise SystemExit(f"database source is missing: {source}")
     try:
-        with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as source_db:
-            with sqlite3.connect(destination) as destination_db:
+        with sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=5.0) as source_db:
+            with sqlite3.connect(destination, timeout=5.0) as destination_db:
                 source_db.backup(destination_db)
                 check = destination_db.execute("PRAGMA integrity_check").fetchone()
     except BaseException:

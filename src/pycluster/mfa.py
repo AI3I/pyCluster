@@ -81,22 +81,58 @@ def totp_otpauth_uri(*, issuer: str, account: str, secret: str) -> str:
     )
 
 
-def verify_totp(secret: str, code: str, *, now: int | None = None, window: int = 1) -> bool:
+TOTP_LAST_COUNTER_PREF = "mfa_totp_last_counter"
+
+
+def matched_totp_counter(secret: str, code: str, *, now: int | None = None, window: int = 1) -> int | None:
+    """Return the time step the supplied code matched, or None."""
     normalized = normalize_totp_secret(secret)
     supplied = "".join(ch for ch in str(code or "").strip() if ch.isdigit())
     if len(supplied) != 6 or not normalized:
-        return False
+        return None
     padded = normalized + ("=" * ((8 - len(normalized) % 8) % 8))
     try:
         key = base64.b32decode(padded, casefold=True)
     except Exception:
-        return False
+        return None
     counter = int((now if now is not None else time.time()) // 30)
     for offset in range(-max(0, int(window)), max(0, int(window)) + 1):
         expected = _totp_code_for_counter(key, counter + offset)
         if secrets.compare_digest(expected, supplied):
-            return True
-    return False
+            return counter + offset
+    return None
+
+
+def verify_totp(secret: str, code: str, *, now: int | None = None, window: int = 1) -> bool:
+    return matched_totp_counter(secret, code, now=now, window=window) is not None
+
+
+async def verify_totp_once(
+    store: SpotStore,
+    call: str,
+    secret: str,
+    code: str,
+    *,
+    now: int | None = None,
+    window: int = 1,
+) -> bool:
+    """Verify a TOTP code and burn its time step so it cannot be replayed.
+
+    A plain TOTP check leaves a code usable for the rest of its window, which
+    is long enough for anyone who observed it to reuse it.
+    """
+    counter = matched_totp_counter(secret, code, now=now, window=window)
+    if counter is None:
+        return False
+    principal = call.strip().upper()
+    secret_scope = hashlib.sha256(normalize_totp_secret(secret).encode("ascii")).hexdigest()[:16]
+    return await store.consume_user_pref_counter(
+        principal,
+        TOTP_LAST_COUNTER_PREF,
+        secret_scope,
+        counter,
+        int(time.time()),
+    )
 
 
 def totp_code(secret: str, *, now: int | None = None) -> str:
@@ -132,8 +168,22 @@ class EmailOtpManager:
             return bool(self.config.require_for_sysop)
         return bool(self.config.require_for_users)
 
+    def _prune_memory(self, now: int) -> None:
+        """Drop expired in-memory state.
+
+        Abandoned challenges are never verified, so without this they would
+        accumulate for the lifetime of the process.
+        """
+        for challenge_id in [cid for cid, ch in self._challenges.items() if ch.expires_epoch < now]:
+            self._challenges.pop(challenge_id, None)
+        cooldown = max(0, int(self.config.resend_cooldown_seconds or 0))
+        horizon = now - max(cooldown, 3600)
+        for key in [k for k, issued in self._recent_issue.items() if issued < horizon]:
+            self._recent_issue.pop(key, None)
+
     async def issue(self, *, call: str, email: str, purpose: str) -> tuple[str, int]:
         now = int(time.time())
+        self._prune_memory(now)
         if self._store is not None:
             await self._store.delete_expired_mfa_challenges(now)
         cooldown = max(0, int(self.config.resend_cooldown_seconds or 0))

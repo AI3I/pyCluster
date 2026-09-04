@@ -33,7 +33,7 @@ def _set_pref(conn: sqlite3.Connection, call: str, key: str, value: str, now: in
 
 def lock_account(db_path: str, call: str, reason: str) -> None:
     now = int(time.time())
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
         _set_pref(conn, call, "registration_state", "locked", now)
         _set_pref(conn, call, "failed_password_locked_epoch", str(now), now)
         _set_pref(conn, call, "failed_password_count", "0", now)
@@ -44,7 +44,7 @@ def lock_account(db_path: str, call: str, reason: str) -> None:
 
 def unlock_account(db_path: str, call: str) -> None:
     now = int(time.time())
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
         _set_pref(conn, call, "registration_state", "verified", now)
         conn.execute(
             "DELETE FROM user_prefs WHERE call = ? AND pref_key IN ('failed_password_locked_epoch', 'failed_password_count', 'failed_mfa_locked_epoch', 'failed_mfa_count')",
