@@ -13,6 +13,7 @@ from pycluster.py_protocol import (
     PyPolicyMessage,
     PyProbeMessage,
     PyRbnStatusMessage,
+    PySessionFrameMessage,
     PyTopologyDigestEntry,
     PyTopologyDigestMessage,
     PyTopologyRecord,
@@ -20,6 +21,17 @@ from pycluster.py_protocol import (
     PyTopologyRequestMessage,
     PyWithdrawMessage,
 )
+
+
+def test_py_session_frame_round_trip_and_rejects_nested_frames() -> None:
+    message = PySessionFrameMessage(
+        "12345678-1234-4678-9234-567812345678", 7, "PY12", ("2", "PROBE", "payload"),
+    )
+    assert PySessionFrameMessage.from_fields(message.to_fields()) == message
+    with pytest.raises(ValueError):
+        PySessionFrameMessage(
+            message.session_id, 8, "PY11", ("2", "FRAME", "payload"),
+        ).to_fields()
 
 
 def test_py_hello_round_trip_is_canonical() -> None:

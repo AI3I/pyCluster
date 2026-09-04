@@ -43,8 +43,14 @@ def source_repo_root(runtime_root: str | Path) -> Path:
     candidates.append(Path("/usr/src/pyCluster"))
     candidates.append(Path(runtime_root))
     for candidate in candidates:
-        if candidate and (candidate / ".git").exists():
-            return candidate.resolve()
+        try:
+            if candidate and (candidate / ".git").exists():
+                return candidate.resolve()
+        except OSError:
+            # A receipt may name an administrator-owned checkout that the
+            # runtime service cannot traverse. That disables web upgrades; it
+            # must not prevent the core and System Operator console starting.
+            continue
     return Path(runtime_root).resolve()
 
 

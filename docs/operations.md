@@ -40,8 +40,8 @@ Typical production services:
 Validated operational environments so far:
 
 - Debian 12 and 13
-- Ubuntu 24.04 LTS and 25.10
-- Fedora 42 and 43 with SELinux enforcing
+- Ubuntu 24.04 LTS, 25.10, and 26.04 LTS
+- Fedora 42, 43, and 44 with SELinux enforcing
 - CentOS Stream 9 and 10 with SELinux enforcing
 - AlmaLinux 8, 9, and 10 with SELinux enforcing
 - Rocky Linux 8, 9, and 10 with SELinux enforcing

@@ -30,7 +30,7 @@ from .node_link import NodeLinkEngine
 from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, parse_wire_pc_frame, serialize_wire_protocol_frame
-from .py_protocol import PY_CAPABILITIES, PY_CLOCK_TYPE, PY_DATASETS_TYPE, PY_ERROR_TYPE, PY_FRAME_CAPABILITIES, PY_HEALTH_TYPE, PY_HELLO_TYPE, PY_NODEINFO_TYPE, PY_NOTICE_TYPE, PY_POLICY_TYPE, PY_PROBE_TYPE, PY_RBN_STATUS_TYPE, PY_REQUEST_TYPE, PY_TOPOLOGY_DIGEST_TYPE, PY_TOPOLOGY_RECORDS_TYPE, PY_WITHDRAW_TYPE, PyClockMessage, PyDatasetsMessage, PyErrorMessage, PyHealthMessage, PyHelloMessage, PyNodeInfoMessage, PyNoticeMessage, PyPolicyMessage, PyProbeMessage, PyRbnStatusMessage, PyTopologyDigestEntry, PyTopologyDigestMessage, PyTopologyRecord, PyTopologyRecordsMessage, PyTopologyRequestMessage, PyWithdrawMessage
+from .py_protocol import PY_CAPABILITIES, PY_CLOCK_TYPE, PY_DATASETS_TYPE, PY_ERROR_TYPE, PY_FRAME_CAPABILITIES, PY_HEALTH_TYPE, PY_HELLO_TYPE, PY_NODEINFO_TYPE, PY_NOTICE_TYPE, PY_POLICY_TYPE, PY_PROBE_TYPE, PY_RBN_STATUS_TYPE, PY_REQUEST_TYPE, PY_SESSION_FRAME_TYPE, PY_TOPOLOGY_DIGEST_TYPE, PY_TOPOLOGY_RECORDS_TYPE, PY_WITHDRAW_TYPE, PyClockMessage, PyDatasetsMessage, PyErrorMessage, PyHealthMessage, PyHelloMessage, PyNodeInfoMessage, PyNoticeMessage, PyPolicyMessage, PyProbeMessage, PyRbnStatusMessage, PySessionFrameMessage, PyTopologyDigestEntry, PyTopologyDigestMessage, PyTopologyRecord, PyTopologyRecordsMessage, PyTopologyRequestMessage, PyWithdrawMessage
 from .rbn import is_rbn_spot, parse_rbn_dx_line
 from .shdx import BAND_RANGES
 from .spot_filters import SpotFilterEntry, evaluate_spot_entries
@@ -128,6 +128,9 @@ class ClusterApp:
         self._py_topology_snapshots: dict[str, dict[str, object]] = {}
         self._py_metadata_epoch: dict[str, int] = {}
         self._py_session_ids: dict[str, str] = {}
+        self._py_remote_session_ids: dict[str, str] = {}
+        self._py_tx_sequences: dict[str, int] = {}
+        self._py_rx_sequences: dict[str, int] = {}
         self._py_remote_limits: dict[str, tuple[int, int, int]] = {}
         self._py_probe_pending: dict[str, tuple[str, int, float]] = {}
         self._py_probe_epoch: dict[str, int] = {}
@@ -1479,6 +1482,9 @@ class ClusterApp:
         self._py_probe_pending.pop(peer_key, None)
         self._py_probe_epoch.pop(peer_key, None)
         self._py_session_ids.pop(peer_key, None)
+        self._py_remote_session_ids.pop(peer_key, None)
+        self._py_tx_sequences.pop(peer_key, None)
+        self._py_rx_sequences.pop(peer_key, None)
 
     async def _handle_unexpected_peer_disconnect(self, peer_name: str) -> None:
         peer_key = normalize_call(peer_name) or peer_name.upper()
@@ -1560,6 +1566,23 @@ class ClusterApp:
         values["updated_epoch"] = int(time.time())
         await self._record_proto_state(peer_name, {f"py.sync.{key}": str(value) for key, value in values.items()})
 
+    async def _send_py_frame(self, peer_name: str, frame: WirePcFrame) -> bool:
+        peer_key = normalize_call(peer_name) or peer_name.upper()
+        outgoing = frame
+        if frame.pc_type != PY_HELLO_TYPE and "session-binding" in self._py_negotiated_capabilities.get(peer_key, frozenset()):
+            sequence = self._py_tx_sequences.get(peer_key, 0) + 1
+            message = PySessionFrameMessage(
+                self._py_session_ids.setdefault(peer_key, str(uuid.uuid4())),
+                sequence,
+                frame.pc_type,
+                tuple(frame.payload_fields),
+            )
+            outgoing = WirePcFrame(PY_SESSION_FRAME_TYPE, message.to_fields())
+            if not self._py_frame_fits(outgoing, peer_name):
+                return False
+            self._py_tx_sequences[peer_key] = sequence
+        return await self.node_link.send(peer_name, outgoing) is not False
+
     async def _send_py_probe(self, peer_name: str, *, force: bool = False) -> bool:
         peer_key = normalize_call(peer_name) or peer_name.upper()
         if "probe" not in self._py_negotiated_capabilities.get(peer_key, frozenset()):
@@ -1576,7 +1599,7 @@ class ClusterApp:
         nonce = str(uuid.uuid4())
         sent_millis = int(time.time() * 1000)
         message = PyProbeMessage(self.config.node.node_call, "request", nonce, sent_millis)
-        if await self.node_link.send(peer_name, WirePcFrame(PY_PROBE_TYPE, message.to_fields())) is False:
+        if not await self._send_py_frame(peer_name, WirePcFrame(PY_PROBE_TYPE, message.to_fields())):
             return False
         self._py_probe_pending[peer_key] = (nonce, sent_millis, time.monotonic())
         self._py_probe_epoch[peer_key] = now
@@ -1595,7 +1618,7 @@ class ClusterApp:
             if peer_key == excluded or "topology-withdraw" not in capabilities:
                 continue
             try:
-                if await self.node_link.send(peer_key, WirePcFrame(PY_WITHDRAW_TYPE, message.to_fields())) is not False:
+                if await self._send_py_frame(peer_key, WirePcFrame(PY_WITHDRAW_TYPE, message.to_fields())):
                     sent += 1
             except (KeyError, ConnectionError, OSError):
                 continue
@@ -1713,7 +1736,7 @@ class ClusterApp:
         except ValueError as exc:
             LOG.warning("PY01 NODEINFO not sent: invalid local metadata: %s", exc)
             return False
-        if await self.node_link.send(peer_name, WirePcFrame(PY_NODEINFO_TYPE, fields)) is False:
+        if not await self._send_py_frame(peer_name, WirePcFrame(PY_NODEINFO_TYPE, fields)):
             return False
         self._py_nodeinfo_sent.add(peer_key)
         return True
@@ -1853,7 +1876,7 @@ class ClusterApp:
             more = offset + len(batch) < len(entries)
             cursor = batch[-1].node_call if batch else ""
             message = PyTopologyDigestMessage(tuple(batch), cursor, more, now, snapshot_id, page_number)
-            if await self.node_link.send(peer_name, WirePcFrame(PY_TOPOLOGY_DIGEST_TYPE, message.to_fields())) is False:
+            if not await self._send_py_frame(peer_name, WirePcFrame(PY_TOPOLOGY_DIGEST_TYPE, message.to_fields())):
                 return False
             sent = True
             offset += len(batch)
@@ -1890,7 +1913,7 @@ class ClusterApp:
                 offset += 1
                 continue
             message = PyTopologyRequestMessage(tuple(batch), now)
-            if await self.node_link.send(peer_name, WirePcFrame(PY_REQUEST_TYPE, message.to_fields())) is False:
+            if not await self._send_py_frame(peer_name, WirePcFrame(PY_REQUEST_TYPE, message.to_fields())):
                 return False
             sent = True
             offset += len(batch)
@@ -1931,7 +1954,7 @@ class ClusterApp:
                 offset += 1
                 continue
             message = PyTopologyRecordsMessage(tuple(batch), now)
-            if await self.node_link.send(peer_name, WirePcFrame(PY_TOPOLOGY_RECORDS_TYPE, message.to_fields())) is False:
+            if not await self._send_py_frame(peer_name, WirePcFrame(PY_TOPOLOGY_RECORDS_TYPE, message.to_fields())):
                 return False
             sent = True
             offset += len(batch)
@@ -2164,7 +2187,7 @@ class ClusterApp:
                 LOG.warning("%s metadata exceeds configured PY frame size", frame_type)
                 continue
             sendable += 1
-            if await self.node_link.send(peer_name, frame) is not False:
+            if await self._send_py_frame(peer_name, frame):
                 sent += 1
         if sendable == sent:
             self._py_metadata_epoch[peer_key] = now
@@ -2182,7 +2205,7 @@ class ClusterApp:
             detail=clean_detail,
             epoch=int(datetime.now(timezone.utc).timestamp()),
         )
-        return await self.node_link.send(peer_name, WirePcFrame(PY_ERROR_TYPE, message.to_fields()))
+        return await self._send_py_frame(peer_name, WirePcFrame(PY_ERROR_TYPE, message.to_fields()))
 
     async def _validate_py_metadata_message(self, peer_name: str, frame_type: str, message: object) -> bool:
         peer_key = normalize_call(peer_name) or peer_name.upper()
@@ -2243,8 +2266,17 @@ class ClusterApp:
                 return
             remote_capabilities = frozenset(hello.capabilities)
             negotiated = frozenset(set(self._local_py_capabilities()).intersection(remote_capabilities))
+            ptag = re.sub(r"[^a-z0-9_.-]", "_", peer_name.lower())
+            pfx = f"proto.peer.{ptag}.py."
+            previous = await self.store.list_user_prefs(self.config.node.node_call)
+            previous_capabilities = {
+                item for item in str(previous.get(pfx + "capabilities", "")).split(",") if item
+            }
+            missing_capabilities = sorted(previous_capabilities - set(remote_capabilities))
             self._py_remote_capabilities[peer_key] = remote_capabilities
             self._py_negotiated_capabilities[peer_key] = negotiated
+            self._py_remote_session_ids[peer_key] = hello.session_id
+            self._py_rx_sequences[peer_key] = 0
             self._py_remote_limits[peer_key] = (
                 hello.max_frame_bytes, hello.max_records_per_frame, hello.max_hops
             )
@@ -2258,6 +2290,13 @@ class ClusterApp:
                     "py.software_version": hello.software_version,
                     "py.capabilities": ",".join(hello.capabilities),
                     "py.negotiated_capabilities": ",".join(sorted(negotiated)),
+                    "py.capability_warning": (
+                        "Previously advertised capabilities missing: " + ", ".join(missing_capabilities)
+                        if missing_capabilities else ""
+                    ),
+                    "py.capability_warning_epoch": (
+                        str(int(datetime.now(timezone.utc).timestamp())) if missing_capabilities else ""
+                    ),
                     "py.announced_epoch": str(hello.epoch),
                     "py.session_id": hello.session_id,
                     "py.limits.remote_frame_bytes": str(hello.max_frame_bytes),
@@ -2282,8 +2321,29 @@ class ClusterApp:
             await self.node_link.mark_policy_drop(peer_name, "py_before_capability_negotiation")
             return
 
-        required_capability = PY_FRAME_CAPABILITIES.get(frame.pc_type)
         negotiated = self._py_negotiated_capabilities.get(peer_key, frozenset())
+        if frame.pc_type == PY_SESSION_FRAME_TYPE:
+            if "session-binding" not in negotiated:
+                await self.node_link.mark_policy_drop(peer_name, "unnegotiated_py_session_frame")
+                return
+            try:
+                envelope = PySessionFrameMessage.from_fields(frame.payload_fields)
+            except ValueError:
+                await self.node_link.mark_policy_drop(peer_name, "invalid_py_session_frame")
+                return
+            if envelope.session_id != self._py_remote_session_ids.get(peer_key):
+                await self.node_link.mark_policy_drop(peer_name, "stale_py_session")
+                return
+            if envelope.sequence <= self._py_rx_sequences.get(peer_key, 0):
+                await self.node_link.mark_policy_drop(peer_name, "replayed_py_session_frame")
+                return
+            self._py_rx_sequences[peer_key] = envelope.sequence
+            frame = WirePcFrame(envelope.inner_type, list(envelope.inner_fields))
+        elif "session-binding" in negotiated:
+            await self.node_link.mark_policy_drop(peer_name, "unbound_py_session_frame")
+            return
+
+        required_capability = PY_FRAME_CAPABILITIES.get(frame.pc_type)
         if required_capability is None or required_capability not in negotiated:
             await self.node_link.mark_policy_drop(peer_name, "unsupported_py_type")
             await self._send_py_error(peer_name, "unsupported-type", frame.pc_type, "Frame capability was not negotiated")
@@ -2324,7 +2384,7 @@ class ClusterApp:
             if probe.kind == "request":
                 reply = PyProbeMessage(self.config.node.node_call, "reply", probe.nonce,
                                        probe.sent_millis, now_millis)
-                await self.node_link.send(peer_name, WirePcFrame(PY_PROBE_TYPE, reply.to_fields()))
+                await self._send_py_frame(peer_name, WirePcFrame(PY_PROBE_TYPE, reply.to_fields()))
             else:
                 pending = self._py_probe_pending.get(peer_key)
                 if not pending or pending[0] != probe.nonce or pending[1] != probe.sent_millis:
@@ -2409,28 +2469,31 @@ class ClusterApp:
                 await self._send_py_error(peer_name, "sequence-conflict", frame.pc_type, "NODEINFO content changed without a new sequence")
                 return
             previous_node_id = existing_node_id if existing_node_id and existing_node_id != node_info.node_id else ""
-            await self._touch_proto_activity(peer_name, frame.pc_type)
-            await self._record_proto_state(
-                peer_name,
-                {
-                    "py.nodeinfo.node_id": node_info.node_id,
-                    "py.nodeinfo.sequence": str(node_info.sequence),
-                    "py.nodeinfo.content_digest": incoming_digest,
+            nodeinfo_state = {
+                "py.nodeinfo.node_id": node_info.node_id,
+                "py.nodeinfo.sequence": str(node_info.sequence),
+                "py.nodeinfo.content_digest": incoming_digest,
+                "py.nodeinfo.software_version": node_info.software_version,
+                "py.nodeinfo.public_web_url": node_info.public_web_url,
+                "py.nodeinfo.locator": node_info.locator,
+                "py.nodeinfo.qth": node_info.qth,
+                "py.nodeinfo.sysop_contact": node_info.sysop_contact,
+                "py.nodeinfo.services": ",".join(node_info.services),
+                "py.nodeinfo.capabilities": ",".join(node_info.capabilities),
+                "py.nodeinfo.updated_epoch": str(node_info.updated_epoch),
+                "py.nodeinfo.received_epoch": str(now),
+                "py.nodeinfo.expires_epoch": str(node_info.expires_epoch),
+                "py.nodeinfo.learned_from": peer_key,
+                "py.nodeinfo.confidence": "direct",
+            }
+            if previous_node_id:
+                nodeinfo_state.update({
                     "py.nodeinfo.previous_node_id": previous_node_id,
-                    "py.nodeinfo.software_version": node_info.software_version,
-                    "py.nodeinfo.public_web_url": node_info.public_web_url,
-                    "py.nodeinfo.locator": node_info.locator,
-                    "py.nodeinfo.qth": node_info.qth,
-                    "py.nodeinfo.sysop_contact": node_info.sysop_contact,
-                    "py.nodeinfo.services": ",".join(node_info.services),
-                    "py.nodeinfo.capabilities": ",".join(node_info.capabilities),
-                    "py.nodeinfo.updated_epoch": str(node_info.updated_epoch),
-                    "py.nodeinfo.received_epoch": str(now),
-                    "py.nodeinfo.expires_epoch": str(node_info.expires_epoch),
-                    "py.nodeinfo.learned_from": peer_key,
-                    "py.nodeinfo.confidence": "direct",
-                },
-            )
+                    "py.identity_warning": f"Stable node identity changed from {previous_node_id} to {node_info.node_id}",
+                    "py.identity_warning_epoch": str(now),
+                })
+            await self._touch_proto_activity(peer_name, frame.pc_type)
+            await self._record_proto_state(peer_name, nodeinfo_state)
             await self.store.upsert_py_node_record(
                 self._py_record_from_info(
                     node_info,
@@ -2673,14 +2736,17 @@ class ClusterApp:
                 ):
                     requested.append(entry.node_call)
                 elif entry.sequence == local_sequence and same_digest:
-                    await self.store.refresh_py_node_lease(
+                    refreshed = await self.store.refresh_py_node_lease(
                         entry.node_call,
                         entry.node_id,
                         entry.sequence,
                         entry.digest,
                         entry.expires_epoch,
                         now,
+                        learned_from=peer_key,
                     )
+                    if not refreshed:
+                        requested.append(entry.node_call)
             await self._touch_proto_activity(peer_name, frame.pc_type)
             accumulated = snapshot["requested"]
             assert isinstance(accumulated, set)

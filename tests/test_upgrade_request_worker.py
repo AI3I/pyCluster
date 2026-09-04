@@ -154,6 +154,32 @@ def test_source_repo_root_uses_deployment_receipt(tmp_path) -> None:
     assert source_repo_root(runtime) == source.resolve()
 
 
+def test_source_repo_root_skips_inaccessible_receipt_checkout(tmp_path, monkeypatch) -> None:
+    from pycluster.upgrade_manager import source_repo_root
+
+    runtime = tmp_path / "runtime"
+    source = tmp_path / "private-source"
+    (runtime / "data").mkdir(parents=True)
+    (runtime / ".git").mkdir()
+    (source / ".git").mkdir(parents=True)
+    (runtime / "data" / "deployment-state.toml").write_text(
+        f'source_root = "{source}"\n',
+        encoding="utf-8",
+    )
+    original_exists = Path.exists
+
+    def guarded_exists(path: Path) -> bool:
+        if path == source / ".git":
+            raise PermissionError(13, "Permission denied", str(path))
+        if path == Path("/usr/src/pyCluster/.git"):
+            return False
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", guarded_exists)
+
+    assert source_repo_root(runtime) == runtime.resolve()
+
+
 def test_upgrade_worker_fetches_new_release_and_runs_upgrade(tmp_path: Path) -> None:
     remote = tmp_path / "remote.git"
     source = tmp_path / "source"
