@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import shutil
+import subprocess
 import tomllib
 
 from pycluster import __version__
@@ -26,6 +28,28 @@ def test_sysop_login_fields_submit_on_enter() -> None:
     assert "async function loginSysop()" in text
     assert "[byId('call'), byId('pass')].forEach((field) =>" in text
     assert "event.preventDefault();\n    loginSysop();" in text
+
+
+def test_rendered_sysop_javascript_parses(tmp_path) -> None:
+    if not shutil.which("node"):
+        return
+    cfg = _mk_config(str(tmp_path / "web_js_parse.db"), admin_token="adm")
+    store = SpotStore(cfg.store.sqlite_path)
+    srv = WebAdminServer(
+        config=cfg,
+        store=store,
+        started_at=datetime.now(timezone.utc),
+        session_count_fn=lambda: 0,
+    )
+    try:
+        html = srv._render_index_html()
+        script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+        result = subprocess.run(
+            ["node", "--check"], input=script, text=True, capture_output=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
+    finally:
+        asyncio.run(store.close())
 
 
 def test_sysop_welcome_title_warns_about_hrd_compatibility() -> None:

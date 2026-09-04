@@ -5172,7 +5172,7 @@ byId('knownNodesReload').onclick = async () => {
 byId('knownNodesExport').onclick = async () => {
   try {
     const payload = await j('/api/py-nodes/export');
-    const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], {type:'application/json'});
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `pycluster-topology-${String(payload.node_call || 'node').toLowerCase()}-${new Date().toISOString().slice(0, 10)}.json`;

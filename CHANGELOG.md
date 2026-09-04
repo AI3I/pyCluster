@@ -4,6 +4,7 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Fix a rendered SysOp JavaScript syntax error in the topology-export control that prevented login and all other console actions from binding; add a generated-script parse regression.
 - Add connection-session frame and byte counters by wire family, structured PY conformance verdicts with rejection details, and an authenticated sanitized JSON export of known-node topology and retained routes.
 - Prevent an inaccessible administrator-owned source checkout recorded by a nonstandard installation from crashing the core service; System Operator upgrades now fall back to unavailable while telnet and web continue running.
 - Add authenticated PY topology route details and a System Operator drill-down for selected and alternate route provenance, sequence, hops, and lease freshness.
