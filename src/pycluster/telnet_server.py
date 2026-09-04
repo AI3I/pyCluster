@@ -10,15 +10,16 @@ import logging
 import math
 import re
 import socket
+import sqlite3
 import time
 import textwrap
 from pathlib import Path
-from typing import Callable, Awaitable
+from typing import Any, Awaitable, Callable
 import urllib.request
 
 from . import __version__
 from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, CLUSTER_NODE_FAMILIES, default_access_allowed
-from .auth import hash_password, is_password_hash, verify_password
+from .auth import hash_password, hash_password_async, is_password_hash, verify_password_async
 from .auth_logging import log_auth_failure
 from .config import AppConfig, node_presentation_defaults, parse_telnet_ports
 from .ctydat import load_cty, lookup
@@ -53,7 +54,7 @@ from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
 from .maidenhead import coords_to_locator, extract_locator, locator_to_coords
-from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
+from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp_once
 from .wm7d import WM7DClient, WM7DLookupError
 from .ve7cc import CC11Location, format_cc11
 
@@ -2492,7 +2493,7 @@ class TelnetClusterServer:
             supplied_totp = await self._read_password(reader, writer)
             if supplied_totp is None:
                 return False
-            if not verify_totp(totp_secret, supplied_totp):
+            if not await verify_totp_once(self.store, totp_target or call, totp_secret, supplied_totp):
                 fallback_due = await self._record_totp_failure(call, target=totp_target)
                 await self._write(writer, self._string("mfa.invalid_code", "Login failed (invalid code)") + "\r\n")
                 if await self._record_mfa_failure(call):
@@ -11101,7 +11102,6 @@ class TelnetClusterServer:
             "show/dup_wwv": self._cmd_show_dupwwv_direct,
             "show/dxqsl": self._cmd_show_dxqsl_direct,
             "show/ik3qar": self._cmd_show_ik3qar_direct,
-            "show/newconfiguration": self._cmd_show_configuration,
             "show/satellite": self._cmd_show_satellite,
             "show/wm7d": self._cmd_show_wm7d_direct,
             # create/delete/forward/get
@@ -11253,7 +11253,7 @@ class TelnetClusterServer:
                         await writer.wait_closed()
                         return
                     if expected_password is not None and str(expected_password).strip():
-                        if not verify_password(supplied_password, str(expected_password)):
+                        if not await verify_password_async(supplied_password, str(expected_password)):
                             recoverable = await self._telnet_password_recovery_available(call)
                             reason = "bad_password_recoverable" if recoverable else "bad_password"
                             self._log_auth_failure("telnet", peer, call, reason)
@@ -11272,7 +11272,7 @@ class TelnetClusterServer:
                             await writer.wait_closed()
                             return
                         if not is_password_hash(str(expected_password)):
-                            await self.store.set_user_pref(call, "password", hash_password(supplied_password), int(datetime.now(timezone.utc).timestamp()))
+                            await self.store.set_user_pref(call, "password", await hash_password_async(supplied_password), int(datetime.now(timezone.utc).timestamp()))
                         await self._clear_telnet_password_failures(call)
                 if self.config.node.verified_email_required_for_telnet and not node_family:
                     if not self.config.node.registration_required and not await self._ensure_login_email(call, reader, writer):
@@ -11397,6 +11397,8 @@ class TelnetClusterServer:
                         else:
                             await self._write(writer, await self._prompt(call))
 
+            except (ConnectionResetError, BrokenPipeError):
+                LOG.debug("telnet client disconnected abruptly peer=%s", peer)
             except Exception:
                 LOG.exception("session error peer=%s", peer)
             finally:

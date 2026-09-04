@@ -88,11 +88,11 @@ In practice that means:
 
 pyCluster is usable today as a single-node cluster with web and telnet access, persistent storage, peer linking, and operator controls. The codebase is still evolving, but it is no longer just a prototype.
 
-Current release: `1.0.16`
+Current release: `1.0.17`
 
-Development version: `1.0.17`
+Next development milestone: `1.0.18`
 
-Recent highlights through `1.0.16`:
+Recent highlights through `1.0.17`:
 
 - PY protocol v2 negotiates capabilities and conservative per-link limits with a session-specific handshake while retaining PC as the rolling-upgrade fallback
 - decentralized topology exchange retains bounded alternate routes, promotes live fallbacks after withdrawal or expiry, and debounces rapid link changes

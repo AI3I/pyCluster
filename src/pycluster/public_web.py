@@ -21,14 +21,15 @@ import urllib.request
 from . import __version__
 from .auth_logging import log_auth_failure
 from .access_policy import CLUSTER_NODE_FAMILIES, default_access_allowed
-from .auth import hash_password, is_password_hash, verify_password
+from .auth import hash_password, hash_password_async, is_password_hash, verify_password_async
 from .config import AppConfig, config_override_paths, load_config, node_presentation_defaults
 from .ctydat import load_cty, lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
+from .httputil import RequestBodyTooLarge, read_body, request_content_length, with_head_deadline
 from .geomag import canonicalize_wwv_text
 from .maidenhead import extract_locator
-from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
+from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp_once
 from .qr_svg import qr_svg
 from .rbn import is_rbn_spot
 from .live_spots import decode_rbn_spot, rbn_socket_address
@@ -1066,6 +1067,7 @@ class PublicWebServer:
             403: "Forbidden",
             404: "Not Found",
             405: "Method Not Allowed",
+            413: "Content Too Large",
             429: "Too Many Requests",
             500: "Internal Server Error",
         }.get(status, "OK")
@@ -1980,7 +1982,7 @@ class PublicWebServer:
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            head = await reader.readuntil(b"\r\n\r\n")
+            head = await with_head_deadline(reader.readuntil(b"\r\n\r\n"))
         except Exception:
             await self._close_writer(writer)
             return
@@ -2002,11 +2004,14 @@ class PublicWebServer:
             body = b""
             if method in {"POST", "PUT", "PATCH"}:
                 try:
-                    content_len = int(headers.get("content-length", "0") or "0")
+                    content_len = request_content_length(headers.get("content-length"))
+                except RequestBodyTooLarge:
+                    await self._write_response(writer, 413, self._json({"error": "request body too large"}))
+                    return
                 except ValueError:
-                    content_len = 0
-                if content_len > 0:
-                    body = await reader.readexactly(content_len)
+                    await self._write_response(writer, 400, self._json({"error": "invalid content length"}))
+                    return
+                body = await read_body(reader, content_len)
 
             self._refresh_runtime_config()
 
@@ -2340,7 +2345,7 @@ class PublicWebServer:
                     self._log_auth_failure(writer, headers, "public-web", call, "password_setup_required")
                     await self._write_response(writer, 403, self._json({"error": "password setup required"}))
                     return
-                if not verify_password(password, str(expected)):
+                if not await verify_password_async(password, str(expected)):
                     _state, verified_epoch, _remaining = await registration_state(self.store, call)
                     recoverable = verified_epoch > 0
                     self._log_auth_failure(
@@ -2358,7 +2363,7 @@ class PublicWebServer:
                     await self._write_response(writer, 401, self._json({"error": "invalid credentials"}))
                     return
                 if not is_password_hash(str(expected)):
-                    await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
+                    await self.store.set_user_pref(call, "password", await hash_password_async(password), int(time.time()))
                 await self.store.delete_user_pref(call, "failed_password_count")
                 await self.store.delete_user_pref(call, "failed_password_locked_epoch")
                 await self.store.delete_user_pref(call.split("-", 1)[0].upper(), "failed_password_count")
@@ -2409,7 +2414,7 @@ class PublicWebServer:
                             LOG.info("public web mfa required call=%s method=totp", call)
                             await self._write_response(writer, 202, self._json({"ok": False, "mfa_required": True, "mfa_method": "totp"}))
                             return
-                        if not verify_totp(totp_secret, otp):
+                        if not await verify_totp_once(self.store, call, totp_secret, otp):
                             self._log_auth_failure(writer, headers, "public-web", call, "mfa_invalid_totp")
                             await self._write_response(writer, 401, self._json({"error": "invalid code"}))
                             return
@@ -2633,7 +2638,7 @@ class PublicWebServer:
                         self._audit("user", f"{call} verified email MFA")
                         await self._write_response(writer, 200, self._json({"ok": True, "call": call, "verified": True, "mfa": await self._mfa_snapshot(call)}))
                         return
-                    if not verify_totp(pending_secret, otp):
+                    if not await verify_totp_once(self.store, target_call, pending_secret, otp):
                         await self._write_response(writer, 400, self._json({"error": "invalid authenticator code"}))
                         return
                     await self.store.set_user_pref(target_call, "mfa_totp_secret", pending_secret, now)

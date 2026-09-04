@@ -393,11 +393,20 @@ def test_systemd_units_render_configured_runtime_identity_and_paths(tmp_path) ->
     systemd_dir.mkdir()
     runtime = tmp_path / "runtime"
     python_link = tmp_path / "bin" / "pycluster-python"
+    upgrade_source_check = tmp_path / "libexec" / "pycluster-check-upgrade-source"
     command = f"""
       . deploy/lib.sh
       repo_root() {{ printf '%s' '{root}'; }}
       systemctl() {{ :; }}
       install() {{
+        if [ "$1" = "-d" ]; then
+          shift
+          while [ "$#" -gt 1 ]; do
+            case "$1" in -o|-g|-m) shift 2 ;; *) shift ;; esac
+          done
+          command mkdir -p "$1"
+          return
+        fi
         local -a paths=()
         while [ "$#" -gt 0 ]; do
           case "$1" in -o|-g|-m) shift 2 ;; *) paths+=("$1"); shift ;; esac
@@ -408,6 +417,7 @@ def test_systemd_units_render_configured_runtime_identity_and_paths(tmp_path) ->
       PYCLUSTER_GROUP=clustergroup
       PYCLUSTER_APP_DIR='{runtime}'
       PYCLUSTER_PYTHON_LINK='{python_link}'
+      PYCLUSTER_UPGRADE_SOURCE_CHECK='{upgrade_source_check}'
       PYCLUSTER_SYSTEMD_DIR='{systemd_dir}'
       PYCLUSTER_SERVICE_NAME=custom-core.service
       PYCLUSTER_WEB_SERVICE_NAME=custom-web.service
@@ -436,3 +446,5 @@ def test_systemd_units_render_configured_runtime_identity_and_paths(tmp_path) ->
     assert f"WorkingDirectory={runtime}" in reminders
     assert "Unit=custom-reminders.service" in reminder_timer
     assert f"WorkingDirectory={root}" in upgrade
+    assert f"ExecStartPre={upgrade_source_check} {root}" in upgrade
+    assert upgrade_source_check.is_file()

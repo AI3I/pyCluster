@@ -8,18 +8,20 @@ import logging
 from pathlib import Path
 import re
 import secrets
+import subprocess
 import time
 import tomllib
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .access_policy import ACCESS_CAPABILITIES, ACCESS_CHANNELS, CLUSTER_NODE_FAMILIES, default_access_allowed
-from .auth import hash_password, is_password_hash, verify_password
+from .auth import hash_password, hash_password_async, is_password_hash, verify_password_async
 from .config import AppConfig, RBNFeedConfig, node_presentation_defaults, parse_telnet_ports, save_config
 from .auth_logging import AUTHFAIL_LOG_PATH, log_auth_failure
 from .geomag import canonicalize_wwv_text
+from .httputil import RequestBodyTooLarge, read_body, request_content_length, with_head_deadline
 from .maidenhead import extract_locator
-from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp
+from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp_once
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
 from .netutil import detected_public_ip_addresses
 from .rbn import is_rbn_spot
@@ -36,6 +38,7 @@ from .upgrade_manager import detect_upgrade_availability, migration_hooks, queue
 
 
 LOG = logging.getLogger(__name__)
+_MAX_REQUEST_HEADERS = 100
 _AUTHFAIL_RE = re.compile(
     r"^(?P<when>\S+\s+\S+)\s+\w+\s+AUTHFAIL channel=(?P<channel>[a-z-]+)\s+ip=(?P<ip>\S+)\s+call=(?P<call>\S+)\s+reason=(?P<reason>[a-z_]+)$"
 )
@@ -664,6 +667,7 @@ class WebAdminServer:
             403: "Forbidden",
             404: "Not Found",
             405: "Method Not Allowed",
+            413: "Content Too Large",
             429: "Too Many Requests",
             500: "Internal Server Error",
         }.get(status, "OK")
@@ -987,7 +991,7 @@ class WebAdminServer:
                         timeout=3,
                         check=False,
                     )
-                except Exception:
+                except (OSError, subprocess.SubprocessError):
                     proc = None
                     continue
                 if proc.returncode == 0:
@@ -1023,33 +1027,6 @@ class WebAdminServer:
 
     def _log_auth_failure(self, writer: asyncio.StreamWriter, headers: dict[str, str], channel: str, call: str, reason: str) -> None:
         log_auth_failure(LOG, channel, self._client_ip(headers, writer), self._auth_log_call(call), reason)
-
-    def _access_login_summary(self, access: dict[str, dict[str, bool]]) -> str:
-        parts: list[str] = []
-        for channel, label in (("telnet", "Telnet"), ("web", "Web")):
-            allowed = (access.get(channel, {}) or {}).get("login")
-            parts.append(f"{label}: {'allowed' if allowed else 'blocked'}")
-        return "; ".join(parts)
-
-    def _access_post_summary(self, access: dict[str, dict[str, bool]]) -> str:
-        labels: list[str] = []
-        for capability, label in (
-            ("spots", "Spots"),
-            ("rbn", "RBN"),
-            ("chat", "Chat"),
-            ("announce", "Announce"),
-            ("wx", "WX"),
-            ("wcy", "WCY"),
-            ("wwv", "WWV"),
-        ):
-            channels = [
-                channel.title()
-                for channel in self._access_channels()
-                if (access.get(channel, {}) or {}).get(capability)
-            ]
-            if channels:
-                labels.append(f"{label}: {'/'.join(channels)}")
-        return "; ".join(labels) if labels else "No posting access"
 
     def _parse_json_body(self, body: bytes) -> dict[str, object]:
         if not body:
@@ -3980,7 +3957,7 @@ function fmtBytes(value) {
   return `${(bytes / 1048576).toFixed(1)} MiB`;
 }
 function esc(v) {
-  return String(v ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+  return String(v ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
 }
 function healthBadge(v) {
   const txt = String(v || 'unknown').toLowerCase();
@@ -4290,7 +4267,10 @@ function setKnownNodeRows(payload, peers) {
       : directPeer
         ? `<div class="mini">health ${esc(health.state || 'unknown')} • RBN ${esc(rbn.state || 'unknown')} • sync ${esc(sync.state || 'pending')} • RTT ${probe.state === 'responsive' ? esc(String(probe.rtt_ms || 0)) + ' ms' : esc(probe.state || 'pending')}</div>`
       : '';
-    const publicUrl = String(row.public_web_url || '').trim();
+    const rawPublicUrl = String(row.public_web_url || '').trim();
+    // Peer-advertised; only ever render it as a link when it is plainly http(s).
+    const publicUrlLower = rawPublicUrl.toLowerCase();
+    const publicUrl = (publicUrlLower.startsWith('http://') || publicUrlLower.startsWith('https://')) ? rawPublicUrl : '';
     const callText = publicUrl
       ? `<a href="${esc(publicUrl)}" target="_blank" rel="noopener noreferrer"><strong>${esc(call)}</strong></a>`
       : `<strong>${esc(call)}</strong>`;
@@ -5811,9 +5791,31 @@ if (restoreWebSession()) {
 </body>
 </html>"""
 
+    async def _read_head(self, reader: asyncio.StreamReader) -> tuple[bytes, dict[str, str]]:
+        req_line = await reader.readline()
+        headers: dict[str, str] = {}
+        if not req_line:
+            return req_line, headers
+        while True:
+            line = await reader.readline()
+            if line in {b"\r\n", b"\n", b""}:
+                break
+            if len(headers) >= _MAX_REQUEST_HEADERS:
+                raise ValueError("too many request headers")
+            text = line.decode("ascii", errors="replace").strip()
+            if ":" in text:
+                k, v = text.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+        return req_line, headers
+
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            req_line = await reader.readline()
+            try:
+                req_line, headers = await with_head_deadline(self._read_head(reader))
+            except Exception:
+                writer.close()
+                await writer.wait_closed()
+                return
             if not req_line:
                 writer.close()
                 await writer.wait_closed()
@@ -5825,25 +5827,17 @@ if (restoreWebSession()) {
                 await self._write_response(writer, 400, self._json({"error": "malformed request"}))
                 return
 
-            headers: dict[str, str] = {}
-            while True:
-                line = await reader.readline()
-                if line in {b"\r\n", b"\n", b""}:
-                    break
-                text = line.decode("ascii", errors="replace").strip()
-                if ":" in text:
-                    k, v = text.split(":", 1)
-                    headers[k.strip().lower()] = v.strip()
             body = b""
             if method == "POST":
-                clen_txt = headers.get("content-length", "0").strip()
                 try:
-                    clen = int(clen_txt)
+                    content_len = request_content_length(headers.get("content-length"))
+                except RequestBodyTooLarge:
+                    await self._write_response(writer, 413, self._json({"error": "request body too large"}))
+                    return
                 except ValueError:
-                    clen = 0
-                clen = max(0, min(clen, 1024 * 64))
-                if clen > 0:
-                    body = await reader.readexactly(clen)
+                    await self._write_response(writer, 400, self._json({"error": "invalid content length"}))
+                    return
+                body = await read_body(reader, content_len)
 
             if method not in {"GET", "POST"}:
                 await self._write_response(writer, 405, self._json({"error": "only GET/POST are supported"}))
@@ -5902,18 +5896,21 @@ if (restoreWebSession()) {
                         await self._write_response(writer, 403, self._json({"error": "email verification required"}))
                         return
                 expected = await self.store.get_user_pref(call, "password")
-                if not special_sysop and (expected is None or not str(expected).strip()):
+                # A stored password is mandatory for every account, SYSOP included.
+                # Exempting SYSOP here would hand out a session to any caller on a
+                # node whose bootstrap password had never been seeded.
+                if expected is None or not str(expected).strip():
                     self._log_auth_failure(writer, headers, "sysop-web", call, "password_setup_required")
                     await self._write_response(writer, 403, self._json({"error": "password setup required"}))
                     return
-                if expected is not None and str(expected).strip() and not verify_password(password, str(expected)):
+                stored_password = str(expected)
+                if not await verify_password_async(password, stored_password):
                     self._log_auth_failure(writer, headers, "sysop-web", call, "bad_password")
                     await self._write_response(writer, 401, self._json({"error": "login failed"}))
                     return
-                has_real_password = expected is not None and bool(str(expected).strip())
-                is_sysop = has_real_password and verify_password(password, str(expected)) and (is_admin_candidate or await self._admin_privileged_call(call))
-                if has_real_password and not is_password_hash(str(expected)) and verify_password(password, str(expected)):
-                    await self.store.set_user_pref(call, "password", hash_password(password), int(time.time()))
+                is_sysop = is_admin_candidate or await self._admin_privileged_call(call)
+                if not is_password_hash(stored_password):
+                    await self.store.set_user_pref(call, "password", await hash_password_async(password), int(time.time()))
                 if await self._mfa_required_for_call(call, is_sysop=is_sysop):
                     challenge_id = str(payload.get("challenge_id", "")).strip()
                     otp = str(payload.get("otp", "")).strip()
@@ -5927,7 +5924,7 @@ if (restoreWebSession()) {
                                 self._json({"ok": False, "mfa_required": True, "mfa_method": "totp"}),
                             )
                             return
-                        if not verify_totp(totp_secret, otp):
+                        if not await verify_totp_once(self.store, call, totp_secret, otp):
                             self._log_auth_failure(writer, headers, "sysop-web", call, "mfa_invalid_totp")
                             await self._write_response(writer, 401, self._json({"error": "invalid code"}))
                             return
@@ -6030,7 +6027,7 @@ if (restoreWebSession()) {
                 limit = self._parse_limit(q, "limit", default=20, low=1, high=200)
                 auth_rows = self._read_recent_auth_failures(limit)
                 login_rows = await self._recent_login_rows(limit)
-                ban_rows = self._fail2ban_ban_rows()
+                ban_rows = await asyncio.to_thread(self._fail2ban_ban_rows)
                 await self._write_response(writer, 200, self._json({"auth_failures": auth_rows, "logins": login_rows, "bans": ban_rows}))
                 return
 

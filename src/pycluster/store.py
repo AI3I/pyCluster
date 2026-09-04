@@ -222,6 +222,10 @@ class SpotStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # The shipped maintenance scripts open this same WAL database while the
+        # daemon is running. Without a busy timeout SQLite fails those writers
+        # immediately with "database is locked" instead of waiting its turn.
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._lock = asyncio.Lock()
         self._spot_dupe_enabled = True
         self._spot_dupe_ttl_seconds = 900
@@ -1448,6 +1452,45 @@ class SpotStore:
             )
             row = cur.fetchone()
             return str(row["pref_value"]) if row else None
+
+    async def consume_user_pref_counter(
+        self, call: str, key: str, scope: str, counter: int, epoch: int
+    ) -> bool:
+        """Atomically retain a strictly increasing counter for one scoped value."""
+        c = call.strip().upper()
+        k = key.strip().lower()
+        s = scope.strip().lower()
+        if not c or not k or not s or counter < 0:
+            return False
+        async with self._lock:
+            row = self._conn.execute(
+                "SELECT pref_value FROM user_prefs WHERE call = ? AND pref_key = ? LIMIT 1",
+                (c, k),
+            ).fetchone()
+            previous_scope = ""
+            previous_counter = -1
+            if row is not None:
+                raw = str(row["pref_value"] or "")
+                previous_scope, separator, previous_value = raw.partition(":")
+                if separator:
+                    try:
+                        previous_counter = int(previous_value)
+                    except ValueError:
+                        previous_counter = -1
+            if previous_scope == s and counter <= previous_counter:
+                return False
+            self._conn.execute(
+                """
+                INSERT INTO user_prefs(call, pref_key, pref_value, updated_epoch)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(call, pref_key) DO UPDATE SET
+                    pref_value = excluded.pref_value,
+                    updated_epoch = excluded.updated_epoch
+                """,
+                (c, k, f"{s}:{counter}", epoch),
+            )
+            self._conn.commit()
+            return True
 
     async def list_user_prefs(self, call: str) -> dict[str, str]:
         c = call.strip().upper()

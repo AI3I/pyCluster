@@ -17,6 +17,7 @@ PYCLUSTER_REGISTRATION_REMINDERS_SERVICE_NAME="${PYCLUSTER_REGISTRATION_REMINDER
 PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME="${PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME:-pycluster-registration-reminders.timer}"
 PYCLUSTER_UPGRADE_SERVICE_NAME="${PYCLUSTER_UPGRADE_SERVICE_NAME:-pycluster-upgrade.service}"
 PYCLUSTER_UPGRADE_PATH_NAME="${PYCLUSTER_UPGRADE_PATH_NAME:-pycluster-upgrade.path}"
+PYCLUSTER_UPGRADE_SOURCE_CHECK="${PYCLUSTER_UPGRADE_SOURCE_CHECK:-/usr/local/libexec/pycluster-check-upgrade-source}"
 PYCLUSTER_SYSTEMD_DIR="${PYCLUSTER_SYSTEMD_DIR:-/etc/systemd/system}"
 PYCLUSTER_CONFIG_SRC="${PYCLUSTER_CONFIG_SRC:-config/pycluster.toml}"
 PYCLUSTER_CONFIG_DEST="${PYCLUSTER_CONFIG_DEST:-$PYCLUSTER_APP_DIR/config/pycluster.toml}"
@@ -486,6 +487,8 @@ install_or_refresh_service() {
   escaped_root="$(printf '%s' "$root" | sed 's/[\\&|]/\\&/g')"
   escaped_app="$(printf '%s' "$PYCLUSTER_APP_DIR" | sed 's/[\\&|]/\\&/g')"
   escaped_python="$(printf '%s' "$PYCLUSTER_PYTHON_LINK" | sed 's/[\\&|]/\\&/g')"
+  install -d -o root -g root -m 0755 "$(dirname "$PYCLUSTER_UPGRADE_SOURCE_CHECK")"
+  install -o root -g root -m 0755 "$root/deploy/check-upgrade-source.sh" "$PYCLUSTER_UPGRADE_SOURCE_CHECK"
   for unit in \
     pycluster.service \
     pyclusterweb.service \
@@ -515,6 +518,7 @@ install_or_refresh_service() {
       -e "s|/usr/src/pyCluster|$escaped_root|g" \
       -e "s|/home/pycluster/pyCluster|$escaped_app|g" \
       -e "s|/usr/local/bin/pycluster-python|$escaped_python|g" \
+      -e "s|/usr/local/libexec/pycluster-check-upgrade-source|$PYCLUSTER_UPGRADE_SOURCE_CHECK|g" \
       -e "s|pycluster.service|$PYCLUSTER_SERVICE_NAME|g" \
       -e "s|pyclusterweb.service|$PYCLUSTER_WEB_SERVICE_NAME|g" \
       -e "s|pycluster-data-refresh.service|$PYCLUSTER_DATA_REFRESH_SERVICE_NAME|g" \

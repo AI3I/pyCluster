@@ -342,7 +342,10 @@ class DxSpiderInboundConnection:
         initial_lines: list[str] | None = None,
     ) -> None:
         self.name = name
-        self.transport = "dxspider"
+        # This adapter parses the shared PC/telnet wire format; it does not
+        # establish the remote software family. PC18/profile detection owns
+        # that classification.
+        self.transport = "telnet"
         self.path_hint = describe_socket_path(writer.get_extra_info("peername"), writer.get_extra_info("sockname"))
         self._reader = reader
         self._writer = writer

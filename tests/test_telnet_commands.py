@@ -26,6 +26,35 @@ _SAMPLE_TLE = (
 )
 
 
+async def _read_reply(
+    reader: asyncio.StreamReader,
+    *,
+    until: bytes | None = None,
+    timeout: float = 5.0,
+    settle: float = 1.0,
+) -> bytes:
+    """Read a server reply that may span more than one write.
+
+    Password hashing runs off the event loop, so the telnet echo-restore
+    negotiation and the text that follows it no longer necessarily land in a
+    single read. Real clients keep reading; so does this. Pass `until` to stop
+    as soon as an expected marker arrives instead of waiting out `settle`.
+    """
+    data = b""
+    while True:
+        window = timeout if not data else settle
+        try:
+            chunk = await asyncio.wait_for(reader.read(4096), timeout=window)
+        except (asyncio.TimeoutError, TimeoutError):
+            break
+        if not chunk:
+            break
+        data += chunk
+        if until is not None and until in data:
+            break
+    return data
+
+
 class _DummyWriter:
     def __init__(self) -> None:
         self.buffer = bytearray()
@@ -5960,7 +5989,10 @@ def test_telnet_totp_fallback_stays_on_exact_ssid_and_challenges_email(
             await store.set_user_pref(call, "mfa_totp_secret", secret, now)
             await store.set_user_pref(call, "mfa_email_otp", "off", now)
 
-        monkeypatch.setattr(telnet_server_mod, "verify_totp", lambda _secret, _code: False)
+        async def _reject_totp(_store, _call, _secret, _code):
+            return False
+
+        monkeypatch.setattr(telnet_server_mod, "verify_totp_once", _reject_totp)
         try:
             await srv.start()
         except OSError:
@@ -6051,7 +6083,7 @@ def test_telnet_login_rejects_exact_ssid_locked_account(tmp_path) -> None:
             await asyncio.wait_for(reader.readuntil(b"login: "), timeout=2.0)
             writer.write(b"N9JR-10\r\n")
             await writer.drain()
-            output = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+            output = await _read_reply(reader, until=b"Account N9JR-10 is locked")
             assert b"Account N9JR-10 is locked" in output
             writer.close()
             await writer.wait_closed()
@@ -6387,7 +6419,7 @@ def test_telnet_login_denied_when_telnet_access_disabled(tmp_path) -> None:
             assert b"login:" in prompt
             writer.write(b"N0CALL\r\n")
             await writer.drain()
-            deny = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+            deny = await _read_reply(reader, until=b"Login not allowed via telnet")
             assert b"Login not allowed via telnet" in deny
             writer.close()
             await writer.wait_closed()
@@ -6943,7 +6975,7 @@ def test_maxconnect_enforced_on_login(tmp_path) -> None:
             assert b"login:" in p1
             w1.write(b"N0CALL\r\n")
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1, until=b"N0NODE-1>")
             assert b"Hello, N0CALL." in hello
             assert b"N0NODE-1>" in hello
 
@@ -6952,7 +6984,7 @@ def test_maxconnect_enforced_on_login(tmp_path) -> None:
             assert b"login:" in p2
             w2.write(b"N0CALL\r\n")
             await w2.drain()
-            deny = await asyncio.wait_for(r2.read(4096), timeout=2.0)
+            deny = await _read_reply(r2, until=b"Maximum allowed: 1")
             assert b"Too many connections for N0CALL" in deny
             assert b"Maximum allowed: 1" in deny
 
@@ -7049,7 +7081,7 @@ def test_telnet_login_prompts_for_password_when_required(tmp_path) -> None:
             assert b"password:" in pw
             w1.write(b"pw1\r\n")
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1, until=b"AI3I-15>")
             assert b"Welcome" in hello
             assert b"AI3I-15>" in hello
             w1.close()
@@ -7062,7 +7094,7 @@ def test_telnet_login_prompts_for_password_when_required(tmp_path) -> None:
             await asyncio.wait_for(r2.readuntil(b"password: "), timeout=2.0)
             w2.write(b"bad\r\n")
             await w2.drain()
-            deny = await asyncio.wait_for(r2.read(4096), timeout=2.0)
+            deny = await _read_reply(r2, until=b"Login failed")
             assert b"Login failed" in deny
             w2.close()
             await w2.wait_closed()
@@ -7106,7 +7138,7 @@ def test_telnet_bad_passwords_lock_account_until_sysop_unlock(tmp_path) -> None:
                 await asyncio.wait_for(reader.readuntil(b"password: "), timeout=2.0)
                 writer.write(b"bad-password\r\n")
                 await writer.drain()
-                deny = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+                deny = await _read_reply(reader, until=b"Login failed")
                 assert b"Login failed" in deny
                 writer.close()
                 await writer.wait_closed()
@@ -7118,7 +7150,7 @@ def test_telnet_bad_passwords_lock_account_until_sysop_unlock(tmp_path) -> None:
             await asyncio.wait_for(reader.readuntil(b"login: "), timeout=2.0)
             writer.write(b"N0CALL\r\n")
             await writer.drain()
-            locked = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+            locked = await _read_reply(reader)
             assert b"Account N0CALL is locked" in locked
             assert b"password:" not in locked
             writer.close()
@@ -7270,7 +7302,7 @@ def test_telnet_first_login_forces_password_creation(tmp_path) -> None:
             assert b"confirm password:" in confirm
             w1.write(b"pw1\r\n")
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1, until=b"Welcome")
             assert b"Password set for N0CALL." in hello
             assert b"Welcome" in hello
             saved = await store.get_user_pref("N0CALL", "password")
@@ -7286,7 +7318,7 @@ def test_telnet_first_login_forces_password_creation(tmp_path) -> None:
             await asyncio.wait_for(r2.readuntil(b"password: "), timeout=2.0)
             w2.write(b"pw1\r\n")
             await w2.drain()
-            hello2 = await asyncio.wait_for(r2.read(4096), timeout=2.0)
+            hello2 = await _read_reply(r2, until=b"Welcome")
             assert b"Welcome" in hello2
             w2.close()
             await w2.wait_closed()
@@ -7322,7 +7354,7 @@ def test_telnet_login_without_required_password_skips_first_time_password_setup(
             await asyncio.wait_for(r1.readuntil(b"login: "), timeout=2.0)
             w1.write(b"N0CALL\r\n")
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1)
             assert b"new password:" not in hello
             assert b"password:" not in hello
             assert b"Welcome" in hello
@@ -7611,7 +7643,7 @@ def test_telnet_registration_required_can_queue_registration_request(tmp_path) -
             otp = str(pending["code"])
             w1.write((otp + "\r\n").encode("ascii"))
             await w1.drain()
-            final = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            final = await _read_reply(r1, until=b"Registration request submitted for N1NEW.")
             assert b"Registration request submitted for N1NEW." in final
             req = await store.get_registration_request("N1NEW")
             assert req is not None
@@ -7902,7 +7934,7 @@ def test_telnet_password_prompt_stays_clean_for_raw_tcp_clients(tmp_path) -> Non
             assert b"\xff\xfb\x01" in pw
             w1.write(b"pw1\r\n")
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1)
             assert b"pw1" not in hello
             assert b"Welcome" in hello
             w1.close()
@@ -7948,7 +7980,7 @@ def test_telnet_password_prompt_negotiates_echo_for_telnet_clients(tmp_path) -> 
             assert pw.endswith(b"password: ")
             w1.write(b"pw1\r\n")
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1, until=b"Welcome")
             assert b"\xff\xfc\x01" in hello
             assert b"\xff\xfc\x03" in hello
             assert b"\xff\xfe\x03" in hello
@@ -8048,7 +8080,7 @@ def test_telnet_login_can_require_email_otp(tmp_path) -> None:
             assert sent and sent[0][0] == "n0call@example.test"
             w1.write((challenge.code + "\r\n").encode("ascii"))
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1, until=b"Welcome")
             assert b"Welcome" in hello
             w1.close()
             await w1.wait_closed()
@@ -8105,7 +8137,7 @@ def test_telnet_login_email_mfa_uses_base_call_email_for_ssid(tmp_path) -> None:
             challenge = next(iter(srv._mfa._challenges.values()))
             w1.write((challenge.code + "\r\n").encode("ascii"))
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1, until=b"Welcome")
             assert b"Welcome" in hello
             w1.close()
             await w1.wait_closed()
@@ -8155,7 +8187,7 @@ def test_telnet_login_can_use_totp_authenticator(tmp_path) -> None:
             assert b"authenticator code:" in prompt
             w1.write((totp_code("JBSWY3DPEHPK3PXP") + "\r\n").encode("ascii"))
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1, until=b"Welcome")
             assert b"Welcome" in hello
             w1.close()
             await w1.wait_closed()
@@ -8210,7 +8242,7 @@ def test_telnet_login_honors_per_user_mfa_override(tmp_path) -> None:
             challenge = next(iter(srv._mfa._challenges.values()))
             w1.write((challenge.code + "\r\n").encode("ascii"))
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1, until=b"Welcome")
             assert b"Welcome" in hello
             w1.close()
             await w1.wait_closed()
@@ -8223,7 +8255,7 @@ def test_telnet_login_honors_per_user_mfa_override(tmp_path) -> None:
             await asyncio.wait_for(r2.readuntil(b"password: "), timeout=2.0)
             w2.write(b"pw1\r\n")
             await w2.drain()
-            hello2 = await asyncio.wait_for(r2.read(4096), timeout=2.0)
+            hello2 = await _read_reply(r2, until=b"Welcome")
             assert b"Welcome" in hello2
             w2.close()
             await w2.wait_closed()
@@ -8272,7 +8304,7 @@ def test_telnet_login_requires_email_verification_for_unverified_user(tmp_path) 
             assert sent and sent[0][0] == "n0call@example.test"
             w1.write((challenge.code + "\r\n").encode("ascii"))
             await w1.drain()
-            hello = await asyncio.wait_for(r1.read(4096), timeout=2.0)
+            hello = await _read_reply(r1, until=b"Welcome")
             assert b"Email address verified for N0CALL." in hello
             assert b"Welcome" in hello
             assert await store.get_user_pref("N0CALL", "email_verified_epoch") is not None

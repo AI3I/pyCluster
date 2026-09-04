@@ -4194,7 +4194,7 @@ function fmtFreq(khz) {
   const truncated = Math.floor(khz * 10 + Number.EPSILON) / 10;
   return truncated.toFixed(1);
 }
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 const BAND_RANGES = [
   [0.1357,0.479,'LF/MF'],[1.8,2.0,'160m'],
   [3.5,4.0,'80m'],[5.33,5.407,'60m'],[7.0,7.3,'40m'],
@@ -4532,7 +4532,7 @@ function renderMiniRank(id, items, mapper) {
     li.className = 'mini-rank-item';
     li.innerHTML = `
       <span class="mini-rank-n">${i+1}</span>
-      <span class="mini-rank-call" title="${label}">${label}</span>
+      <span class="mini-rank-call" title="${esc(label)}">${esc(label)}</span>
       <div class="mini-rank-bar-w"><div class="mini-rank-bar" style="width:${pct}%"></div></div>
       <span class="mini-rank-ct">${count}</span>`;
     if (onClick) li.addEventListener('click', onClick);
@@ -5848,7 +5848,7 @@ function renderFilterPresets() {
   filterPresets.forEach(p => {
     const div = document.createElement('div');
     div.className = 'preset-item';
-    div.innerHTML = `<span class="preset-name" title="${p.name}">${p.name}</span><button class="preset-load">Load</button><button class="preset-del">✕</button>`;
+    div.innerHTML = `<span class="preset-name" title="${esc(p.name)}">${esc(p.name)}</span><button class="preset-load">Load</button><button class="preset-del">✕</button>`;
     div.querySelector('.preset-load').addEventListener('click', () => applyPreset(p));
     div.querySelector('.preset-del').addEventListener('click', () => deleteFilterPreset(p.name));
     el.appendChild(div);
