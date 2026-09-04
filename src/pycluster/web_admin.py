@@ -1104,6 +1104,46 @@ class WebAdminServer:
             "flap_window_secs": max(5, min(86400, _to_int(node_cfg.get("proto.threshold.flap_window_secs"), 300))),
         }
 
+    @staticmethod
+    def _py_conformance(
+        py: dict[str, object], *, connected: bool, profile: str, policy_reasons: dict[str, object]
+    ) -> dict[str, object]:
+        """Explain PY eligibility and negotiation without guessing remote policy."""
+        state = str(py.get("negotiation_state") or "not_identified")
+        identified = bool(py.get("identified"))
+        drops = {
+            str(key): int(value or 0)
+            for key, value in policy_reasons.items()
+            if str(key).startswith("py_") or "_py_" in str(key)
+               or str(key).startswith("invalid_py_")
+               or str(key).startswith("unbound_py_") or str(key).startswith("replayed_py_")
+               or str(key).startswith("stale_py_") or str(key).startswith("unsupported_py_")
+        }
+        if not connected:
+            verdict, reason = "offline", "Peer is not connected; negotiation requires a new link session."
+        elif not bool(py.get("local_enabled")):
+            verdict, reason = "disabled", "PY protocol is disabled on this node."
+        elif profile != "pycluster" and not identified:
+            verdict, reason = "ineligible", "Peer is not configured or positively identified as pyCluster."
+        elif state == "invalid_response":
+            verdict = "failed"
+            reason = f"Peer returned an invalid PY00 response: {py.get('handshake_error') or 'unknown error'}."
+        elif state == "hello_sent":
+            verdict, reason = "no-response", "PY00 was sent, but no compatible response was received."
+        elif state == "awaiting_py00":
+            verdict, reason = "pending", "Peer is identified as pyCluster; PY00 has not been sent in this session."
+        elif state in {"negotiated", "nodeinfo_received"}:
+            negotiated = {str(item) for item in (py.get("negotiated_capabilities") or [])}
+            if "session-binding" not in negotiated:
+                verdict, reason = "compatible", "PY v2 negotiated without session binding; rolling-upgrade compatibility is active."
+            elif state == "negotiated":
+                verdict, reason = "partial", "PY v2 and session binding negotiated; NODEINFO has not been received."
+            else:
+                verdict, reason = "pass", "PY v2, session binding, and NODEINFO are active for this session."
+        else:
+            verdict, reason = "pending", "Waiting for positive pyCluster identity and PY00 negotiation."
+        return {"verdict": verdict, "reason": reason, "rejection_total": sum(drops.values()), "rejections": drops}
+
     def _proto_state_for_peer(self, node_cfg: dict[str, str], peer_name: str, now_epoch: int) -> dict[str, object]:
         ptag = re.sub(r"[^a-z0-9_.-]", "_", peer_name.lower())
         pfx = f"proto.peer.{ptag}."
@@ -3347,7 +3387,10 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <h3>Known pyCluster Nodes</h3>
                 <div class="subtle">Direct peers identified as pyCluster by PC18, plus nodes learned through negotiated pyCluster metadata and topology exchange.</div>
               </div>
-              <button class="secondary" id="knownNodesReload" type="button" title="Reload the local known-node catalog">Reload</button>
+              <div class="actions">
+                <button class="secondary" id="knownNodesExport" type="button" title="Download the sanitized known-node and route catalog as JSON">Export JSON</button>
+                <button class="secondary" id="knownNodesReload" type="button" title="Reload the local known-node catalog">Reload</button>
+              </div>
             </div>
             <div class="tablewrap">
               <table class="known-node-table">
@@ -3929,6 +3972,13 @@ function fmtEpoch(epoch) {
   if (Number.isNaN(d.getTime())) return '-';
   return d.toISOString().replace('T', ' ').replace('.000Z', 'Z');
 }
+function fmtBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1048576).toFixed(1)} MiB`;
+}
 function esc(v) {
   return String(v ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 }
@@ -4136,6 +4186,17 @@ function setProtoPeerRows(peers) {
     const pc18 = String(proto.pc18_summary || proto.pc18_software || '').trim();
     const py = proto.py || {};
     const pyWarning = py.identity_warning || py.capability_warning || py.handshake_error || '';
+    const conformance = py.conformance || {};
+    const pyRx = Object.entries(row.rx_bytes_by_type || {}).filter(([type]) => String(type).startsWith('PY')).reduce((sum, [, value]) => sum + Number(value || 0), 0);
+    const pyTx = Object.entries(row.tx_bytes_by_type || {}).filter(([type]) => String(type).startsWith('PY')).reduce((sum, [, value]) => sum + Number(value || 0), 0);
+    const pyRxFrames = Object.entries(row.rx_by_type || {}).filter(([type]) => String(type).startsWith('PY')).reduce((sum, [, value]) => sum + Number(value || 0), 0);
+    const pyTxFrames = Object.entries(row.tx_by_type || {}).filter(([type]) => String(type).startsWith('PY')).reduce((sum, [, value]) => sum + Number(value || 0), 0);
+    const pyTraffic = py.identified || pyRx || pyTx
+      ? `<div class="mini">PY RX ${esc(String(pyRxFrames))} / ${esc(fmtBytes(pyRx))} • TX ${esc(String(pyTxFrames))} / ${esc(fmtBytes(pyTx))} • rejected ${esc(String(conformance.rejection_total || 0))}</div>`
+      : '';
+    const conformanceText = conformance.verdict
+      ? `<div class="mini"><strong>PY ${esc(conformance.verdict)}</strong> • ${esc(conformance.reason || '')}</div>`
+      : '';
     const linkText = link.summary || (row.connected ? 'connected' : 'down');
     const lastPc = row.last_pc_type || proto.last_pc_type || '-';
     return `<tr>
@@ -4143,7 +4204,7 @@ function setProtoPeerRows(peers) {
       <td>${esc(linkText)}</td>
       <td><span class="health ${esc(proto.health || 'unknown')}">${esc(proto.health || 'unknown')}</span></td>
       <td><strong>RX</strong> ${esc(fmtEpoch(row.last_rx_epoch || 0))}<div class="mini"><strong>TX</strong> ${esc(fmtEpoch(row.last_tx_epoch || 0))}</div></td>
-      <td><strong>${esc(lastPc)}</strong><div class="mini">${esc(pc18 || 'No version advertised')}</div>${pyWarning ? `<div class="mini warntext">${esc(pyWarning)}</div>` : ''}</td>
+      <td><strong>${esc(lastPc)}</strong><div class="mini">${esc(pc18 || 'No version advertised')}</div>${conformanceText}${pyTraffic}${pyWarning ? `<div class="mini warntext">${esc(pyWarning)}</div>` : ''}</td>
     </tr>`;
   }).join('');
 }
@@ -5106,6 +5167,22 @@ byId('knownNodesReload').onclick = async () => {
     say('Known pyCluster nodes refreshed.');
   } catch (err) {
     say('Known-node refresh failed: ' + errText(err), false);
+  }
+};
+byId('knownNodesExport').onclick = async () => {
+  try {
+    const payload = await j('/api/py-nodes/export');
+    const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], {type:'application/json'});
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `pycluster-topology-${String(payload.node_call || 'node').toLowerCase()}-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+    say('Known-node topology exported.');
+  } catch (err) {
+    say('Known-node export failed: ' + errText(err), false);
   }
 };
 byId('pySharingSave').onclick = async () => {
@@ -7187,6 +7264,30 @@ if (restoreWebSession()) {
                 }))
                 return
 
+            if path == "/api/py-nodes/export":
+                if method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                now_epoch = int(time.time())
+                await self.store.prune_expired_py_nodes(now_epoch)
+                nodes = await self.store.list_py_node_records(now_epoch)
+                routes: dict[str, list[dict[str, object]]] = {}
+                for row in nodes:
+                    call = str(row.get("node_call") or "")
+                    routes[call] = await self.store.list_py_node_routes(call, now_epoch)
+                await self._write_response(writer, 200, self._json({
+                    "format": "pycluster-topology-export",
+                    "format_version": 1,
+                    "generated_epoch": now_epoch,
+                    "node_call": self.config.node.node_call,
+                    "nodes": nodes,
+                    "routes": routes,
+                }))
+                return
+
             if path == "/api/py-notice":
                 if not self._is_authorized(headers):
                     await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
@@ -7341,6 +7442,14 @@ if (restoreWebSession()) {
                     observed_family = str(proto.get("pc18_family") or "").strip().lower()
                     if observed_family:
                         profile = normalize_profile(observed_family)
+                    py_state = proto.get("py")
+                    if isinstance(py_state, dict):
+                        py_state["conformance"] = self._py_conformance(
+                            py_state,
+                            connected=name in stats,
+                            profile=profile,
+                            policy_reasons=dict(st.get("policy_reasons") or {}),
+                        )
                     link_activity = self._link_activity_for_peer(st, now_epoch) if name in stats else {}
                     out.append(
                         {
@@ -7353,6 +7462,10 @@ if (restoreWebSession()) {
                             "last_pc_type": str(st.get("last_pc_type") or ""),
                             "rx_by_type": st.get("rx_by_type", {}),
                             "tx_by_type": st.get("tx_by_type", {}),
+                            "rx_bytes": int(st.get("rx_bytes", 0)),
+                            "tx_bytes": int(st.get("tx_bytes", 0)),
+                            "rx_bytes_by_type": st.get("rx_bytes_by_type", {}),
+                            "tx_bytes_by_type": st.get("tx_bytes_by_type", {}),
                             "policy_reasons": st.get("policy_reasons", {}),
                             "connected_epoch": int(st.get("connected_epoch", 0) or 0),
                             "last_rx_epoch": int(st.get("last_rx_epoch", 0) or 0),

@@ -173,6 +173,19 @@ Authenticated SysOps can inspect the durable local catalog through `GET /api/py-
 
 `GET /api/py-nodes/routes?call=NODE-CALL` returns the live bounded route set for one node and marks the materialized selection. The route-detail endpoint is authenticated and does not expose the route catalog on the public web surface.
 
+`GET /api/py-nodes/export` returns an authenticated, versioned JSON snapshot of
+the live known-node catalog and every retained route. It contains only the same
+bounded topology metadata available in Protocol Health and excludes peer
+transport addresses, credentials, tokens, user data, logs, and runtime
+configuration.
+
+The authenticated peer API exposes connection-session frame and byte counters
+by wire family. Protocol Health summarizes PY traffic and rejected-frame
+reasons and assigns an explicit conformance verdict such as `pass`, `partial`,
+`compatible`, `no-response`, `disabled`, `ineligible`, or `offline`. These
+diagnostics describe local evidence only: silence after PY00 is never claimed
+as proof that the remote operator disabled PY.
+
 The public cluster endpoint publishes only live local links and unexpired, operator-enabled PY topology records. Saved/down peer configuration and old node-user login history remain private to the SysOp interface and are not presented as current network membership.
 
 The SysOp Known pyCluster Nodes table also merges direct peers positively

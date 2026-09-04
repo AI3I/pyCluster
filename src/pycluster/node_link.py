@@ -36,6 +36,10 @@ class LinkPeer:
     last_pc_type: str | None = None
     rx_by_type: Counter[str] = field(default_factory=Counter)
     tx_by_type: Counter[str] = field(default_factory=Counter)
+    rx_bytes: int = 0
+    tx_bytes: int = 0
+    rx_bytes_by_type: Counter[str] = field(default_factory=Counter)
+    tx_bytes_by_type: Counter[str] = field(default_factory=Counter)
     py_rx_window: deque[tuple[float, int]] = field(default_factory=deque)
     py_tx_window: deque[tuple[float, int]] = field(default_factory=deque)
     py_rx_window_bytes: int = 0
@@ -254,9 +258,11 @@ class NodeLinkEngine:
                 pass
             raise
         peer.sent_frames += 1
+        peer.tx_bytes += frame_size
         peer.last_tx_epoch = int(datetime.now(timezone.utc).timestamp())
         peer.last_pc_type = frame.pc_type
         peer.tx_by_type[frame.pc_type] += 1
+        peer.tx_bytes_by_type[frame.pc_type] += frame_size
         return True
 
     async def peer_names(self) -> list[str]:
@@ -329,6 +335,10 @@ class NodeLinkEngine:
                 "allowed_types": sorted(allowed_types_for_profile(p.profile)),
                 "rx_by_type": dict(p.rx_by_type),
                 "tx_by_type": dict(p.tx_by_type),
+                "rx_bytes": p.rx_bytes,
+                "tx_bytes": p.tx_bytes,
+                "rx_bytes_by_type": dict(p.rx_bytes_by_type),
+                "tx_bytes_by_type": dict(p.tx_bytes_by_type),
             }
         return out
 
@@ -391,9 +401,11 @@ class NodeLinkEngine:
                     continue
 
                 peer.parsed_frames += 1
+                peer.rx_bytes += len(text.encode("utf-8", errors="replace"))
                 peer.last_rx_epoch = int(datetime.now(timezone.utc).timestamp())
                 peer.last_pc_type = frame.pc_type
                 peer.rx_by_type[frame.pc_type] += 1
+                peer.rx_bytes_by_type[frame.pc_type] += len(text.encode("utf-8", errors="replace"))
 
                 # Attempt typed decode for known families; None for others.
                 typed = decode_typed_from_wire(frame)

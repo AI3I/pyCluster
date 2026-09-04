@@ -423,6 +423,12 @@ Select a route count to inspect the selected and alternate live routes, includin
 their learned-from peer, source, confidence, hop count, sequence, last-seen time,
 and lease expiry. This detail is available only to authenticated System Operators.
 
+Peer State also reports session-scoped PY receive/transmit byte totals,
+rejected-frame counts, and a conformance verdict explaining the current
+negotiation outcome. `Export JSON` downloads a sanitized, versioned snapshot of
+the live known-node catalog and retained routes for troubleshooting; it does
+not include transport addresses, credentials, tokens, users, or configuration.
+
 Lists local, directly observed, and relayed pyCluster node records with version, location, provenance, services, and freshness. These records are reported topology observations, not a central registry.
 
 #### Protocol Alerts
