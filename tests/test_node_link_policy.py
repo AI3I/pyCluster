@@ -61,6 +61,27 @@ def test_py_frames_are_limited_to_pycluster_profile() -> None:
         assert pycluster_conn.sent == ["PY00^2^HELLO^eyJub2RlX2NhbGwiOiJBSTNJLTkwIn0"]
         stats = await eng.stats()
         assert stats["spider"]["policy_reasons"] == {"profile_tx_block": 1}
+        expected_bytes = len(pycluster_conn.sent[0].encode("utf-8"))
+        assert stats["pycluster"]["tx_bytes"] == expected_bytes
+        assert stats["pycluster"]["tx_bytes_by_type"] == {"PY00": expected_bytes}
+
+    asyncio.run(run())
+
+
+def test_received_byte_counters_are_scoped_by_frame_type() -> None:
+    async def run() -> None:
+        eng = NodeLinkEngine(py_protocol_enabled=True)
+        conn = _DummyConn()
+        lines = ["PY99^error", "PC20^AI3I-90^", None]
+        conn.lines = list(lines)
+        peer = LinkPeer(name="AI3I-90", conn=conn, inbound=False, profile="pycluster")
+        eng._peers[peer.name] = peer
+
+        await eng._peer_reader(peer)
+
+        assert peer.rx_bytes == sum(len(line.encode("utf-8")) for line in lines if line)
+        assert peer.rx_bytes_by_type["PY99"] == len(lines[0].encode("utf-8"))
+        assert peer.rx_bytes_by_type["PC20"] == len(lines[1].encode("utf-8"))
 
     asyncio.run(run())
 

@@ -1024,6 +1024,32 @@ def test_proto_state_reports_current_session_py00_without_reply(tmp_path) -> Non
         asyncio.run(store.close())
 
 
+def test_py_conformance_explains_negotiation_states() -> None:
+    evaluate = WebAdminServer._py_conformance
+    assert evaluate(
+        {"local_enabled": True, "identified": True, "negotiation_state": "hello_sent"},
+        connected=True, profile="pycluster", policy_reasons={},
+    )["verdict"] == "no-response"
+    passed = evaluate(
+        {
+            "local_enabled": True,
+            "identified": True,
+            "negotiation_state": "nodeinfo_received",
+            "negotiated_capabilities": ["node-info", "session-binding"],
+        },
+        connected=True,
+        profile="pycluster",
+        policy_reasons={"replayed_py_session_frame": 2, "profile_rx_block": 7},
+    )
+    assert passed["verdict"] == "pass"
+    assert passed["rejection_total"] == 2
+    assert passed["rejections"] == {"replayed_py_session_frame": 2}
+    assert evaluate(
+        {"local_enabled": True, "identified": False, "negotiation_state": "not_identified"},
+        connected=True, profile="dxspider", policy_reasons={},
+    )["verdict"] == "ineligible"
+
+
 def test_api_spots_uses_advisory_when_cty_data_is_unavailable(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_spot_review_advisory.db")
@@ -3078,6 +3104,22 @@ def test_web_py_nodes_endpoint_is_authorized_and_prunes_expired_records(tmp_path
             assert route_payload["count"] == 1
             assert route_payload["routes"][0]["selected"] is True
             assert route_payload["routes"][0]["learned_from"] == "AI3I-92"
+            code, _, _ = await _http_request(srv, "GET", "/api/py-nodes/export")
+            assert code == 401
+            code, _, body = await _http_request(
+                srv, "GET", "/api/py-nodes/export", headers={"X-Admin-Token": "adm"}
+            )
+            assert code == 200
+            exported = json.loads(body.decode("utf-8"))
+            assert exported["format"] == "pycluster-topology-export"
+            assert exported["format_version"] == 1
+            assert exported["node_call"] == cfg.node.node_call
+            assert [row["node_call"] for row in exported["nodes"]] == ["AI3I-92"]
+            assert exported["routes"]["AI3I-92"][0]["selected"] is True
+            serialized = json.dumps(exported).lower()
+            assert "password" not in serialized
+            assert "token" not in serialized
+            assert "127.0.0.1" not in serialized
             assert await store.get_py_node_record("AI3I-93") is None
         finally:
             await store.close()
