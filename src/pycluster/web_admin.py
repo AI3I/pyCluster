@@ -2618,18 +2618,21 @@ table{
   white-space:normal;
 }
 .known-node-table{
-  width:max-content;
+  width:100%;
   min-width:100%;
+  table-layout:fixed;
 }
 .known-node-table th,
 .known-node-table td{
-  white-space:nowrap;
-}
-.known-node-table td:nth-child(4),
-.known-node-table td:nth-child(6),
-.known-node-table td:nth-child(7){
   white-space:normal;
+  overflow-wrap:anywhere;
 }
+.known-node-table th:nth-child(1){width:16%}
+.known-node-table th:nth-child(2){width:18%}
+.known-node-table th:nth-child(3){width:18%}
+.known-node-table th:nth-child(4){width:32%}
+.known-node-table th:nth-child(5){width:16%}
+.topology-tablewrap{overflow-x:hidden}
 th,td{
   padding:10px 11px;
   border-bottom:1px solid var(--table-border);
@@ -2780,6 +2783,29 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   input,textarea,select{font-size:16px}
   .tablewrap table{min-width:720px}
   .tablewrap.compact table{min-width:640px}
+  .tablewrap .known-node-table{min-width:100%}
+  .known-node-table thead{display:none}
+  .known-node-table,
+  .known-node-table tbody,
+  .known-node-table tr{display:block}
+  .known-node-table tr{padding:8px 0;border-bottom:1px solid var(--table-border)}
+  .known-node-table td{
+    display:grid;
+    grid-template-columns:92px minmax(0,1fr);
+    gap:8px;
+    width:100%;
+    padding:5px 8px;
+    border-bottom:0;
+  }
+  .known-node-table td::before{
+    content:attr(data-label);
+    color:var(--header-subtle);
+    font-size:10px;
+    font-weight:700;
+    text-transform:uppercase;
+  }
+  .known-node-table td[colspan]{display:block}
+  .known-node-table td[colspan]::before{content:none}
   .users-statusrow button{flex:1 1 100%}
 }
 @media (max-width: 560px){
@@ -2843,6 +2869,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <a href="#users" data-view="users"><strong>Users</strong><span>Registry</span></a>
             <a href="#links" data-view="links"><strong>Peers and Links</strong><span>Connectivity</span></a>
             <a href="#protocol" data-view="protocol"><strong>Protocol Health</strong><span>State</span></a>
+            <a href="#topology" data-view="topology"><strong>Topology</strong><span>Known Nodes</span></a>
             <a href="#publish" data-view="publish"><strong>Operator Tools</strong><span>Posting</span></a>
             <a href="#telemetry" data-view="telemetry"><strong>Telemetry</strong><span>Runtime</span></a>
             <a href="#taxonomy" data-view="taxonomy"><strong>Taxonomy</strong><span>Public Web</span></a>
@@ -3358,41 +3385,6 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               </table>
             </div>
           </section>
-          <section style="margin-top:14px">
-            <div class="users-browser-topbar">
-              <div>
-                <h3>Known pyCluster Nodes</h3>
-                <div class="subtle">Direct peers identified as pyCluster by PC18, plus nodes learned through negotiated pyCluster metadata and topology exchange.</div>
-              </div>
-              <div class="actions">
-                <button class="secondary" id="knownNodesExport" type="button" title="Download the sanitized known-node and route catalog as JSON">Export JSON</button>
-                <button class="secondary" id="knownNodesReload" type="button" title="Reload the local known-node catalog">Reload</button>
-              </div>
-            </div>
-            <div class="tablewrap">
-              <table class="known-node-table">
-                <thead><tr><th>Node</th><th>Reach</th><th>Version</th><th>Location</th><th>Learned</th><th>Services</th><th>Freshness</th></tr></thead>
-                <tbody id="knownNodeRows"><tr><td colspan="7">Loading known pyCluster nodes...</td></tr></tbody>
-              </table>
-            </div>
-          </section>
-          <div class="user-modal hidden" id="pyRouteModal" role="dialog" aria-modal="true" aria-labelledby="pyRouteTitle">
-            <div class="users-editor-side user-modal-panel">
-              <section>
-                <div class="user-modal-head">
-                  <h3 id="pyRouteTitle">Topology Routes</h3>
-                  <button class="secondary" id="closePyRouteModal" type="button" title="Close topology route details">Close</button>
-                </div>
-                <div class="subtle" id="pyRouteSummary">Live routes retained for this reported node.</div>
-                <div class="tablewrap" style="margin-top:12px">
-                  <table>
-                    <thead><tr><th>Selection</th><th>Learned From</th><th>Confidence</th><th>Hops</th><th>Sequence</th><th>Last Seen</th><th>Expires</th></tr></thead>
-                    <tbody id="pyRouteRows"><tr><td colspan="7">Select a known node to inspect routes.</td></tr></tbody>
-                  </table>
-                </div>
-              </section>
-            </div>
-          </div>
           <div class="split" style="margin-top:14px">
             <section>
               <h3>Protocol Alerts</h3>
@@ -3416,6 +3408,44 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <table>
                   <thead><tr><th>Peer</th><th>When</th><th>Key</th><th>From</th><th>To</th></tr></thead>
                   <tbody id="histRows"><tr><td colspan="5">Loading history...</td></tr></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel view-section" id="topology">
+        <header>
+          <div>
+            <h2>Known pyCluster Nodes</h2>
+            <div class="subtle">Direct pyCluster peers and nodes learned through negotiated topology exchange.</div>
+          </div>
+          <div class="actions">
+            <button class="secondary" id="knownNodesExport" type="button" title="Download the sanitized known-node and route catalog as JSON">Export JSON</button>
+            <button class="secondary" id="knownNodesReload" type="button" title="Reload the local known-node catalog">Reload</button>
+          </div>
+        </header>
+        <div class="body">
+          <div class="tablewrap topology-tablewrap">
+            <table class="known-node-table">
+              <thead><tr><th>Node</th><th>Identity</th><th>Location</th><th>Path &amp; Services</th><th>Freshness</th></tr></thead>
+              <tbody id="knownNodeRows"><tr><td colspan="5">Loading known pyCluster nodes...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="user-modal hidden" id="pyRouteModal" role="dialog" aria-modal="true" aria-labelledby="pyRouteTitle">
+          <div class="users-editor-side user-modal-panel">
+            <section>
+              <div class="user-modal-head">
+                <h3 id="pyRouteTitle">Topology Routes</h3>
+                <button class="secondary" id="closePyRouteModal" type="button" title="Close topology route details">Close</button>
+              </div>
+              <div class="subtle" id="pyRouteSummary">Live routes retained for this reported node.</div>
+              <div class="tablewrap" style="margin-top:12px">
+                <table>
+                  <thead><tr><th>Selection</th><th>Learned From</th><th>Confidence</th><th>Hops</th><th>Sequence</th><th>Last Seen</th><th>Expires</th></tr></thead>
+                  <tbody id="pyRouteRows"><tr><td colspan="7">Select a known node to inspect routes.</td></tr></tbody>
                 </table>
               </div>
             </section>
@@ -4243,7 +4273,7 @@ function setKnownNodeRows(payload, peers) {
   });
   rows.sort((a, b) => String(a.node_call || '').localeCompare(String(b.node_call || '')));
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="7">No pyCluster nodes are known yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="5">No pyCluster nodes are known yet.</td></tr>';
     return;
   }
   body.innerHTML = rows.map((row) => {
@@ -4275,13 +4305,11 @@ function setKnownNodeRows(payload, peers) {
       ? `<a href="${esc(publicUrl)}" target="_blank" rel="noopener noreferrer"><strong>${esc(call)}</strong></a>`
       : `<strong>${esc(call)}</strong>`;
     return `<tr>
-      <td>${callText}<div class="mini">${esc(String(row.node_id || ''))}</div></td>
-      <td><span class="tag">${esc(confidence)}</span></td>
-      <td>${esc(row.software_version || '-')}<div class="mini">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div></td>
-      <td>${esc(location)}</td>
-      <td>${esc(learned)}<div class="mini">${row.node_id ? `<button class="secondary py-route-detail" type="button" data-call="${esc(call)}" title="Inspect retained topology routes">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}</button>` : 'No retained routes'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div></td>
-      <td>${esc(services)}${serviceMeta}</td>
-      <td>Seen ${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
+      <td data-label="Node">${callText}<div class="mini">${esc(String(row.node_id || ''))}</div></td>
+      <td data-label="Identity"><span class="tag">${esc(confidence)}</span><div>${esc(row.software_version || '-')}</div><div class="mini">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div></td>
+      <td data-label="Location">${esc(location)}</td>
+      <td data-label="Path &amp; Services">${esc(learned)}<div class="mini">${row.node_id ? `<button class="secondary py-route-detail" type="button" data-call="${esc(call)}" title="Inspect retained topology routes">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}</button>` : 'No retained routes'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div><div class="mini"><strong>Services</strong> ${esc(services)}</div>${serviceMeta}</td>
+      <td data-label="Freshness">Seen ${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
     </tr>`;
   }).join('');
   body.querySelectorAll('.py-route-detail').forEach((button) => {

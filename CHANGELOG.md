@@ -4,6 +4,12 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+## 1.0.19 - 2026-09-05
+
+- Widen the public-web sidebar slightly so all five navigation labels render completely without changing the full-width mobile layout.
+- Give the public-web Popups toggle the same base, hover, active, and inactive styling as the Sidebar toggle.
+- Move Known pyCluster Nodes from Protocol Health to a dedicated Topology view and consolidate its catalog into five wrapping, fixed-layout columns to avoid horizontal page scrolling.
+
 ## 1.0.18 - 2026-09-05
 
 - Admit private `PYnn` frames on established inbound and outbound telnet peer transports; 1.0.17 incorrectly admitted only `PCnn` lines, silently preventing PY00 negotiation between otherwise healthy pyCluster peers.

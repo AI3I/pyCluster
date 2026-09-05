@@ -14,7 +14,7 @@
 /* ================================================================ theme variables */
 :root {
   color-scheme: dark;
-  --sidebar-width: 320px;
+  --sidebar-width: 336px;
   --sidebar-toast-offset: calc(var(--sidebar-width) + 28px);
   --bg-body:        #090d13;
   --bg-header:      linear-gradient(160deg, #0d1420 0%, #111827 60%, #0a1628 100%);
@@ -245,18 +245,20 @@ html.light #map .leaflet-control-attribution { background:rgba(255,255,255,.88);
   transition:color .15s,border-color .15s,background .15s;
 }
 #map-toggle:hover { color:var(--text-primary); border-color:var(--accent); background:var(--row-hover); }
-#sidebar-toggle {
+#sidebar-toggle,
+#toast-toggle {
   border:1px solid var(--border-pill); background:var(--bg-pill); color:var(--text-secondary);
   border-radius:999px; min-width:116px; height:34px; padding:0 14px;
   cursor:pointer; flex-shrink:0; font:700 0.72rem/1 'Exo',system-ui,Arial,sans-serif;
   letter-spacing:.08em; text-transform:uppercase;
   transition:background .2s,border-color .2s,color .2s;
 }
-#sidebar-toggle:hover { background:var(--row-hover); border-color:var(--accent); color:var(--accent); }
+#sidebar-toggle:hover,
+#toast-toggle:hover { background:var(--row-hover); border-color:var(--accent); color:var(--accent); }
 
 /* ================================================================ sidebar */
 #sidebar {
-  width:320px; flex-shrink:0; background:var(--bg-filters);
+  width:336px; flex-shrink:0; background:var(--bg-filters);
   border-left:1px solid var(--border-main); overflow-y:auto;
   display:flex; flex-direction:column; gap:10px; padding:10px 12px;
 }

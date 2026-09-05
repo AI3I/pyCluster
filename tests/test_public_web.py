@@ -45,6 +45,11 @@ def _write_wpxloc(tmp_path: Path) -> str:
 
 def test_public_web_static_uses_backend_kp_endpoint() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    assert "--sidebar-width: 336px;" in text
+    assert "--sidebar-toast-offset: calc(var(--sidebar-width) + 28px);" in text
+    assert "width:336px; flex-shrink:0;" in text
+    assert "body.sidebar-hidden {\n  --sidebar-toast-offset: 28px;" in text
+    assert "right:var(--sidebar-toast-offset);" in text
     assert "const KP     = '/api/kp';" in text
     assert "fetch(KP)" in text
     assert "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json" not in text
@@ -719,6 +724,8 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert ".footer-controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));" in text
     assert '<span class="footer-control-label">Popups</span>' in text
     assert '<span class="footer-control-label">Sidebar</span>' in text
+    assert "#sidebar-toggle,\n#toast-toggle {" in text
+    assert "#sidebar-toggle:hover,\n#toast-toggle:hover" in text
     assert "Hide Popups" not in text and "Show Popups" not in text
     assert "Hide Sidebar" not in text and "Show Sidebar" not in text
     assert "Hide the sidebar" in text and "Show the sidebar" in text

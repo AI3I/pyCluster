@@ -441,7 +441,7 @@ def test_web_admin_static_omits_location_detail_field() -> None:
 
 def test_public_web_static_offsets_toasts_clear_of_sidebar() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
-    assert "--sidebar-width: 320px;" in text
+    assert "--sidebar-width: 336px;" in text
     assert "--sidebar-toast-offset: calc(var(--sidebar-width) + 28px);" in text
     assert "right:var(--sidebar-toast-offset);" in text
     assert "bottom:100px;" in text
@@ -3262,13 +3262,18 @@ def test_web_admin_contains_py_topology_and_notice_controls() -> None:
     node_settings = text.index('id="node-group-pyprotocol"')
     maintenance = text.index('id="node-group-maintenance"')
     protocol_health = text.index('id="protocol"')
+    topology = text.index('id="topology"')
     assert node_settings < text.index('id="pyEnabled"') < maintenance
     assert node_settings < text.index('id="pyNoticeShare"') < maintenance
-    assert protocol_health < text.index('id="knownNodeRows"')
+    assert protocol_health < topology < text.index('id="knownNodeRows"')
+    assert 'data-view="topology"' in text
+    assert '<th>Node</th><th>Identity</th><th>Location</th><th>Path &amp; Services</th><th>Freshness</th>' in text
+    assert '.topology-tablewrap{overflow-x:hidden}' in text
+    assert 'data-label="Path &amp; Services"' in text
     assert 'id="pyShareNotices"' not in text
     assert text.index('id="saveNodeMaintenance"') < text.index('id="runCleanup"')
     assert "target === 'pyprotocol' || target === 'maintenance'" in text
-    assert "Direct peers identified as pyCluster by PC18" in text
+    assert "Direct pyCluster peers and nodes learned through negotiated topology exchange" in text
     assert "PC18 identified; PY00 not sent yet" in text
     assert "PC18 identified; PY disabled locally" in text
     assert "PY00 sent; no compatible response received" in text
