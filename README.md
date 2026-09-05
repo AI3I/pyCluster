@@ -217,8 +217,8 @@ a consistent SQLite snapshot, or a complete offline lab-import archive. See
 
 The installer seeds a one-time `SYSOP` account and writes its credentials to
 `/root/pycluster-initial-sysop.txt`. The default configuration starts the node,
-but its example `N0CALL-1` identity must be replaced under **Node Settings >
-General** before the node is treated as production-ready.
+but its example `N0CALL-1` identity must be replaced under
+**Node Settings > General** before the node is treated as production-ready.
 
 Interactive installs now offer to run `deploy/setup-nginx.sh` for you. That flow asks for:
 
