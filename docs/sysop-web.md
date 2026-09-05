@@ -29,6 +29,7 @@ The console is organized into these main views:
 - `Users`
 - `Peers and Links`
 - `Protocol Health`
+- `Topology`
 - `Operator Tools`
 - `Telemetry`
 - `Taxonomy`
@@ -169,7 +170,7 @@ This tab controls the optional private PY protocol used only between authenticat
 - the shared metadata preview
 - structured network-notice sharing
 
-The controls are local policy settings. Existing pyCluster links must reconnect to negotiate newly enabled capabilities. Live negotiation state, alerts, and the Known pyCluster Nodes catalog remain under `Protocol Health`.
+The controls are local policy settings. Existing pyCluster links must reconnect to negotiate newly enabled capabilities. Live negotiation state and alerts remain under `Protocol Health`; the known-node catalog and route provenance are under `Topology`.
 
 ### Maintenance
 
@@ -390,7 +391,48 @@ This view focuses on live peer state, negotiated protocol metadata, alerting, an
 
 Shows link state, health, activity, and negotiated protocol detail for each peer.
 
-#### Known pyCluster Nodes
+Peer State also reports session-scoped PY receive/transmit byte totals,
+rejected-frame counts, and a conformance verdict explaining the current
+negotiation outcome.
+
+#### Protocol Alerts
+
+Columns:
+
+- `Peer`
+- `Health`
+- `Age`
+- `Flap`
+- `Status`
+
+#### Policy Drops
+
+Columns:
+
+- `Peer`
+- `Total`
+- `Loop Drops`
+- `Reasons`
+
+#### Protocol History
+
+Columns:
+
+- `Peer`
+- `When`
+- `Key`
+- `From`
+- `To`
+
+This area is the main operator view for peer health and protocol instability.
+
+## Topology
+
+### Known pyCluster Nodes
+
+The dedicated Topology view uses five wrapping columns: node, identity,
+location, path and services, and freshness. On narrow screens each node becomes
+a labeled stacked record instead of forcing the console to scroll horizontally.
 
 This table includes two levels of knowledge:
 
@@ -423,44 +465,11 @@ Select a route count to inspect the selected and alternate live routes, includin
 their learned-from peer, source, confidence, hop count, sequence, last-seen time,
 and lease expiry. This detail is available only to authenticated System Operators.
 
-Peer State also reports session-scoped PY receive/transmit byte totals,
-rejected-frame counts, and a conformance verdict explaining the current
-negotiation outcome. `Export JSON` downloads a sanitized, versioned snapshot of
+`Export JSON` downloads a sanitized, versioned snapshot of
 the live known-node catalog and retained routes for troubleshooting; it does
 not include transport addresses, credentials, tokens, users, or configuration.
 
 Lists local, directly observed, and relayed pyCluster node records with version, location, provenance, services, and freshness. These records are reported topology observations, not a central registry.
-
-#### Protocol Alerts
-
-Columns:
-
-- `Peer`
-- `Health`
-- `Age`
-- `Flap`
-- `Status`
-
-#### Policy Drops
-
-Columns:
-
-- `Peer`
-- `Total`
-- `Loop Drops`
-- `Reasons`
-
-#### Protocol History
-
-Columns:
-
-- `Peer`
-- `When`
-- `Key`
-- `From`
-- `To`
-
-This area is the main operator view for peer health and protocol instability.
 
 ## Operator Tools
 
