@@ -154,8 +154,8 @@ During install and repair, pyCluster now prints the bootstrap `SYSOP` credential
 
 The default runtime `pycluster.toml` is sufficient to start both services and
 complete the first `SYSOP` login. It intentionally begins with example node
-identity values such as `N0CALL-1`. After that first login, open **Node Settings
-> General**, replace the example callsign, owner, QTH, locator, support contact,
+identity values such as `N0CALL-1`. After that first login, open
+**Node Settings > General**, replace the example callsign, owner, QTH, locator, support contact,
 and public URL as applicable, then save. The System Operator console writes
 host-specific values to `pycluster.local.toml`, which is layered over the base
 file and preserved across upgrades. An installation is operational before this
