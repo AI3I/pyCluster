@@ -301,7 +301,7 @@ Filters are useful when:
 - you want entity-aware spot filtering by CQ zone or DXCC entity name/prefix
 - you want spotter-based filtering so `sh/mydx` reflects spots posted from places you can reasonably use
 
-RBN live delivery is opt-in for telnet users. Run `set/rbn` when you want RBN/Skimmer reports in your live stream, and `unset/rbn` to turn them off. `show/rbn` remains available for recent RBN history even when live delivery is off.
+RBN live delivery is opt-in per user. Run `set/rbn` or `unset/rbn` from telnet, or use **Edit Profile > Receive RBN spots** on the public web interface. Both controls update the same account preference. The web option is unavailable when the System Operator has disabled the node feed or denied that account web RBN access. `show/rbn` remains available for recent RBN history even when live delivery is off.
 
 `accept/rbn` and `reject/rbn` are separate RBN filter-family commands. For example, `accept/rbn 1 call N9JR` allows only RBN/Skimmer spots whose spotted DX call matches `N9JR`; it does not affect ordinary human-posted spots. `reject/rbn 2` remains a shorthand for rejecting all RBN spots in slot 2.
 

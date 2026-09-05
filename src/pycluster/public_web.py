@@ -762,6 +762,12 @@ class PublicWebServer:
             "profile_mfa_email_cancelled": "Email MFA verification cancelled.",
             "profile_mfa_authenticator_prompt": "Enter your authenticator code:",
             "profile_mfa_enter_code": "Enter the MFA code first.",
+            "profile_rbn_label": "RBN Spots",
+            "profile_rbn_subscribe": "Receive RBN spots",
+            "profile_rbn_available": "This preference is shared with the telnet set/rbn and unset/rbn commands.",
+            "profile_rbn_node_disabled": "The System Operator has not enabled an RBN feed on this node.",
+            "profile_rbn_access_denied": "RBN web access is not enabled for this account.",
+            "profile_rbn_unavailable": "RBN access is unavailable.",
             "register_required_fields": "Callsign, email, and password are required.",
             "register_password_mismatch": "Passwords do not match.",
             "register_sending_verification": "Sending verification code...",
@@ -1295,6 +1301,8 @@ class PublicWebServer:
         reg = await self.store.get_user_registry(call)
         row = dict(reg) if reg is not None else {}
         privilege, _blocked = await self._access_subject(call)
+        rbn_access_allowed = await self._access_allowed(call, "web", "rbn")
+        rbn_pref = str(await self.store.get_user_pref(call.upper(), "rbn") or "").strip().lower()
         return {
             "name": str(row.get("display_name") or "").strip(),
             "qth": str(row.get("qth") or "").strip(),
@@ -1304,6 +1312,12 @@ class PublicWebServer:
             "mfa": await self._mfa_snapshot(call),
             "watch_seed": await self._watch_seed_for_call(call),
             "is_sysop": privilege in {"sysop", "admin"},
+            "rbn": {
+                "subscribed": rbn_pref in {"1", "on", "true", "yes"},
+                "available": bool(self.config.rbn.enabled and rbn_access_allowed),
+                "node_enabled": bool(self.config.rbn.enabled),
+                "access_allowed": bool(rbn_access_allowed),
+            },
         }
 
     def _sanitize_named_presets(self, value: object, *, max_items: int = 40) -> list[dict[str, object]]:
@@ -2544,6 +2558,16 @@ class PublicWebServer:
                     await self._write_response(writer, 400, self._json({"error": "valid email required"}))
                     return
                 homenode = normalize_call(str(payload.get("homenode", "")).strip())[:16]
+                subscribe_rbn = payload.get("rbn_subscribed") is True
+                if "rbn_subscribed" in payload and subscribe_rbn and not (
+                    self.config.rbn.enabled and await self._access_allowed(call, "web", "rbn")
+                ):
+                    await self._write_response(
+                        writer,
+                        403,
+                        self._json({"error": self._public_ui_strings()["profile_rbn_unavailable"]}),
+                    )
+                    return
                 now = int(time.time())
                 qra = extract_locator(qra)[:16] if qra else ""
                 await self.store.upsert_user_registry(
@@ -2558,6 +2582,8 @@ class PublicWebServer:
                     await self.store.set_user_pref(call, "homenode", homenode, now)
                 else:
                     await self.store.delete_user_pref(call, "homenode")
+                if "rbn_subscribed" in payload:
+                    await self.store.set_user_pref(call, "rbn", "on" if subscribe_rbn else "off", now)
                 self._audit("user", f"{call} updated public profile")
                 await self._write_response(
                     writer,
