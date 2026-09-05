@@ -152,25 +152,23 @@ Operator-facing browser console.
 
 ## 🚀 Quick Start
 
-Get the code with SSH:
+For a production host, clone the public repository as root so the source used
+by the privileged upgrade worker is not writable by the network-facing service
+account:
 
 ```bash
-cd /usr/src
-git clone git@github.com:AI3I/pyCluster.git
-cd pyCluster
-git fetch --tags --force
-git checkout "$(git tag --sort=-v:refname | head -n 1)"
+sudo git clone https://github.com/AI3I/pyCluster.git /usr/src/pyCluster
+cd /usr/src/pyCluster
+LATEST_TAG="$(sudo git -C /usr/src/pyCluster tag --sort=-v:refname | head -n 1)"
+sudo git -C /usr/src/pyCluster checkout "$LATEST_TAG"
 ```
 
-Or with HTTPS:
-
-```bash
-cd /usr/src
-git clone https://github.com/AI3I/pyCluster.git
-cd pyCluster
-git fetch --tags --force
-git checkout "$(git tag --sort=-v:refname | head -n 1)"
-```
+Run production installation and maintenance from the normal human
+administrator account using `sudo`. Never grant the generated `pycluster`
+service account sudo access or personal GitHub credentials.
+`/opt/pyCluster` may be used instead when it is likewise root-owned and the
+installer is run from that checkout; user-home development checkouts are not
+accepted by the privileged web upgrader.
 
 Install and upgrade production nodes from release tags. The `main` branch is active
 development and may contain incomplete work for the next version; do not deploy it
@@ -178,8 +176,10 @@ by routinely pulling the latest commit. Update an existing source checkout to th
 latest release tag with:
 
 ```bash
-git fetch --tags --force
-git checkout "$(git tag --sort=-v:refname | head -n 1)"
+cd /usr/src/pyCluster
+sudo git fetch --tags --force
+LATEST_TAG="$(sudo git tag --sort=-v:refname | head -n 1)"
+sudo git checkout "$LATEST_TAG"
 ```
 
 For production-style installs, start from a clean host. Do not treat pyCluster as a sidecar package to be dropped into an already crowded server with other unrelated products.
@@ -259,8 +259,10 @@ Typical deployed layout:
 Upgrade an existing deployment from the latest release tag:
 
 ```bash
-git fetch --tags --force
-git checkout "$(git tag --sort=-v:refname | head -n 1)"
+cd /usr/src/pyCluster
+sudo git fetch --tags --force
+LATEST_TAG="$(sudo git tag --sort=-v:refname | head -n 1)"
+sudo git checkout "$LATEST_TAG"
 sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
