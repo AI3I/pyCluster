@@ -202,7 +202,7 @@ Startup commands run after login and before the final prompt. Their output is li
 
 RBN live delivery is off for telnet users by default. Use `set/rbn` to opt in to live RBN/Skimmer reports and `unset/rbn` to stop them. `show/rbn` remains available for recent summarized RBN history.
 
-Logged-in public web spot views use the same database-backed RBN preference and filter state: `unset/rbn` hides RBN/Skimmer spots there as well, while `set/rbn` plus `accept/rbn` or `reject/rbn` controls which RBN spots pass.
+Logged-in public web spot views use the same database-backed RBN preference and filter state: `unset/rbn` hides RBN/Skimmer spots there as well, while `set/rbn` plus `accept/rbn` or `reject/rbn` controls which RBN spots pass. The public **Edit Profile > Receive RBN spots** checkbox changes the same preference, so opting in or out from either interface applies to both.
 
 The public web `Rules` panel reads and writes these same family/action/slot records. System Operators can also maintain the node-wide `baddx`, `badspotter`, `badnode`, and `badword` records there; those controls are not available to ordinary users. Multi-word DXCC entity names such as `call_dxcc United States` and entity prefixes are supported consistently on both surfaces.
 

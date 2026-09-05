@@ -24,6 +24,21 @@ def test_inbound_pc_adapter_reports_transport_without_claiming_a_software_family
     assert connection.transport == "telnet"
 
 
+def test_inbound_pc_adapter_admits_py_protocol_frames() -> None:
+    async def run() -> None:
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"ordinary telnet output\r\nPY00^2^HELLO^payload\r\n")
+        reader.feed_eof()
+        connection = DxSpiderInboundConnection(
+            "AI3I-90",
+            reader,
+            _InboundWriter(),  # type: ignore[arg-type]
+        )
+        assert await connection.readline() == "PY00^2^HELLO^payload"
+
+    asyncio.run(run())
+
+
 def test_parse_tcp_dsn() -> None:
     spec = parse_transport_dsn("tcp://127.0.0.1:7300")
     assert spec.scheme == "tcp"
@@ -93,7 +108,11 @@ def test_kiss_multiple_frames_in_stream() -> None:
     assert decoded == [p1, p2]
 
 
-def test_dxspider_connect_handshake_and_pc_readline() -> None:
+@pytest.mark.parametrize("wire_line", [
+    "PC92^AI3I-15^0^D^^WB3FFV-2^H96^",
+    "PY00^2^HELLO^payload",
+])
+def test_dxspider_connect_handshake_and_protocol_readline(wire_line: str) -> None:
     async def run() -> None:
         seen: list[str] = []
 
@@ -106,7 +125,7 @@ def test_dxspider_connect_handshake_and_pc_readline() -> None:
             await writer.drain()
             client_cmd = (await reader.readline()).decode("utf-8", errors="replace").strip()
             seen.append(client_cmd)
-            writer.write(b"PC92^AI3I-15^0^D^^WB3FFV-2^H96^\r\n")
+            writer.write((wire_line + "\r\n").encode())
             await writer.drain()
             await asyncio.sleep(0.05)
             writer.close()
@@ -123,7 +142,7 @@ def test_dxspider_connect_handshake_and_pc_readline() -> None:
             conn = await connect_from_dsn("legacy", f"dxspider://127.0.0.1:{port}?login=AI3I-16&client=AI3I-15")
             try:
                 line = await conn.readline()
-                assert line == "PC92^AI3I-15^0^D^^WB3FFV-2^H96^"
+                assert line == wire_line
                 assert seen == ["AI3I-16", "client AI3I-15 telnet"]
             finally:
                 await conn.close()

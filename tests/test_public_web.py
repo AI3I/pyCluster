@@ -729,6 +729,8 @@ def test_public_dxweb_static_includes_footer_register_modal() -> None:
     assert "class=\"profile-save-icon\" id=\"profile-save\"" in text
     assert 'id="profile-cancel"' not in text
     assert 'id="profile-email"' in text
+    assert 'id="profile-rbn-subscribe" type="checkbox"' in text
+    assert "uiText('profile_rbn_available')" in text
     assert "cdn.jsdelivr.net/npm/qrcode" not in text
     assert 'id="profile-mfa-qr"' in text
     assert ">Use TOTP</button>" in text
@@ -1377,6 +1379,7 @@ def test_public_web_auth_and_posting(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "public_auth.db")
         cfg = _mk_config(db)
+        cfg.rbn.enabled = True
         store = SpotStore(db)
         now = int(datetime.now(timezone.utc).timestamp())
         await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
@@ -1409,12 +1412,18 @@ def test_public_web_auth_and_posting(tmp_path) -> None:
             assert me["access"]["chat"] is True
             assert me["profile"]["email"] == "ai3i@example.test"
             assert me["profile"]["mfa"]["enabled"] is False
+            assert me["profile"]["rbn"] == {
+                "subscribed": False,
+                "available": True,
+                "node_enabled": True,
+                "access_allowed": True,
+            }
 
             code, _, body = await _http_request_ex(
                 srv,
                 "POST",
                 "/api/profile",
-                json.dumps({"name": "John", "qth": "Western Pennsylvania", "qra": "FN00FS", "email": "new@example.test"}).encode("utf-8"),
+                json.dumps({"name": "John", "qth": "Western Pennsylvania", "qra": "FN00FS", "email": "new@example.test", "rbn_subscribed": True}).encode("utf-8"),
                 {"Content-Type": "application/json", "X-Web-Token": token},
             )
             assert code == 200
@@ -1422,11 +1431,36 @@ def test_public_web_auth_and_posting(tmp_path) -> None:
             assert profile["email"] == "new@example.test"
             assert profile["qth"] == "Western Pennsylvania"
             assert profile["qra"] == "FN00FS"
+            assert profile["rbn"]["subscribed"] is True
+            assert await store.get_user_pref("AI3I", "rbn") == "on"
             row = await store.get_user_registry("AI3I")
             assert row is not None
             assert row["email"] == "new@example.test"
             assert row["qth"] == "Western Pennsylvania"
             assert row["qra"] == "FN00FS"
+
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile",
+                json.dumps({"email": "new@example.test", "rbn_subscribed": False}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 200
+            assert json.loads(body.decode("utf-8"))["profile"]["rbn"]["subscribed"] is False
+            assert await store.get_user_pref("AI3I", "rbn") == "off"
+
+            cfg.rbn.enabled = False
+            code, _, body = await _http_request_ex(
+                srv,
+                "POST",
+                "/api/profile",
+                json.dumps({"name": "Must Not Persist", "email": "new@example.test", "rbn_subscribed": True}).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Web-Token": token},
+            )
+            assert code == 403
+            assert json.loads(body.decode("utf-8"))["error"] == "RBN access is unavailable."
+            assert (await store.get_user_registry("AI3I"))["display_name"] == ""
 
             code, _, body = await _http_request_ex(
                 srv,

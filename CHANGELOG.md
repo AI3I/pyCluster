@@ -4,6 +4,11 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+## 1.0.18 - 2026-09-05
+
+- Admit private `PYnn` frames on established inbound and outbound telnet peer transports; 1.0.17 incorrectly admitted only `PCnn` lines, silently preventing PY00 negotiation between otherwise healthy pyCluster peers.
+- Let authenticated public-web users opt into or out of RBN spots from Edit Profile using the same database preference as telnet `set/rbn` and `unset/rbn`, while respecting node feed state and per-user web access.
+
 ## 1.0.17 - 2026-09-04
 
 - Require a stored password for every System Operator web login, including the bootstrap `SYSOP` account, and move PBKDF2 hashing and verification off the asyncio event loop.

@@ -1000,6 +1000,9 @@ html.light .toast { box-shadow:0 8px 24px rgba(15,23,42,.14); }
   border-radius:12px; padding:9px 11px; font:0.78rem/1.2 'Exo',system-ui,Arial,sans-serif;
 }
 .profile-modal-grid input:focus { outline:none; border-color:var(--accent); }
+.profile-modal-grid .profile-choice { flex-direction:row; align-items:center; color:var(--text-primary); text-transform:none; }
+.profile-modal-grid .profile-choice input { width:auto; margin:0; accent-color:#3fb950; }
+.profile-choice-help { color:var(--text-dim); font-size:.65rem; line-height:1.35; }
 .profile-modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
 .profile-modal-actions { flex-wrap:wrap; }
 .profile-mfa-settings {
@@ -2001,6 +2004,14 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <label for="profile-homenode">Home Node</label>
         <input id="profile-homenode" type="text" maxlength="16" placeholder="Home node">
       </div>
+      <div class="field span-2">
+        <label id="profile-rbn-label" for="profile-rbn-subscribe"></label>
+        <label class="profile-choice" for="profile-rbn-subscribe">
+          <input id="profile-rbn-subscribe" type="checkbox">
+          <span id="profile-rbn-subscribe-text"></span>
+        </label>
+        <span id="profile-rbn-help" class="profile-choice-help"></span>
+      </div>
     </div>
     <div class="profile-mfa-settings">
       <span class="profile-mfa-settings-label">MFA Settings</span>
@@ -2706,6 +2717,22 @@ function openProfileModal() {
   document.getElementById('profile-email').value = webProfile?.email || '';
   document.getElementById('profile-qra').value = webProfile?.qra || '';
   document.getElementById('profile-homenode').value = webProfile?.homenode || '';
+  const rbn = webProfile?.rbn || {};
+  const rbnToggle = document.getElementById('profile-rbn-subscribe');
+  if (rbnToggle) {
+    rbnToggle.checked = !!rbn.subscribed;
+    rbnToggle.disabled = !rbn.available;
+  }
+  const rbnLabel = document.getElementById('profile-rbn-label');
+  if (rbnLabel) rbnLabel.textContent = uiText('profile_rbn_label');
+  const rbnText = document.getElementById('profile-rbn-subscribe-text');
+  if (rbnText) rbnText.textContent = uiText('profile_rbn_subscribe');
+  const rbnHelp = document.getElementById('profile-rbn-help');
+  if (rbnHelp) {
+    rbnHelp.textContent = rbn.available
+      ? uiText('profile_rbn_available')
+      : uiText(rbn.node_enabled ? 'profile_rbn_access_denied' : 'profile_rbn_node_disabled');
+  }
   renderProfileMfa();
   clearProfileMfaQr();
   setProfileStatus('');
@@ -2958,6 +2985,7 @@ async function saveProfile() {
     email: (document.getElementById('profile-email')?.value || '').trim(),
     qra: (document.getElementById('profile-qra')?.value || '').trim().toUpperCase(),
     homenode: (document.getElementById('profile-homenode')?.value || '').trim().toUpperCase(),
+    rbn_subscribed: !!document.getElementById('profile-rbn-subscribe')?.checked,
   };
   try {
     setProfileStatus(uiText('profile_saving'), '');

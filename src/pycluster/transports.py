@@ -307,7 +307,7 @@ class _DxSpiderTelnetConnection:
                 line = raw.decode("utf-8", errors="replace").rstrip("\r")
                 if not line:
                     continue
-                if not line.startswith("PC"):
+                if not line.startswith(("PC", "PY")):
                     continue
                 return line
             chunk = await self._read_chunk()
@@ -316,7 +316,7 @@ class _DxSpiderTelnetConnection:
                     return None
                 tail = self._buf.decode("utf-8", errors="replace").rstrip("\r")
                 self._buf.clear()
-                if tail.startswith("PC"):
+                if tail.startswith(("PC", "PY")):
                     return tail
                 return None
             self._buf.extend(chunk)
@@ -370,7 +370,7 @@ class DxSpiderInboundConnection:
                 line = raw.decode("utf-8", errors="replace").rstrip("\r")
                 if not line:
                     continue
-                if not line.startswith("PC"):
+                if not line.startswith(("PC", "PY")):
                     continue
                 return line
             chunk = await self._read_chunk()
@@ -379,7 +379,7 @@ class DxSpiderInboundConnection:
                     return None
                 tail = self._buf.decode("utf-8", errors="replace").rstrip("\r")
                 self._buf.clear()
-                if tail.startswith("PC"):
+                if tail.startswith(("PC", "PY")):
                     return tail
                 return None
             self._buf.extend(chunk)
