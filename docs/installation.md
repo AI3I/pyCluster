@@ -89,15 +89,30 @@ If you need machine-local settings, create `./config/pycluster.local.toml`. pyCl
 
 ## Production Install
 
-From the repo root:
+Use the public HTTPS repository so the root-managed production checkout does
+not depend on a personal GitHub account or SSH key:
 
 ```bash
-cd /usr/src
-git clone git@github.com:AI3I/pyCluster.git
-cd pyCluster
+sudo git clone https://github.com/AI3I/pyCluster.git /usr/src/pyCluster
+LATEST_TAG="$(sudo git -C /usr/src/pyCluster tag --sort=-v:refname | head -n 1)"
+sudo git -C /usr/src/pyCluster checkout "$LATEST_TAG"
+cd /usr/src/pyCluster
 sudo ./deploy/install.sh
 sudo ./deploy/doctor.sh
 ```
+
+Run these commands from the normal human administrator account that already
+has sudo access. Do not log in as the generated `pycluster` account, add it to
+sudoers, or give it GitHub credentials. `/usr/src/pyCluster` is deliberately a
+root-managed source checkout; `/home/pycluster/pyCluster` is the restricted
+service account's live runtime tree.
+
+`/usr/src/pyCluster` is the recommended Linux layout, not a hard-coded
+requirement. A root-owned checkout such as `/opt/pyCluster` is also supported
+when installation is run from there. Every ancestor and object in a source
+checkout used by the web upgrader must be root-owned and not group/world
+writable; a checkout under a normal user's home directory therefore is not a
+supported automatic-upgrade source.
 
 Recommended layout for a host-level install:
 
@@ -150,6 +165,10 @@ identity remains active.
 ## Upgrade
 
 ```bash
+cd /usr/src/pyCluster
+sudo git fetch --tags --force
+LATEST_TAG="$(sudo git tag --sort=-v:refname | head -n 1)"
+sudo git checkout "$LATEST_TAG"
 sudo ./deploy/upgrade.sh
 sudo ./deploy/doctor.sh
 ```
@@ -182,7 +201,8 @@ Recommended before future upgrades:
 
 - keep `config/pycluster.toml` close to upstream defaults
 - move host-specific changes into `config/pycluster.local.toml`
-- leave `config/pycluster.local.toml` untracked so `git pull --ff-only` stays clean
+- keep runtime-only `config/pycluster.local.toml` under `/home/pycluster/pyCluster`, not in the source checkout
+- deploy release tags rather than pulling the development `main` branch
 
 That local override file is also the right place for host-specific secrets such as QRZ credentials, SMTP credentials, and any node identity or listener changes that should survive repo updates.
 
