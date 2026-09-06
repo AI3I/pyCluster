@@ -2061,26 +2061,28 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
     <button class="sm-close" id="login-close" type="button" title="Close" aria-label="Close login">✕</button>
     <h2>Web Login</h2>
     <div class="register-help">Sign in with your local callsign and password to post from the web UI.</div>
+    <form id="public-login-form" action="/api/auth/login" method="post" autocomplete="on">
     <div class="profile-modal-grid">
       <div class="field">
         <label for="login-call">Callsign</label>
-        <input id="login-call" type="text" maxlength="12" placeholder="N0CALL" autocomplete="username">
+        <input id="login-call" name="username" type="text" maxlength="12" placeholder="N0CALL" autocomplete="username" autocapitalize="none" spellcheck="false">
       </div>
       <div class="field">
         <label for="login-pass">Password</label>
-        <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+        <input id="login-pass" name="password" type="password" placeholder="Password" autocomplete="current-password">
       </div>
       <div class="field span-2" id="login-otp-row" style="display:none">
         <label for="login-otp" id="login-otp-label">MFA Code</label>
-        <input id="login-otp" type="text" inputmode="numeric" maxlength="12" placeholder="Enter verification code" autocomplete="one-time-code">
+        <input id="login-otp" name="otp" type="text" inputmode="numeric" maxlength="12" placeholder="Enter verification code" autocomplete="one-time-code">
       </div>
     </div>
     <div class="profile-modal-actions">
       <button id="login-reset-password" type="button">Reset Password</button>
       <button id="login-reset-mfa" type="button">Reset MFA</button>
       <button id="login-cancel" type="button">Cancel</button>
-      <button id="login-submit" class="primary" type="button">Log In</button>
+      <button id="login-submit" class="primary" type="submit">Log In</button>
     </div>
+    </form>
     <div id="login-status" class="profile-modal-status"></div>
   </div>
 </div>
@@ -2354,6 +2356,8 @@ let bulletinCategory = 'all';
 let mapVisible  = true;
 let highlightId = null;
 let wsRetryTimer= null;
+let activeSpotSocket = null;
+let spotSocketToken = null;
 let sortCol     = 'time';
 let sortDir     = 'desc';
 let cqzFilter   = '';         // empty = no DX CQ zone filter
@@ -2595,6 +2599,11 @@ function saveWebSession() {
     sessionStorage.setItem(WEB_SESSION_KEY, JSON.stringify({token:webToken, call:webCall, access:webAccess, profile:webProfile}));
   } else {
     sessionStorage.removeItem(WEB_SESSION_KEY);
+  }
+  if (spotSocketToken !== null && spotSocketToken !== webToken) {
+    allSpots = [];
+    renderTable();
+    connectWS();
   }
 }
 
@@ -3358,6 +3367,7 @@ async function updateStoredFilterRule(payload) {
     storedFilterRules = Array.isArray(data.rules) ? data.rules : [];
     renderStoredFilterRules();
     if (status) { status.textContent = uiText(payload.operation === 'delete' ? 'filter_rule_deleted' : 'filter_rule_saved'); status.className = 'rule-status ok'; }
+    connectWS();
     await fetchSpots();
   } catch (err) {
     if (status) { status.textContent = `${uiText('filter_rule_update_failed')} ${err.message || err}`; status.className = 'rule-status err'; }
@@ -5260,8 +5270,11 @@ renderWatchProfiles();
 
 // ================================================================ Fetch spots
 async function fetchSpots() {
+  const requestToken = webToken;
   try {
-    allSpots = await webJson(API+'?limit=500');
+    const spots = await webJson(API+'?limit=500');
+    if (requestToken !== webToken) return;
+    allSpots = spots;
     dedupeAllSpots();
     await loadStats();
     renderTable();
@@ -5304,13 +5317,22 @@ function mergeSpotBatch(batch) {
 
 // ================================================================ WebSocket
 function connectWS() {
+  clearTimeout(wsRetryTimer);
+  const oldSocket = activeSpotSocket;
+  activeSpotSocket = null;
+  if (oldSocket) oldSocket.close();
+  const connectionToken = webToken;
+  spotSocketToken = connectionToken;
   const wsUrl = webToken ? `${WS_BASE_URL}?token=${encodeURIComponent(webToken)}` : WS_BASE_URL;
   const ws = new WebSocket(wsUrl);
+  activeSpotSocket = ws;
   ws.addEventListener('open', () => {
+    if (activeSpotSocket !== ws || connectionToken !== webToken) return;
     document.getElementById('live-dot').classList.remove('dead');
     const ping = setInterval(() => { if (ws.readyState===WebSocket.OPEN) ws.send('ping'); else clearInterval(ping); }, 30000);
   });
   ws.addEventListener('message', evt => {
+    if (activeSpotSocket !== ws || connectionToken !== webToken) return;
     let batch;
     try { batch=JSON.parse(evt.data); } catch { return; }
     if (!Array.isArray(batch)) batch=[batch];
@@ -5327,6 +5349,7 @@ function connectWS() {
     if (firstVisible) playSpotSound(firstVisible);
   });
   ws.addEventListener('close', () => {
+    if (activeSpotSocket !== ws) return;
     document.getElementById('live-dot').classList.add('dead');
     clearTimeout(wsRetryTimer);
     wsRetryTimer = setTimeout(connectWS,5000);
@@ -5963,7 +5986,8 @@ document.getElementById('preset-name-input').addEventListener('keydown', e => {
 renderFilterPresets();
 
 // ================================================================ Operator actions
-document.getElementById('login-submit')?.addEventListener('click', () => {
+document.getElementById('public-login-form').addEventListener('submit', e => {
+  e.preventDefault();
   loginOperatorFromModal();
 });
 document.getElementById('login-close')?.addEventListener('click', closeLoginModal);
@@ -5990,13 +6014,6 @@ document.querySelectorAll('#bulletin-toolbar [data-bcat]').forEach(btn => {
       other.classList.toggle('active', other === btn);
     });
     renderBulletinsPage();
-  });
-});
-document.querySelectorAll('#login-call, #login-pass, #login-otp').forEach(field => {
-  field.addEventListener('keydown', e => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    loginOperatorFromModal();
   });
 });
 document.getElementById('post-info')?.addEventListener('keydown', e => {

@@ -65,8 +65,23 @@ def test_sysop_login_fields_submit_on_enter() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
 
     assert "async function loginSysop()" in text
-    assert "[byId('call'), byId('pass')].forEach((field) =>" in text
-    assert "event.preventDefault();\n    loginSysop();" in text
+    assert "byId('sysopLoginForm').onsubmit = (event) =>" in text
+    assert "event.preventDefault();\n  loginSysop();" in text
+    assert 'name="username" type="text" autocomplete="username"' in text
+    assert 'name="password" type="password" autocomplete="current-password"' in text
+    assert '<button id="login" type="submit">' in text
+    assert 'name="otp" type="text" inputmode="numeric" autocomplete="one-time-code"' in text
+    assert "sysopLoginChallenge = {call:payload.call, password:payload.password, challenge_id:r.challenge_id || ''}" in text
+    assert "const otp = window.prompt('Enter the '" not in text
+
+
+def test_telemetry_history_is_bounded_and_scrollable() -> None:
+    text = Path("src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert '#telemetry .tablewrap{max-height:480px;overflow:auto}' in text
+    assert 'id="telemetryLimit"' in text
+    assert '<option value="200">200</option>' in text
+    assert "byId('telemetryLimit').onchange" in text
+    assert "'/api/security?limit=' + byId('telemetryLimit').value" in text
 
 
 def test_rendered_sysop_javascript_parses(tmp_path) -> None:
