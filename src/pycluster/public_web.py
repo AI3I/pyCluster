@@ -835,6 +835,7 @@ class PublicWebServer:
             "filter_rules_load_failed": "Loading rules failed:",
             "spot_source_all": "All",
             "spot_clear_filters": "Clear Filters",
+            "spot_export_json": "Download filtered spots as JSON",
             "spot_source_rbn": "RBN",
             "spot_source_no_rbn": "No RBN",
             "filter_rule_saved": "Rule saved.",
