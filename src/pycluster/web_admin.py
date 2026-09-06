@@ -2685,6 +2685,12 @@ tbody tr.filler td{
   font-size:11px;
   font-weight:700;
 }
+.known-node-versions .tag[data-confidence="local"]{background:#174b38;color:#b8f5d5}
+.known-node-versions .tag[data-confidence="direct"]{background:#173e68;color:#c7e5ff}
+.known-node-versions .tag[data-confidence="reported"]{background:#594313;color:#ffe8a6}
+html.light .known-node-versions .tag[data-confidence="local"]{background:#d5f1e2;color:#145238}
+html.light .known-node-versions .tag[data-confidence="direct"]{background:#dcecff;color:#194e80}
+html.light .known-node-versions .tag[data-confidence="reported"]{background:#fff0c2;color:#684900}
 .presence{
   font-size:16px;
   font-weight:700;
@@ -4377,7 +4383,7 @@ function setKnownNodeRows(payload, peers) {
     const serviceMeta = row.discovery_state
       ? `<div class="mini">${esc(row.discovery_state)}</div>`
       : directPeer
-        ? `<div class="mini">Reported health: ${esc(healthLabel)} • RBN ${esc(rbn.state || 'unknown')} • sync ${esc(sync.state || 'pending')} • RTT ${probe.state === 'responsive' ? esc(String(probe.rtt_ms || 0)) + ' ms' : esc(probe.state || 'pending')}</div>`
+        ? `<div class="mini"><strong>Health</strong> ${esc(healthLabel)} • RBN ${esc(rbn.state || 'unknown')} • sync ${esc(sync.state || 'pending')} • RTT ${probe.state === 'responsive' ? esc(String(probe.rtt_ms || 0)) + ' ms' : esc(probe.state || 'pending')}</div>`
       : '';
     const rawPublicUrl = String(row.public_web_url || '').trim();
     // Peer-advertised; only ever render it as a link when it is plainly http(s).
@@ -4389,7 +4395,7 @@ function setKnownNodeRows(payload, peers) {
     return `<tr>
       <td data-label="Node">${callText}<div class="mini">${esc(String(row.node_id || ''))}</div><div class="mini"><strong>Location</strong> ${esc(location)}</div></td>
       <td data-label="Path &amp; Services">${esc(learned)}<div class="mini">${row.node_id ? `<button class="secondary py-route-detail" type="button" data-call="${esc(call)}" title="Inspect retained topology routes">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}</button>` : 'No retained routes'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div><div class="mini"><strong>Services</strong> ${esc(services)}</div>${serviceMeta}</td>
-      <td data-label="Last Seen">${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div><div class="known-node-versions"><span class="tag">${esc(confidence)}</span> <span class="tag">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</span> <span class="tag">${esc(row.software_version || '-')}</span></div></td>
+      <td data-label="Last Seen">${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div><div class="known-node-versions"><span class="tag" data-confidence="${esc(confidence)}">${esc(confidence)}</span> <span class="tag">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</span> <span class="tag">${esc(row.software_version || '-')}</span></div></td>
     </tr>`;
   }).join('');
   body.querySelectorAll('.py-route-detail').forEach((button) => {
