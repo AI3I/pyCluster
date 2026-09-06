@@ -4,6 +4,8 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Fix empty SysOp RBN telemetry by including a bounded 200-spot in-memory sample from accepted direct and peer RBN traffic, without restoring database persistence.
+
 - Default SysOp address blocks to active entries, separate removed/expired history, and keep Add Block/Refresh compact on desktop and mobile.
 - Shorten the connected RBN summary to Online in At A Glance while retaining detailed feed status.
 

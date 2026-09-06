@@ -4000,6 +4000,55 @@ def test_app_rbn_feed_reconfigure_stops_running_tasks(tmp_path, monkeypatch) -> 
     asyncio.run(run())
 
 
+def test_rbn_task_cancellation_closes_feed_socket(tmp_path, monkeypatch) -> None:
+    async def run():
+        cfg = _mk_config(str(tmp_path / 'rbn-close.db'))
+        cfg.rbn.callsign = 'AI3I-99'
+        app = ClusterApp(cfg)
+        reading = asyncio.Event()
+
+        class Reader:
+            async def readline(self):
+                reading.set()
+                await asyncio.Event().wait()
+
+        class Writer:
+            closed = False
+            waited = False
+
+            def write(self, data):
+                pass
+
+            async def drain(self):
+                pass
+
+            def close(self):
+                self.closed = True
+
+            async def wait_closed(self):
+                self.waited = True
+
+        writer = Writer()
+
+        async def open_connection(*args):
+            return Reader(), writer
+
+        monkeypatch.setattr(asyncio, 'open_connection', open_connection)
+        task = asyncio.create_task(app._run_rbn_feed_once({'key':'test', 'host':'localhost', 'port':7000}))
+        app._rbn_feed_tasks = {'test': task}
+        try:
+            await asyncio.wait_for(reading.wait(), 2)
+            await asyncio.wait_for(app._stop_rbn_feed_tasks(), 2)
+            assert task.cancelled()
+            assert writer.closed and writer.waited
+            assert app._rbn_feed_tasks == {}
+        finally:
+            await app._stop_rbn_feed_tasks()
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_rbn_sustained_ingest_is_bounded_and_never_persisted(tmp_path) -> None:
     async def run() -> None:
         app = ClusterApp(_mk_config(str(tmp_path / "rbn_sustained.db")))
@@ -4031,6 +4080,9 @@ def test_rbn_sustained_ingest_is_bounded_and_never_persisted(tmp_path) -> None:
             assert await app.store.count_spots() == 0
             assert len(app._rbn_recent_spot_epochs) == 10000
             assert len(app._rbn_seen) <= 50000
+            assert len(app.recent_rbn_spots()) == 200
+            assert app.recent_rbn_spots()[0]['epoch'] == now + 19999
+            assert app.recent_rbn_spots()[-1]['epoch'] == now + 19800
         finally:
             await app.store.close()
 
