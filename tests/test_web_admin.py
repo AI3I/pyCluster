@@ -3410,6 +3410,9 @@ def test_web_admin_contains_py_topology_and_notice_controls() -> None:
     assert 'data-view="topology"' in text
     assert '<th>Node</th><th>Path &amp; Services</th><th>Last Seen</th>' in text
     assert 'data-label="Identity"' not in text
+    version_line = text.split('<div class="known-node-versions">', 1)[1].split('</div>', 1)[0]
+    assert version_line.count('class="tag"') == 3
+    assert version_line.index('esc(confidence)') < version_line.index('row.protocol_version') < version_line.index('row.software_version')
     assert 'Reported health: ${esc(healthLabel)}' in text
     assert "if (control.closest('.matrix-toggle')) return;" in text
     assert "if (control.closest('#loginGate')) return;" in text
