@@ -3405,7 +3405,8 @@ def test_web_admin_contains_py_topology_and_notice_controls() -> None:
     assert node_settings < text.index('id="pyNoticeShare"') < maintenance
     assert protocol_health < topology < text.index('id="knownNodeRows"')
     assert 'data-view="topology"' in text
-    assert '<th>Node</th><th>Identity</th><th>Path &amp; Services</th><th>Freshness</th>' in text
+    assert '<th>Node</th><th>Identity</th><th>Path &amp; Services</th><th>Last Seen</th>' in text
+    assert 'Reported health: ${esc(healthLabel)}' in text
     assert '.topology-tablewrap{overflow-x:hidden}' in text
     assert 'data-label="Path &amp; Services"' in text
     assert '<div class="mini"><strong>Location</strong> ${esc(location)}</div>' in text
