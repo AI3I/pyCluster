@@ -4,6 +4,16 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Add read-only sample previews and a two-condition AND editor for public-web delivery rules; use shared deciding-rule explanations in telnet `show/filter test`, preserve spotter SSIDs for web filtering, and add missing WPXLOC fallback for telnet DX zone/entity filters.
+
+- Fix mobile clipping in Protocol Health and stack peer, history, and address-block records into labeled mobile layouts; keep PY counters out of the PC traffic summary.
+
+- Add persistent IPv4/IPv6 address and CIDR blocks with expiry and removal history, SysOp Security controls, and `sysop/ipblock`; enforce on new telnet connections and web requests using trusted-proxy client addresses.
+
+- Simplify SysOp peer monitoring: Peers & Links now focuses on connection operations, while Protocol Health separates PC state, PY negotiation evidence, rejected frames, and filterable PC/PY history.
+- Consolidate Topology location details beneath each node UUID, reducing the known-node catalog to four columns and giving route and service diagnostics more room.
+- Document unscheduled design concepts for optional node discovery and identity, client-compatible authentication, graphical filter management, and distributed PY security advisories.
+
 ## 1.0.19 - 2026-09-05
 
 - Widen the public-web sidebar slightly so all five navigation labels render completely without changing the full-width mobile layout.

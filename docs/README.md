@@ -28,6 +28,9 @@ historical compatibility research.
 - [Command Specification](command-specification.md): command support policy
 - [Feature Highlights](feature-highlights.md): current product overview
 - [Roadmap](pycluster-roadmap.md): forward-looking direction
+- [Future Feature Concepts](future-feature-concepts.md): unscheduled design
+  notes for node discovery, optional identity, compatible authentication,
+  graphical filters, and PY security advisories
 - [Changelog](../CHANGELOG.md): released and development changes
 
 ## Compatibility Research

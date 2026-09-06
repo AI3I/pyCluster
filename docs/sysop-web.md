@@ -342,25 +342,26 @@ Columns:
 - `Peer`
 - `Connection`
 - `Activity`
-- `Traffic`
+- `Operations`
 
-The `Peer` cell carries:
-
-- peer family
-- learned peer software/version when it has been seen from `PC18`
+The `Peer` cell carries the configured or observed peer family.
 
 The `Connection` cell answers the simple transport question first:
 
 - `connected`: a live socket exists
 - `disconnected`: no live socket exists
 
-It also shows inbound/outbound direction, automatic retry state, and the most recent connection error when applicable. The `Activity` cell shows the last PC frame type and the last receive/transmit times. `Traffic` keeps frame/type counts and queued-mail or route warnings together.
+It also shows inbound/outbound direction and the most recent connection error when applicable. The `Activity` cell shows the last receive/transmit times. `Operations` keeps retry and queued-mail state together.
 
-Detailed transport addresses, counters, errors, and protocol state remain in the peer modal. Stale, degraded, and flapping analysis remains on the separate Protocol Health page instead of duplicating a second health label in this operational table.
+Detailed transport addresses and connection errors remain in the peer modal. Frame counts, PC/PY state, version advertisements, rejected frames, and protocol analysis live on the separate Protocol Health page.
 
 This view is intended to make peer operations understandable without dropping into raw counters or logs.
 
 ## Protocol Health
+
+Address-level connection policy is managed in **Telemetry > Security > Address
+Blocks**. It supports IPv4/IPv6 CIDRs, expiration, and retained removal history.
+See [Security](security.md) for proxy configuration and enforcement scope.
 
 This view focuses on live peer state, negotiated protocol metadata, alerting, and protocol history. PY sharing policy and notices are configured under `Node Settings > pyCluster Protocol`.
 
@@ -389,13 +390,16 @@ This view focuses on live peer state, negotiated protocol metadata, alerting, an
 
 #### Peer State
 
-Shows link state, health, activity, and negotiated protocol detail for each peer.
+Separates each peer into `Connection`, `PC Protocol`, `PY Protocol`, and
+`Activity`. PY states report direct evidence such as `Disabled locally`,
+`PY00 sent; no response`, `Invalid PY00 response`, `Negotiated; awaiting
+NODEINFO`, and `Negotiated`.
 
 Peer State also reports session-scoped PY receive/transmit byte totals,
 rejected-frame counts, and a conformance verdict explaining the current
 negotiation outcome.
 
-#### Protocol Alerts
+#### Connection Alerts
 
 Columns:
 
@@ -405,7 +409,7 @@ Columns:
 - `Flap`
 - `Status`
 
-#### Policy Drops
+#### Rejected Frames
 
 Columns:
 
@@ -414,7 +418,17 @@ Columns:
 - `Loop Drops`
 - `Reasons`
 
+This table contains frames that arrived and were rejected by local policy. A
+silent peer that does not answer `PY00` is not a drop; that evidence appears in
+Peer State so the failed negotiation remains visible for troubleshooting.
+
 #### Protocol History
+
+Use the `PY`, `PC`, and `All` tabs to separate event families.
+The configured history limit applies to the selected family.
+Family selection is applied by the API before limiting results, so newer PC
+events cannot hide an older retained PY negotiation event. History values retain
+their original case.
 
 Columns:
 
@@ -430,8 +444,9 @@ This area is the main operator view for peer health and protocol instability.
 
 ### Known pyCluster Nodes
 
-The dedicated Topology view uses five wrapping columns: node, identity,
-location, path and services, and freshness. On narrow screens each node becomes
+The dedicated Topology view uses four wrapping columns: node, identity,
+path and services, and freshness. Locator and QTH appear with the node UUID
+because they describe node identity rather than route state. On narrow screens each node becomes
 a labeled stacked record instead of forcing the console to scroll horizontally.
 
 This table includes two levels of knowledge:

@@ -10,10 +10,21 @@ import time
 
 from .models import Spot, normalize_call
 from .shdx import ShDxQuery
+from .address_policy import address, network
 
 
 SCHEMA_SQL = """
 PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS address_blocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    network TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_epoch INTEGER NOT NULL,
+    expires_epoch INTEGER NOT NULL DEFAULT 0,
+    removed_epoch INTEGER NOT NULL DEFAULT 0,
+    removed_by TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS spots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     freq_khz REAL NOT NULL,
@@ -289,6 +300,47 @@ class SpotStore:
     async def close(self) -> None:
         async with self._lock:
             self._conn.close()
+
+    async def add_address_block(self, value: str, reason: str, actor: str, minutes: int = 0) -> int:
+        subnet = str(network(value))
+        if not reason.strip() or len(reason) > 500 or any(ord(c) < 32 for c in reason):
+            raise ValueError("A printable reason of 1 to 500 characters is required")
+        if minutes < 0 or minutes > 525600:
+            raise ValueError("Duration must be 0 to 525600 minutes; 0 means permanent")
+        now = int(time.time())
+        async with self._lock:
+            count = self._conn.execute("SELECT COUNT(*) FROM address_blocks WHERE removed_epoch=0 AND (expires_epoch=0 OR expires_epoch>?)", (now,)).fetchone()[0]
+            if count >= 4096:
+                raise ValueError("Active address block limit reached")
+            cur = self._conn.execute(
+                "INSERT INTO address_blocks(network,reason,created_by,created_epoch,expires_epoch) VALUES(?,?,?,?,?)",
+                (subnet, reason.strip(), actor, now, now + minutes * 60 if minutes else 0),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    async def remove_address_block(self, block_id: int, actor: str) -> bool:
+        async with self._lock:
+            cur = self._conn.execute("UPDATE address_blocks SET removed_epoch=?,removed_by=? WHERE id=? AND removed_epoch=0", (int(time.time()), actor, block_id))
+            self._conn.commit()
+            return bool(cur.rowcount)
+
+    async def list_address_blocks(self, *, history: bool = False) -> list[dict]:
+        async with self._lock:
+            sql = "SELECT * FROM address_blocks"
+            args = ()
+            if not history:
+                sql += " WHERE removed_epoch=0 AND (expires_epoch=0 OR expires_epoch>?)"
+                args = (int(time.time()),)
+            sql += " ORDER BY id DESC LIMIT 4096"
+            return [dict(row) for row in self._conn.execute(sql, args).fetchall()]
+
+    async def address_blocked(self, value: str) -> bool:
+        try:
+            candidate = address(value)
+        except ValueError:
+            return False
+        return any(candidate in network(row['network']) for row in await self.list_address_blocks())
 
     async def optimize(self) -> dict[str, int]:
         async with self._lock:

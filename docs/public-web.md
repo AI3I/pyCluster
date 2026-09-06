@@ -207,3 +207,19 @@ Depending on node policy, a user may be allowed to post:
 - WWV
 
 Disabled actions in the UI reflect local policy.
+## Rule Preview
+
+The Rules editor can combine two conditions with AND and displays the equivalent
+telnet command. Its sample preview evaluates the stored rules plus the current
+editor draft, replacing only the same family/action/slot in memory. It does not
+save a rule, insert a spot, or transmit traffic.
+
+The result includes the winning rule or explains that no accept rule matched.
+RBN samples also check the user's web RBN access and subscription. This is a
+rule/policy preview, not a guarantee of delivery: feed connectivity, ingestion
+policy, browser display filters, and live throttling are outside its scope.
+
+Quick filters ask before replacing existing slot-8 rules. Web saves reject
+oversized or incomplete recognized conditions instead of truncating them.
+Advanced expressions retain the existing matching syntax, including literal
+text matching; a successful preview is not exhaustive grammar validation.

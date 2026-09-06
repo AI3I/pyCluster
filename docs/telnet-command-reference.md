@@ -476,3 +476,19 @@ sysop/services
 ## Compatibility Note
 
 pyCluster still recognizes a larger DXSpider-style command universe than this page lists. The purpose of this reference is to document the meaningful implemented surface, not every historical compatibility token or legacy alias.
+## Address Blocking
+
+System Operators can use `sysop/ipblock show` to inspect retained address-block
+records, `sysop/ipblock add <IP/CIDR> <minutes> <reason>` to add a rule, and
+`sysop/ipblock remove <id>` to remove it. Zero minutes means permanent.
+Rules apply to new telnet connections and web requests. See
+[Security](security.md) for IPv6, trusted proxies, and recovery considerations.
+
+## Spot Rule Explanations
+
+`show/filter test spots --verbose <kHz> <DX-call> <spotter> [comment]` and
+`show/filter test rbn --verbose ...` use the live shared rule evaluator, including
+RBN-specific rules, legacy RBN fallback, and global normal-spot rejects.
+The command reads current database rules and reports the deciding rule. It
+does not post a sample or simulate feed connectivity, subscriptions, access,
+or throttling. Web previews additionally report web RBN access/subscription.

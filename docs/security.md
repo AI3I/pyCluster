@@ -106,3 +106,26 @@ sudo /home/pycluster/pyCluster/scripts/lock_user_account.py --db /home/pycluster
 ## CTY and Security
 
 CTY data is operational data, not a security boundary. Keep it current, but do not treat entity mapping as access control.
+## Local Address Blocks
+
+System Operators can manage address blocks under **Telemetry > Security >
+Address Blocks**, or with `sysop/ipblock show`,
+`sysop/ipblock add <IP/CIDR> <minutes> <reason>`, and
+`sysop/ipblock remove <id>`. Zero minutes means permanent. IPv4, IPv6, and
+IPv4-mapped IPv6 are supported. CIDRs are normalized to network boundaries.
+
+Blocks apply before a new telnet login and before web request bodies or
+authentication are processed, including System Operator web requests. They do
+not terminate existing telnet or WebSocket sessions or outbound peer links.
+Changes, expiration, and removal history are stored in SQLite. These are
+application-level rules; they do not install firewall rules or replace Fail2Ban.
+Blocking your own address or network can prevent further web access; use an
+unblocked operator connection to remove the rule.
+
+Both `[web]` and `[public_web]` accept `trusted_proxies`, an array of IPs/CIDRs.
+The default is `["127.0.0.1/32", "::1/128"]` for the bundled local nginx setup.
+For an external reverse proxy, configure its exact address in each applicable
+section of `pycluster.local.toml` and restart the corresponding service. An
+empty array disables forwarded-address trust. The client address is resolved
+from right to left through `X-Forwarded-For`, stopping at the first untrusted
+hop. Headers from direct untrusted clients cannot override their socket IP.

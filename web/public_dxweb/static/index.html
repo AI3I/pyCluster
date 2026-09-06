@@ -1560,12 +1560,28 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
               <option value="spotter_zone">Spotter CQ Zone</option><option value="call_itu">DX ITU Zone</option>
               <option value="spotter_itu">Spotter ITU Zone</option><option value="call_cont">DX Continent</option>
               <option value="spotter_cont">Spotter Continent</option><option value="call_dxcc">DXCC Entity</option>
+              <option value="spotter_dxcc">Spotter DXCC Entity</option>
               <option value="info">Comment / Mode</option><option value="raw">Advanced Expression</option>
             </select></label>
             <label class="rule-wide">Value<input id="rule-value" maxlength="160" autocomplete="off" placeholder="Call, zones, entity, band, or text"></label>
+            <label>AND<select id="rule-and-condition"><option value="">-</option></select></label>
+            <label>Value<input id="rule-and-value" maxlength="160" autocomplete="off"></label>
           </div>
+          <code id="rule-command" style="display:block;overflow-wrap:anywhere"></code>
           <div class="rule-actions"><button id="rule-reset" type="button">New</button><button id="rule-save" type="button">Save Rule</button></div>
           <div id="rule-status" class="rule-status"></div>
+          <details>
+            <summary id="filter-preview-title">Preview</summary>
+            <div class="rule-grid">
+              <label>kHz<input id="filter-preview-frequency" type="number" min="0.001" step="any" value="14025"></label>
+              <label>DX Callsign<input id="filter-preview-dx" maxlength="16"></label>
+              <label>Spotter<input id="filter-preview-spotter" maxlength="16"></label>
+              <label>Stream<select id="filter-preview-stream"><option value="spots">Spots</option><option value="rbn">RBN</option></select></label>
+              <label class="rule-wide">Comment<input id="filter-preview-info" maxlength="160"></label>
+            </div>
+            <button id="filter-preview-run" type="button">Preview</button>
+            <div id="filter-preview-result" class="rule-status" role="status"></div>
+          </details>
         </div>
         <hr class="sidebar-divider">
         <div class="filter-section">
@@ -3242,6 +3258,10 @@ async function saveCurrentSpotFilters() {
   if (!webToken) return;
   try {
     const expr = buildServerSpotFilterExpression();
+    const current = await webJson(FILTER_SPOTS);
+    const existing = (current.rules || []).filter(row => Number(row.slot) === 8);
+    const unchanged = existing.length === 1 && existing[0].action === 'accept' && existing[0].expr === expr;
+    if (existing.length && !unchanged && !window.confirm(uiText('filter_quick_replace_confirm'))) return;
     const payload = !expr
       ? {action:'clear', slot:8}
       : {action:'accept', slot:8, expr};
@@ -3258,12 +3278,15 @@ async function saveCurrentSpotFilters() {
 }
 
 function resetStoredRuleEditor() {
+  document.getElementById('rule-and-condition').value = '';
+  document.getElementById('rule-and-value').value = '';
   document.getElementById('rule-family').value = 'spots';
   document.getElementById('rule-action').value = 'accept';
   document.getElementById('rule-slot').value = '1';
   document.getElementById('rule-condition').value = 'call';
   document.getElementById('rule-value').value = '';
   document.getElementById('rule-status').textContent = '';
+  updateRuleCommand();
 }
 
 function fillUiText(key, values={}) {
@@ -3275,6 +3298,7 @@ function fillUiText(key, values={}) {
 
 function parseStoredRuleExpression(expr) {
   const text = String(expr || '').trim();
+  if (/\s+and\s+/i.test(text)) return {condition:'raw', value:text};
   const match = text.match(/^(call|callsign|by|on|call_zone|spotter_zone|by_zone|call_itu|spotter_itu|by_itu|call_cont|dx_cont|spotter_cont|by_cont|call_dxcc|info)\s+(.+)$/i);
   return match ? {condition:match[1].toLowerCase(), value:match[2]} : {condition:'raw', value:text};
 }
@@ -3302,6 +3326,9 @@ function renderStoredFilterRules() {
     document.getElementById('rule-slot').value = String(row.slot);
     document.getElementById('rule-condition').value = parsed.condition;
     document.getElementById('rule-value').value = parsed.value;
+    document.getElementById('rule-and-condition').value = '';
+    document.getElementById('rule-and-value').value = '';
+    updateRuleCommand();
   }));
   list.querySelectorAll('[data-rule-delete]').forEach(button => button.addEventListener('click', async () => {
     const row = storedFilterRules[Number(button.dataset.ruleDelete)];
@@ -3311,6 +3338,8 @@ function renderStoredFilterRules() {
 }
 
 async function loadStoredFilterRules() {
+  document.getElementById('filter-preview-title').textContent = uiText('filter_preview_title');
+  document.getElementById('filter-preview-run').textContent = uiText('filter_preview_run');
   if (!webToken) { storedFilterRules = []; renderStoredFilterRules(); return; }
   try {
     const data = await webJson(FILTER_RULES);
@@ -3336,7 +3365,6 @@ async function updateStoredFilterRule(payload) {
 }
 
 async function saveStoredFilterRule() {
-  const condition = document.getElementById('rule-condition').value;
   const value = document.getElementById('rule-value').value.trim();
   if (!value) {
     const status = document.getElementById('rule-status');
@@ -3346,8 +3374,23 @@ async function saveStoredFilterRule() {
   await updateStoredFilterRule({
     operation:'save', family:document.getElementById('rule-family').value,
     action:document.getElementById('rule-action').value, slot:Number(document.getElementById('rule-slot').value),
-    expr:condition === 'raw' ? value : `${condition} ${value}`
+    expr:storedRuleExpression()
   });
+}
+function storedRuleExpression() {
+  const condition = document.getElementById('rule-condition').value;
+  const value = document.getElementById('rule-value').value.trim();
+  let expr = condition === 'raw' ? value : `${condition} ${value}`;
+  const second = document.getElementById('rule-and-condition').value;
+  const secondValue = document.getElementById('rule-and-value').value.trim();
+  if (second) expr += ` and ${second} ${secondValue}`;
+  return expr;
+}
+function updateRuleCommand() {
+  const family = document.getElementById('rule-family').value;
+  const action = document.getElementById('rule-action').value;
+  const slot = document.getElementById('rule-slot').value;
+  document.getElementById('rule-command').textContent = `${action}/${family} ${slot} ${storedRuleExpression()}`;
 }
 
 function renderStoredDenyRules() {
@@ -4019,6 +4062,31 @@ const ruleSlot = document.getElementById('rule-slot');
 if (ruleSlot) ruleSlot.innerHTML = Array.from({length:10}, (_, slot) => `<option value="${slot}">${slot}</option>`).join('');
 document.getElementById('rule-reset')?.addEventListener('click', resetStoredRuleEditor);
 document.getElementById('rule-save')?.addEventListener('click', saveStoredFilterRule);
+for (const option of document.getElementById('rule-condition').options) {
+  if (option.value !== 'raw') document.getElementById('rule-and-condition').appendChild(option.cloneNode(true));
+}
+for (const id of ['rule-family','rule-action','rule-slot','rule-condition','rule-value','rule-and-condition','rule-and-value']) {
+  document.getElementById(id).addEventListener('input', updateRuleCommand);
+}
+document.getElementById('filter-preview-run')?.addEventListener('click', async () => {
+  const result = document.getElementById('filter-preview-result');
+  const value = document.getElementById('rule-value').value.trim();
+  const payload = {
+    freq_khz: Number(document.getElementById('filter-preview-frequency').value),
+    dx_call: document.getElementById('filter-preview-dx').value.trim(),
+    spotter: document.getElementById('filter-preview-spotter').value.trim(),
+    info: document.getElementById('filter-preview-info').value,
+    stream: document.getElementById('filter-preview-stream').value
+  };
+  if (value) payload.draft = {family:document.getElementById('rule-family').value, action:document.getElementById('rule-action').value, slot:Number(document.getElementById('rule-slot').value), expr:storedRuleExpression()};
+  try {
+    const data = await webJson('/api/filters/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    const rule = data.filter.rule;
+    const detail = !data.policy_allowed ? uiText('filter_preview_policy') : rule ? `${rule.action}/${rule.family} ${rule.slot} ${rule.expr}` : uiText('filter_preview_' + data.filter.reason);
+    result.textContent = `${uiText(data.allowed ? 'filter_preview_pass' : 'filter_preview_blocked')} ${detail} ${uiText(data.draft ? 'filter_preview_draft' : 'filter_preview_stored')}`;
+    result.className = 'rule-status ' + (data.allowed ? 'ok' : 'err');
+  } catch (err) {result.textContent = String(err.message || err); result.className = 'rule-status err';}
+});
 document.getElementById('deny-save')?.addEventListener('click', saveStoredDenyRule);
 
 // ================================================================ Flags
