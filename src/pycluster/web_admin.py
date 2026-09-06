@@ -6020,6 +6020,7 @@ function showControlHelp(indicator) {
 }
 function addHelpIndicators() {
   document.querySelectorAll('label[title],button[title],a[title],input[title],select[title],textarea[title]').forEach((control) => {
+    if (control.closest('.matrix-toggle')) return;
     const label = control.labels && control.labels[0];
     const host = label || control;
     if (host.matches('input,select,textarea') || host.querySelector('.help-indicator')) return;
