@@ -533,6 +533,12 @@ Cards:
 
 ### Recent Spots
 
+The RBN view uses a bounded in-memory sample of the latest 200 accepted RBN
+spots, including direct feeds and peer-delivered RBN reports. The All view merges
+that sample with stored cluster spots. The sample resets on restart; it does not
+restore RBN database persistence. Feed connection state remains under Node
+Settings > RBN.
+
 Columns:
 
 - `Frequency`

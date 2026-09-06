@@ -958,6 +958,36 @@ def test_api_spots_can_filter_cluster_vs_rbn_sources(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_api_spots_includes_live_only_rbn_sample(tmp_path) -> None:
+    from pycluster.app import ClusterApp
+
+    async def run():
+        cfg = _mk_config(str(tmp_path / 'live-rbn.db'), admin_token='adm')
+        app = ClusterApp(cfg)
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            spot = Spot(14025, 'AI3I-90', now, 'CW 20 dB', 'AI3I-91', 'RBN', '')
+            assert app._remember_rbn_spot(spot)
+            assert not app._remember_rbn_spot(spot)
+            assert await app.store.count_spots() == 0
+            headers = {'X-Admin-Token': 'adm'}
+            for source in ('all', 'rbn'):
+                code, _, body = await _http_request(app.web, 'GET', f'/api/spots?source={source}', headers=headers)
+                assert code == 200
+                rows = json.loads(body)
+                assert len(rows) == 1
+                assert rows[0]['dx_call'] == 'AI3I-90'
+                assert rows[0]['is_rbn']
+            code, _, body = await _http_request(app.web, 'GET', '/api/spots?source=cluster', headers=headers)
+            assert code == 200 and json.loads(body) == []
+            code, _, _ = await _http_request(app.web, 'GET', '/api/spots?source=rbn')
+            assert code == 401
+            assert await app.store.count_spots() == 0
+        finally:
+            await app.store.close()
+    asyncio.run(run())
+
+
 def test_proto_state_counts_pc18_handshake_as_known(tmp_path) -> None:
     db = str(tmp_path / "web_proto_pc18.db")
     cfg = _mk_config(db, admin_token="adm")

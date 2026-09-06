@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from dataclasses import asdict
 from datetime import datetime, timezone
 import fnmatch
 import hashlib
@@ -187,6 +188,7 @@ class ClusterApp:
             event_log_fn=self.telnet.record_event,
             audit_rows_fn=self.telnet.audit_rows,
             rbn_status_fn=self.rbn_feed_status,
+            recent_rbn_spots_fn=self.recent_rbn_spots,
             rbn_reconfigure_fn=self.reconfigure_rbn_feed,
             config_updated_fn=self._apply_runtime_config,
             config_path=config_path,
@@ -213,6 +215,7 @@ class ClusterApp:
         self._rbn_feed_tasks: dict[str, asyncio.Task[None]] = {}
         self._rbn_feed_statuses: dict[str, dict[str, object]] = {}
         self._rbn_recent_spot_epochs: deque[int] = deque(maxlen=10000)
+        self._rbn_telemetry_spots: deque[Spot] = deque(maxlen=200)
         self._rbn_seen_order: deque[tuple[int, tuple[object, ...]]] = deque(maxlen=50000)
         self._rbn_seen: set[tuple[object, ...]] = set()
         self._rbn_web_socket: socket.socket | None = None
@@ -986,7 +989,11 @@ class ClusterApp:
             self._rbn_seen.discard(stale_key)
         self._rbn_seen.add(key)
         self._rbn_seen_order.append((now, key))
+        self._rbn_telemetry_spots.append(spot)
         return True
+
+    def recent_rbn_spots(self) -> list[dict[str, object]]:
+        return [asdict(spot) for spot in reversed(self._rbn_telemetry_spots)]
 
     def _publish_rbn_to_public_web(self, spot: Spot) -> None:
         if self._rbn_web_socket is None:

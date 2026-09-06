@@ -129,6 +129,7 @@ class WebAdminServer:
         rbn_reconfigure_fn=None,
         config_updated_fn=None,
         config_path: str | None = None,
+        recent_rbn_spots_fn=None,
     ) -> None:
         self.config = config
         self.store = store
@@ -153,6 +154,7 @@ class WebAdminServer:
         self.event_log_fn = event_log_fn
         self.audit_rows_fn = audit_rows_fn
         self.rbn_status_fn = rbn_status_fn
+        self.recent_rbn_spots_fn = recent_rbn_spots_fn
         self.rbn_reconfigure_fn = rbn_reconfigure_fn
         self.config_updated_fn = config_updated_fn
         self.config_path = str(config_path).strip() if config_path else ""
@@ -7321,7 +7323,10 @@ if (restoreWebSession()) {
                     return
                 limit = self._parse_limit(q, "limit", default=20, low=1, high=200)
                 source_filter = str(q.get("source", ["all"])[0] or "all").strip().lower()
-                rows = await self.store.latest_spots(limit=200 if source_filter in {"rbn", "cluster"} else limit)
+                rows = list(await self.store.latest_spots(limit=200 if source_filter in {"rbn", "cluster"} else limit))
+                if source_filter != "cluster" and self.recent_rbn_spots_fn:
+                    rows.extend(self.recent_rbn_spots_fn())
+                    rows.sort(key=lambda row: int(row["epoch"]), reverse=True)
                 def _row_is_rbn(r) -> bool:
                     return is_rbn_spot(
                         str(r["dx_call"] or ""),
@@ -7334,6 +7339,8 @@ if (restoreWebSession()) {
                         for r in rows
                         if (_row_is_rbn(r) == (source_filter == "rbn"))
                     ][:limit]
+                else:
+                    rows = rows[:limit]
                 dataset_status = self._dataset_status().get("cty", {})
                 body = [
                     {
