@@ -2648,7 +2648,6 @@ table{
 .known-node-table th:first-child,.known-node-table th:last-child{width:1%;white-space:nowrap}
 .known-node-table td:first-child,.known-node-table td:last-child,
 .known-node-table td:first-child > *,.known-node-table td:last-child > *{white-space:nowrap;overflow-wrap:normal}
-.known-node-heading{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
 .topology-tablewrap{overflow-x:hidden}
 th,td{
   padding:10px 11px;
@@ -2832,7 +2831,6 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   .known-node-table td > *{grid-column:2}
   .known-node-table td:first-child,.known-node-table td:last-child,
   .known-node-table td:first-child > *,.known-node-table td:last-child > *{white-space:normal;overflow-wrap:anywhere}
-  .known-node-heading{flex-wrap:wrap}
   .known-node-table td > .tag{justify-self:start}
   .known-node-table td[colspan]{display:block}
   .known-node-table td[colspan]::before{content:none}
@@ -4389,9 +4387,9 @@ function setKnownNodeRows(payload, peers) {
       ? `<a href="${esc(publicUrl)}" target="_blank" rel="noopener noreferrer"><strong>${esc(call)}</strong></a>`
       : `<strong>${esc(call)}</strong>`;
     return `<tr>
-      <td data-label="Node"><div class="known-node-heading">${callText}<span class="tag">${esc(confidence)}</span></div><div>${esc(row.software_version || '-')} • ${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div><div class="mini">${esc(String(row.node_id || ''))}</div><div class="mini"><strong>Location</strong> ${esc(location)}</div></td>
+      <td data-label="Node">${callText}<div class="mini">${esc(String(row.node_id || ''))}</div><div class="mini"><strong>Location</strong> ${esc(location)}</div></td>
       <td data-label="Path &amp; Services">${esc(learned)}<div class="mini">${row.node_id ? `<button class="secondary py-route-detail" type="button" data-call="${esc(call)}" title="Inspect retained topology routes">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}</button>` : 'No retained routes'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div><div class="mini"><strong>Services</strong> ${esc(services)}</div>${serviceMeta}</td>
-      <td data-label="Last Seen">${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
+      <td data-label="Last Seen">${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div><div>${esc(row.software_version || '-')}</div><div class="mini">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div><span class="tag">${esc(confidence)}</span></td>
     </tr>`;
   }).join('');
   body.querySelectorAll('.py-route-detail').forEach((button) => {
