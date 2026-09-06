@@ -54,6 +54,70 @@ def test_filter_preview_draft_is_read_only_and_matches_telnet(tmp_path):
     asyncio.run(run())
 
 
+def test_filter_preview_rbn_policy_and_cross_surface_edits(tmp_path):
+    from pycluster.telnet_server import Session, TelnetClusterServer
+
+    async def run():
+        cfg = _mk_config(str(tmp_path / "parity.db"))
+        store = SpotStore(cfg.store.sqlite_path)
+        web = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        telnet = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        call = "AI3I-99"
+        telnet._sessions[1] = Session(call=call, writer=SimpleNamespace(), connected_at=datetime.now(timezone.utc))
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await store.upsert_user_registry(call, now, privilege="user", email="ai3i@example.test")
+            await store.set_user_pref(call, "access.web.rbn", "on", now)
+            await store.set_user_pref(call, "rbn", "on", now)
+            token, _ = web._issue_web_token(call)
+            headers = {"X-Web-Token": token, "Content-Type": "application/json"}
+
+            async def preview(stream):
+                sample = {"freq_khz": 14025, "dx_call": "AI3I-90", "spotter": "AI3I-91", "stream": stream}
+                code, _, body = await _http_request_ex(web, "POST", "/api/filters/preview", json.dumps(sample).encode(), headers)
+                assert code == 200
+                return json.loads(body)
+
+            await telnet._execute_command(call, "accept/rbn 0 call AI3I-90")
+            await telnet._execute_command(call, "reject/spots 9 by AI3I-91")
+            for stream in ("spots", "rbn"):
+                result = await preview(stream)
+                assert not result["allowed"]
+                assert result["filter"]["rule"]["slot"] == 9
+                _, output = await telnet._execute_command(call, f"show/filter test {stream} --verbose 14025 AI3I-90 AI3I-91")
+                assert "Decision: deny" in output
+            assert (await preview("rbn"))["filter"]["reason"] == "global_reject"
+
+            # A web mutation must be visible to the existing telnet instance.
+            payload = {"operation": "delete", "family": "spots", "action": "reject", "slot": 9}
+            code, _, _ = await _http_request_ex(web, "POST", "/api/filters", json.dumps(payload).encode(), headers)
+            assert code == 200
+            for stream in ("spots", "rbn"):
+                assert (await preview(stream))["allowed"]
+                _, output = await telnet._execute_command(call, f"show/filter test {stream} --verbose 14025 AI3I-90 AI3I-91")
+                assert "Decision: allow" in output
+
+            await telnet._execute_command(call, "unset/rbn")
+            result = await preview("rbn")
+            assert result["filter"]["allowed"]
+            assert not result["rbn_subscribed"]
+            assert not result["policy_allowed"]
+            assert not result["allowed"]
+            assert (await preview("spots"))["allowed"]
+
+            await telnet._execute_command(call, "set/rbn")
+            await store.set_user_pref(call, "access.web.rbn", "off", now)
+            result = await preview("rbn")
+            assert result["rbn_subscribed"]
+            assert not result["rbn_access"]
+            assert not result["allowed"]
+            assert not await store.latest_spots(limit=1)
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def _mk_config(db_path: str, static_dir: str = "") -> AppConfig:
     return AppConfig(
         node=NodeConfig(node_call="AI3I-15", owner_name="John D. Lewis", qth="Western Pennsylvania"),
