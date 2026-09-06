@@ -3427,7 +3427,6 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </section>
             <section>
               <h3>Rejected Frames</h3>
-              <div class="subtle" style="margin-bottom:8px">Frames received and rejected by local protocol policy. A peer that never answers PY00 is shown in Peer State, not as a rejected frame.</div>
               <div class="tablewrap">
                 <table>
                   <thead><tr><th>Peer</th><th>Total</th><th>Loop</th><th>Reasons</th></tr></thead>

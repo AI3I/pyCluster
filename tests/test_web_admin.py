@@ -331,7 +331,7 @@ def test_web_admin_protocol_health_separates_pc_and_py_history() -> None:
     assert 'data-history-family="connection"' not in text
     assert "function historyFamily(row)" in text
     assert "PY00 sent; no response" in text
-    assert "A peer that never answers PY00 is shown in Peer State" in text
+    assert "A peer that never answers PY00" not in text
 
 
 def test_web_admin_static_exposes_qrz_settings() -> None:
