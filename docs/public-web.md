@@ -67,7 +67,7 @@ State/province filtering is not inferred from callsign call areas. It will only 
 - saved filter presets for logged-in users
 - count of filtered vs total spots
 - `RARE` badge support for selected entities
-- `All` reset button when a filter is active
+- `Clear Filters` reset button when a filter is active, distinct from the source selector's `All` option
 - QTH marker support from the local map profile or, after login, the user's stored grid square
 
 ### Stats

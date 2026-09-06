@@ -1367,7 +1367,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
       <div id="lower">
         <div style="display:flex;align-items:center;padding:3px 8px 3px 10px;border-bottom:1px solid var(--border-main);flex-shrink:0;gap:6px;flex-wrap:wrap">
           <span id="spot-count-lbl" style="font-size:0.70rem;color:var(--text-dim)"></span>
-          <button class="csv-btn spot-reset-btn" id="spot-reset-btn" title="Show all spots again">All</button>
+          <button class="csv-btn spot-reset-btn" id="spot-reset-btn" title="Clear all display filters">Clear Filters</button>
           <span class="spot-source-filter" role="group" aria-label="Spot source">
             <button class="csv-btn spot-rbn-btn active" type="button" data-rbn-view="ALL" aria-pressed="true">All</button>
             <button class="csv-btn spot-rbn-btn" id="spot-rbn-btn" type="button" data-rbn-view="RBN" aria-pressed="false">RBN</button>
@@ -4462,6 +4462,7 @@ function syncSpotFilterUi() {
   if (searchEl) searchEl.value = searchTerm;
   const resetBtn = document.getElementById('spot-reset-btn');
   if (resetBtn) resetBtn.classList.toggle('visible', hasActiveSpotFilter());
+  if (resetBtn && uiText('spot_clear_filters') !== 'spot_clear_filters') resetBtn.textContent = uiText('spot_clear_filters');
   document.querySelectorAll('[data-rbn-view]').forEach(btn => {
     const selected = btn.dataset.rbnView === (['RBN','NO_RBN'].includes(commentTagFilter) ? commentTagFilter : 'ALL');
     btn.classList.toggle('active', selected);
