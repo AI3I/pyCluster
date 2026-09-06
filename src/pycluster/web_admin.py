@@ -2637,7 +2637,7 @@ table{
 .known-node-table{
   width:100%;
   min-width:100%;
-  table-layout:fixed;
+  table-layout:auto;
 }
 .known-node-table th,
 .known-node-table td{
@@ -2645,9 +2645,10 @@ table{
   overflow-wrap:anywhere;
 }
 .known-node-table td > *{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
-.known-node-table th:nth-child(1){width:42%}
-.known-node-table th:nth-child(2){width:min(34%,360px)}
-.known-node-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.known-node-table th:first-child,.known-node-table th:last-child{width:1%;white-space:nowrap}
+.known-node-table td:first-child,.known-node-table td:last-child,
+.known-node-table td:first-child > *,.known-node-table td:last-child > *{white-space:nowrap;overflow-wrap:normal}
+.known-node-heading{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
 .topology-tablewrap{overflow-x:hidden}
 th,td{
   padding:10px 11px;
@@ -2829,6 +2830,9 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
     text-transform:uppercase;
   }
   .known-node-table td > *{grid-column:2}
+  .known-node-table td:first-child,.known-node-table td:last-child,
+  .known-node-table td:first-child > *,.known-node-table td:last-child > *{white-space:normal;overflow-wrap:anywhere}
+  .known-node-heading{flex-wrap:wrap}
   .known-node-table td > .tag{justify-self:start}
   .known-node-table td[colspan]{display:block}
   .known-node-table td[colspan]::before{content:none}
