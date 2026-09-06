@@ -292,9 +292,9 @@ def test_web_admin_static_peer_table_uses_compact_fixed_columns() -> None:
     assert ".peer-table{" in text
     assert "table-layout:fixed;" in text
     assert ".peer-table th:nth-child(4){width:25%}" in text
-    assert '<thead><tr><th>Peer</th><th>Connection</th><th>Activity</th><th>Traffic</th></tr></thead>' in text
+    assert '<thead><tr><th>Peer</th><th>Connection</th><th>Activity</th><th>Operations</th></tr></thead>' in text
     assert '<th>Role</th><th>Status</th><th>Traffic</th><th>Health</th>' not in text
-    assert 'class="peer-table"' in text
+    assert 'class="peer-table responsive-records"' in text
     assert 'class="peer-toolbar"' in text
     assert 'id="peerModal"' in text
     assert 'id="peerModalTitle"' in text
@@ -311,7 +311,7 @@ def test_web_admin_static_peer_table_uses_compact_fixed_columns() -> None:
     assert "window.confirm('Delete saved peer ' + peer + '? Any live session for this peer will also be disconnected.')" in text
     _assert_text_order(text, 'id="peername"', 'id="peerpass"', 'id="peerprof"')
     assert '<label>Connection</label><span>${esc(connection)}</span>' in text
-    assert '<label>Protocol</label><span>${esc(protoText)}</span>' in text
+    assert '<label>Protocol</label><span>${esc(protoText)}</span>' not in text
     assert '<label>Address</label><span>${esc(dsnText)}</span>' in text
     _assert_text_order(
         text,
@@ -321,6 +321,17 @@ def test_web_admin_static_peer_table_uses_compact_fixed_columns() -> None:
         'id="pdisconnect"',
     )
     _assert_text_order(text, 'id="peerDelete"', 'id="peerSave"', 'id="closePeerModal"')
+
+
+def test_web_admin_protocol_health_separates_pc_and_py_history() -> None:
+    text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
+    assert '<th>Connection</th><th>PC Protocol</th><th>PY Protocol</th><th>Activity</th>' in text
+    assert 'data-history-family="py"' in text
+    assert 'data-history-family="pc"' in text
+    assert 'data-history-family="connection"' not in text
+    assert "function historyFamily(row)" in text
+    assert "PY00 sent; no response" in text
+    assert "A peer that never answers PY00 is shown in Peer State" in text
 
 
 def test_web_admin_static_exposes_qrz_settings() -> None:
@@ -2701,7 +2712,8 @@ def test_web_admin_login_failure_logs_structured_authfail(tmp_path, caplog) -> N
                 )
             assert code == 401
             assert json.loads(body.decode("utf-8"))["error"] == "login failed"
-            assert "AUTHFAIL channel=sysop-web ip=198.51.100.24 call=AI3I reason=bad_password" in caplog.text
+            # An absent socket identity must not grant trust to forwarded headers.
+            assert "AUTHFAIL channel=sysop-web ip=- call=AI3I reason=bad_password" in caplog.text
         finally:
             await store.close()
 
@@ -3017,6 +3029,29 @@ def test_web_peers_reports_transmit_active_receive_quiet_link(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_address_block_api_authorization_and_removal(tmp_path) -> None:
+    async def run():
+        cfg = _mk_config(str(tmp_path / 'address-api.db'), admin_token='adm')
+        store = SpotStore(cfg.store.sqlite_path)
+        srv = WebAdminServer(config=cfg, store=store, started_at=datetime.now(timezone.utc), session_count_fn=lambda: 0)
+        try:
+            code, _, _ = await _http_request(srv, 'GET', '/api/address-blocks')
+            assert code == 401
+            headers = {'X-Admin-Token': 'adm', 'Content-Type': 'application/json'}
+            payload = {'action': 'add', 'network': '2001:db8::/64', 'reason': 'test', 'minutes': 60}
+            code, _, body = await _http_request(srv, 'POST', '/api/address-blocks', headers=headers, body=json.dumps(payload).encode())
+            assert code == 200
+            row = json.loads(body)[0]
+            assert await store.address_blocked('2001:db8::99')
+            code, _, body = await _http_request(srv, 'POST', '/api/address-blocks', headers=headers, body=json.dumps({'action': 'remove', 'id': row['id']}).encode())
+            assert code == 200
+            assert json.loads(body)[0]['removed_epoch']
+            assert not await store.address_blocked('2001:db8::99')
+        finally:
+            await store.close()
+    asyncio.run(run())
+
+
 def test_web_proto_history_endpoint(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "web_proto_hist.db")
@@ -3058,6 +3093,24 @@ def test_web_proto_history_endpoint(tmp_path) -> None:
             assert len(rows) == 2
             assert all(r["peer"] == "peer1" for r in rows)
             assert rows[0]["epoch"] >= rows[1]["epoch"]
+            await store.set_user_pref(
+                cfg.node.node_call, "proto.peer.peer1.history",
+                json.dumps([
+                    {"epoch": now - 100, "key": "py.hello_received_epoch", "from": "", "to": "123"},
+                    *[{"epoch": now - i, "key": "pc24.flag", "from": "0", "to": "1"} for i in range(10)],
+                ]), now,
+            )
+            code, _, body = await _http_request(
+                srv, "GET", "/api/proto/history?peer=peer1&family=py&limit=1",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 200
+            assert [row["key"] for row in json.loads(body)] == ["py.hello_received_epoch"]
+            code, _, _ = await _http_request(
+                srv, "GET", "/api/proto/history?family=invalid",
+                headers={"X-Admin-Token": "adm"},
+            )
+            assert code == 400
         finally:
             await store.close()
 
@@ -3267,9 +3320,11 @@ def test_web_admin_contains_py_topology_and_notice_controls() -> None:
     assert node_settings < text.index('id="pyNoticeShare"') < maintenance
     assert protocol_health < topology < text.index('id="knownNodeRows"')
     assert 'data-view="topology"' in text
-    assert '<th>Node</th><th>Identity</th><th>Location</th><th>Path &amp; Services</th><th>Freshness</th>' in text
+    assert '<th>Node</th><th>Identity</th><th>Path &amp; Services</th><th>Freshness</th>' in text
     assert '.topology-tablewrap{overflow-x:hidden}' in text
     assert 'data-label="Path &amp; Services"' in text
+    assert '<div class="mini"><strong>Location</strong> ${esc(location)}</div>' in text
+    assert 'data-label="Location"' not in text
     assert 'id="pyShareNotices"' not in text
     assert text.index('id="saveNodeMaintenance"') < text.index('id="runCleanup"')
     assert "target === 'pyprotocol' || target === 'maintenance'" in text
@@ -4759,16 +4814,17 @@ def test_web_protocol_page_focuses_on_alerts_and_history(tmp_path) -> None:
             assert headers.get("content-type", "").startswith("text/html")
             html = body.decode("utf-8")
             assert "Protocol Health" in html
-            assert "Protocol Alerts" in html
+            assert "Connection Alerts" in html
             assert "Protocol History" in html
             assert "Peer State" in html
-            assert "Protocol Detail" in html
+            assert "PC Protocol" in html
+            assert "PY Protocol" in html
             assert "proto-peer-table" in html
             assert 'id="protoPeers"' in html
             assert 'id="protoPeerRows"' in html
             assert 'id="protoAlertSummary"' in html
             assert "function setProtoPeerRows(peers)" in html
-            assert "Policy Drops" in html
+            assert "Rejected Frames" in html
             assert "Loading policy drops..." in html
             assert "j('/api/proto/summary')" in html
             assert "j('/api/policydrop' + (peer ? '?peer=' + peer : ''))" in html

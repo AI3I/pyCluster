@@ -49,7 +49,7 @@ from .spot_throttle import (
     check_spot_throttle,
     load_spot_throttle_policy,
 )
-from .spot_filters import SpotFilterEntry, entity_matches_filter, evaluate_spot_entries, is_legacy_rbn_expr
+from .spot_filters import SpotFilterEntry, entity_matches_filter, evaluate_spot_entries, is_legacy_rbn_expr, explain_spot_entries
 from .strings import StringCatalog
 from .store import SpotStore
 from .importer import import_spot_file
@@ -226,6 +226,7 @@ class TelnetClusterServer:
         "sysop/access",
         "sysop/path",
         "sysop/peer",
+        "sysop/ipblock",
         "sysop/peeraccount",
         "sysop/peerprofile",
         "sysop/setaccess",
@@ -1093,6 +1094,8 @@ class TelnetClusterServer:
 
         if first == "call_zone" and rest:
             ent = lookup(dx_call) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(dx_call)
             if not ent:
                 return False
             wanted = self._parse_zone_spec(rest, 1, 40)
@@ -1100,6 +1103,8 @@ class TelnetClusterServer:
 
         if first == "call_itu" and rest:
             ent = lookup(dx_call) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(dx_call)
             if not ent:
                 return False
             wanted = self._parse_zone_spec(rest, 1, 90)
@@ -1107,6 +1112,8 @@ class TelnetClusterServer:
 
         if first == "call_dxcc" and rest:
             ent = lookup(dx_call) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(dx_call)
             if not ent:
                 return False
             return entity_matches_filter(ent, rest)
@@ -1146,6 +1153,12 @@ class TelnetClusterServer:
                 return False
             wanted = self._parse_zone_spec(rest, 1, 90)
             return bool(wanted) and ent.itu_zone in wanted
+
+        if first in {"spotter_dxcc", "by_dxcc"} and rest:
+            ent = lookup(spotter) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(spotter)
+            return entity_matches_filter(ent, rest)
 
         if first == "info" and rest:
             return rest in (info or "").lower()
@@ -3888,16 +3901,12 @@ class TelnetClusterServer:
             dx_call = args[1].upper()
             spotter = args[2].upper()
             info = " ".join(args[3:]) if len(args) > 3 else ""
-            if call not in self._filters:
-                await self._load_filters_for_call(call)
-            f = self._filters.get(call, {}).get(fam, {})
-            ok, detail = self._eval_filter_family_detail(
-                f,
-                lambda expr: (
-                    self._spot_matches_expr(freq, dx_call, spotter, info, expr)
-                    and (fam != "rbn" or self._is_rbn_spot(dx_call, spotter, info))
-                ),
-            )
+            rows = await self.store.list_filter_rules(call)
+            entries = [SpotFilterEntry(str(row['family']), str(row['action']), int(row['slot']), str(row['expr'])) for row in rows]
+            decision = explain_spot_entries(entries, lambda expr: self._spot_matches_expr(freq, dx_call, spotter, info, expr), is_rbn=fam == 'rbn' or self._is_rbn_spot(dx_call, spotter, info))
+            ok = decision.allowed
+            rule = decision.rule
+            detail = self._render_string('filters.rule_match', '{action} rule matched in slot {slot}: {expr}', action=rule.action.capitalize(), slot=rule.slot, expr=rule.expr) if rule else self._string('filtertest.' + decision.reason, decision.reason)
             lines = [
                 self._render_string("filters.test_spots_title", "Filter test for {call} ({family}):", call=call, family=fam),
                 self._render_string("filters.decision", "  Decision: {decision}", decision="allow" if ok else "deny"),
@@ -7706,6 +7715,23 @@ class TelnetClusterServer:
             return self._render_string("sysop.peerprofile_updated", "Profile for peer {peer} set to {profile}.", peer=peer, profile=profile) + "\r\n"
         return self._render_string("sysop.peer_missing_create", "No saved or live peer named {peer}; use the SysOp web Peers and Links view or create/connect the peer first.", peer=peer) + "\r\n"
 
+    async def _cmd_sysop_ipblock(self, call: str, arg: str | None) -> str:
+        denied = await self._require_privilege(call, 2, "sysop/ipblock")
+        if denied:
+            return denied
+        parts = (arg or "show").split(maxsplit=3)
+        try:
+            if parts[0] == "add" and len(parts) == 4:
+                await self.store.add_address_block(parts[1], parts[3], call, int(parts[2]))
+            elif parts[0] == "remove" and len(parts) == 2:
+                await self.store.remove_address_block(int(parts[1]), call)
+            elif parts != ["show"]:
+                raise ValueError("usage")
+        except ValueError:
+            return self._string("sysop.ipblock_usage", "Usage: sysop/ipblock show | add <IP/CIDR> <minutes; 0=permanent> <reason> | remove <id>") + "\r\n"
+        rows = await self.store.list_address_blocks(history=True)
+        return "\r\n".join(self._render_string("sysop.ipblock_row", "{id} {network} expires={expires} removed={removed} {reason}", id=row['id'], network=row['network'], expires=row['expires_epoch'], removed=row['removed_epoch'], reason=row['reason']) for row in rows) + "\r\n"
+
     async def _cmd_sysop_peer(self, call: str, arg: str | None) -> str:
         denied = await self._require_privilege(call, 2, "sysop/peer")
         if denied:
@@ -10854,6 +10880,7 @@ class TelnetClusterServer:
             "sysop/access": self._cmd_sysop_access,
             "sysop/path": self._cmd_sysop_path,
             "sysop/peer": self._cmd_sysop_peer,
+            "sysop/ipblock": self._cmd_sysop_ipblock,
             "sysop/peeraccount": self._cmd_sysop_peeraccount,
             "sysop/peerprofile": self._cmd_sysop_peerprofile,
             "sysop/spotlimit": self._cmd_sysop_spotlimit,
@@ -11114,6 +11141,12 @@ class TelnetClusterServer:
         }
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        peer = writer.get_extra_info("peername")
+        if isinstance(peer, tuple) and peer and await self.store.address_blocked(str(peer[0])):
+            self._log_auth_failure("telnet", peer, "", "blocked_ip")
+            writer.close()
+            await writer.wait_closed()
+            return
         async with self._semaphore:
             peer = writer.get_extra_info("peername")
             sock = writer.get_extra_info("socket")

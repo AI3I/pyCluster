@@ -30,11 +30,13 @@ keepalive_interval_seconds = 300
 max_line_length = 512
 
 [web]
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
 host = "127.0.0.1"
 port = 8080
 admin_token = ""
 
 [public_web]
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
 enabled = true
 host = "127.0.0.1"
 port = 8081

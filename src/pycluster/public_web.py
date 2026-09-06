@@ -1,13 +1,16 @@
 from __future__ import annotations
+from .address_policy import client_address
 
 import asyncio
 import base64
 from collections import deque
+from dataclasses import asdict
 from datetime import datetime, timezone, timedelta
 import fnmatch
 import hashlib
 import json
 import logging
+import math
 import mimetypes
 from pathlib import Path
 import re
@@ -37,7 +40,7 @@ from .models import Spot, display_call, is_valid_call, is_valid_registration_cal
 from .pathmeta import describe_session_path
 from .propagation import latest_wwv_snapshot, merge_solar_snapshots, parse_hamqsl_solar_xml, snapshot_payload
 from .registration import has_valid_email, mark_email_verified, registration_state
-from .spot_filters import SpotFilterEntry, entity_matches_filter, evaluate_spot_entries
+from .spot_filters import SpotFilterEntry, entity_matches_filter, evaluate_spot_entries, explain_spot_entries, validate_expression
 from .spot_throttle import check_spot_throttle
 from .store import SpotStore
 
@@ -819,6 +822,16 @@ class PublicWebServer:
             "presets_save_failed": "Saving presets failed:",
             "presets_load_failed": "Loading presets failed:",
             "filter_rules_empty": "No stored spot or RBN rules.",
+            "filter_preview_title": "Sample spot preview",
+            "filter_quick_replace_confirm": "Replace the existing slot 8 rules with these quick filters? Review advanced rules in Rules before continuing.",
+            "filter_preview_run": "Preview",
+            "filter_preview_pass": "Passes web delivery rules.",
+            "filter_preview_blocked": "Blocked by web delivery rules.",
+            "filter_preview_policy": "RBN access or subscription is off.",
+            "filter_preview_default_allow": "No matching reject and no accept rule requires a match.",
+            "filter_preview_no_accept_match": "No accept rule matched.",
+            "filter_preview_draft": "Includes the unsaved editor rule.",
+            "filter_preview_stored": "Uses stored rules.",
             "filter_rules_load_failed": "Loading rules failed:",
             "filter_rule_saved": "Rule saved.",
             "filter_rule_deleted": "Rule deleted.",
@@ -926,15 +939,8 @@ class PublicWebServer:
             self._web_sessions.pop(k, None)
 
     def _client_ip(self, headers: dict[str, str], writer: asyncio.StreamWriter) -> str:
-        forwarded = str(headers.get("x-forwarded-for", "")).strip()
-        if forwarded:
-            return forwarded.split(",", 1)[0].strip() or "-"
         peer = writer.get_extra_info("peername") if hasattr(writer, "get_extra_info") else None
-        if isinstance(peer, tuple) and peer:
-            return str(peer[0] or "-")
-        if peer is None:
-            return "-"
-        return str(peer)
+        return client_address(peer, headers.get("x-forwarded-for", ""), self.config.public_web.trusted_proxies)
 
     def _auth_log_call(self, call: str) -> str:
         raw = str(call or "").strip().upper()
@@ -1170,7 +1176,8 @@ class PublicWebServer:
         freq = float(value("freq_khz"))
         comment = str(value("info") or "")
         dx_call = str(value("dx_call") or "")
-        spotter = display_call(str(value("spotter") or ""))
+        spotter_call = str(value("spotter") or "").strip().upper()
+        spotter = display_call(spotter_call)
         source_node = str(value("source_node") or "")
         raw = str(value("raw") or "")
         stamp = datetime.fromtimestamp(int(value("epoch")), tz=timezone.utc).isoformat()
@@ -1180,12 +1187,13 @@ class PublicWebServer:
         sp_ent = lookup(spotter) if self._cty_loaded else None
         if sp_ent is None and self._wpx_loaded:
             sp_ent = wpx_lookup(spotter)
-        is_rbn = is_rbn_spot(dx_call, spotter, f"{comment} {raw}") or source_node.strip().upper() == "RBN"
+        is_rbn = is_rbn_spot(dx_call, spotter_call, f"{comment} {raw}") or source_node.strip().upper() == "RBN"
         return {
             "time": stamp,
             "freq": freq,
             "dx_call": dx_call,
             "spotter": spotter,
+            "spotter_call": spotter_call,
             "source_node": source_node,
             "comment": comment,
             "band": freq_to_band(freq),
@@ -1432,7 +1440,7 @@ class PublicWebServer:
         first = toks[0]
         rest = " ".join(toks[1:]).strip()
         dx_call = str(spot.get("dx_call") or "").upper()
-        spotter = str(spot.get("spotter") or "").upper()
+        spotter = str(spot.get("spotter_call") or spot.get("spotter") or "").upper()
         comment = str(spot.get("comment") or "")
 
         if first in {"all", "*"}:
@@ -1456,6 +1464,11 @@ class PublicWebServer:
             ent = lookup(dx_call) if self._cty_loaded else None
             if ent is None and self._wpx_loaded:
                 ent = wpx_lookup(dx_call)
+            return entity_matches_filter(ent, rest)
+        if first in {"spotter_dxcc", "by_dxcc"} and rest:
+            ent = lookup(spotter) if self._cty_loaded else None
+            if ent is None and self._wpx_loaded:
+                ent = wpx_lookup(spotter)
             return entity_matches_filter(ent, rest)
         if first in {"call_cont", "dx_cont"} and rest:
             wanted = {tok.strip().upper() for tok in re.split(r"[,\s]+", rest) if tok.strip()}
@@ -2016,6 +2029,10 @@ class PublicWebServer:
                 k, v = line.split(":", 1)
                 headers[k.strip().lower()] = v.strip()
             body = b""
+            if await self.store.address_blocked(self._client_ip(headers, writer)):
+                self._log_auth_failure(writer, headers, "public-web", "", "blocked_ip")
+                await self._write_response(writer, 403, self._json({"error": "access denied"}))
+                return
             if method in {"POST", "PUT", "PATCH"}:
                 try:
                     content_len = request_content_length(headers.get("content-length"))
@@ -2475,7 +2492,7 @@ class PublicWebServer:
                         "public-web",
                         writer.get_extra_info("peername") if hasattr(writer, "get_extra_info") else None,
                         writer.get_extra_info("sockname") if hasattr(writer, "get_extra_info") else None,
-                        headers.get("x-forwarded-for", ""),
+                        self._client_ip(headers, writer),
                     ),
                 )
                 token, exp = self._issue_web_token(call)
@@ -2723,6 +2740,49 @@ class PublicWebServer:
                     return
                 await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
                 return
+            if path == "/api/filters/preview":
+                call = self._web_call_from_headers(headers)
+                if not call:
+                    await self._write_response(writer, 401, self._json({"error": "web login required"}))
+                    return
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "POST required"}))
+                    return
+                payload = self._parse_json_body(body)
+                try:
+                    freq = float(payload.get("freq_khz", 0))
+                    dx_call = str(payload.get("dx_call", "")).strip().upper()
+                    spotter = str(payload.get("spotter", "")).strip().upper()
+                    info = str(payload.get("info", ""))
+                    if not math.isfinite(freq) or freq <= 0 or not is_valid_call(dx_call) or not is_valid_call(spotter.removesuffix('-#')) or len(info) > 160:
+                        raise ValueError("Invalid sample spot")
+                    stream = str(payload.get("stream", "spots"))
+                    if stream not in {"spots", "rbn"}:
+                        raise ValueError("Invalid sample stream")
+                    spot = self._spot_payload(dict(freq_khz=freq, dx_call=dx_call, spotter=spotter, info=info, epoch=int(time.time()), source_node="RBN" if stream == "rbn" else "", raw=""))
+                    entries = [SpotFilterEntry(str(row['family']), str(row['action']), int(row['slot']), str(row['expr'])) for row in await self.store.list_filter_rules(call)]
+                    draft = payload.get("draft")
+                    if draft is not None:
+                        rule = SpotFilterEntry(str(draft['family']), str(draft['action']), int(draft['slot']), validate_expression(str(draft['expr'])))
+                        if rule.family not in {'spots', 'rbn'} or rule.action not in {'accept', 'reject'} or not 0 <= rule.slot <= 9 or not 1 <= len(rule.expr) <= 160:
+                            raise ValueError("Invalid draft rule")
+                        entries = [row for row in entries if (row.family, row.action, row.slot) != (rule.family, rule.action, rule.slot)] + [rule]
+                except (ValueError, TypeError, KeyError, OverflowError):
+                    await self._write_response(writer, 400, self._json({"error": "Invalid sample spot or draft rule"}))
+                    return
+                decision = explain_spot_entries(entries, lambda expr: self._spot_payload_matches_expr(spot, expr), is_rbn=bool(spot['is_rbn']))
+                policy_allowed = await self._spot_passes_public_policy(call, spot)
+                await self._write_response(writer, 200, self._json({
+                    "allowed": policy_allowed and decision.allowed,
+                    "policy_allowed": policy_allowed,
+                    "filter": asdict(decision),
+                    "is_rbn": spot['is_rbn'],
+                    "rbn_access": await self._access_allowed(call, "web", "rbn"),
+                    "rbn_subscribed": self._is_on_value(str(await self.store.get_user_pref(call, 'rbn')), default=False),
+                    "draft": draft is not None,
+                }))
+                return
+
             if path in {"/api/filters", "/api/filters/spots"}:
                 call = self._web_call_from_headers(headers)
                 if not call:
@@ -2770,9 +2830,10 @@ class PublicWebServer:
                     elif action == "clear":
                         await self.store.clear_filter_rules(call, family, slot)
                     else:
-                        expr = str(payload.get("expr", "")).strip()[:160]
-                        if not expr:
-                            await self._write_response(writer, 400, self._json({"error": "filter expression is required"}))
+                        try:
+                            expr = validate_expression(str(payload.get("expr", "")))
+                        except ValueError as exc:
+                            await self._write_response(writer, 400, self._json({"error": str(exc)}))
                             return
                         await self.store.set_filter_rule(call, family, action, slot, expr, now)
                     rows = [

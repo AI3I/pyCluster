@@ -21,6 +21,39 @@ from pycluster.public_web import PublicWebServer, _RbnLiveProtocol
 from pycluster.store import SpotStore
 
 
+def test_filter_preview_draft_is_read_only_and_matches_telnet(tmp_path):
+    from pycluster.telnet_server import TelnetClusterServer
+
+    async def run():
+        cfg = _mk_config(str(tmp_path / 'preview.db'))
+        store = SpotStore(cfg.store.sqlite_path)
+        server = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        telnet = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            token, _ = server._issue_web_token('AI3I-99')
+            headers = {'X-Web-Token': token, 'Content-Type': 'application/json'}
+            await store.set_filter_rule('AI3I-99', 'spots', 'reject', 1, 'by AI3I-90', 1)
+            sample = {'freq_khz': 14025, 'dx_call': 'AI3I-99', 'spotter': 'AI3I-90'}
+            code, _, _ = await _http_request_ex(server, 'POST', '/api/filters/preview', json.dumps(sample).encode())
+            assert code == 401
+            code, _, body = await _http_request_ex(server, 'POST', '/api/filters/preview', json.dumps(sample).encode(), headers)
+            assert code == 200
+            result = json.loads(body)
+            assert result['allowed'] is False
+            assert result['filter']['rule']['slot'] == 1
+            _, out = await telnet._execute_command('AI3I-99', 'show/filter test spots --verbose 14025 AI3I-99 AI3I-90')
+            assert 'Decision: deny' in out
+            assert 'by AI3I-90' in out
+            sample['draft'] = {'family': 'spots', 'action': 'reject', 'slot': 1, 'expr': 'by AI3I-91'}
+            code, _, body = await _http_request_ex(server, 'POST', '/api/filters/preview', json.dumps(sample).encode(), headers)
+            assert code == 200 and json.loads(body)['allowed'] is True
+            assert (await store.list_filter_rules('AI3I-99'))[0]['expr'] == 'by AI3I-90'
+            assert not await store.latest_spots(limit=1)
+        finally:
+            await store.close()
+    asyncio.run(run())
+
+
 def _mk_config(db_path: str, static_dir: str = "") -> AppConfig:
     return AppConfig(
         node=NodeConfig(node_call="AI3I-15", owner_name="John D. Lewis", qth="Western Pennsylvania"),
@@ -399,7 +432,8 @@ def test_public_web_spot_endpoints_and_static_root(tmp_path) -> None:
             assert code == 200
             hist = json.loads(body.decode("utf-8"))
             assert hist[0]["date"] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            assert hist[0]["spots"] == 2
+            same_day = datetime.fromtimestamp(now - 300, timezone.utc).date() == datetime.fromtimestamp(now, timezone.utc).date()
+            assert hist[0]["spots"] == (2 if same_day else 1)
             assert hist[0]["top_band"] in {"20m", "40m"}
 
             await store.add_bulletin("announce", "AI3I", "FULL", now, "cluster announcement")
@@ -915,7 +949,7 @@ def test_public_web_login_failure_logs_structured_authfail(tmp_path, caplog) -> 
                 )
             assert code == 401
             assert json.loads(body.decode("utf-8"))["error"] == "invalid credentials"
-            assert "AUTHFAIL channel=public-web ip=203.0.113.77 call=AI3I reason=invalid_credentials_verified" in caplog.text
+            assert "AUTHFAIL channel=public-web ip=- call=AI3I reason=invalid_credentials_verified" in caplog.text
         finally:
             await store.close()
 

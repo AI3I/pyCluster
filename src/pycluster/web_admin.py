@@ -24,6 +24,7 @@ from .maidenhead import extract_locator
 from .mfa import EmailOtpManager, SMTPMailer, generate_totp_secret, totp_otpauth_uri, verify_totp_once
 from .models import Spot, is_plausible_spot_call, is_valid_call, normalize_call
 from .netutil import detected_public_ip_addresses
+from .address_policy import client_address
 from .rbn import is_rbn_spot
 from .ctydat import is_loaded as cty_loaded, load_cty, lookup as cty_lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
@@ -1009,15 +1010,8 @@ class WebAdminServer:
         return rows
 
     def _client_ip(self, headers: dict[str, str], writer: asyncio.StreamWriter) -> str:
-        forwarded = str(headers.get("x-forwarded-for", "")).strip()
-        if forwarded:
-            return forwarded.split(",", 1)[0].strip() or "-"
         peer = writer.get_extra_info("peername") if hasattr(writer, "get_extra_info") else None
-        if isinstance(peer, tuple) and peer:
-            return str(peer[0] or "-")
-        if peer is None:
-            return "-"
-        return str(peer)
+        return client_address(peer, headers.get("x-forwarded-for", ""), self.config.web.trusted_proxies)
 
     def _auth_log_call(self, call: str) -> str:
         raw = str(call or "").strip().upper()
@@ -2291,6 +2285,7 @@ button.special{
   grid-template-columns:repeat(2,minmax(0,1fr));
   gap:18px;
 }
+.split > *{min-width:0}
 .node-tabs{
   display:flex;
   flex-wrap:wrap;
@@ -2597,8 +2592,8 @@ table{
   overflow-wrap:anywhere;
   vertical-align:top;
 }
-.peer-table th:nth-child(1){width:20%}
-.peer-table th:nth-child(2){width:30%}
+.peer-table th:nth-child(1){width:22%}
+.peer-table th:nth-child(2){width:28%}
 .peer-table th:nth-child(3){width:25%}
 .peer-table th:nth-child(4){width:25%}
 .proto-peer-table{
@@ -2609,10 +2604,12 @@ table{
   white-space:nowrap;
 }
 .proto-peer-table th:nth-child(1){width:15%}
-.proto-peer-table th:nth-child(2){width:18%}
-.proto-peer-table th:nth-child(3){width:12%}
-.proto-peer-table th:nth-child(4){width:27%}
-.proto-peer-table th:nth-child(5){width:28%}
+.proto-peer-table th:nth-child(2){width:17%}
+.proto-peer-table th:nth-child(3){width:24%}
+.proto-peer-table th:nth-child(4){width:25%}
+.proto-peer-table th:nth-child(5){width:19%}
+.proto-peer-table td:nth-child(2),
+.proto-peer-table td:nth-child(3),
 .proto-peer-table td:nth-child(4),
 .proto-peer-table td:nth-child(5){
   white-space:normal;
@@ -2627,11 +2624,10 @@ table{
   white-space:normal;
   overflow-wrap:anywhere;
 }
-.known-node-table th:nth-child(1){width:16%}
+.known-node-table th:nth-child(1){width:25%}
 .known-node-table th:nth-child(2){width:18%}
-.known-node-table th:nth-child(3){width:18%}
-.known-node-table th:nth-child(4){width:32%}
-.known-node-table th:nth-child(5){width:16%}
+.known-node-table th:nth-child(3){width:39%}
+.known-node-table th:nth-child(4){width:18%}
 .topology-tablewrap{overflow-x:hidden}
 th,td{
   padding:10px 11px;
@@ -2783,6 +2779,14 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
   input,textarea,select{font-size:16px}
   .tablewrap table{min-width:720px}
   .tablewrap.compact table{min-width:640px}
+  .tablewrap .responsive-records{min-width:100%;table-layout:fixed}
+  .responsive-records thead{display:none}
+  .responsive-records,.responsive-records tbody,.responsive-records tr{display:block}
+  .responsive-records tr{padding:8px 0;border-bottom:1px solid var(--line)}
+  .responsive-records td{display:grid;grid-template-columns:90px minmax(0,1fr);width:100%;white-space:normal;overflow-wrap:anywhere}
+  .responsive-records td::before{content:attr(data-label);font-weight:700}
+  .responsive-records td > *{grid-column:2}
+  .responsive-records td[colspan]{display:block}
   .tablewrap .known-node-table{min-width:100%}
   .known-node-table thead{display:none}
   .known-node-table,
@@ -3342,8 +3346,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </div>
           </div>
           <div class="tablewrap" style="margin-top:14px">
-            <table class="peer-table">
-              <thead><tr><th>Peer</th><th>Connection</th><th>Activity</th><th>Traffic</th></tr></thead>
+            <table class="peer-table responsive-records">
+              <thead><tr><th>Peer</th><th>Connection</th><th>Activity</th><th>Operations</th></tr></thead>
               <tbody id="peerRows"><tr><td colspan="4">Loading peers...</td></tr></tbody>
             </table>
           </div>
@@ -3354,7 +3358,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <header>
           <div>
             <h2>Protocol Health</h2>
-            <div class="subtle">Protocol alerting, threshold controls, and history review.</div>
+            <div class="subtle">Connection health, PC traffic, PY negotiation, rejected frames, and event history.</div>
           </div>
         </header>
         <div class="body">
@@ -3379,22 +3383,23 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           <section class="protocol-peer-state" style="margin-top:14px">
             <h3>Peer State</h3>
             <div class="tablewrap">
-              <table class="proto-peer-table">
-                <thead><tr><th>Peer</th><th>Link</th><th>Health</th><th>Activity</th><th>Protocol Detail</th></tr></thead>
+              <table class="proto-peer-table responsive-records">
+                <thead><tr><th>Peer</th><th>Connection</th><th>PC Protocol</th><th>PY Protocol</th><th>Activity</th></tr></thead>
                 <tbody id="protoPeerRows"><tr><td colspan="5">Loading peer state...</td></tr></tbody>
               </table>
             </div>
           </section>
           <div class="split" style="margin-top:14px">
             <section>
-              <h3>Protocol Alerts</h3>
+              <h3>Connection Alerts</h3>
               <div class="tablewrap">
                 <table>
                   <thead><tr><th>Peer</th><th>Health</th><th>Age</th><th>Flap</th><th>Status</th></tr></thead>
                   <tbody id="protoAlertRows"><tr><td colspan="5">Loading protocol alerts...</td></tr></tbody>
                 </table>
               </div>
-              <h3 style="margin-top:14px">Policy Drops</h3>
+              <h3 style="margin-top:14px">Rejected Frames</h3>
+              <div class="subtle" style="margin-bottom:8px">Frames received and rejected by local protocol policy. A peer that never answers PY00 is shown in Peer State, not as a rejected frame.</div>
               <div class="tablewrap">
                 <table>
                   <thead><tr><th>Peer</th><th>Total</th><th>Loop</th><th>Reasons</th></tr></thead>
@@ -3404,8 +3409,13 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </section>
             <section>
               <h3>Protocol History</h3>
+              <div class="subtabs" aria-label="Protocol history family">
+                <button class="subtab active" type="button" data-history-family="py">PY</button>
+                <button class="subtab" type="button" data-history-family="pc">PC</button>
+                <button class="subtab" type="button" data-history-family="all">All</button>
+              </div>
               <div class="tablewrap">
-                <table>
+                <table class="responsive-records">
                   <thead><tr><th>Peer</th><th>When</th><th>Key</th><th>From</th><th>To</th></tr></thead>
                   <tbody id="histRows"><tr><td colspan="5">Loading history...</td></tr></tbody>
                 </table>
@@ -3429,8 +3439,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <div class="body">
           <div class="tablewrap topology-tablewrap">
             <table class="known-node-table">
-              <thead><tr><th>Node</th><th>Identity</th><th>Location</th><th>Path &amp; Services</th><th>Freshness</th></tr></thead>
-              <tbody id="knownNodeRows"><tr><td colspan="5">Loading known pyCluster nodes...</td></tr></tbody>
+              <thead><tr><th>Node</th><th>Identity</th><th>Path &amp; Services</th><th>Freshness</th></tr></thead>
+              <tbody id="knownNodeRows"><tr><td colspan="4">Loading known pyCluster nodes...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -3553,6 +3563,16 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
           <div class="subpanel" id="telemetry-panel-security">
             <section>
+              <h3>Address Blocks</h3>
+              <form id="addressBlockForm" class="form-grid compact-controls">
+                <div class="field"><label for="blockNetwork">IP / CIDR</label><input id="blockNetwork" required></div>
+                <div class="field"><label for="blockMinutes">Minutes (0 = permanent)</label><input id="blockMinutes" type="number" min="0" max="525600" value="1440" required></div>
+                <div class="field"><label for="blockReason">Reason</label><input id="blockReason" maxlength="500" required></div>
+                <div class="actions"><button type="submit">Add Block</button><button type="button" id="blocksReload">Refresh</button></div>
+              </form>
+              <div class="tablewrap"><table class="responsive-records"><thead><tr><th>Network</th><th>Reason / Author</th><th>Expires</th><th>Status</th><th>Action</th></tr></thead><tbody id="addressBlockRows"></tbody></table></div>
+            </section>
+            <section>
               <h3>Security</h3>
               <div class="actions" style="margin:8px 0 12px">
                 <button class="info" id="securityReload" title="Reload recent login failures and current fail2ban bans.">Reload Security</button>
@@ -3639,6 +3659,9 @@ let currentUserBrowser = 'local';
 let spotSourceFilter = 'all';
 let selectedUserCall = '';
 let selectedPeerName = '';
+let protocolHistoryRows = [];
+let protocolHistoryFamily = 'py';
+let protocolHistoryLimit = 20;
 const USER_PAGE_SIZE = 10;
 const SYSOP_SESSION_KEY = 'pycluster-sysop-session';
 const API_BASE = window.location.pathname.startsWith('/sysop')
@@ -3682,6 +3705,7 @@ function setNodeGroup(group) {
 }
 function setTelemetryPanel(panel) {
   const target = String(panel || 'overview').toLowerCase();
+  if (target === 'security' && webTok) loadAddressBlocks().catch((err) => say(errText(err), false));
   document.querySelectorAll('.subpanel[id^="telemetry-panel-"]').forEach((el) => {
     el.classList.toggle('active', el.id === `telemetry-panel-${target}`);
   });
@@ -4048,14 +4072,6 @@ function fillPeerForm(peer) {
   const connection = data.connected === false ? 'Disconnected' : 'Connected';
   const link = data.link || {};
   const linkHealth = data.connected === false ? 'disconnected' : (link.health || 'connected');
-  const frames = `${Number(data.parsed_frames || 0)} in / ${Number(data.sent_frames || 0)} out`;
-  const rxTypes = summarizeTypes(data.rx_by_type);
-  const txTypes = summarizeTypes(data.tx_by_type);
-  const proto = data.proto || {};
-  const protoText = data.proto
-    ? `${proto.health || 'unknown'}${proto.age_min >= 0 ? ` • ${proto.age_min}m since inbound PC` : ' • no inbound PC age'} • last ${proto.last_pc_type || 'unknown'}`
-    : 'no protocol data';
-  const versionText = String((proto.pc18_summary || proto.pc18_software) || 'not advertised');
   const transport = String(data.transport || data.profile || '-').trim() || '-';
   const dsnText = String(auth.dsn || data.path_hint || '').trim() || (data.inbound ? 'inbound peer' : '-');
   const retryText = data.inbound ? 'no local retry' : (data.reconnect_enabled === false ? 'manual retry' : 'auto retry');
@@ -4064,18 +4080,12 @@ function fillPeerForm(peer) {
   byId('peerPathStatus').innerHTML = `
     <div class="status-cell"><label>Connection</label><span>${esc(connection)}</span></div>
     <div class="status-cell"><label>Direction</label><span>${esc(direction)}</span></div>
-    <div class="status-cell"><label>Link Health</label><span>${esc(linkHealth)}</span></div>
     <div class="status-cell"><label>Family</label><span>${esc(data.profile || '-')}</span></div>
-    <div class="status-cell"><label>Software</label><span>${esc(versionText)}</span></div>
     <div class="status-cell"><label>Transport</label><span>${esc(transport)}</span></div>
     <div class="status-cell"><label>Retry</label><span>${esc(retryText)}</span></div>
-    <div class="status-cell"><label>Frames</label><span>${esc(frames)}</span></div>
-    <div class="status-cell"><label>RX Types</label><span>${esc(rxTypes)}</span></div>
-    <div class="status-cell"><label>TX Types</label><span>${esc(txTypes)}</span></div>
     <div class="status-cell"><label>Mail Queue</label><span>${esc(queueText)}</span></div>
-    <div class="status-cell"><label>Route Issues</label><span>${esc(String(data.route_issues || 0))}</span></div>
     <div class="status-cell"><label>Last Error</label><span>${esc(lastError)}</span></div>
-    <div class="status-cell wide"><label>Protocol</label><span>${esc(protoText)}</span></div>
+    <div class="status-cell"><label>Link Health</label><span>${esc(linkHealth)}</span></div>
     <div class="status-cell wide"><label>Address</label><span>${esc(dsnText)}</span></div>`;
   setText('peerEditorTitle', selectedPeerName ? `Editing ${selectedPeerName}` : 'Peers and Links');
   setText('peerModalTitle', selectedPeerName ? `Editing ${selectedPeerName}` : 'Peer Details');
@@ -4137,15 +4147,11 @@ function setPeerRows(peers) {
   }
   body.innerHTML = peers.map((peer) => {
     const direction = peer.inbound ? 'Inbound' : 'Outbound';
-    const frames = `${peer.parsed_frames || 0} in / ${peer.sent_frames || 0} out`;
-    const rxTypes = summarizeTypes(peer.rx_by_type);
-    const txTypes = summarizeTypes(peer.tx_by_type);
     const status = peer.connected === false ? 'Disconnected' : 'Connected';
     const transport = String(peer.transport || '').trim();
     const reconnect = peer.inbound ? 'no local retry' : (peer.reconnect_enabled ? 'auto retry' : 'manual retry');
     const retry = peer.inbound ? 'n/a' : (peer.next_retry_epoch ? `next ${fmtEpoch(peer.next_retry_epoch)}` : 'ready');
     const queue = peer.inbound ? 'mail n/a' : `mail ${esc(String(peer.pending_mail || 0))} queued`;
-    const routeIssues = !peer.inbound && peer.route_issues ? `<div class="mini warntext">route issues ${esc(String(peer.route_issues))}</div>` : '';
     let err = '';
     if (peer.last_error) {
       let errText = String(peer.last_error);
@@ -4162,23 +4168,32 @@ function setPeerRows(peers) {
     const normalizedProfile = observedFamily || String(peer.profile || 'dxspider').trim().toLowerCase();
     const normalizedTransport = transport.toLowerCase();
     const transportMeta = transport && normalizedTransport !== normalizedProfile ? ` • ${esc(transport)}` : '';
-    const learnedVersion = String((peer.proto && (peer.proto.pc18_summary || peer.proto.pc18_software)) || '').trim();
-    const learnedVersionMeta = learnedVersion ? `<div class="mini">${esc(learnedVersion)}</div>` : '';
     const familyMeta = `<div class="mini"><strong>${esc(normalizedProfile)}</strong>${transportMeta}</div>`;
-    const lastPc = String(peer.last_pc_type || (peer.proto && peer.proto.last_pc_type) || '-');
     const rxTime = peer.last_rx_epoch ? fmtEpoch(peer.last_rx_epoch) : 'none';
     const txTime = peer.last_tx_epoch ? fmtEpoch(peer.last_tx_epoch) : 'none';
     const connectionMeta = peer.connected === false
       ? (peer.inbound ? 'waiting for remote node' : `${reconnect} • ${retry}`)
       : `${direction} • ${peer.desired ? 'configured' : 'observed'}`;
     return `<tr data-peer="${esc(peer.peer || '')}">
-      <td><strong>${esc(peer.peer || '')}</strong>${familyMeta}${learnedVersionMeta}</td>
+      <td><strong>${esc(peer.peer || '')}</strong>${familyMeta}</td>
       <td>${healthBadge(status)}<div class="mini">${esc(connectionMeta)}</div>${err}</td>
-      <td><strong>${esc(lastPc)}</strong><div class="mini">RX ${esc(rxTime)}</div><div class="mini">TX ${esc(txTime)}</div></td>
-      <td>${frames}<div class="mini">rx ${esc(rxTypes)}</div><div class="mini">tx ${esc(txTypes)}</div><div class="mini">${queue}</div>${routeIssues}</td>
+      <td><div class="mini">RX ${esc(rxTime)}</div><div class="mini">TX ${esc(txTime)}</div></td>
+      <td><div class="mini">${queue}</div><div class="mini">${esc(reconnect)} • ${esc(retry)}</div></td>
     </tr>`;
   }).join('');
   bindSelectablePeerRows(body, peers);
+  labelTableCells(body);
+}
+function labelTableCells(body) {
+  const labels = Array.from(body.closest('table').querySelectorAll('thead th'), (cell) => cell.textContent);
+  body.querySelectorAll('tr').forEach((row) => Array.from(row.cells).forEach((cell, index) => {
+    if (!cell.hasAttribute('colspan')) {
+      cell.dataset.label = labels[index] || '';
+      const value = document.createElement('div');
+      while (cell.firstChild) value.appendChild(cell.firstChild);
+      cell.appendChild(value);
+    }
+  }));
 }
 function setProtoPeerRows(peers) {
   const body = byId('protoPeerRows');
@@ -4192,28 +4207,34 @@ function setProtoPeerRows(peers) {
     const link = row.link || {};
     const pc18 = String(proto.pc18_summary || proto.pc18_software || '').trim();
     const py = proto.py || {};
+    const pcRx = Object.fromEntries(Object.entries(row.rx_by_type || {}).filter(([type]) => /^PC[0-9]+$/.test(type)));
+    const pcTx = Object.fromEntries(Object.entries(row.tx_by_type || {}).filter(([type]) => /^PC[0-9]+$/.test(type)));
     const pyWarning = py.identity_warning || py.capability_warning || py.handshake_error || '';
     const conformance = py.conformance || {};
     const pyRx = Object.entries(row.rx_bytes_by_type || {}).filter(([type]) => String(type).startsWith('PY')).reduce((sum, [, value]) => sum + Number(value || 0), 0);
     const pyTx = Object.entries(row.tx_bytes_by_type || {}).filter(([type]) => String(type).startsWith('PY')).reduce((sum, [, value]) => sum + Number(value || 0), 0);
     const pyRxFrames = Object.entries(row.rx_by_type || {}).filter(([type]) => String(type).startsWith('PY')).reduce((sum, [, value]) => sum + Number(value || 0), 0);
     const pyTxFrames = Object.entries(row.tx_by_type || {}).filter(([type]) => String(type).startsWith('PY')).reduce((sum, [, value]) => sum + Number(value || 0), 0);
+    const pyLabels = {
+      offline:'Disconnected', disabled:'Disabled locally', ineligible:'Not identified as pyCluster',
+      failed:'Invalid PY00 response', 'no-response':'PY00 sent; no response', pending:'Negotiation pending',
+      compatible:'Negotiated (compatibility mode)', partial:'Negotiated; awaiting NODEINFO', pass:'Negotiated'
+    };
+    const pyState = pyLabels[String(conformance.verdict || '')] || 'No PY state reported';
     const pyTraffic = py.identified || pyRx || pyTx
-      ? `<div class="mini">PY RX ${esc(String(pyRxFrames))} / ${esc(fmtBytes(pyRx))} • TX ${esc(String(pyTxFrames))} / ${esc(fmtBytes(pyTx))} • rejected ${esc(String(conformance.rejection_total || 0))}</div>`
-      : '';
-    const conformanceText = conformance.verdict
-      ? `<div class="mini"><strong>PY ${esc(conformance.verdict)}</strong> • ${esc(conformance.reason || '')}</div>`
+      ? `<div class="mini">RX ${esc(String(pyRxFrames))} / ${esc(fmtBytes(pyRx))} • TX ${esc(String(pyTxFrames))} / ${esc(fmtBytes(pyTx))} • rejected ${esc(String(conformance.rejection_total || 0))}</div>`
       : '';
     const linkText = link.summary || (row.connected ? 'connected' : 'down');
     const lastPc = row.last_pc_type || proto.last_pc_type || '-';
     return `<tr>
       <td><strong>${esc(row.peer || '')}</strong></td>
-      <td>${esc(linkText)}</td>
-      <td><span class="health ${esc(proto.health || 'unknown')}">${esc(proto.health || 'unknown')}</span></td>
+      <td>${healthBadge(row.connected === false ? 'disconnected' : (link.health || 'connected'))}<div class="mini">${esc(linkText)}</div></td>
+      <td><strong>Last ${esc(lastPc)}</strong><div class="mini">${esc(pc18 || 'No PC18 version advertised')}</div><div class="mini">RX ${esc(summarizeTypes(pcRx))}</div><div class="mini">TX ${esc(summarizeTypes(pcTx))}</div></td>
+      <td><strong>${esc(pyState)}</strong><div class="mini">${esc(conformance.reason || 'No negotiation evidence recorded.')}</div>${pyTraffic}${pyWarning ? `<div class="mini warntext">${esc(pyWarning)}</div>` : ''}</td>
       <td><strong>RX</strong> ${esc(fmtEpoch(row.last_rx_epoch || 0))}<div class="mini"><strong>TX</strong> ${esc(fmtEpoch(row.last_tx_epoch || 0))}</div></td>
-      <td><strong>${esc(lastPc)}</strong><div class="mini">${esc(pc18 || 'No version advertised')}</div>${conformanceText}${pyTraffic}${pyWarning ? `<div class="mini warntext">${esc(pyWarning)}</div>` : ''}</td>
     </tr>`;
   }).join('');
+  labelTableCells(body);
 }
 async function loadPeerRows() {
   const peers = await j('/api/peers');
@@ -4273,7 +4294,7 @@ function setKnownNodeRows(payload, peers) {
   });
   rows.sort((a, b) => String(a.node_call || '').localeCompare(String(b.node_call || '')));
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="5">No pyCluster nodes are known yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="4">No pyCluster nodes are known yet.</td></tr>';
     return;
   }
   body.innerHTML = rows.map((row) => {
@@ -4305,9 +4326,8 @@ function setKnownNodeRows(payload, peers) {
       ? `<a href="${esc(publicUrl)}" target="_blank" rel="noopener noreferrer"><strong>${esc(call)}</strong></a>`
       : `<strong>${esc(call)}</strong>`;
     return `<tr>
-      <td data-label="Node">${callText}<div class="mini">${esc(String(row.node_id || ''))}</div></td>
+      <td data-label="Node">${callText}<div class="mini">${esc(String(row.node_id || ''))}</div><div class="mini"><strong>Location</strong> ${esc(location)}</div></td>
       <td data-label="Identity"><span class="tag">${esc(confidence)}</span><div>${esc(row.software_version || '-')}</div><div class="mini">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div></td>
-      <td data-label="Location">${esc(location)}</td>
       <td data-label="Path &amp; Services">${esc(learned)}<div class="mini">${row.node_id ? `<button class="secondary py-route-detail" type="button" data-call="${esc(call)}" title="Inspect retained topology routes">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}</button>` : 'No retained routes'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div><div class="mini"><strong>Services</strong> ${esc(services)}</div>${serviceMeta}</td>
       <td data-label="Freshness">Seen ${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
     </tr>`;
@@ -4518,18 +4538,53 @@ function setProtoSummary(summary) {
   setText('protoHistoryPeers', `Peers with history: ${Number(data.history_peers || 0)}`);
 }
 function setHistRows(rows) {
+  protocolHistoryRows = Array.isArray(rows) ? rows : [];
+  renderHistoryRows();
+}
+function historyFamily(row) {
+  const key = String((row && row.key) || '').toLowerCase();
+  if (key.startsWith('py_') || key.startsWith('py.') || key.includes('.py_')) return 'py';
+  if (key.startsWith('pc') || key.includes('.pc')) return 'pc';
+  return 'other';
+}
+function renderHistoryRows() {
   const body = byId('histRows');
-  if (!Array.isArray(rows) || !rows.length) {
-    body.innerHTML = '<tr><td colspan="5">No protocol history for this filter.</td></tr>';
+  const matchingRows = protocolHistoryFamily === 'all'
+    ? protocolHistoryRows
+    : protocolHistoryRows.filter((row) => historyFamily(row) === protocolHistoryFamily);
+  const rows = matchingRows.slice(0, protocolHistoryLimit);
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="5">No ${esc(protocolHistoryFamily === 'all' ? 'protocol' : protocolHistoryFamily.toUpperCase())} history for this filter.</td></tr>`;
     return;
   }
   body.innerHTML = rows.map((row) => `<tr>
     <td><strong>${esc(String(row.peer || '').toUpperCase())}</strong></td>
     <td>${esc(fmtEpoch(row.epoch))}</td>
     <td>${esc(row.key || '')}</td>
-    <td>${esc(String(row.from || '').toUpperCase())}</td>
-    <td>${esc(String(row.to || '').toUpperCase())}</td>
+    <td>${esc(String(row.from || ''))}</td>
+    <td>${esc(String(row.to || ''))}</td>
   </tr>`).join('');
+  labelTableCells(body);
+}
+async function setProtocolHistoryFamily(family) {
+  protocolHistoryFamily = ['py','pc','all'].includes(family) ? family : 'py';
+  document.querySelectorAll('[data-history-family]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.historyFamily === protocolHistoryFamily);
+  });
+  byId('histRows').innerHTML = '<tr><td colspan="5">Loading history...</td></tr>';
+  try {
+    const selectedFamily = protocolHistoryFamily;
+    const rows = await j(protocolHistoryUrl());
+    if (selectedFamily === protocolHistoryFamily) setHistRows(rows);
+  } catch (err) {
+    say('Loading protocol history failed: ' + errText(err), false);
+  }
+}
+function protocolHistoryUrl() {
+  const params = new URLSearchParams({family: protocolHistoryFamily, limit: String(protocolHistoryLimit)});
+  const peer = byId('peer').value.trim();
+  if (peer) params.set('peer', peer);
+  return '/api/proto/history?' + params.toString();
 }
 function setPolicyDropRows(rows) {
   const body = byId('policyDropRows');
@@ -5070,13 +5125,15 @@ async function load() {
   sayLoading('Loading dashboard data...');
   const peer = encodeURIComponent(byId('peer').value.trim());
   const lim = parseInt(byId('phlim').value.trim(), 10) || 20;
+  protocolHistoryLimit = Math.max(1, Math.min(200, lim));
+  const historyFamilyAtLoad = protocolHistoryFamily;
   const results = await Promise.allSettled([
     j('/api/stats'),
     j('/api/spots?limit=20&source=' + encodeURIComponent(spotSourceFilter)),
     j('/api/peers'),
     j('/api/proto/summary'),
     j('/api/proto/alerts?include_acked=1' + (peer ? '&peer=' + peer : '')),
-    j('/api/proto/history' + (peer ? '?peer=' + peer + '&' : '?') + 'limit=' + encodeURIComponent(lim)),
+    j(protocolHistoryUrl()),
     j('/api/proto/thresholds'),
     j('/api/policydrop' + (peer ? '?peer=' + peer : '')),
     j('/api/node/presentation'),
@@ -5134,7 +5191,7 @@ async function load() {
   }
   if (protoSummaryRes.status === 'fulfilled') setProtoSummary(protoSummaryRes.value);
   if (protoAlertsRes.status === 'fulfilled') setProtoAlertRows(protoAlertsRes.value);
-  if (histRes.status === 'fulfilled') setHistRows(histRes.value);
+  if (histRes.status === 'fulfilled' && historyFamilyAtLoad === protocolHistoryFamily) setHistRows(histRes.value);
   if (thresholdsRes.status === 'fulfilled') {
     const thresholds = thresholdsRes.value || {};
     if (thresholds.stale_mins !== undefined) byId('pstale').value = thresholds.stale_mins;
@@ -5802,6 +5859,35 @@ byId('phreset').onclick = async () => {
   await load();
 };
 byId('phload').onclick = load;
+async function loadAddressBlocks() {
+  const rows = await j('/api/address-blocks');
+  const now = Date.now() / 1000;
+  byId('addressBlockRows').innerHTML = rows.map((row) => {
+    const active = !row.removed_epoch && (!row.expires_epoch || row.expires_epoch > now);
+    return `<tr><td>${esc(row.network)}</td><td>${esc(row.reason)}<div class="mini">${esc(row.created_by)} • ${esc(fmtEpoch(row.created_epoch))}</div></td><td>${row.expires_epoch ? esc(fmtEpoch(row.expires_epoch)) : 'Permanent'}</td><td>${row.removed_epoch ? 'Removed' : active ? 'Active' : 'Expired'}</td><td>${active ? `<button type="button" data-remove-block="${esc(row.id)}">Remove</button>` : ''}</td></tr>`;
+  }).join('') || '<tr><td colspan="5">No address blocks.</td></tr>';
+  labelTableCells(byId('addressBlockRows'));
+}
+byId('blocksReload').onclick = () => loadAddressBlocks().catch((err) => say(errText(err), false));
+byId('addressBlockForm').onsubmit = async (event) => {
+  event.preventDefault();
+  if (!window.confirm('Apply this address block to new telnet connections and web requests, including System Operator access?')) return;
+  try {
+    await j('/api/address-blocks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'add', network:byId('blockNetwork').value.trim(), minutes:Number(byId('blockMinutes').value), reason:byId('blockReason').value.trim()})});
+    await loadAddressBlocks();
+  } catch (err) { say(errText(err), false); }
+};
+byId('addressBlockRows').onclick = async (event) => {
+  const button = event.target.closest('[data-remove-block]');
+  if (!button || !window.confirm('Remove this address block?')) return;
+  try {
+    await j('/api/address-blocks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'remove', id:Number(button.dataset.removeBlock)})});
+    await loadAddressBlocks();
+  } catch (err) { say(errText(err), false); }
+};
+document.querySelectorAll('[data-history-family]').forEach((button) => {
+  button.onclick = () => setProtocolHistoryFamily(button.dataset.historyFamily || 'py');
+});
 applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
 setView((window.location.hash || '#node').slice(1) || 'node');
 setNodeGroup('general');
@@ -5856,6 +5942,10 @@ if (restoreWebSession()) {
                 return
 
             body = b""
+            if await self.store.address_blocked(self._client_ip(headers, writer)):
+                self._log_auth_failure(writer, headers, "sysop-web", "", "blocked_ip")
+                await self._write_response(writer, 403, self._json({"error": "access denied"}))
+                return
             if method == "POST":
                 try:
                     content_len = request_content_length(headers.get("content-length"))
@@ -5992,7 +6082,7 @@ if (restoreWebSession()) {
                         "sysop-web",
                         writer.get_extra_info("peername") if hasattr(writer, "get_extra_info") else None,
                         writer.get_extra_info("sockname") if hasattr(writer, "get_extra_info") else None,
-                        headers.get("x-forwarded-for", ""),
+                        self._client_ip(headers, writer),
                     ),
                 )
                 self._audit("sysop", f"{call} logged in to System Operator web")
@@ -6043,6 +6133,26 @@ if (restoreWebSession()) {
                 categories = {category} if category in allowed else None
                 rows = self.audit_rows_fn(limit, categories) if self.audit_rows_fn else []
                 await self._write_response(writer, 200, self._json(rows))
+                return
+
+            if path == "/api/address-blocks":
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                if method == "POST":
+                    payload = self._parse_json_body(body)
+                    actor = self._authorized_call(headers)
+                    try:
+                        if payload.get("action") == "remove":
+                            await self.store.remove_address_block(int(payload["id"]), actor)
+                        elif payload.get("action") == "add":
+                            await self.store.add_address_block(str(payload.get("network", "")), str(payload.get("reason", "")), actor, int(payload.get("minutes", 0)))
+                        else:
+                            raise ValueError("Invalid address block action")
+                    except (ValueError, TypeError, KeyError) as exc:
+                        await self._write_response(writer, 400, self._json({"error": str(exc)}))
+                        return
+                await self._write_response(writer, 200, self._json(await self.store.list_address_blocks(history=True)))
                 return
 
             if path == "/api/security":
@@ -7559,6 +7669,10 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
                     return
                 peer_filter = q.get("peer", [""])[0].strip().lower()
+                family = q.get("family", ["all"])[0].strip().lower()
+                if family not in {"all", "pc", "py"}:
+                    await self._write_response(writer, 400, self._json({"error": "invalid history family"}))
+                    return
                 limit = self._parse_limit(q, "limit", default=20, low=1, high=200)
                 node_cfg = await self.store.list_user_prefs(self.config.node.node_call)
                 node_cfg.update(await self.store.list_user_vars(self.config.node.node_call))
@@ -7575,8 +7689,12 @@ if (restoreWebSession()) {
                         arr = []
                     if not isinstance(arr, list):
                         continue
-                    for item in arr[-limit:]:
+                    for item in arr:
                         if not isinstance(item, dict):
+                            continue
+                        key = str(item.get("key", "")).lower()
+                        item_family = "py" if key.startswith(("py.", "py_")) else "pc" if re.match(r"pc\d+[._]", key) else "other"
+                        if family != "all" and item_family != family:
                             continue
                         rows.append(
                             {

@@ -25,6 +25,7 @@ class WebConfig:
     host: str = "127.0.0.1"
     port: int = 8080
     admin_token: str = ""
+    trusted_proxies: tuple[str, ...] = ("127.0.0.1/32", "::1/128")
 
 
 @dataclass(slots=True)
@@ -35,6 +36,7 @@ class PublicWebConfig:
     static_dir: str = ""
     cty_dat_path: str = ""
     wpxloc_raw_path: str = ""
+    trusted_proxies: tuple[str, ...] = ("127.0.0.1/32", "::1/128")
 
 
 @dataclass(slots=True)
@@ -305,6 +307,10 @@ def load_config(path: str | Path) -> AppConfig:
     telnet = TelnetConfig(**telnet_raw)
     web = WebConfig(**_load_section(data, "web"))
     public_web = PublicWebConfig(**_load_section(data, "public_web")) if "public_web" in data else PublicWebConfig()
+    for web_section in (web, public_web):
+        if not isinstance(web_section.trusted_proxies, (list, tuple)):
+            raise ValueError("trusted_proxies must be an array of IP addresses or CIDR networks")
+        web_section.trusted_proxies = tuple(str(ipaddress.ip_network(item, strict=False)) for item in web_section.trusted_proxies)
     public_web.wpxloc_raw_path = _default_wpxloc_raw_path(public_web)
     store = StoreConfig(**_load_section(data, "store"))
 
