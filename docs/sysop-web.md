@@ -97,6 +97,12 @@ Tabs:
 
 ### Authentication
 
+Both public and System Operator login forms provide named username/password
+fields and standard autocomplete hints for password managers. When the server
+requires MFA, the System Operator login switches to an inline verification step
+with a one-time-code field; accounts without an MFA challenge skip that step.
+Actual automatic OTP filling depends on the browser and password-manager integration.
+
 - `Require registration for users`
 - `Require verified email for web`
 - `Require verified email for telnet`
@@ -546,6 +552,11 @@ This view is for authenticated operator posting.
 This uses the current logged-in sysop identity.
 
 ## Telemetry
+
+The Recent records selector requests 20, 50, 100, or 200 retained entries for
+spots, audit activity, authentication failures, and logins. Tables scroll within
+the page with their headings kept visible. This is a bounded recent-history view,
+not an unlimited log archive; live-only RBN entries remain limited to the runtime buffer.
 
 This view groups runtime visibility and operational history.
 

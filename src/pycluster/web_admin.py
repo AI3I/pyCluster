@@ -2649,6 +2649,8 @@ table{
 .known-node-table td:first-child,.known-node-table td:last-child,
 .known-node-table td:first-child > *,.known-node-table td:last-child > *{white-space:nowrap;overflow-wrap:normal}
 .topology-tablewrap{overflow-x:hidden}
+#telemetry .tablewrap{max-height:480px;overflow:auto}
+#telemetry .tablewrap th{position:sticky;top:0;z-index:1}
 th,td{
   padding:10px 11px;
   border-bottom:1px solid var(--table-border);
@@ -3000,7 +3002,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   <input id="verified_email_required_for_telnet" type="checkbox">
                   <label for="verified_email_required_for_telnet">Require verified email for telnet</label>
                 </div>
-                <div class="checkrow attention" title="When enabled, web and telnet logins can require a one-time code after password verification. Codes are delivered by email.">
+                <div class="checkrow attention" title="When enabled, web and telnet logins can require a one-time code after password verification, using the account's configured authenticator or email method.">
                   <input id="mfa_enabled" type="checkbox">
                   <label for="mfa_enabled">Enable MFA login challenges</label>
                 </div>
@@ -3127,18 +3129,18 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <h3>PY Sharing Policy</h3>
               <div class="subtle">Controls decentralized metadata shared only with authenticated, negotiated pyCluster peers.</div>
               <div class="checkgrid" style="margin-top:12px">
-                <div class="checkrow attention"><input id="pyEnabled" type="checkbox"><label for="pyEnabled">Enable private pyCluster protocol</label></div>
-                <div class="checkrow"><input id="pyShareNodeInfo" type="checkbox"><label for="pyShareNodeInfo">Node information</label></div>
-                <div class="checkrow"><input id="pyShareTopology" type="checkbox"><label for="pyShareTopology">Known-node topology</label></div>
-                <div class="checkrow"><input id="pyShareHealth" type="checkbox"><label for="pyShareHealth">Health</label></div>
-                <div class="checkrow"><input id="pyShareDatasets" type="checkbox"><label for="pyShareDatasets">Dataset freshness</label></div>
-                <div class="checkrow"><input id="pyShareRbn" type="checkbox"><label for="pyShareRbn">RBN status</label></div>
-                <div class="checkrow"><input id="pySharePolicy" type="checkbox"><label for="pySharePolicy">Access policy</label></div>
-                <div class="checkrow"><input id="pyShareClock" type="checkbox"><label for="pyShareClock">Clock and uptime</label></div>
-                <div class="checkrow"><input id="pySharePublicUrl" type="checkbox"><label for="pySharePublicUrl">Public web URL</label></div>
-                <div class="checkrow"><input id="pyShareLocator" type="checkbox"><label for="pyShareLocator">Grid locator</label></div>
-                <div class="checkrow"><input id="pyShareQth" type="checkbox"><label for="pyShareQth">QTH</label></div>
-                <div class="checkrow"><input id="pyShareContact" type="checkbox"><label for="pyShareContact">System Operator contact</label></div>
+                <div class="checkrow attention"><input id="pyEnabled" type="checkbox"><label for="pyEnabled" title="Allow PY negotiation and metadata exchange with authenticated pyCluster peers. Legacy PC traffic remains separate.">Enable private pyCluster protocol</label></div>
+                <div class="checkrow"><input id="pyShareNodeInfo" type="checkbox"><label for="pyShareNodeInfo" title="Share this node's identity, software version, and advertised services.">Node information</label></div>
+                <div class="checkrow"><input id="pyShareTopology" type="checkbox"><label for="pyShareTopology" title="Exchange known-node records and routes for decentralized discovery.">Known-node topology</label></div>
+                <div class="checkrow"><input id="pyShareHealth" type="checkbox"><label for="pyShareHealth" title="Share reported service health; this does not expose logs or user sessions.">Health</label></div>
+                <div class="checkrow"><input id="pyShareDatasets" type="checkbox"><label for="pyShareDatasets" title="Share dataset age and version metadata, not dataset contents.">Dataset freshness</label></div>
+                <div class="checkrow"><input id="pyShareRbn" type="checkbox"><label for="pyShareRbn" title="Share feed state and ingest telemetry. This does not enable RBN or forward the spot stream.">RBN status</label></div>
+                <div class="checkrow"><input id="pySharePolicy" type="checkbox"><label for="pySharePolicy" title="Advertise a summary of local access requirements without changing another node's policy.">Access policy</label></div>
+                <div class="checkrow"><input id="pyShareClock" type="checkbox"><label for="pyShareClock" title="Share clock and uptime metadata for diagnostics; this does not synchronize clocks.">Clock and uptime</label></div>
+                <div class="checkrow"><input id="pySharePublicUrl" type="checkbox"><label for="pySharePublicUrl" title="Include the configured public user-facing URL in shared node information.">Public web URL</label></div>
+                <div class="checkrow"><input id="pyShareLocator" type="checkbox"><label for="pyShareLocator" title="Include this node's configured grid locator in shared node information.">Grid locator</label></div>
+                <div class="checkrow"><input id="pyShareQth" type="checkbox"><label for="pyShareQth" title="Include this node's configured location description in shared node information.">QTH</label></div>
+                <div class="checkrow"><input id="pyShareContact" type="checkbox"><label for="pyShareContact" title="Include the configured operator contact in shared metadata. Enable only for contact details intended to be shared.">System Operator contact</label></div>
               </div>
               <div class="form-grid" style="margin-top:12px">
                 <div class="field wide">
@@ -3155,11 +3157,11 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="form-grid compact-controls" id="pyNoticeFields">
                 <div class="field notice-sharing">
                   <label for="pyNoticeShare">Notice Sharing</label>
-                  <div class="checkrow attention"><input id="pyNoticeShare" type="checkbox"><label for="pyNoticeShare">Advertise on negotiated pyCluster links</label></div>
+                  <div class="checkrow attention"><input id="pyNoticeShare" type="checkbox"><label for="pyNoticeShare" title="Share the operator notice with negotiated pyCluster peers. This does not send a public cluster announcement.">Advertise on negotiated pyCluster links</label></div>
                 </div>
                 <div class="field"><label for="pyNoticeSeverity">Severity</label><div class="select-shell"><select id="pyNoticeSeverity"><option value="normal">Normal</option><option value="maintenance">Maintenance</option><option value="upgrading">Upgrading</option><option value="degraded">Degraded</option><option value="testing">Testing</option></select></div></div>
-                <div class="field"><label for="pyNoticeExpires">Expires</label><input id="pyNoticeExpires" type="datetime-local"></div>
-                <div class="field wide"><label for="pyNoticeMessage">Operator Message</label><input id="pyNoticeMessage" maxlength="240" placeholder="Short operational notice"></div>
+                <div class="field"><label for="pyNoticeExpires" title="Notice expiry in your browser's local time zone.">Expires</label><input id="pyNoticeExpires" type="datetime-local"></div>
+                <div class="field wide"><label for="pyNoticeMessage" title="Up to 240 characters describing this node's operational state. Shared with negotiated pyCluster peers when notice sharing is enabled; do not include private information.">Operator Message</label><input id="pyNoticeMessage" maxlength="240" placeholder="Short operational notice"></div>
               </div>
               <div class="actions" style="margin-top:12px">
                 <button class="good" id="pyNoticeSave" type="button">Save Notice</button>
@@ -3526,11 +3528,11 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
           <div class="field" style="margin-top:12px"><label for="text" title="Text body for chat, announce, WWV, or WX posts.">Message / Bulletin Text</label><textarea id="text" placeholder="Enter chat, announce, WWV, or WX text here before posting." title="Required for Chat, Announce, WWV, and WX actions."></textarea></div>
           <div class="actions" style="margin-top:12px">
-            <button id="spot" title="Post a DX spot using the current web-logged-in operator callsign.">Post Spot</button>
-            <button class="secondary" id="chat" title="Post a local chat-style bulletin.">Chat</button>
-            <button class="secondary" id="announce" title="Post an announce bulletin using the selected scope.">Announce</button>
-            <button class="secondary" id="wwv" title="Post a WWV-style propagation bulletin.">WWV</button>
-            <button class="secondary" id="wx" title="Post a weather bulletin.">WX</button>
+            <button id="spot">Post Spot</button>
+            <button class="secondary" id="chat">Chat</button>
+            <button class="secondary" id="announce">Announce</button>
+            <button class="secondary" id="wwv">WWV</button>
+            <button class="secondary" id="wx">WX</button>
           </div>
           <div class="subtle" style="margin-top:12px">Posting identity: <strong id="postingCall">-</strong></div>
         </div>
@@ -3549,6 +3551,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <button class="subtab" data-telemetry-panel="audit">Audit</button>
             <button class="subtab" data-telemetry-panel="security">Security</button>
           </div>
+          <div class="actions" style="margin-bottom:12px"><label for="telemetryLimit">Recent records</label><select id="telemetryLimit" style="width:auto"><option value="20">20</option><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></div>
           <div class="subpanel" id="telemetry-panel-overview">
             <section>
               <h3>Runtime Stats</h3>
@@ -3612,9 +3615,9 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <section>
               <h3>Address Blocks</h3>
               <form id="addressBlockForm" class="form-grid compact-controls">
-                <div class="field"><label for="blockNetwork">IP / CIDR</label><input id="blockNetwork" required></div>
-                <div class="field"><label for="blockMinutes">Minutes (0 = permanent)</label><input id="blockMinutes" type="number" min="0" max="525600" value="1440" required></div>
-                <div class="field"><label for="blockReason">Reason</label><input id="blockReason" maxlength="500" required></div>
+                <div class="field"><label for="blockNetwork" title="An IPv4 or IPv6 address or CIDR network. Blocks apply to new telnet and web connections, including System Operator access.">IP / CIDR</label><input id="blockNetwork" required></div>
+                <div class="field"><label for="blockMinutes" title="How long the block lasts. Zero keeps it active until manually removed.">Minutes (0 = permanent)</label><input id="blockMinutes" type="number" min="0" max="525600" value="1440" required></div>
+                <div class="field"><label for="blockReason" title="Required local explanation for the block, up to 500 characters. Recorded with the block for operator review.">Reason</label><input id="blockReason" maxlength="500" required></div>
                 <div class="actions"><button type="submit">Add Block</button><button type="button" id="blocksReload">Refresh</button></div>
               </form>
               <div class="field"><label for="addressBlockView">View</label><select id="addressBlockView"><option value="active">Active Blocks</option><option value="history">History</option></select></div>
@@ -3675,25 +3678,32 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
 <section class="panel gate" id="loginGate">
   <header>
     <div>
-      <h2>System Operator Login</h2>
+      <h2 id="sysopLoginHeading">System Operator Login</h2>
       <div class="subtle">pyCluster System Operator Console</div>
     </div>
   </header>
   <div class="body">
     <div class="gate-note">Use a callsign with System Operator access on this node.</div>
-    <div class="form-grid">
+    <form id="sysopLoginForm" action="/api/auth/login" method="post" autocomplete="on">
+    <div class="form-grid" id="sysopCredentials">
       <div class="field">
         <label for="call">Callsign</label>
-        <input id="call" placeholder="callsign">
+        <input id="call" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="callsign">
       </div>
       <div class="field">
         <label for="pass">Password</label>
-        <input id="pass" type="password" placeholder="password">
+        <input id="pass" name="password" type="password" autocomplete="current-password" placeholder="password">
       </div>
     </div>
-    <div class="actions">
-      <button id="login">Sign In</button>
+    <div id="sysopMfaStep" class="hidden">
+      <div class="gate-note" id="sysopMfaDescription"></div>
+      <div class="field"><label for="sysopOtp">MFA Code</label><input id="sysopOtp" name="otp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="12" aria-describedby="sysopMfaDescription"></div>
     </div>
+    <div class="actions">
+      <button id="sysopMfaBack" type="button" class="secondary hidden">Back</button>
+      <button id="login" type="submit">Sign In</button>
+    </div>
+    </form>
     <div class="statusline hidden" id="loginStatus"></div>
     <div class="statusline" id="who">Awaiting System Operator login.</div>
   </div>
@@ -3702,6 +3712,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
 let webTok = '';
 let webCall = '';
 let webIsSysop = false;
+let sysopLoginChallenge = null;
+let sysopLoginBusy = false;
 let userOffset = 0;
 let currentUserBrowser = 'local';
 let spotSourceFilter = 'all';
@@ -3986,6 +3998,7 @@ function sayLogin(text, ok = true) {
   el.classList.toggle('error', !ok);
 }
 function clearWebSession() {
+  resetSysopLoginStep();
   webTok = '';
   webCall = '';
   webIsSysop = false;
@@ -4564,7 +4577,7 @@ function setBanRows(rows) {
 }
 async function reloadAudit() {
   const category = byId('auditCategory')?.value || '';
-  const path = '/api/audit?limit=20' + (category ? '&category=' + encodeURIComponent(category) : '');
+  const path = '/api/audit?limit=' + byId('telemetryLimit').value + (category ? '&category=' + encodeURIComponent(category) : '');
   const rows = await j(path);
   setAuditRows(rows);
 }
@@ -5215,7 +5228,7 @@ async function load() {
   const historyFamilyAtLoad = protocolHistoryFamily;
   const results = await Promise.allSettled([
     j('/api/stats'),
-    j('/api/spots?limit=20&source=' + encodeURIComponent(spotSourceFilter)),
+    j('/api/spots?limit=' + byId('telemetryLimit').value + '&source=' + encodeURIComponent(spotSourceFilter)),
     j('/api/peers'),
     j('/api/proto/summary'),
     j('/api/proto/alerts?include_acked=1' + (peer ? '&peer=' + peer : '')),
@@ -5225,8 +5238,8 @@ async function load() {
     j('/api/node/presentation'),
     j('/api/node/taxonomy'),
     j('/api/upgrade/status'),
-    j('/api/audit?limit=20'),
-    j('/api/security?limit=20'),
+    j('/api/audit?limit=' + byId('telemetryLimit').value + '&category=' + encodeURIComponent(byId('auditCategory').value)),
+    j('/api/security?limit=' + byId('telemetryLimit').value),
     j('/api/py-nodes'),
     j('/api/py-notice'),
     j('/api/py-sharing'),
@@ -5445,7 +5458,7 @@ document.querySelectorAll('.subtab[data-spot-source]').forEach((el) => {
   el.addEventListener('click', async () => {
     spotSourceFilter = String(el.dataset.spotSource || 'all').toLowerCase();
     document.querySelectorAll('.subtab[data-spot-source]').forEach((btn) => btn.classList.toggle('active', btn === el));
-    const spots = await j('/api/spots?limit=20&source=' + encodeURIComponent(spotSourceFilter));
+    const spots = await j('/api/spots?limit=' + byId('telemetryLimit').value + '&source=' + encodeURIComponent(spotSourceFilter));
     setSpotRows(spots);
   });
 });
@@ -5468,7 +5481,7 @@ byId('auditReload').onclick = async () => {
   say('Audit reloaded.');
 };
 byId('securityReload').onclick = async () => {
-  const payload = await j('/api/security?limit=20');
+  const payload = await j('/api/security?limit=' + byId('telemetryLimit').value);
   setAuthFailRows((payload || {}).auth_failures || []);
   setLoginRows((payload || {}).logins || []);
   setBanRows((payload || {}).bans || []);
@@ -5477,6 +5490,18 @@ byId('securityReload').onclick = async () => {
 byId('auditCategory').onchange = async () => {
   await reloadAudit();
 };
+byId('telemetryLimit').onchange = async () => {
+  try {
+    const limit = byId('telemetryLimit').value;
+    const spots = await j('/api/spots?limit=' + limit + '&source=' + encodeURIComponent(spotSourceFilter));
+    setSpotRows(spots);
+    await reloadAudit();
+    const security = await j('/api/security?limit=' + limit);
+    setAuthFailRows(security.auth_failures || []);
+    setLoginRows(security.logins || []);
+    setBanRows(security.bans || []);
+  } catch (err) { say(errText(err), false); }
+};
 byId('themeToggle').onclick = () => {
   const current = document.documentElement.classList.contains('light') ? 'light' : 'dark';
   applyTheme(current === 'light' ? 'dark' : 'light');
@@ -5484,25 +5509,53 @@ byId('themeToggle').onclick = () => {
 byId('logout').onclick = async () => {
   await logoutSysop();
 };
+function resetSysopLoginStep() {
+  sysopLoginChallenge = null;
+  byId('sysopCredentials').classList.remove('hidden');
+  byId('sysopMfaStep').classList.add('hidden');
+  byId('sysopMfaBack').classList.add('hidden');
+  byId('sysopOtp').value = '';
+  byId('sysopOtp').disabled = true;
+  byId('sysopOtp').required = false;
+  setText('sysopLoginHeading', 'System Operator Login');
+  setText('login', 'Sign In');
+}
+byId('sysopMfaBack').onclick = () => {
+  if (sysopLoginBusy) return;
+  resetSysopLoginStep();
+  byId('pass').value = '';
+  sayLogin('');
+  byId('pass').focus();
+};
 async function loginSysop() {
+  if (sysopLoginBusy) return;
+  sysopLoginBusy = true;
+  byId('login').disabled = true;
+  byId('sysopMfaBack').disabled = true;
   try {
     sayLogin('');
     const call = byId('call').value.trim();
     const password = byId('pass').value;
     let payload = {call, password};
+    if (sysopLoginChallenge) payload = {...sysopLoginChallenge, otp:byId('sysopOtp').value.trim()};
     let r = await jw('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), skipAuthReset:true});
     if (r && r.mfa_required) {
-      const method = r.mfa_method === 'totp' ? 'authenticator app' : 'email OTP';
-      const otp = window.prompt('Enter the ' + method + ' code for ' + call + ':', '');
-      if (!otp) {
-        sayLogin('Login cancelled before MFA code entry.', false);
-        say('Login cancelled before MFA code entry.', false);
-        return;
-      }
-      payload = {call, password, challenge_id: r.challenge_id || '', otp: String(otp).trim()};
-      r = await jw('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), skipAuthReset:true});
+      sysopLoginChallenge = {call:payload.call, password:payload.password, challenge_id:r.challenge_id || ''};
+      byId('sysopCredentials').classList.add('hidden');
+      byId('sysopMfaStep').classList.remove('hidden');
+      byId('sysopMfaBack').classList.remove('hidden');
+      setText('sysopLoginHeading', 'System Operator Verification');
+      setText('sysopMfaDescription', r.mfa_method === 'totp' ? 'Enter the code from your authenticator app.' : 'Enter the code sent to your email.');
+      setText('login', 'Verify');
+      byId('sysopOtp').disabled = false;
+      byId('sysopOtp').required = true;
+      byId('sysopOtp').value = '';
+      byId('sysopOtp').focus();
+      return;
     }
     if (r && r.ok) {
+      resetSysopLoginStep();
+      byId('pass').value = '';
       webTok = r.token;
       webCall = r.call;
       webIsSysop = !!r.sysop;
@@ -5543,16 +5596,16 @@ async function loginSysop() {
       sayLogin('Login failed: ' + message, false);
       say('Login failed: ' + message, false);
     }
+  } finally {
+    sysopLoginBusy = false;
+    byId('login').disabled = false;
+    byId('sysopMfaBack').disabled = false;
   }
 }
-byId('login').onclick = loginSysop;
-[byId('call'), byId('pass')].forEach((field) => {
-  field.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter') return;
-    event.preventDefault();
-    loginSysop();
-  });
-});
+byId('sysopLoginForm').onsubmit = (event) => {
+  event.preventDefault();
+  loginSysop();
+};
 async function saveNodeSettings(actionId) {
   try {
     await runButtonAction(actionId, async () => {
@@ -6026,10 +6079,14 @@ function showControlHelp(indicator) {
   controlHelp.style.top = Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - controlHelp.offsetHeight - 12)) + 'px';
 }
 function addHelpIndicators() {
-  document.querySelectorAll('label[title],button[title],a[title],input[title],select[title],textarea[title]').forEach((control) => {
+  document.querySelectorAll('label[title],button[title],a[title],input[title],select[title],textarea[title],.checkrow[title]').forEach((control) => {
     if (control.closest('.matrix-toggle')) return;
     if (control.closest('#loginGate')) return;
-    const label = control.labels && control.labels[0];
+    if (control.matches('button,a') && !['runCleanup','runUpgrade','phreset','reset','rbnAdvanced'].includes(control.id)) {
+      if (control.matches('button') && !control.matches('.iconbtn,.py-route-detail')) control.removeAttribute('title');
+      return;
+    }
+    const label = control.matches('.checkrow') ? control.querySelector('label') : control.labels && control.labels[0];
     const host = label || control;
     if (host.matches('input,select,textarea') || host.querySelector('.help-indicator')) return;
     const tip = host.getAttribute('title') || control.getAttribute('title');

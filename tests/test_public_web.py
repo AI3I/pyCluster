@@ -1430,8 +1430,10 @@ def test_public_static_keeps_button_icons_but_not_taxonomy_emoji_labels() -> Non
     assert 'id="audio-icon"' in text
     assert "const AUDIO_GAIN_BOOST = 2.5;" in text
     assert "Math.min(0.6, Math.max(0.001, vol * AUDIO_GAIN_BOOST))" in text
-    assert "document.querySelectorAll('#login-call, #login-pass, #login-otp')" in text
-    assert "e.preventDefault();\n    loginOperatorFromModal();" in text
+    assert "document.getElementById('public-login-form').addEventListener('submit'" in text
+    assert "e.preventDefault();\n  loginOperatorFromModal();" in text
+    assert 'id="login-call" name="username"' in text
+    assert 'id="login-pass" name="password"' in text
     assert 'id="theme-icon"' in text
     assert "⬇ CSV" in text and "⬇ ADIF" in text
     assert 'id="spot-rbn-btn" type="button" title="Show RBN/Skimmer spots">RBN</button>' in text

@@ -4,6 +4,9 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Rebind the public spot stream when login identity changes, preventing an anonymous connection from bypassing stored user filters (#279).
+- Add bounded 20/50/100/200-record Telemetry history selection and scrollable tables (#278).
+- Add standard username/password autocomplete fields and submit forms for public and SysOp password-manager integration, preserving MFA prompts.
 - Add Topology search and pagination, defaulting to 15 nodes per page, with local Add Peer drafts from node route details. Existing peers reopen for editing; new drafts leave transport blank and retry disabled.
 - Show which remote services are reported down beside degraded health. Treat an independently hosted public-web process as unobserved rather than falsely advertising it as down.
 
