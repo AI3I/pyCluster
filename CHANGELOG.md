@@ -2,11 +2,11 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## Unreleased
+## 1.0.21 - 2026-09-06
 
 - Add filtered public spot JSON diagnostics, distinguish Clear Filters from the All source selector, and default the spot view to one hour while retaining saved preset ranges.
 
-## 1.0.21 - 2026-09-06
+- Label learned public cluster nodes as Discovered rather than Reported, with Network Node as their role.
 
 - Add immediate All/RBN/No RBN public-web display filtering using backend spot classification without changing RBN access or subscriptions.
 
