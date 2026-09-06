@@ -2,7 +2,7 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## Unreleased
+## 1.0.20 - 2026-09-05
 
 - Refresh SysOp RBN status independently every five seconds while the console is visible, without overwriting unsaved settings; show the runtime QRZ agent default instead of a generic version placeholder.
 
