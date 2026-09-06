@@ -78,19 +78,20 @@ def _has_valid_email(email: str) -> bool:
     return has_valid_email(email)
 
 
-def _spot_call_review(value: str, cty_status: dict[str, object] | None = None) -> dict[str, object]:
+def _spot_call_review(value: str, cty_status: dict[str, object] | None = None, *, spotter: bool = False) -> dict[str, object]:
     call = normalize_call(value)
+    lookup_call = call.removesuffix("-#") if spotter else call
     reasons: list[str] = []
     advisory: list[str] = []
     cty_loaded = bool((cty_status or {}).get("loaded", False))
     cty_stale = bool((cty_status or {}).get("stale", False))
-    if not is_plausible_spot_call(call):
+    if not is_plausible_spot_call(lookup_call):
         reasons.append("malformed")
     elif not cty_loaded and not wpx_loaded():
         advisory.append("prefix_data_unavailable")
     elif cty_stale and not wpx_loaded():
         advisory.append("prefix_data_stale")
-    elif cty_lookup(call) is None and wpx_lookup(call) is None:
+    elif cty_lookup(lookup_call) is None and wpx_lookup(lookup_call) is None:
         reasons.append("unrecognized_prefix")
     return {
         "call": call,
@@ -7352,7 +7353,7 @@ if (restoreWebSession()) {
                         "source_node": r["source_node"],
                         "is_rbn": _row_is_rbn(r),
                         "dx_review": _spot_call_review(str(r["dx_call"] or ""), dataset_status),
-                        "spotter_review": _spot_call_review(str(r["spotter"] or ""), dataset_status),
+                        "spotter_review": _spot_call_review(str(r["spotter"] or ""), dataset_status, spotter=True),
                     }
                     for r in rows
                 ]
