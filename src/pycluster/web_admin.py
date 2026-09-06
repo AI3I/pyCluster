@@ -2584,6 +2584,10 @@ button.special{
   max-width:320px;
   flex:1 1 280px;
 }
+#topology .browser-toolbar{flex-wrap:wrap}
+#knownNodeSearch{flex:0 1 auto;width:240px;max-width:100%}
+#topology .browser-nav{flex-direction:row;flex-wrap:wrap;min-width:0}
+#knownNodePageSize{width:auto}
 .tablewrap{
   overflow:auto;
   border:1px solid var(--line);
@@ -3460,12 +3464,17 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <tbody id="knownNodeRows"><tr><td colspan="4">Loading known pyCluster nodes...</td></tr></tbody>
             </table>
           </div>
+          <div class="browser-toolbar">
+            <input id="knownNodeSearch" type="search" placeholder="Filter nodes" aria-label="Filter known nodes">
+            <div class="browser-nav"><select id="knownNodePageSize" aria-label="Nodes per page"><option value="5">5</option><option value="15" selected>15</option><option value="30">30</option><option value="50">50</option></select><span id="knownNodePageInfo" class="subtle" aria-live="polite"></span><button id="knownNodePrev" class="secondary" type="button">Previous</button><button id="knownNodeNext" class="secondary" type="button">Next</button></div>
+          </div>
         </div>
         <div class="user-modal hidden" id="pyRouteModal" role="dialog" aria-modal="true" aria-labelledby="pyRouteTitle">
           <div class="users-editor-side user-modal-panel">
             <section>
               <div class="user-modal-head">
                 <h3 id="pyRouteTitle">Topology Routes</h3>
+                <button class="secondary" id="knownNodeAddPeer" type="button">Add Peer...</button>
                 <button class="secondary" id="closePyRouteModal" type="button" title="Close topology route details">Close</button>
               </div>
               <div class="subtle" id="pyRouteSummary">Live routes retained for this reported node.</div>
@@ -4259,7 +4268,14 @@ async function loadPeerRows() {
   setPeerRows(peers);
   setProtoPeerRows(peers);
 }
+let knownNodePayload = {};
+let knownNodePeers = [];
+let knownNodeCatalog = [];
+let knownNodePage = 0;
+let selectedKnownNode = '';
 function setKnownNodeRows(payload, peers) {
+  knownNodePayload = payload || {};
+  knownNodePeers = Array.isArray(peers) ? peers : [];
   const body = byId('knownNodeRows');
   if (!body) return;
   const peerRows = Array.isArray(peers) ? peers : [];
@@ -4311,16 +4327,27 @@ function setKnownNodeRows(payload, peers) {
     knownCalls.add(call);
   });
   rows.sort((a, b) => String(a.node_call || '').localeCompare(String(b.node_call || '')));
-  if (!rows.length) {
+  knownNodeCatalog = rows;
+  const search = byId('knownNodeSearch').value.trim().toLowerCase();
+  const matching = rows.filter(row => [row.node_call, row.node_id, row.locator, row.qth].some(value => String(value || '').toLowerCase().includes(search)));
+  const pageSize = Number(byId('knownNodePageSize').value);
+  const pages = Math.max(1, Math.ceil(matching.length / pageSize));
+  knownNodePage = Math.max(0, Math.min(knownNodePage, pages - 1));
+  setText('knownNodePageInfo', `Page ${knownNodePage + 1} of ${pages} • ${matching.length} nodes`);
+  byId('knownNodePrev').disabled = knownNodePage === 0;
+  byId('knownNodeNext').disabled = knownNodePage >= pages - 1;
+  if (!matching.length) {
     body.innerHTML = '<tr><td colspan="4">No pyCluster nodes are known yet.</td></tr>';
     return;
   }
-  body.innerHTML = rows.map((row) => {
+  body.innerHTML = matching.slice(knownNodePage * pageSize, (knownNodePage + 1) * pageSize).map((row) => {
     const call = String(row.node_call || '').toUpperCase();
     const confidence = String(row.confidence || 'reported').toLowerCase();
     const directPeer = peerMap.get(call);
     const peerPy = directPeer && directPeer.proto ? (directPeer.proto.py || {}) : {};
     const health = peerPy.health || {};
+    const downServices = Object.entries(health.services || {}).filter(([, state]) => state === 'down').map(([name]) => name);
+    const healthLabel = String(health.state || 'unknown') + (downServices.length ? ` (${downServices.join(', ')} down)` : '');
     const rbn = peerPy.rbn_status || {};
     const probe = peerPy.probe || {};
     const sync = peerPy.sync || {};
@@ -4334,7 +4361,7 @@ function setKnownNodeRows(payload, peers) {
     const serviceMeta = row.discovery_state
       ? `<div class="mini">${esc(row.discovery_state)}</div>`
       : directPeer
-        ? `<div class="mini">health ${esc(health.state || 'unknown')} • RBN ${esc(rbn.state || 'unknown')} • sync ${esc(sync.state || 'pending')} • RTT ${probe.state === 'responsive' ? esc(String(probe.rtt_ms || 0)) + ' ms' : esc(probe.state || 'pending')}</div>`
+        ? `<div class="mini">Reported health ${esc(healthLabel)} • RBN ${esc(rbn.state || 'unknown')} • sync ${esc(sync.state || 'pending')} • RTT ${probe.state === 'responsive' ? esc(String(probe.rtt_ms || 0)) + ' ms' : esc(probe.state || 'pending')}</div>`
       : '';
     const rawPublicUrl = String(row.public_web_url || '').trim();
     // Peer-advertised; only ever render it as a link when it is plainly http(s).
@@ -4357,6 +4384,10 @@ function setKnownNodeRows(payload, peers) {
 async function openPyRouteModal(call) {
   const nodeCall = String(call || '').trim().toUpperCase();
   if (!nodeCall) return;
+  selectedKnownNode = nodeCall;
+  const node = knownNodeCatalog.find(row => String(row.node_call || '').toUpperCase() === nodeCall);
+  byId('knownNodeAddPeer').disabled = !node || node.confidence === 'local';
+  setText('knownNodeAddPeer', knownNodePeers.some(peer => String(peer.peer || '').toUpperCase() === nodeCall) ? 'Edit Peer...' : 'Add Peer...');
   setText('pyRouteTitle', `Topology Routes • ${nodeCall}`);
   setText('pyRouteSummary', 'Loading retained routes...');
   byId('pyRouteRows').innerHTML = '<tr><td colspan="7">Loading...</td></tr>';
@@ -5260,6 +5291,32 @@ async function load() {
 }
 
 byId('reload').onclick = load;
+byId('knownNodePrev').onclick = () => {knownNodePage--; setKnownNodeRows(knownNodePayload, knownNodePeers);};
+byId('knownNodeNext').onclick = () => {knownNodePage++; setKnownNodeRows(knownNodePayload, knownNodePeers);};
+byId('knownNodeSearch').oninput = () => {knownNodePage = 0; setKnownNodeRows(knownNodePayload, knownNodePeers);};
+byId('knownNodePageSize').onchange = () => {knownNodePage = 0; setKnownNodeRows(knownNodePayload, knownNodePeers);};
+byId('knownNodeAddPeer').onclick = async () => {
+  const nodeCall = selectedKnownNode;
+  const node = knownNodeCatalog.find(row => String(row.node_call || '').toUpperCase() === nodeCall);
+  if (!node || node.confidence === 'local') return;
+  try {
+    const peers = await j('/api/peers');
+    if (selectedKnownNode !== nodeCall) return;
+    const existing = peers.find(peer => String(peer.peer || '').toUpperCase() === nodeCall);
+    byId('pyRouteModal').classList.add('hidden');
+    setView('links');
+    if (existing) fillPeerForm(existing);
+    else {
+      clearPeerForm();
+      byId('peername').value = nodeCall;
+      byId('peerprof').value = 'pycluster';
+      byId('peerretry').checked = false;
+      setText('peerModalTitle', `New Peer • ${nodeCall}`);
+      byId('peerPathStatus').innerHTML = `<div class="status-cell"><label>Discovery</label><span>${esc(node.confidence || 'reported')}</span></div><div class="status-cell"><label>Learned From</label><span>${esc(node.learned_from || node.source_node || '-')}</span></div><div class="status-cell wide"><label>Node UUID</label><span>${esc(node.node_id || '-')}</span></div>`;
+    }
+    openPeerModal();
+  } catch (err) {say(errText(err), false);}
+};
 byId('knownNodesReload').onclick = async () => {
   try {
     await reloadKnownNodes();

@@ -454,6 +454,27 @@ This area is the main operator view for peer health and protocol instability.
 
 ## Topology
 
+### Peer Drafts And Paging
+
+Topology defaults to 15 nodes per page and supports page-size selection and
+search by callsign, UUID, locator, or QTH. Export still includes the full catalog.
+Open a node's route details and choose Add Peer to open the local peer editor.
+Existing matching peer records are reopened instead of creating a second record.
+The local node cannot be added as its own peer.
+
+New drafts contain the advertised callsign and pyCluster family, with provenance
+shown separately. They leave transport and credentials blank and automatic retry
+off. A public web URL is not a verified telnet endpoint and is never converted
+into one. Review the endpoint and authentication before saving; enabling retry
+is an explicit operator choice. No request or configuration is sent to the
+remote node by this workflow.
+
+Reported health now includes the services marked down by a remote node. In
+split-process installations, the core cannot infer public-web health from its
+own process state; it reports that component locally as unknown and omits it
+from PY health rather than claiming it is down. This is not an external health
+probe. Older peers can continue sending the false down report until upgraded.
+
 ### Known pyCluster Nodes
 
 The dedicated Topology view uses four wrapping columns: node, identity,

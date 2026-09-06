@@ -719,7 +719,9 @@ class ClusterApp:
             },
             {
                 "component": "publicweb",
-                "state": "up" if self._public_web_started and self.public_web._server is not None else "down",
+                "state": ("disabled" if not self.config.public_web.enabled else
+                          "up" if self._public_web_started and self.public_web._server is not None else
+                          "unknown" if not self._public_web_started else "down"),
                 "detail": f"{self.config.public_web.host}:{self.config.public_web.port}",
             },
         ]
@@ -1976,7 +1978,8 @@ class ClusterApp:
         peer_key = normalize_call(peer_name) or peer_name.upper()
         row = stats.get(peer_name) or stats.get(peer_key) or {}
         components = await self.component_status()
-        services = {str(item["component"]): str(item["state"]) for item in components}
+        # An external public-web process is unobserved, not known to be down.
+        services = {str(item["component"]): str(item["state"]) for item in components if item["state"] != "unknown"}
         if not self.config.public_web.enabled:
             services["publicweb"] = "disabled"
         services["rbn-feed"] = "up" if self.config.rbn.enabled and any(

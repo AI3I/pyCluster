@@ -4000,6 +4000,35 @@ def test_app_rbn_feed_reconfigure_stops_running_tasks(tmp_path, monkeypatch) -> 
     asyncio.run(run())
 
 
+def test_py_health_does_not_mark_separate_public_web_down(tmp_path) -> None:
+    async def run():
+        cfg = _mk_config(str(tmp_path / 'external-public-web.db'))
+        cfg.public_web.enabled = True
+        app = ClusterApp(cfg)
+
+        async def ports():
+            return [7300]
+
+        app.telnet.active_ports = ports
+        app.web._server = object()
+        try:
+            components = {row['component']: row['state'] for row in await app.component_status()}
+            assert components['publicweb'] == 'unknown'
+            health = await app._build_py_health('AI3I-99')
+            assert health.state == 'healthy'
+            assert 'publicweb' not in dict(health.services)
+            app._public_web_started = True
+            health = await app._build_py_health('AI3I-99')
+            assert health.state == 'degraded'
+            assert dict(health.services)['publicweb'] == 'down'
+            cfg.public_web.enabled = False
+            health = await app._build_py_health('AI3I-99')
+            assert dict(health.services)['publicweb'] == 'disabled'
+        finally:
+            await app.store.close()
+    asyncio.run(run())
+
+
 def test_rbn_task_cancellation_closes_feed_socket(tmp_path, monkeypatch) -> None:
     async def run():
         cfg = _mk_config(str(tmp_path / 'rbn-close.db'))
