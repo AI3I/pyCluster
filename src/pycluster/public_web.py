@@ -834,6 +834,8 @@ class PublicWebServer:
             "filter_preview_stored": "Uses stored rules.",
             "filter_rules_load_failed": "Loading rules failed:",
             "spot_source_all": "All",
+            "cluster_network_node": "Network Node",
+            "cluster_discovered": "Discovered",
             "spot_clear_filters": "Clear Filters",
             "spot_export_json": "Download filtered spots as JSON",
             "spot_source_rbn": "RBN",
