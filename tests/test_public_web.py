@@ -1436,8 +1436,10 @@ def test_public_static_keeps_button_icons_but_not_taxonomy_emoji_labels() -> Non
     assert 'id="login-pass" name="password"' in text
     assert 'id="theme-icon"' in text
     assert "⬇ CSV" in text and "⬇ ADIF" in text
-    assert 'id="spot-rbn-btn" type="button" title="Show RBN/Skimmer spots">RBN</button>' in text
-    assert "commentTagFilter = commentTagFilter === 'RBN' ? 'ALL' : 'RBN';" in text
+    assert 'data-rbn-view="ALL"' in text
+    assert 'data-rbn-view="RBN"' in text
+    assert 'data-rbn-view="NO_RBN"' in text
+    assert "Boolean(s.is_rbn) !== (commentTagFilter === 'RBN')" in text
     assert 'id="sm-close" type="button" title="Close" aria-label="Close spot details">✕</button>' in text
     assert 'id="profile-close" type="button" title="Close" aria-label="Close profile">✕</button>' in text
     assert 'id="login-close" type="button" title="Close" aria-label="Close login">✕</button>' in text
