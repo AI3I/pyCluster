@@ -3,7 +3,7 @@
 Updated: 2026-09-04
 
 This roadmap describes product direction after the `1.0.19` release during
-`1.0.21` development. It is not a release checklist. The active GitHub milestone and
+the `1.0.21` release. It is not a release checklist. The active GitHub milestone and
 issues are the authority for scheduled work; [CHANGELOG.md](../CHANGELOG.md)
 records what has shipped.
 

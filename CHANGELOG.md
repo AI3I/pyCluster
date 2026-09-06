@@ -2,7 +2,7 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## Unreleased
+## 1.0.21 - 2026-09-06
 
 - Rebind the public spot stream when login identity changes, preventing an anonymous connection from bypassing stored user filters (#279).
 - Add bounded 20/50/100/200-record Telemetry history selection and scrollable tables (#278).
