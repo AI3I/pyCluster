@@ -3675,16 +3675,16 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
     <div class="gate-note">Use a callsign with System Operator access on this node.</div>
     <div class="form-grid">
       <div class="field">
-        <label for="call" title="System Operator callsign used for operator-console authentication.">Callsign</label>
-        <input id="call" placeholder="callsign" title="Only callsigns with System Operator access can enter the operator console.">
+        <label for="call">Callsign</label>
+        <input id="call" placeholder="callsign">
       </div>
       <div class="field">
-        <label for="pass" title="Password tied to the System Operator callsign.">Password</label>
-        <input id="pass" type="password" placeholder="password" title="Required for operator-console access.">
+        <label for="pass">Password</label>
+        <input id="pass" type="password" placeholder="password">
       </div>
     </div>
     <div class="actions">
-      <button id="login" title="Authenticate and open the system operator console.">Sign In</button>
+      <button id="login">Sign In</button>
     </div>
     <div class="statusline hidden" id="loginStatus"></div>
     <div class="statusline" id="who">Awaiting System Operator login.</div>
@@ -6021,6 +6021,7 @@ function showControlHelp(indicator) {
 function addHelpIndicators() {
   document.querySelectorAll('label[title],button[title],a[title],input[title],select[title],textarea[title]').forEach((control) => {
     if (control.closest('.matrix-toggle')) return;
+    if (control.closest('#loginGate')) return;
     const label = control.labels && control.labels[0];
     const host = label || control;
     if (host.matches('input,select,textarea') || host.querySelector('.help-indicator')) return;
