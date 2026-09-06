@@ -2637,7 +2637,7 @@ table{
 .known-node-table{
   width:100%;
   min-width:100%;
-  table-layout:auto;
+  table-layout:fixed;
 }
 .known-node-table th,
 .known-node-table td{
@@ -2645,6 +2645,9 @@ table{
   overflow-wrap:anywhere;
 }
 .known-node-table td > *{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.known-node-table th:nth-child(1){width:34%}
+.known-node-table th:nth-child(2){width:18%}
+.known-node-table th:nth-child(3){width:min(28%,320px)}
 .topology-tablewrap{overflow-x:hidden}
 th,td{
   padding:10px 11px;
