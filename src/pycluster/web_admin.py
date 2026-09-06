@@ -3460,7 +3460,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <div class="body">
           <div class="tablewrap topology-tablewrap">
             <table class="known-node-table">
-              <thead><tr><th>Node</th><th>Identity</th><th>Path &amp; Services</th><th>Freshness</th></tr></thead>
+              <thead><tr><th>Node</th><th>Identity</th><th>Path &amp; Services</th><th>Last Seen</th></tr></thead>
               <tbody id="knownNodeRows"><tr><td colspan="4">Loading known pyCluster nodes...</td></tr></tbody>
             </table>
           </div>
@@ -4347,7 +4347,8 @@ function setKnownNodeRows(payload, peers) {
     const peerPy = directPeer && directPeer.proto ? (directPeer.proto.py || {}) : {};
     const health = peerPy.health || {};
     const downServices = Object.entries(health.services || {}).filter(([, state]) => state === 'down').map(([name]) => name);
-    const healthLabel = String(health.state || 'unknown') + (downServices.length ? ` (${downServices.join(', ')} down)` : '');
+    const healthState = String(health.state || 'unknown');
+    const healthLabel = healthState.charAt(0).toUpperCase() + healthState.slice(1) + (downServices.length ? ` (${downServices.join(', ')} down)` : '');
     const rbn = peerPy.rbn_status || {};
     const probe = peerPy.probe || {};
     const sync = peerPy.sync || {};
@@ -4361,7 +4362,7 @@ function setKnownNodeRows(payload, peers) {
     const serviceMeta = row.discovery_state
       ? `<div class="mini">${esc(row.discovery_state)}</div>`
       : directPeer
-        ? `<div class="mini">Reported health ${esc(healthLabel)} • RBN ${esc(rbn.state || 'unknown')} • sync ${esc(sync.state || 'pending')} • RTT ${probe.state === 'responsive' ? esc(String(probe.rtt_ms || 0)) + ' ms' : esc(probe.state || 'pending')}</div>`
+        ? `<div class="mini">Reported health: ${esc(healthLabel)} • RBN ${esc(rbn.state || 'unknown')} • sync ${esc(sync.state || 'pending')} • RTT ${probe.state === 'responsive' ? esc(String(probe.rtt_ms || 0)) + ' ms' : esc(probe.state || 'pending')}</div>`
       : '';
     const rawPublicUrl = String(row.public_web_url || '').trim();
     // Peer-advertised; only ever render it as a link when it is plainly http(s).
@@ -4374,7 +4375,7 @@ function setKnownNodeRows(payload, peers) {
       <td data-label="Node">${callText}<div class="mini">${esc(String(row.node_id || ''))}</div><div class="mini"><strong>Location</strong> ${esc(location)}</div></td>
       <td data-label="Identity"><span class="tag">${esc(confidence)}</span><div>${esc(row.software_version || '-')}</div><div class="mini">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div></td>
       <td data-label="Path &amp; Services">${esc(learned)}<div class="mini">${row.node_id ? `<button class="secondary py-route-detail" type="button" data-call="${esc(call)}" title="Inspect retained topology routes">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}</button>` : 'No retained routes'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div><div class="mini"><strong>Services</strong> ${esc(services)}</div>${serviceMeta}</td>
-      <td data-label="Freshness">Seen ${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
+      <td data-label="Last Seen">${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
     </tr>`;
   }).join('');
   body.querySelectorAll('.py-route-detail').forEach((button) => {

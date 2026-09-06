@@ -478,7 +478,7 @@ probe. Older peers can continue sending the false down report until upgraded.
 ### Known pyCluster Nodes
 
 The dedicated Topology view uses four wrapping columns: node, identity,
-path and services, and freshness. Locator and QTH appear with the node UUID
+path and services, and last-seen time. Locator and QTH appear with the node UUID
 because they describe node identity rather than route state. On narrow screens each node becomes
 a labeled stacked record instead of forcing the console to scroll horizontally.
 
@@ -517,7 +517,7 @@ and lease expiry. This detail is available only to authenticated System Operator
 the live known-node catalog and retained routes for troubleshooting; it does
 not include transport addresses, credentials, tokens, users, or configuration.
 
-Lists local, directly observed, and relayed pyCluster node records with version, location, provenance, services, and freshness. These records are reported topology observations, not a central registry.
+Lists local, directly observed, and relayed pyCluster node records with version, location, provenance, services, and last-seen time. These records are reported topology observations, not a central registry.
 
 ## Operator Tools
 
