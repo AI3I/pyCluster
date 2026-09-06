@@ -478,8 +478,8 @@ probe. Older peers can continue sending the false down report until upgraded.
 ### Known pyCluster Nodes
 
 The dedicated Topology view uses three columns: node, path and services,
-and last-seen time. Confidence appears beside the callsign, with software and PY
-versions beneath it. Locator and QTH appear with the node UUID
+and last-seen time. Software and PY versions and the local/direct/reported status
+appear beneath the timestamps. Locator and QTH appear with the node UUID
 because they describe node identity rather than route state. On narrow screens each node becomes
 a labeled stacked record instead of forcing the console to scroll horizontally.
 
