@@ -3416,7 +3416,7 @@ def test_web_admin_contains_py_topology_and_notice_controls() -> None:
     assert '.topology-tablewrap{overflow-x:hidden}' in text
     assert '.known-node-table td > *{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}' in text
     assert '.known-node-table th:nth-child(1){width:25%}' not in text
-    assert '.known-node-table th:nth-child(2){width:min(34%,360px)}' in text
+    assert '.known-node-table th:first-child,.known-node-table th:last-child{width:1%;white-space:nowrap}' in text
     assert 'data-label="Path &amp; Services"' in text
     assert '<div class="mini"><strong>Location</strong> ${esc(location)}</div>' in text
     assert 'data-label="Location"' not in text
