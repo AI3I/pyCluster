@@ -2645,9 +2645,9 @@ table{
   overflow-wrap:anywhere;
 }
 .known-node-table td > *{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
-.known-node-table th:nth-child(1){width:34%}
-.known-node-table th:nth-child(2){width:18%}
-.known-node-table th:nth-child(3){width:min(28%,320px)}
+.known-node-table th:nth-child(1){width:42%}
+.known-node-table th:nth-child(2){width:min(34%,360px)}
+.known-node-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .topology-tablewrap{overflow-x:hidden}
 th,td{
   padding:10px 11px;
@@ -3473,8 +3473,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <div class="body">
           <div class="tablewrap topology-tablewrap">
             <table class="known-node-table">
-              <thead><tr><th>Node</th><th>Identity</th><th>Path &amp; Services</th><th>Last Seen</th></tr></thead>
-              <tbody id="knownNodeRows"><tr><td colspan="4">Loading known pyCluster nodes...</td></tr></tbody>
+              <thead><tr><th>Node</th><th>Path &amp; Services</th><th>Last Seen</th></tr></thead>
+              <tbody id="knownNodeRows"><tr><td colspan="3">Loading known pyCluster nodes...</td></tr></tbody>
             </table>
           </div>
           <div class="browser-toolbar">
@@ -4350,7 +4350,7 @@ function setKnownNodeRows(payload, peers) {
   byId('knownNodePrev').disabled = knownNodePage === 0;
   byId('knownNodeNext').disabled = knownNodePage >= pages - 1;
   if (!matching.length) {
-    body.innerHTML = '<tr><td colspan="4">No pyCluster nodes are known yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="3">No pyCluster nodes are known yet.</td></tr>';
     return;
   }
   body.innerHTML = matching.slice(knownNodePage * pageSize, (knownNodePage + 1) * pageSize).map((row) => {
@@ -4385,8 +4385,7 @@ function setKnownNodeRows(payload, peers) {
       ? `<a href="${esc(publicUrl)}" target="_blank" rel="noopener noreferrer"><strong>${esc(call)}</strong></a>`
       : `<strong>${esc(call)}</strong>`;
     return `<tr>
-      <td data-label="Node">${callText}<div class="mini">${esc(String(row.node_id || ''))}</div><div class="mini"><strong>Location</strong> ${esc(location)}</div></td>
-      <td data-label="Identity"><span class="tag">${esc(confidence)}</span><div>${esc(row.software_version || '-')}</div><div class="mini">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div></td>
+      <td data-label="Node"><div class="known-node-heading">${callText}<span class="tag">${esc(confidence)}</span></div><div>${esc(row.software_version || '-')} • ${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</div><div class="mini">${esc(String(row.node_id || ''))}</div><div class="mini"><strong>Location</strong> ${esc(location)}</div></td>
       <td data-label="Path &amp; Services">${esc(learned)}<div class="mini">${row.node_id ? `<button class="secondary py-route-detail" type="button" data-call="${esc(call)}" title="Inspect retained topology routes">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}</button>` : 'No retained routes'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div><div class="mini"><strong>Services</strong> ${esc(services)}</div>${serviceMeta}</td>
       <td data-label="Last Seen">${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div></td>
     </tr>`;
