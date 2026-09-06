@@ -39,6 +39,28 @@ def test_skimmer_spotter_review_checks_underlying_call(monkeypatch) -> None:
     assert 'malformed' in web_admin_mod._spot_call_review('AI3I#-#', {'loaded': True}, spotter=True)['reasons']
 
 
+def test_rbn_status_endpoint_returns_current_state_without_config(tmp_path) -> None:
+    async def run():
+        cfg = _mk_config(str(tmp_path / 'rbn-status.db'), admin_token='adm')
+        store = SpotStore(cfg.store.sqlite_path)
+        status = {'enabled': True, 'state': 'logging_in', 'feeds': [{'name':'CW/RTTY', 'state':'connecting'}]}
+        server = WebAdminServer(cfg, store, datetime.now(timezone.utc), lambda:0, rbn_status_fn=lambda:dict(status))
+        try:
+            code, _, _ = await _http_request(server, 'GET', '/api/rbn/status')
+            assert code == 401
+            headers = {'X-Admin-Token':'adm'}
+            code, _, body = await _http_request(server, 'GET', '/api/rbn/status', headers=headers)
+            assert code == 200 and json.loads(body) == status
+            status.update(state='connected', feeds=[{'name':'CW/RTTY', 'state':'connected'}])
+            code, _, body = await _http_request(server, 'GET', '/api/rbn/status', headers=headers)
+            assert code == 200 and json.loads(body) == status
+            code, _, _ = await _http_request(server, 'POST', '/api/rbn/status', headers=headers)
+            assert code == 405
+        finally:
+            await store.close()
+    asyncio.run(run())
+
+
 def test_sysop_login_fields_submit_on_enter() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
 

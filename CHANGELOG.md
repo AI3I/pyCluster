@@ -4,6 +4,8 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Refresh SysOp RBN status independently every five seconds while the console is visible, without overwriting unsaved settings; show the runtime QRZ agent default instead of a generic version placeholder.
+
 - Recognize the Skimmer `-#` suffix when reviewing spotter callsigns, avoiding false Malformed badges while preserving the displayed suffix.
 
 - Fix empty SysOp RBN telemetry by including a bounded 200-spot in-memory sample from accepted direct and peer RBN traffic, without restoring database persistence.

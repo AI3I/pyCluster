@@ -155,6 +155,12 @@ Direct RBN ingestion is disabled by default. When enabled from the disabled stat
 
 RBN spots still respect the per-user and peer access matrix. Telnet users do not receive live RBN spots by default; they opt in with `set/rbn`. `show/rbn` reports bounded current-session summaries. RBN reports are not retained in SQLite.
 
+Feed status and the At A Glance RBN summary refresh every five seconds while the
+authenticated console is visible. This refresh does not change unsaved form
+values. A failed status request shows Unavailable rather than retaining an old
+connection state. The QRZ Agent placeholder shows the current runtime default;
+leaving the actual field blank keeps version selection automatic across upgrades.
+
 ### QRZ Lookup
 
 This tab configures the optional QRZ XML credentials, API endpoint, and agent string used by `show/qrz`.

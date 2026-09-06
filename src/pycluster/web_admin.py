@@ -439,6 +439,7 @@ class WebAdminServer:
             "qrz_username": self.config.qrz.username,
             "qrz_password": self.config.qrz.password,
             "qrz_agent": self.config.qrz.agent,
+            "qrz_agent_default": f"pyCluster/{__version__}",
             "qrz_api_url": self.config.qrz.api_url,
             "satellite_keps_path": self.config.satellite.keps_path,
             "satellite_prediction_hours": int(self.config.satellite.prediction_hours),
@@ -3032,7 +3033,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="form-grid compact-controls">
               <div class="field"><label for="qrz_username" title="QRZ XML username used by show/qrz lookups.">QRZ Username</label><input id="qrz_username" placeholder="QRZ username" title="Node-wide QRZ XML username used by telnet show/qrz."></div>
               <div class="field"><label for="qrz_password" title="QRZ XML password used by show/qrz lookups.">QRZ Password</label><input id="qrz_password" type="password" placeholder="QRZ password" title="Stored in local config for QRZ XML lookups."></div>
-              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="pyCluster/current-version" title="Optional QRZ XML agent string. Leave blank to use pyCluster's current runtime version automatically."></div>
+              <div class="field"><label for="qrz_agent" title="Optional QRZ XML agent string.">QRZ Agent</label><input id="qrz_agent" placeholder="Automatic" title="Optional QRZ XML agent string. Leave blank to use pyCluster's current runtime version automatically."></div>
               <div class="field"><label for="qrz_api_url" title="QRZ XML API endpoint.">QRZ API URL</label><input id="qrz_api_url" placeholder="https://xmldata.qrz.com/xml/current/" title="QRZ XML API endpoint."></div>
             </div>
           </div>
@@ -5045,28 +5046,11 @@ function fillNodeForm(data) {
   setText('retentionStatus', status);
   setText('retentionLastRun', cleanupLastRun);
   setText('retentionLastResult', cleanupResult);
-  const rbnStatus = data.rbn_status || {};
   const rbnFeedsText = String(data.rbn_feeds || '');
+  byId('qrz_agent').placeholder = data.qrz_agent_default || 'Automatic';
   syncRbnPresetTogglesFromFeeds(rbnFeedsText);
   lastRbnEnabled = !!data.rbn_enabled;
-  const rbnState = String(rbnStatus.state || (data.rbn_enabled ? 'stopped' : 'disabled'));
-  let rbnText = `Feed is ${esc(rbnState)}.`;
-  const rbnHost = String(rbnStatus.host || data.rbn_host || '').trim();
-  const namedFeeds = Array.isArray(rbnStatus.feeds) && rbnStatus.feeds.length ? rbnStatus.feeds.map(f => `${f.name || f.port}:${f.state || 'stopped'}`).join(', ') : '';
-  const rbnPorts = Array.isArray(rbnStatus.ports) && rbnStatus.ports.length ? rbnStatus.ports.join(',') : String(data.rbn_ports || data.rbn_port || 7000);
-  if (rbnHost) rbnText += ` ${esc(rbnHost)}:${esc(rbnPorts)}.`;
-  if (namedFeeds) rbnText += ` Feeds: ${esc(namedFeeds)}.`;
-  if (rbnStatus.last_connected_at) rbnText += ` Connected: ${esc(rbnStatus.last_connected_at)}.`;
-  if (rbnStatus.last_spot_at) rbnText += ` Last spot: ${esc(rbnStatus.last_spot_at)} ${esc(rbnStatus.last_spot || '')}.`;
-  if (rbnStatus.last_error) rbnText += ` Last error: ${esc(rbnStatus.last_error)}.`;
-  setText('rbnStatusState', rbnState);
-  setText('rbnStatusEndpoint', rbnHost ? `${rbnHost}:${rbnPorts}` : '-');
-  setText('rbnStatusFeeds', namedFeeds || '-');
-  setText('rbnStatusConnected', rbnStatus.last_connected_at || '-');
-  setText('rbnStatusLastSpot', rbnStatus.last_spot_at ? `${rbnStatus.last_spot_at} ${rbnStatus.last_spot || ''}` : '-');
-  setText('rbnStatusError', rbnStatus.last_error || 'none');
-  setText('navRbn', rbnState === 'connected' ? 'Online' : rbnState);
-  byId('navRbn').title = rbnText.replace(/<[^>]*>/g, '');
+  renderRbnStatus(data);
   const datasets = data.datasets || {};
   const cty = datasets.cty || {};
   const wpxloc = datasets.wpxloc || {};
@@ -5084,6 +5068,39 @@ function fillNodeForm(data) {
   setDatasetPill('navCty', 'CTY.DAT', cty);
   setDatasetPill('navWpx', 'wpxloc.raw', wpxloc);
 }
+function renderRbnStatus(data) {
+  const rbnStatus = data.rbn_status || {};
+  const rbnState = String(rbnStatus.state || (data.rbn_enabled ? 'stopped' : 'disabled'));
+  const rbnHost = String(rbnStatus.host || data.rbn_host || '').trim();
+  const namedFeeds = Array.isArray(rbnStatus.feeds) && rbnStatus.feeds.length ? rbnStatus.feeds.map(f => `${f.name || f.port}:${f.state || 'stopped'}`).join(', ') : '';
+  const rbnPorts = Array.isArray(rbnStatus.ports) && rbnStatus.ports.length ? rbnStatus.ports.join(',') : String(data.rbn_ports || data.rbn_port || 7000);
+  setText('rbnStatusState', rbnState);
+  setText('rbnStatusEndpoint', rbnHost ? `${rbnHost}:${rbnPorts}` : '-');
+  setText('rbnStatusFeeds', namedFeeds || '-');
+  setText('rbnStatusConnected', rbnStatus.last_connected_at || '-');
+  setText('rbnStatusLastSpot', rbnStatus.last_spot_at ? `${rbnStatus.last_spot_at} ${rbnStatus.last_spot || ''}` : '-');
+  setText('rbnStatusError', rbnStatus.last_error || 'none');
+  setText('navRbn', rbnState === 'connected' ? 'Online' : rbnState);
+  byId('navRbn').title = `${rbnState}${namedFeeds ? ': ' + namedFeeds : ''}`;
+}
+let rbnStatusPending = false;
+async function refreshRbnStatus() {
+  if (!webTok || !webIsSysop || document.hidden || rbnStatusPending) return;
+  const token = webTok;
+  rbnStatusPending = true;
+  try {
+    const status = await j('/api/rbn/status', {signal:AbortSignal.timeout(10000)});
+    if (webTok === token) renderRbnStatus({rbn_status:status, rbn_enabled:status.enabled});
+  } catch (error) {
+    if (webTok === token) {
+      setText('navRbn', '-');
+      setText('rbnStatusState', 'Unavailable');
+      setText('rbnStatusFeeds', '-');
+      byId('navRbn').title = errText(error);
+    }
+  } finally {rbnStatusPending = false;}
+}
+setInterval(refreshRbnStatus, 5000);
 function renderUpgradeStatus(payload) {
   const status = (payload && payload.status) || {};
   const availability = (payload && payload.availability) || {};
@@ -6154,6 +6171,17 @@ if (restoreWebSession()) {
                 categories = {category} if category in allowed else None
                 rows = self.audit_rows_fn(limit, categories) if self.audit_rows_fn else []
                 await self._write_response(writer, 200, self._json(rows))
+                return
+
+            if path == "/api/rbn/status":
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                if method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                status = self.rbn_status_fn() if self.rbn_status_fn else {"enabled": bool(self.config.rbn.enabled), "state": "unavailable"}
+                await self._write_response(writer, 200, self._json(status))
                 return
 
             if path == "/api/address-blocks":
