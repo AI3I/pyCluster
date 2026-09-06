@@ -3124,7 +3124,11 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <div class="checkrow"><input id="pyShareContact" type="checkbox"><label for="pyShareContact">System Operator contact</label></div>
               </div>
               <div class="form-grid" style="margin-top:12px">
-                <div class="field wide"><label for="pyPublicUrl" title="The public URL end users open to access this node's pyCluster web interface. Shared with other pyCluster nodes; not the System Operator console URL.">Shared Public Web URL</label><input id="pyPublicUrl" type="url" placeholder="https://cluster.example.net/" title="The public URL end users open to access this node's pyCluster web interface. Shared with other pyCluster nodes; not the System Operator console URL."></div>
+                <div class="field wide">
+                  <label for="pyPublicUrl">Shared Public Web URL</label>
+                  <div class="subtle" id="pyPublicUrlHelp">The public URL end users open to access this node's pyCluster web interface, not the System Operator console. Shared with other pyCluster nodes when public web URL sharing is enabled.</div>
+                  <input id="pyPublicUrl" type="url" placeholder="https://cluster.example.net/" aria-describedby="pyPublicUrlHelp">
+                </div>
               </div>
               <div class="actions" style="margin-top:12px"><button class="good" id="pySharingSave" type="button">Save Sharing Policy</button></div>
               <div class="user-status-detail" id="pySharingPreview" style="margin-top:12px"><div class="status-cell wide"><label>Shared Metadata Preview</label><span>No metadata preview loaded.</span></div></div>
