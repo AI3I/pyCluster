@@ -22,6 +22,23 @@ from pycluster.telnet_server import TelnetClusterServer
 from pycluster.web_admin import WebAdminServer
 
 
+def test_skimmer_spotter_review_checks_underlying_call(monkeypatch) -> None:
+    looked_up = []
+
+    def lookup(call):
+        looked_up.append(call)
+        return object()
+
+    monkeypatch.setattr(web_admin_mod, 'cty_lookup', lookup)
+    for call in ('AI3I-90', 'AI3I-99'):
+        result = web_admin_mod._spot_call_review(call + '-#', {'loaded': True}, spotter=True)
+        assert not result['suspicious']
+        assert result['call'] == call + '-#'
+        assert looked_up[-1] == call
+    assert 'malformed' in web_admin_mod._spot_call_review('AI3I-99-#', {'loaded': True})['reasons']
+    assert 'malformed' in web_admin_mod._spot_call_review('AI3I#-#', {'loaded': True}, spotter=True)['reasons']
+
+
 def test_sysop_login_fields_submit_on_enter() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/src/pycluster/web_admin.py").read_text(encoding="utf-8")
 
