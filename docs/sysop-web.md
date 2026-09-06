@@ -361,6 +361,9 @@ This view is intended to make peer operations understandable without dropping in
 
 Address-level connection policy is managed in **Telemetry > Security > Address
 Blocks**. It supports IPv4/IPv6 CIDRs, expiration, and retained removal history.
+The default **Active Blocks** view excludes removed and expired entries. Select
+**History** to see those inactive records; they no longer block traffic. Adding
+a block returns the table to Active Blocks.
 See [Security](security.md) for proxy configuration and enforcement scope.
 
 This view focuses on live peer state, negotiated protocol metadata, alerting, and protocol history. PY sharing policy and notices are configured under `Node Settings > pyCluster Protocol`.

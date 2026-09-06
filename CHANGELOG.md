@@ -4,6 +4,8 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Default SysOp address blocks to active entries, separate removed/expired history, and keep Add Block/Refresh compact on desktop and mobile.
+
 - Add read-only sample previews and a two-condition AND editor for public-web delivery rules; use shared deciding-rule explanations in telnet `show/filter test`, preserve spotter SSIDs for web filtering, and add missing WPXLOC fallback for telnet DX zone/entity filters.
 
 - Fix mobile clipping in Protocol Health and stack peer, history, and address-block records into labeled mobile layouts; keep PY counters out of the PC traffic summary.
