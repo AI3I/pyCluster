@@ -3402,6 +3402,9 @@ def test_web_admin_contains_py_topology_and_notice_controls() -> None:
     protocol_health = text.index('id="protocol"')
     topology = text.index('id="topology"')
     assert node_settings < text.index('id="pyEnabled"') < maintenance
+    assert text.index('<label for="pyPublicUrl">') < text.index('id="pyPublicUrlHelp"') < text.index('id="pyPublicUrl"')
+    assert 'aria-describedby="pyPublicUrlHelp"' in text
+    assert "The public URL end users open to access this node's pyCluster web interface" in text
     assert node_settings < text.index('id="pyNoticeShare"') < maintenance
     assert protocol_health < topology < text.index('id="knownNodeRows"')
     assert 'data-view="topology"' in text
