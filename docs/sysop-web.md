@@ -21,7 +21,22 @@ The login page gives explicit feedback for:
 - blocked callsign
 - web login denied by policy
 
+The callsign and password fields provide standard password-manager names and
+autocomplete hints. Enter submits the form. If the server requires MFA, the same
+login panel presents a second verification step instead of a browser popup.
+The code field supports `one-time-code` autofill, and its instructions distinguish
+authenticator codes from emailed codes. Without an MFA challenge, login proceeds
+directly to the console. Back returns to password entry and clears the pending
+challenge from the browser. Autofill support depends on the password manager and browser.
+
 ## Global Layout
+
+Help indicators are reserved for non-obvious settings, accepted input formats,
+limits, and operational consequences. They support hover, focus, and click;
+Escape dismisses the help. Clear action buttons do not receive indicators.
+The login panel has no tooltips, and the Users access matrix keeps its original
+hover descriptions without added indicators. The Shared Public Web URL field
+has a visible explanation beneath its heading instead.
 
 The console is organized into these main views:
 
