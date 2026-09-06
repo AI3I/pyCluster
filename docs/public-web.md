@@ -57,7 +57,7 @@ Core live spot view.
 Features:
 
 - filter by band, mode, activity, DX continent, spotter continent, DX CQ zone, spotter CQ zone, comment tags, and text
-- time-range filtering for `1h`, `3h`, `6h`, `12h`, `18h`, and `24h`
+- time-range filtering for `1h`, `3h`, `6h`, `12h`, `18h`, and `24h`, defaulting to `1h`; saved presets retain their selected range
 - `All` / `RBN` / `No RBN` immediately filters the available spot stream by its backend RBN classification. This is a display filter, not a change to node ingestion, user subscription, or access policy. The choice is included in saved filter presets.
 
 The quick-filter panel intentionally omits ITU-zone controls. The authenticated `Rules` panel supports the shared telnet expressions for callsign, band, CQ zone, ITU zone, continent, DXCC entity, comment/mode, and advanced compound rules. Rules retain their family, action, and slot in `filter_rules`, so telnet and web sessions share the same effective state. An already-connected telnet session refreshes externally edited rules within two seconds. Slot 8 is also used by the quick-filter panel and may be replaced when those controls change.
@@ -68,6 +68,7 @@ State/province filtering is not inferred from callsign call areas. It will only 
 - count of filtered vs total spots
 - `RARE` badge support for selected entities
 - `Clear Filters` reset button when a filter is active, distinct from the source selector's `All` option
+- JSON export beside CSV and ADIF includes the currently filtered spots, their backend metadata, display-filter settings, node/version identifiers, and an export timestamp for diagnostics. It does not include login tokens, passwords, or the user's profile. Review spot contents and search/filter values before sharing the file.
 - QTH marker support from the local map profile or, after login, the user's stored grid square
 
 ### Stats

@@ -1332,7 +1332,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
     <div class="stat-pill live-pill">
       <span id="live-dot"></span><span class="sp-value">LIVE</span>
     </div>
-    <div class="stat-pill"><span class="sp-label" id="stat-total-lbl">24h Spots</span><span class="sp-value" id="stat-total">–</span></div>
+    <div class="stat-pill"><span class="sp-label" id="stat-total-lbl">1h Spots</span><span class="sp-value" id="stat-total">–</span></div>
     <div class="stat-pill"><span class="sp-label">Top Band</span><span class="sp-value" id="stat-topband">–</span></div>
     <div class="stat-pill"><span class="sp-label">Top Mode</span><span class="sp-value" id="stat-topmode">–</span></div>
     <div class="stat-pill"><span class="sp-label">DXCC</span><span class="sp-value" id="stat-dxcc">–</span></div>
@@ -1376,6 +1376,7 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
           <div id="map-legend" style="display:flex;flex-wrap:wrap;gap:4px;flex:1;align-items:center"></div>
           <button class="csv-btn" id="csv-export-btn" title="Download filtered spots as CSV">⬇ CSV</button>
           <button class="csv-btn" id="adif-export-btn" title="Download filtered spots as ADIF">⬇ ADIF</button>
+          <button class="csv-btn" id="json-export-btn" type="button" title="Download filtered spots as JSON">⬇ JSON</button>
         </div>
         <div id="table-wrap">
           <table>
@@ -1424,12 +1425,12 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <div class="filter-section">
           <span class="filter-label">Time Range</span>
           <div class="filter-row">
-            <button class="sb-time" data-hrs="1">1h</button>
+            <button class="sb-time active" data-hrs="1">1h</button>
             <button class="sb-time" data-hrs="3">3h</button>
             <button class="sb-time" data-hrs="6">6h</button>
             <button class="sb-time" data-hrs="12">12h</button>
             <button class="sb-time" data-hrs="18">18h</button>
-            <button class="sb-time active" data-hrs="24">24h</button>
+            <button class="sb-time" data-hrs="24">24h</button>
           </div>
         </div>
 
@@ -2353,7 +2354,7 @@ document.querySelectorAll('.stats-rng-btn').forEach(btn => {
 // ================================================================ State
 let filters     = { band:[], mode:'ALL', activity:'ALL', cont:'ALL', spotterCont:'ALL' };
 let commentTagFilter = 'ALL';
-let timeRangeHrs = 24;
+let timeRangeHrs = 1;
 let searchTerm  = '';
 let allSpots    = [];
 let allBulletins = [];
@@ -3985,6 +3986,7 @@ async function loadBranding() {
   try {
     brandingData = await fetch(BRAND).then(r => r.json());
     uiStrings = brandingData.ui_strings || {};
+    if (uiStrings.spot_export_json) document.getElementById('json-export-btn').title = uiStrings.spot_export_json;
   } catch (e) {
     console.warn('branding load failed', e);
     return;
@@ -5523,6 +5525,30 @@ function exportCSV() {
   a.click();
 }
 
+function spotDiagnosticExport() {
+  const spots = filteredSpots();
+  return {
+    format:'pycluster-spots', format_version:1,
+    generated_at:new Date().toISOString(),
+    node_call:brandingData?.node_call || '',
+    software_version:brandingData?.software_version || '',
+    filters:{...filters, commentTagFilter, cqzFilter, spotterCqzFilter, timeRangeHrs, search:searchTerm},
+    count:spots.length,
+    spots,
+  };
+}
+function exportJSON() {
+  const payload = spotDiagnosticExport();
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `dxspots-${payload.generated_at.substring(0,16).replace(/[T:]/g,'-')}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // ================================================================ ADIF export
 function adifField(tag, val) {
   const s = String(val??'');
@@ -5719,6 +5745,7 @@ renderCommentTagButtons();
 
 document.getElementById('csv-export-btn').addEventListener('click', exportCSV);
 document.getElementById('adif-export-btn').addEventListener('click', exportADIF);
+document.getElementById('json-export-btn').addEventListener('click', exportJSON);
 
 // ================================================================ Audio differentiation
 function playSpotSound(spot) {
@@ -5948,7 +5975,7 @@ function applyPreset(preset) {
   filters.spotterCont = preset.spotterCont || 'ALL';
   cqzFilter        = preset.cqzFilter  || '';
   spotterCqzFilter = preset.spotterCqzFilter || '';
-  timeRangeHrs     = preset.timeRangeHrs || 24;
+  timeRangeHrs     = preset.timeRangeHrs || 1;
   commentTagFilter = preset.commentTagFilter || 'ALL';
   document.querySelectorAll('.sb-time').forEach(b => {
     b.classList.toggle('active', parseInt(b.dataset.hrs) === timeRangeHrs);

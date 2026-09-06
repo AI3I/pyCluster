@@ -29,6 +29,30 @@ assert(!spotMatchesCurrentFilters(rbn));assert(spotMatchesCurrentFilters(cluster
     assert result.returncode == 0, result.stderr
 
 
+def test_spot_json_export_is_filtered_and_excludes_login_state():
+    if not shutil.which('node'):
+        pytest.skip('Node.js is required for browser-state validation')
+    html = Path('web/public_dxweb/static/index.html').read_text(encoding='utf-8')
+    assert 'let timeRangeHrs = 1;' in html
+    assert 'class="sb-time active" data-hrs="1"' in html
+    function = 'function spotDiagnosticExport() {' + html.split('function spotDiagnosticExport() {', 1)[1].split('\n}', 1)[0] + '\n}'
+    script = '''
+const assert = require('node:assert/strict');
+const filteredSpots=()=>[{dx_call:'AI3I-99',is_rbn:false}];
+const brandingData={node_call:'AI3I-90',software_version:'1.0.21'};
+const filters={mode:'ALL'}, commentTagFilter='NO_RBN',cqzFilter='',spotterCqzFilter='',timeRangeHrs=1,searchTerm='';
+const webToken='secret',webProfile={email:'private@example.test'};
+''' + function + '''
+const result=spotDiagnosticExport();
+assert.equal(result.count,1);assert.equal(result.spots[0].dx_call,'AI3I-99');
+assert.equal(result.filters.timeRangeHrs,1);assert.equal(result.filters.commentTagFilter,'NO_RBN');
+assert(!JSON.stringify(result).includes('secret'));assert(!JSON.stringify(result).includes('private@example.test'));
+assert.equal(result.format_version,1);
+'''
+    result = subprocess.run(['node', '-'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_socket_rebinds_on_login_and_ignores_retired_messages():
     if not shutil.which('node'):
         pytest.skip('Node.js is required for browser-state validation')
