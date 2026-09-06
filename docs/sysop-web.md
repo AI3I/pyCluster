@@ -427,6 +427,9 @@ Peer State so the failed negotiation remains visible for troubleshooting.
 
 #### Protocol History
 
+History spans the full content width. Connection Alerts and Rejected Frames
+appear beneath it in equal-width columns, stacking on smaller screens.
+
 Use the `PY`, `PC`, and `All` tabs to separate event families.
 The configured history limit applies to the selected family.
 Family selection is applied by the API before limiting results, so newer PC
