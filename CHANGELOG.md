@@ -2,6 +2,10 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## Unreleased
+
+- Add immediate All/RBN/No RBN public-web display filtering using backend spot classification without changing RBN access or subscriptions.
+
 ## 1.0.21 - 2026-09-06
 
 - Rebind the public spot stream when login identity changes, preventing an anonymous connection from bypassing stored user filters (#279).

@@ -803,6 +803,7 @@ html.light .watch-type option { background:#ffffff; color:#111827; }
   min-width:44px;
 }
 .spot-reset-btn.visible { display:inline-flex; }
+.spot-source-filter{display:inline-flex;gap:4px;flex-wrap:wrap;max-width:100%}
 .spot-rbn-btn.active {
   border-color:#38bdf8;
   color:#38bdf8;
@@ -1367,7 +1368,11 @@ tbody tr.tr-greyline td:first-child { border-left-color:#ff9f43; }
         <div style="display:flex;align-items:center;padding:3px 8px 3px 10px;border-bottom:1px solid var(--border-main);flex-shrink:0;gap:6px;flex-wrap:wrap">
           <span id="spot-count-lbl" style="font-size:0.70rem;color:var(--text-dim)"></span>
           <button class="csv-btn spot-reset-btn" id="spot-reset-btn" title="Show all spots again">All</button>
-          <button class="csv-btn spot-rbn-btn" id="spot-rbn-btn" type="button" title="Show RBN/Skimmer spots">RBN</button>
+          <span class="spot-source-filter" role="group" aria-label="Spot source">
+            <button class="csv-btn spot-rbn-btn active" type="button" data-rbn-view="ALL" aria-pressed="true">All</button>
+            <button class="csv-btn spot-rbn-btn" id="spot-rbn-btn" type="button" data-rbn-view="RBN" aria-pressed="false">RBN</button>
+            <button class="csv-btn spot-rbn-btn" type="button" data-rbn-view="NO_RBN" aria-pressed="false">No RBN</button>
+          </span>
           <div id="map-legend" style="display:flex;flex-wrap:wrap;gap:4px;flex:1;align-items:center"></div>
           <button class="csv-btn" id="csv-export-btn" title="Download filtered spots as CSV">⬇ CSV</button>
           <button class="csv-btn" id="adif-export-btn" title="Download filtered spots as ADIF">⬇ ADIF</button>
@@ -4393,7 +4398,9 @@ function spotMatchesCurrentFilters(s, timeCutoff=0) {
     if (spotterZones.size && !spotterZones.has(Number(s.spotter_cqz || 0))) return false;
     if (filters.cont !== 'ALL' && s.dx_continent !== filters.cont) return false;
     if (filters.spotterCont !== 'ALL' && s.spotter_continent !== filters.spotterCont) return false;
-    if (commentTagFilter !== 'ALL') {
+    if (commentTagFilter === 'RBN' || commentTagFilter === 'NO_RBN') {
+      if (Boolean(s.is_rbn) !== (commentTagFilter === 'RBN')) return false;
+    } else if (commentTagFilter !== 'ALL') {
       const tagDef = COMMENT_TAGS.find(t => t.label === commentTagFilter);
       if (!tagDef || !tagDef.re.test(s.comment)) return false;
     }
@@ -4455,8 +4462,13 @@ function syncSpotFilterUi() {
   if (searchEl) searchEl.value = searchTerm;
   const resetBtn = document.getElementById('spot-reset-btn');
   if (resetBtn) resetBtn.classList.toggle('visible', hasActiveSpotFilter());
-  const rbnBtn = document.getElementById('spot-rbn-btn');
-  if (rbnBtn) rbnBtn.classList.toggle('active', commentTagFilter === 'RBN');
+  document.querySelectorAll('[data-rbn-view]').forEach(btn => {
+    const selected = btn.dataset.rbnView === (['RBN','NO_RBN'].includes(commentTagFilter) ? commentTagFilter : 'ALL');
+    btn.classList.toggle('active', selected);
+    btn.setAttribute('aria-pressed', String(selected));
+    const key = {ALL:'spot_source_all', RBN:'spot_source_rbn', NO_RBN:'spot_source_no_rbn'}[btn.dataset.rbnView];
+    if (uiText(key) !== key) btn.textContent = uiText(key);
+  });
 }
 
 function clearSpotFilters() {
@@ -4529,9 +4541,11 @@ document.getElementById('search-box').addEventListener('input', e => {
   searchTimer = setTimeout(() => { searchTerm=e.target.value.trim(); renderTable(); }, 250);
 });
 document.getElementById('spot-reset-btn').addEventListener('click', clearSpotFilters);
-document.getElementById('spot-rbn-btn').addEventListener('click', () => {
-  commentTagFilter = commentTagFilter === 'RBN' ? 'ALL' : 'RBN';
-  renderTable();
+document.querySelectorAll('[data-rbn-view]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    commentTagFilter = btn.dataset.rbnView;
+    renderTable();
+  });
 });
 
 // ================================================================ Toast

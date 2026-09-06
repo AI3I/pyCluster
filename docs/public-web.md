@@ -58,6 +58,7 @@ Features:
 
 - filter by band, mode, activity, DX continent, spotter continent, DX CQ zone, spotter CQ zone, comment tags, and text
 - time-range filtering for `1h`, `3h`, `6h`, `12h`, `18h`, and `24h`
+- `All` / `RBN` / `No RBN` immediately filters the available spot stream by its backend RBN classification. This is a display filter, not a change to node ingestion, user subscription, or access policy. The choice is included in saved filter presets.
 
 The quick-filter panel intentionally omits ITU-zone controls. The authenticated `Rules` panel supports the shared telnet expressions for callsign, band, CQ zone, ITU zone, continent, DXCC entity, comment/mode, and advanced compound rules. Rules retain their family, action, and slot in `filter_rules`, so telnet and web sessions share the same effective state. An already-connected telnet session refreshes externally edited rules within two seconds. Slot 8 is also used by the quick-filter panel and may be replaced when those controls change.
 
