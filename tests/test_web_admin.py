@@ -3029,13 +3029,15 @@ def test_web_peers_reports_transmit_active_receive_quiet_link(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_address_block_api_authorization_and_removal(tmp_path) -> None:
+def test_address_block_api_authorization_and_removal(tmp_path, monkeypatch) -> None:
     async def run():
         cfg = _mk_config(str(tmp_path / 'address-api.db'), admin_token='adm')
         store = SpotStore(cfg.store.sqlite_path)
         srv = WebAdminServer(config=cfg, store=store, started_at=datetime.now(timezone.utc), session_count_fn=lambda: 0)
         try:
             code, _, _ = await _http_request(srv, 'GET', '/api/address-blocks')
+            assert code == 401
+            code, _, _ = await _http_request(srv, 'GET', '/api/address-blocks?view=history')
             assert code == 401
             headers = {'X-Admin-Token': 'adm', 'Content-Type': 'application/json'}
             payload = {'action': 'add', 'network': '2001:db8::/64', 'reason': 'test', 'minutes': 60}
@@ -3045,8 +3047,22 @@ def test_address_block_api_authorization_and_removal(tmp_path) -> None:
             assert await store.address_blocked('2001:db8::99')
             code, _, body = await _http_request(srv, 'POST', '/api/address-blocks', headers=headers, body=json.dumps({'action': 'remove', 'id': row['id']}).encode())
             assert code == 200
-            assert json.loads(body)[0]['removed_epoch']
+            assert json.loads(body) == []
             assert not await store.address_blocked('2001:db8::99')
+            code, _, body = await _http_request(srv, 'GET', '/api/address-blocks?view=history', headers=headers)
+            assert code == 200
+            assert json.loads(body)[0]['removed_epoch']
+
+            monkeypatch.setattr('pycluster.store.time.time', lambda: 1000)
+            await store.add_address_block('192.0.2.0/24', 'expires', 'AI3I-99', 1)
+            await store.add_address_block('2001:db8:1::/64', 'permanent', 'AI3I-99', 0)
+            monkeypatch.setattr('pycluster.store.time.time', lambda: 1060)
+            code, _, body = await _http_request(srv, 'GET', '/api/address-blocks', headers=headers)
+            assert code == 200
+            assert [r['network'] for r in json.loads(body)] == ['2001:db8:1::/64']
+            code, _, body = await _http_request(srv, 'GET', '/api/address-blocks?view=history', headers=headers)
+            assert code == 200
+            assert {r['network'] for r in json.loads(body)} == {'192.0.2.0/24', '2001:db8::/64'}
         finally:
             await store.close()
     asyncio.run(run())

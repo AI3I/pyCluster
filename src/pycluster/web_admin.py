@@ -2233,6 +2233,18 @@ button.special{
   flex-wrap:wrap;
   gap:10px;
 }
+#addressBlockForm .actions{
+  align-self:end;
+  align-items:center;
+  gap:8px;
+}
+#addressBlockForm .actions button{
+  flex:0 0 auto;
+  width:auto;
+  min-height:36px;
+  padding:7px 12px;
+}
+#addressBlockView{width:auto;max-width:100%;justify-self:start}
 .mast-actions .actions{
   justify-content:flex-end;
 }
@@ -3570,6 +3582,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <div class="field"><label for="blockReason">Reason</label><input id="blockReason" maxlength="500" required></div>
                 <div class="actions"><button type="submit">Add Block</button><button type="button" id="blocksReload">Refresh</button></div>
               </form>
+              <div class="field"><label for="addressBlockView">View</label><select id="addressBlockView"><option value="active">Active Blocks</option><option value="history">History</option></select></div>
               <div class="tablewrap"><table class="responsive-records"><thead><tr><th>Network</th><th>Reason / Author</th><th>Expires</th><th>Status</th><th>Action</th></tr></thead><tbody id="addressBlockRows"></tbody></table></div>
             </section>
             <section>
@@ -5860,20 +5873,24 @@ byId('phreset').onclick = async () => {
 };
 byId('phload').onclick = load;
 async function loadAddressBlocks() {
-  const rows = await j('/api/address-blocks');
+  const view = byId('addressBlockView').value;
+  const rows = await j('/api/address-blocks?view=' + encodeURIComponent(view));
+  if (byId('addressBlockView').value !== view) return;
   const now = Date.now() / 1000;
   byId('addressBlockRows').innerHTML = rows.map((row) => {
     const active = !row.removed_epoch && (!row.expires_epoch || row.expires_epoch > now);
     return `<tr><td>${esc(row.network)}</td><td>${esc(row.reason)}<div class="mini">${esc(row.created_by)} • ${esc(fmtEpoch(row.created_epoch))}</div></td><td>${row.expires_epoch ? esc(fmtEpoch(row.expires_epoch)) : 'Permanent'}</td><td>${row.removed_epoch ? 'Removed' : active ? 'Active' : 'Expired'}</td><td>${active ? `<button type="button" data-remove-block="${esc(row.id)}">Remove</button>` : ''}</td></tr>`;
-  }).join('') || '<tr><td colspan="5">No address blocks.</td></tr>';
+  }).join('') || `<tr><td colspan="5">${view === 'history' ? 'No removed or expired address blocks.' : 'No active address blocks.'}</td></tr>`;
   labelTableCells(byId('addressBlockRows'));
 }
 byId('blocksReload').onclick = () => loadAddressBlocks().catch((err) => say(errText(err), false));
+byId('addressBlockView').onchange = () => loadAddressBlocks().catch((err) => say(errText(err), false));
 byId('addressBlockForm').onsubmit = async (event) => {
   event.preventDefault();
   if (!window.confirm('Apply this address block to new telnet connections and web requests, including System Operator access?')) return;
   try {
     await j('/api/address-blocks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'add', network:byId('blockNetwork').value.trim(), minutes:Number(byId('blockMinutes').value), reason:byId('blockReason').value.trim()})});
+    byId('addressBlockView').value = 'active';
     await loadAddressBlocks();
   } catch (err) { say(errText(err), false); }
 };
@@ -6152,7 +6169,12 @@ if (restoreWebSession()) {
                     except (ValueError, TypeError, KeyError) as exc:
                         await self._write_response(writer, 400, self._json({"error": str(exc)}))
                         return
-                await self._write_response(writer, 200, self._json(await self.store.list_address_blocks(history=True)))
+                history = q.get("view", ["active"])[0] == "history"
+                rows = await self.store.list_address_blocks(history=history)
+                if history:
+                    now = int(time.time())
+                    rows = [row for row in rows if row["removed_epoch"] or (row["expires_epoch"] and row["expires_epoch"] <= now)]
+                await self._write_response(writer, 200, self._json(rows))
                 return
 
             if path == "/api/security":
