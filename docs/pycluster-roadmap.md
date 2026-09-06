@@ -1,9 +1,9 @@
 # pyCluster Roadmap
 
-Updated: 2026-09-04
+Updated: 2026-09-06
 
-This roadmap describes product direction after the `1.0.19` release during
-the `1.0.21` release. It is not a release checklist. The active GitHub milestone and
+This roadmap describes product direction as of the `1.0.21` release.
+It is not a release checklist. The active GitHub milestone and
 issues are the authority for scheduled work; [CHANGELOG.md](../CHANGELOG.md)
 records what has shipped.
 
