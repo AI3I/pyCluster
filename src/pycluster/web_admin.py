@@ -2864,6 +2864,13 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
 @media (max-width: 380px){
   .node-tabs,.subtabs,.users-browser-tabs{grid-template-columns:1fr}
 }
+.help-indicator{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-left:6px;border:1px solid currentColor;border-radius:50%;font-size:11px;line-height:1;cursor:help;vertical-align:middle;flex-shrink:0}
+.help-indicator:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+#controlHelp{position:fixed;inset:auto;margin:0;padding:12px;max-width:min(360px,calc(100vw - 24px));background:var(--panel,#202020);color:var(--text,#fff);border:1px solid currentColor;border-radius:6px;z-index:10000;font-size:13px;line-height:1.5;box-shadow:0 4px 16px #0006}
+#pyNoticeFields{grid-template-columns:repeat(4,minmax(0,1fr))}
+#pyNoticeFields .notice-sharing{grid-column:span 2}
+@media(max-width:760px){#pyNoticeFields{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:420px){#pyNoticeFields{grid-template-columns:minmax(0,1fr)}#pyNoticeFields .notice-sharing{grid-column:auto}}
 </style>
 </head>
 <body>
@@ -3135,8 +3142,8 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             </section>
             <section style="margin-top:14px">
               <h3>Network Notice</h3>
-              <div class="form-grid compact-controls">
-                <div class="field">
+              <div class="form-grid compact-controls" id="pyNoticeFields">
+                <div class="field notice-sharing">
                   <label for="pyNoticeShare">Notice Sharing</label>
                   <div class="checkrow attention"><input id="pyNoticeShare" type="checkbox"><label for="pyNoticeShare">Advertise on negotiated pyCluster links</label></div>
                 </div>
@@ -5988,6 +5995,71 @@ byId('addressBlockRows').onclick = async (event) => {
 document.querySelectorAll('[data-history-family]').forEach((button) => {
   button.onclick = () => setProtocolHistoryFamily(button.dataset.historyFamily || 'py');
 });
+const controlHelp = document.createElement('div');
+controlHelp.id = 'controlHelp';
+controlHelp.hidden = true;
+controlHelp.setAttribute('role', 'tooltip');
+document.body.appendChild(controlHelp);
+let activeHelp = null;
+function hideControlHelp() {
+  controlHelp.hidden = true;
+  if (activeHelp) activeHelp.removeAttribute('aria-describedby');
+  activeHelp = null;
+}
+function showControlHelp(indicator) {
+  hideControlHelp();
+  activeHelp = indicator;
+  indicator.setAttribute('aria-describedby', 'controlHelp');
+  controlHelp.textContent = indicator.dataset.help;
+  controlHelp.hidden = false;
+  const rect = indicator.getBoundingClientRect();
+  controlHelp.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - controlHelp.offsetWidth - 12)) + 'px';
+  controlHelp.style.top = Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - controlHelp.offsetHeight - 12)) + 'px';
+}
+function addHelpIndicators() {
+  document.querySelectorAll('label[title],button[title],a[title],input[title],select[title],textarea[title]').forEach((control) => {
+    const label = control.labels && control.labels[0];
+    const host = label || control;
+    if (host.matches('input,select,textarea') || host.querySelector('.help-indicator')) return;
+    const tip = host.getAttribute('title') || control.getAttribute('title');
+    if (!tip) return;
+    const indicator = document.createElement('span');
+    indicator.className = 'help-indicator';
+    indicator.textContent = '?';
+    indicator.dataset.help = tip;
+    indicator.setAttribute('aria-label', tip);
+    if (!host.matches('button,a')) {
+      indicator.tabIndex = 0;
+      indicator.setAttribute('role', 'button');
+    } else {
+      host.addEventListener('focus', () => showControlHelp(indicator));
+      host.addEventListener('blur', hideControlHelp);
+    }
+    indicator.addEventListener('mouseenter', () => showControlHelp(indicator));
+    indicator.addEventListener('mouseleave', hideControlHelp);
+    indicator.addEventListener('focus', () => showControlHelp(indicator));
+    indicator.addEventListener('blur', hideControlHelp);
+    indicator.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showControlHelp(indicator);
+    });
+    indicator.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        event.stopPropagation();
+        showControlHelp(indicator);
+      }
+    });
+    host.appendChild(indicator);
+  });
+}
+addHelpIndicators();
+new MutationObserver(addHelpIndicators).observe(document.body, {childList:true, subtree:true});
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideControlHelp(); });
+document.addEventListener('click', (event) => { if (!event.target.closest('.help-indicator')) hideControlHelp(); });
+window.addEventListener('resize', hideControlHelp);
+document.addEventListener('scroll', hideControlHelp, true);
 applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
 setView((window.location.hash || '#node').slice(1) || 'node');
 setNodeGroup('general');
