@@ -26,6 +26,12 @@ System Operator console:
 - persisted request-time policy and integration settings, including SMTP and MFA, reload when the primary or local override configuration changes; listener addresses, ports, and the database path remain restart-bound
 - authenticated websocket updates, spot history, statistics, and leaderboards all apply the same stored RBN preference and accept/reject filters
 
+The live spot connection is replaced when login identity changes, including login
+from an anonymous session and logout. Late messages from the previous connection
+are ignored. Saving a rule through the Rules panel also replaces the live
+connection and reloads the spot table, so the updated stored rules apply without
+a browser refresh. This does not enable RBN globally or override node access policy.
+
 Browser storage is used only as a convenience cache or for anonymous,
 not-yet-authenticated UI state such as display toggles and temporary map/QTH
 inputs. After login, the map uses the stored profile grid square to seed the
@@ -163,6 +169,11 @@ Profile fields:
 - grid square
 - home node
 - email address
+
+The login form supplies standard username/password field names and autocomplete
+hints for password managers. Its MFA field uses `one-time-code`; automatic filling
+depends on the manager and browser. Enter submits the current login step, including
+code verification when required. These hints do not bypass password or MFA checks.
 
 MFA controls:
 
