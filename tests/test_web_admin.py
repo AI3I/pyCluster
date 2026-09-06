@@ -383,7 +383,7 @@ def test_web_admin_static_exposes_rbn_settings() -> None:
     assert 'id="navRbn"' in text
     assert text.index('id="navPeers"') < text.index('id="navRbn"') < text.index('id="navTelnet"')
     assert "Reverse Beacon Network" in text
-    assert "setText('navRbn', rbnState);" in text
+    assert "setText('navRbn', rbnState === 'connected' ? 'Online' : rbnState);" in text
     assert "const rbnStatus = data.rbn_status || {};" in text
     assert "rbn_host: byId('rbn_host').value.trim()" in text
     assert "rbn_ports: byId('rbn_ports').value.trim()" in text

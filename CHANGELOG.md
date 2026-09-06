@@ -5,6 +5,7 @@ All notable changes to pyCluster should be recorded here.
 ## Unreleased
 
 - Default SysOp address blocks to active entries, separate removed/expired history, and keep Add Block/Refresh compact on desktop and mobile.
+- Shorten the connected RBN summary to Online in At A Glance while retaining detailed feed status.
 
 - Add read-only sample previews and a two-condition AND editor for public-web delivery rules; use shared deciding-rule explanations in telnet `show/filter test`, preserve spotter SSIDs for web filtering, and add missing WPXLOC fallback for telnet DX zone/entity filters.
 

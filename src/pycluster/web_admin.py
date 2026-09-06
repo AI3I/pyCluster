@@ -5061,7 +5061,7 @@ function fillNodeForm(data) {
   setText('rbnStatusConnected', rbnStatus.last_connected_at || '-');
   setText('rbnStatusLastSpot', rbnStatus.last_spot_at ? `${rbnStatus.last_spot_at} ${rbnStatus.last_spot || ''}` : '-');
   setText('rbnStatusError', rbnStatus.last_error || 'none');
-  setText('navRbn', rbnState);
+  setText('navRbn', rbnState === 'connected' ? 'Online' : rbnState);
   byId('navRbn').title = rbnText.replace(/<[^>]*>/g, '');
   const datasets = data.datasets || {};
   const cty = datasets.cty || {};
