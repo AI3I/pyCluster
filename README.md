@@ -90,7 +90,7 @@ pyCluster is usable today as a single-node cluster with web and telnet access, p
 
 Current release: `1.0.19`
 
-Next development milestone: `1.0.21`
+Current stable release: `1.0.21`
 
 Recent highlights through `1.0.19`:
 
