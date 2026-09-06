@@ -3401,7 +3401,21 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               </table>
             </div>
           </section>
-          <div class="split" style="margin-top:14px">
+          <section id="protocolHistory" style="margin-top:14px">
+            <h3>Protocol History</h3>
+            <div class="subtabs" aria-label="Protocol history family">
+              <button class="subtab active" type="button" data-history-family="py">PY</button>
+              <button class="subtab" type="button" data-history-family="pc">PC</button>
+              <button class="subtab" type="button" data-history-family="all">All</button>
+            </div>
+            <div class="tablewrap">
+              <table class="responsive-records">
+                <thead><tr><th>Peer</th><th>When</th><th>Key</th><th>From</th><th>To</th></tr></thead>
+                <tbody id="histRows"><tr><td colspan="5">Loading history...</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+          <div class="split" id="protocolDiagnostics" style="margin-top:14px">
             <section>
               <h3>Connection Alerts</h3>
               <div class="tablewrap">
@@ -3410,26 +3424,14 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   <tbody id="protoAlertRows"><tr><td colspan="5">Loading protocol alerts...</td></tr></tbody>
                 </table>
               </div>
-              <h3 style="margin-top:14px">Rejected Frames</h3>
+            </section>
+            <section>
+              <h3>Rejected Frames</h3>
               <div class="subtle" style="margin-bottom:8px">Frames received and rejected by local protocol policy. A peer that never answers PY00 is shown in Peer State, not as a rejected frame.</div>
               <div class="tablewrap">
                 <table>
                   <thead><tr><th>Peer</th><th>Total</th><th>Loop</th><th>Reasons</th></tr></thead>
                   <tbody id="policyDropRows"><tr><td colspan="4">Loading policy drops...</td></tr></tbody>
-                </table>
-              </div>
-            </section>
-            <section>
-              <h3>Protocol History</h3>
-              <div class="subtabs" aria-label="Protocol history family">
-                <button class="subtab active" type="button" data-history-family="py">PY</button>
-                <button class="subtab" type="button" data-history-family="pc">PC</button>
-                <button class="subtab" type="button" data-history-family="all">All</button>
-              </div>
-              <div class="tablewrap">
-                <table class="responsive-records">
-                  <thead><tr><th>Peer</th><th>When</th><th>Key</th><th>From</th><th>To</th></tr></thead>
-                  <tbody id="histRows"><tr><td colspan="5">Loading history...</td></tr></tbody>
                 </table>
               </div>
             </section>
