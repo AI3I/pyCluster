@@ -2,6 +2,11 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## Unreleased
+
+- Add Topology search and pagination, defaulting to 15 nodes per page, with local Add Peer drafts from node route details. Existing peers reopen for editing; new drafts leave transport blank and retry disabled.
+- Show which remote services are reported down beside degraded health. Treat an independently hosted public-web process as unobserved rather than falsely advertising it as down.
+
 ## 1.0.20 - 2026-09-05
 
 - Refresh SysOp RBN status independently every five seconds while the console is visible, without overwriting unsaved settings; show the runtime QRZ agent default instead of a generic version placeholder.
