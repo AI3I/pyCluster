@@ -63,6 +63,8 @@ if systemctl list-unit-files fail2ban.service >/dev/null 2>&1; then
   [ -n "$fail2ban_state" ] || fail2ban_state="inactive"
 fi
 
+time_sync_state="$(time_sync_status_line)"
+
 config_ok="no"
 [ -f "$PYCLUSTER_CONFIG_DEST" ] && config_ok="yes"
 
@@ -121,6 +123,7 @@ sharing_fields = (
     "share_node_info", "share_public_web_url", "share_locator", "share_qth",
     "share_sysop_contact", "share_topology", "share_health", "share_datasets",
     "share_rbn_status", "share_policy", "share_clock", "share_notices",
+    "share_neighbors",
 )
 print(f"{sum(bool(getattr(cfg.py_protocol, key)) for key in sharing_fields)}/{len(sharing_fields)}")
 PY
@@ -227,6 +230,7 @@ status "retention timer" "$PYCLUSTER_RETENTION_TIMER_NAME ($retention_timer_stat
 status "registration reminders" "$PYCLUSTER_REGISTRATION_REMINDERS_TIMER_NAME ($registration_reminders_timer_state)"
 status "upgrade watcher" "$PYCLUSTER_UPGRADE_PATH_NAME ($upgrade_path_state)"
 status "fail2ban" "fail2ban.service ($fail2ban_state)"
+status "time sync" "$time_sync_state"
 status "selinux" "$selinux_state"
 status "sysop bootstrap" "$PYCLUSTER_SYSOP_BOOTSTRAP_NOTE ($sysop_bootstrap)"
 status "api stats" "$api_stats"
@@ -243,6 +247,12 @@ if [ "$public_web_enabled" = "yes" ]; then
   [ "$api_stats" != "unavailable" ] || doctor_failures=$((doctor_failures + 1))
   [ "$public_branding" != "unavailable" ] || doctor_failures=$((doctor_failures + 1))
 fi
+case "$time_sync_state" in
+  *"NOT synchronized"*|"none ("*)
+    status "time sync advice" "spot timestamps are shared with linked nodes; run 'timedatectl set-ntp true' or install chrony"
+    ;;
+esac
+
 if [ "$doctor_failures" -gt 0 ]; then
   status "overall" "FAILED ($doctor_failures required check(s) unavailable)"
   exit 1

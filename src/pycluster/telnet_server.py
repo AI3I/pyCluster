@@ -9296,7 +9296,7 @@ class TelnetClusterServer:
                 source_node=self.config.node.node_call,
                 raw=raw,
             )
-            inserted = await self.store.add_spot(spot)
+            inserted = await self.store.add_spot(spot, local=True)
             if inserted:
                 await self.publish_spot(spot)
             if self._on_spot_fn and inserted:
@@ -9916,7 +9916,7 @@ class TelnetClusterServer:
             source_node=source_node,
             raw=raw,
         )
-        inserted = await self.store.add_spot(spot)
+        inserted = await self.store.add_spot(spot, local=True)
         if not inserted:
             self._log_event("spot", f"{call} dx rejected {freq_khz:.1f} {dx_call} {info}")
             return self._render_string(

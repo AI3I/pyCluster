@@ -1387,6 +1387,12 @@ class WebAdminServer:
                     "generated_epoch": _to_int(node_cfg.get(pfx + "py.rbn.generated_epoch", "0")),
                     "expires_epoch": _to_int(node_cfg.get(pfx + "py.rbn.expires_epoch", "0")),
                 },
+                "neighbors": {
+                    "records": _json_value("py.neighbors.records", []),
+                    "count": _to_int(node_cfg.get(pfx + "py.neighbors.count", "0")),
+                    "generated_epoch": _to_int(node_cfg.get(pfx + "py.neighbors.generated_epoch", "0")),
+                    "expires_epoch": _to_int(node_cfg.get(pfx + "py.neighbors.expires_epoch", "0")),
+                },
                 "notice": {
                     "notice_id": node_cfg.get(pfx + "py.notice.notice_id", ""),
                     "sequence": _to_int(node_cfg.get(pfx + "py.notice.sequence", "0")),
@@ -2693,6 +2699,8 @@ tbody tr.filler td{
 html.light .known-node-versions .tag[data-confidence="local"]{background:#d5f1e2;color:#145238}
 html.light .known-node-versions .tag[data-confidence="direct"]{background:#dcecff;color:#194e80}
 html.light .known-node-versions .tag[data-confidence="reported"]{background:#fff0c2;color:#684900}
+.known-node-versions .tag[data-confidence="legacy"]{background:#4a2d5c;color:#e9d2ff}
+html.light .known-node-versions .tag[data-confidence="legacy"]{background:#efdcff;color:#4b2266}
 .presence{
   font-size:16px;
   font-weight:700;
@@ -3137,6 +3145,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <div class="checkrow"><input id="pyShareRbn" type="checkbox"><label for="pyShareRbn" title="Share feed state and ingest telemetry. This does not enable RBN or forward the spot stream.">RBN status</label></div>
                 <div class="checkrow"><input id="pySharePolicy" type="checkbox"><label for="pySharePolicy" title="Advertise a summary of local access requirements without changing another node's policy.">Access policy</label></div>
                 <div class="checkrow"><input id="pyShareClock" type="checkbox"><label for="pyShareClock" title="Share clock and uptime metadata for diagnostics; this does not synchronize clocks.">Clock and uptime</label></div>
+                <div class="checkrow"><input id="pyShareNeighbors" type="checkbox"><label for="pyShareNeighbors" title="Share the callsign and software of non-pyCluster nodes this node links to directly, so peers can see the wider network. Never relayed.">Non-pyCluster neighbors</label></div>
                 <div class="checkrow"><input id="pySharePublicUrl" type="checkbox"><label for="pySharePublicUrl" title="Include the configured public user-facing URL in shared node information.">Public web URL</label></div>
                 <div class="checkrow"><input id="pyShareLocator" type="checkbox"><label for="pyShareLocator" title="Include this node's configured grid locator in shared node information.">Grid locator</label></div>
                 <div class="checkrow"><input id="pyShareQth" type="checkbox"><label for="pyShareQth" title="Include this node's configured location description in shared node information.">QTH</label></div>
@@ -4307,6 +4316,11 @@ let knownNodePeers = [];
 let knownNodeCatalog = [];
 let knownNodePage = 0;
 let selectedKnownNode = '';
+const LEGACY_NODE_FAMILIES = new Set(['dxspider', 'arcluster', 'clx', 'dxnet']);
+const LEGACY_FAMILY_LABELS = {dxspider:'DXSpider', arcluster:'AR-Cluster', clx:'CLX', dxnet:'DX-NET'};
+function familyLabel(family) {
+  return LEGACY_FAMILY_LABELS[String(family || '').toLowerCase()] || 'Unknown software';
+}
 function setKnownNodeRows(payload, peers) {
   knownNodePayload = payload || {};
   knownNodePeers = Array.isArray(peers) ? peers : [];
@@ -4360,10 +4374,64 @@ function setKnownNodeRows(payload, peers) {
     });
     knownCalls.add(call);
   });
+  // Non-pyCluster cluster software this node links to directly. These never
+  // appear in the PY catalog, which by definition only holds PY-speaking nodes.
+  peerRows.forEach((peer) => {
+    const call = String(peer && peer.peer || '').toUpperCase();
+    if (!call || knownCalls.has(call)) return;
+    const proto = peer && peer.proto ? peer.proto : {};
+    const family = String(proto.pc18_family || peer.profile || '').toLowerCase();
+    if (!LEGACY_NODE_FAMILIES.has(family)) return;
+    rows.push({
+      node_call:call,
+      node_id:'',
+      confidence:'legacy',
+      software_version:String(proto.pc18_summary || proto.pc18_software || ''),
+      protocol_version:'',
+      services:[],
+      source_node:call,
+      learned_from:call,
+      hop_count:0,
+      legacy_family:family,
+      last_seen:Number(proto.last_epoch || peer.last_rx_epoch || peer.connected_epoch || 0),
+      expires_at:0,
+      discovery_state:`${familyLabel(family)} node linked directly to this node`,
+    });
+    knownCalls.add(call);
+  });
+  // Non-pyCluster nodes our pyCluster peers report through PY14 NEIGHBORS. One
+  // hop of provenance only: PY14 is never relayed.
+  peerRows.forEach((peer) => {
+    const reporter = String(peer && peer.peer || '').toUpperCase();
+    const peerPy = peer && peer.proto ? (peer.proto.py || {}) : {};
+    const neighbors = peerPy.neighbors || {};
+    const records = Array.isArray(neighbors.records) ? neighbors.records : [];
+    records.forEach((record) => {
+      const call = String(record && record.call || '').toUpperCase();
+      if (!call || knownCalls.has(call)) return;
+      const family = String(record.family || 'unknown').toLowerCase();
+      rows.push({
+        node_call:call,
+        node_id:'',
+        confidence:'legacy',
+        software_version:String(record.software || ''),
+        protocol_version:'',
+        services:[],
+        source_node:reporter,
+        learned_from:reporter,
+        hop_count:1,
+        legacy_family:family,
+        last_seen:Number(neighbors.generated_epoch || 0),
+        expires_at:Number(neighbors.expires_epoch || 0),
+        discovery_state:`${familyLabel(family)} node reported by ${reporter}${record.state ? ` (${record.state})` : ''}`,
+      });
+      knownCalls.add(call);
+    });
+  });
   rows.sort((a, b) => String(a.node_call || '').localeCompare(String(b.node_call || '')));
   knownNodeCatalog = rows;
   const search = byId('knownNodeSearch').value.trim().toLowerCase();
-  const matching = rows.filter(row => [row.node_call, row.node_id, row.locator, row.qth].some(value => String(value || '').toLowerCase().includes(search)));
+  const matching = rows.filter(row => [row.node_call, row.node_id, row.locator, row.qth, row.legacy_family, row.software_version].some(value => String(value || '').toLowerCase().includes(search)));
   const pageSize = Number(byId('knownNodePageSize').value);
   const pages = Math.max(1, Math.ceil(matching.length / pageSize));
   knownNodePage = Math.max(0, Math.min(knownNodePage, pages - 1));
@@ -4371,7 +4439,7 @@ function setKnownNodeRows(payload, peers) {
   byId('knownNodePrev').disabled = knownNodePage === 0;
   byId('knownNodeNext').disabled = knownNodePage >= pages - 1;
   if (!matching.length) {
-    body.innerHTML = '<tr><td colspan="3">No pyCluster nodes are known yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="3">No nodes are known yet.</td></tr>';
     return;
   }
   body.innerHTML = matching.slice(knownNodePage * pageSize, (knownNodePage + 1) * pageSize).map((row) => {
@@ -4391,7 +4459,11 @@ function setKnownNodeRows(payload, peers) {
       ? 'This node'
       : confidence === 'identified'
         ? `${directPeer && directPeer.connected ? 'Connected direct peer' : 'Direct peer'} • PC18 identified`
-        : `${row.learned_from || row.source_node || '-'} • ${Number(row.hop_count || 0)} hop${Number(row.hop_count || 0) === 1 ? '' : 's'}`;
+        : confidence === 'legacy'
+          ? Number(row.hop_count || 0) === 0
+            ? `${directPeer && directPeer.connected ? 'Connected direct link' : 'Direct link'} • not a PY node`
+            : `${row.learned_from || '-'} reports a direct link • not a PY node`
+          : `${row.learned_from || row.source_node || '-'} • ${Number(row.hop_count || 0)} hop${Number(row.hop_count || 0) === 1 ? '' : 's'}`;
     const services = Array.isArray(row.services) ? row.services.join(', ') : '-';
     const serviceMeta = row.discovery_state
       ? `<div class="mini">${esc(row.discovery_state)}</div>`
@@ -4408,7 +4480,7 @@ function setKnownNodeRows(payload, peers) {
     return `<tr>
       <td data-label="Node">${callText}<div class="mini">${esc(String(row.node_id || ''))}</div><div class="mini"><strong>Location</strong> ${esc(location)}</div></td>
       <td data-label="Path &amp; Services">${esc(learned)}<div class="mini">${row.node_id ? `<button class="secondary py-route-detail" type="button" data-call="${esc(call)}" title="Inspect retained topology routes">${esc(String(row.route_count || 1))} route${Number(row.route_count || 1) === 1 ? '' : 's'}</button>` : 'No retained routes'}${(row.one_sided_peers || []).length ? ` • one-sided: ${esc(row.one_sided_peers.join(', '))}` : ''}${(row.unknown_peers || []).length ? ` • unknown: ${esc(row.unknown_peers.join(', '))}` : ''}</div><div class="mini"><strong>Services</strong> ${esc(services)}</div>${serviceMeta}</td>
-      <td data-label="Last Seen">${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div><div class="known-node-versions"><span class="tag" data-confidence="${esc(confidence)}">${esc(confidence)}</span> <span class="tag">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : 'PY -'}</span> <span class="tag">${esc(row.software_version || '-')}</span></div></td>
+      <td data-label="Last Seen">${esc(fmtEpoch(row.last_seen || 0))}<div class="mini">${row.expires_at ? `Expires ${esc(fmtEpoch(row.expires_at))}` : confidence === 'identified' ? 'No NODEINFO lease' : 'No expiry reported'}</div><div class="known-node-versions"><span class="tag" data-confidence="${esc(confidence)}">${esc(confidence)}</span> <span class="tag">${row.protocol_version ? `PY ${esc(row.protocol_version)}` : confidence === 'identified' ? 'PY not negotiated' : confidence === 'legacy' ? esc(familyLabel(row.legacy_family)) : 'PY -'}</span> <span class="tag">${esc(row.software_version || '-')}</span></div></td>
     </tr>`;
   }).join('');
   body.querySelectorAll('.py-route-detail').forEach((button) => {
@@ -4464,7 +4536,7 @@ function fillPySharing(data) {
   const fields = {
     pyEnabled:'enabled', pyShareNodeInfo:'share_node_info', pyShareTopology:'share_topology',
     pyShareHealth:'share_health', pyShareDatasets:'share_datasets', pyShareRbn:'share_rbn_status',
-    pySharePolicy:'share_policy', pyShareClock:'share_clock',
+    pySharePolicy:'share_policy', pyShareClock:'share_clock', pyShareNeighbors:'share_neighbors',
     pySharePublicUrl:'share_public_web_url', pyShareLocator:'share_locator', pyShareQth:'share_qth',
     pyShareContact:'share_sysop_contact',
   };
@@ -5389,6 +5461,7 @@ byId('pySharingSave').onclick = async () => {
         share_rbn_status:byId('pyShareRbn').checked,
         share_policy:byId('pySharePolicy').checked,
         share_clock:byId('pyShareClock').checked,
+        share_neighbors:byId('pyShareNeighbors').checked,
         share_notices:byId('pyNoticeShare').checked,
         share_public_web_url:byId('pySharePublicUrl').checked,
         share_locator:byId('pyShareLocator').checked,
@@ -7751,6 +7824,7 @@ if (restoreWebSession()) {
                     "enabled", "share_node_info", "share_public_web_url", "share_locator", "share_qth",
                     "share_sysop_contact", "share_topology", "share_health", "share_datasets",
                     "share_rbn_status", "share_policy", "share_clock", "share_notices",
+                    "share_neighbors",
                 )
                 if method == "POST":
                     payload = self._parse_json_body(body)
@@ -8560,7 +8634,7 @@ if (restoreWebSession()) {
                     source_node=self.config.node.node_call,
                     raw=raw,
                 )
-                inserted = await self.store.add_spot(spot)
+                inserted = await self.store.add_spot(spot, local=True)
                 if not inserted:
                     await self._write_response(
                         writer,

@@ -27,6 +27,9 @@ PY_REQUEST_TYPE = "PY10"
 PY_SESSION_FRAME_TYPE = "PY11"
 PY_PROBE_TYPE = "PY12"
 PY_WITHDRAW_TYPE = "PY13"
+PY_NEIGHBORS_TYPE = "PY14"
+# PY15 is reserved for distributed security advisories (issue #276) and must
+# not be reused by another family.
 PY_ERROR_TYPE = "PY99"
 PY_CAPABILITIES = ("probe", "py99-error", "session-binding")
 PY_FRAME_CAPABILITIES = {
@@ -43,8 +46,15 @@ PY_FRAME_CAPABILITIES = {
     "PY11": "session-binding",
     "PY12": "probe",
     "PY13": "topology-withdraw",
+    "PY14": "neighbors",
     PY_ERROR_TYPE: "py99-error",
 }
+# Cluster software this node can positively identify on a direct link. A peer
+# whose PC18 banner matches nothing recognized is reported as "unknown"
+# rather than guessed at.
+PY_NEIGHBOR_FAMILIES = ("arcluster", "clx", "dxnet", "dxspider", "unknown")
+PY_NEIGHBOR_STATES = ("configured", "connected")
+PY_MAX_NEIGHBORS = 64
 _CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 
@@ -286,6 +296,84 @@ class PyHelloMessage:
         valid = self.from_fields(fields)
         payload["session_id"] = valid.session_id
         return [valid.protocol_version, "HELLO", _encode_payload(payload)]
+
+
+@dataclass(frozen=True, slots=True)
+class PyNeighborRecord:
+    """One non-pyCluster cluster node directly linked to the reporting node."""
+
+    call: str
+    family: str
+    software: str
+    state: str
+
+    def as_payload(self) -> dict[str, object]:
+        return {"call": self.call, "family": self.family, "software": self.software, "state": self.state}
+
+
+@dataclass(frozen=True, slots=True)
+class PyNeighborsMessage:
+    """PY14 NEIGHBORS: the reporting node's direct non-pyCluster links.
+
+    pyCluster neighbors already travel in PY01 NODEINFO ``direct_peers``. This
+    family covers the rest of the network a node touches - DXSpider, AR-Cluster,
+    CLX, DX-NET - so a PY peer can see beyond the pyCluster island. It describes
+    only links the sender holds itself and is never relayed, so every record has
+    exactly one hop of provenance.
+    """
+
+    node_call: str
+    neighbors: tuple[PyNeighborRecord, ...]
+    generated_epoch: int
+    expires_epoch: int
+    protocol_version: str = PY_PROTOCOL_VERSION
+
+    @classmethod
+    def from_fields(cls, fields: list[str]) -> "PyNeighborsMessage":
+        if len(fields) != 3 or fields[1].strip().upper() != "NEIGHBORS":
+            raise ValueError("invalid PY14 NEIGHBORS field layout")
+        if fields[0].strip() != PY_PROTOCOL_VERSION:
+            raise ValueError(f"unsupported PY protocol version: {fields[0].strip()}")
+        payload = _decode_payload(fields[2])
+        node_call, generated, expires = _status_envelope(payload, {"neighbors"}, "PY14 NEIGHBORS")
+        raw = payload["neighbors"]
+        if not isinstance(raw, list) or len(raw) > PY_MAX_NEIGHBORS:
+            raise ValueError("PY14 NEIGHBORS list is invalid")
+        records: list[PyNeighborRecord] = []
+        for item in raw:
+            if not isinstance(item, dict) or set(item) != {"call", "family", "software", "state"}:
+                raise ValueError("PY14 NEIGHBORS record contains unknown or missing fields")
+            call = normalize_call(str(item["call"]))
+            family = _clean_text(item["family"], 16).lower()
+            software = _clean_text(item["software"], 60)
+            state = _clean_text(item["state"], 16).lower()
+            if not is_valid_call(call) or call == node_call:
+                raise ValueError("PY14 NEIGHBORS record callsign is invalid")
+            if family not in PY_NEIGHBOR_FAMILIES or state not in PY_NEIGHBOR_STATES:
+                raise ValueError("PY14 NEIGHBORS record family or state is invalid")
+            records.append(PyNeighborRecord(call, family, software, state))
+        calls = {record.call for record in records}
+        if len(calls) != len(records):
+            raise ValueError("PY14 NEIGHBORS contains duplicate nodes")
+        ordered = tuple(sorted(records, key=lambda record: record.call))
+        return cls(node_call, ordered, generated, expires, fields[0].strip())
+
+    def to_fields(self) -> list[str]:
+        payload = {
+            "node_call": self.node_call,
+            "neighbors": [record.as_payload() for record in self.neighbors],
+            "generated_epoch": self.generated_epoch,
+            "expires_epoch": self.expires_epoch,
+        }
+        fields = _status_fields(self.protocol_version, "NEIGHBORS", payload)
+        valid = self.from_fields(fields)
+        canonical = {
+            "node_call": valid.node_call,
+            "neighbors": [record.as_payload() for record in valid.neighbors],
+            "generated_epoch": valid.generated_epoch,
+            "expires_epoch": valid.expires_epoch,
+        }
+        return _status_fields(valid.protocol_version, "NEIGHBORS", canonical)
 
 
 @dataclass(frozen=True, slots=True)

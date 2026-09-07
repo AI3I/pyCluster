@@ -147,6 +147,7 @@ class PyProtocolConfig:
     share_rbn_status: bool = True
     share_policy: bool = True
     share_clock: bool = True
+    share_neighbors: bool = True
     share_notices: bool = True
     notice_severity: str = "normal"
     notice_message: str = ""

@@ -8,6 +8,7 @@ PYCLUSTER_PKG_AUTO_INSTALL="${PYCLUSTER_PKG_AUTO_INSTALL:-0}"
 
 require_root
 ensure_base_packages
+ensure_time_sync_packages
 ensure_supported_python
 refresh_source_tags_best_effort
 log "upgrading pyCluster in $PYCLUSTER_APP_DIR"
@@ -36,6 +37,7 @@ refresh_runtime_data_best_effort
 restart_service_hard
 restart_web_service_hard
 enable_fail2ban_service
+enable_time_sync_service
 apply_imported_fail2ban_badips
 wait_for_systemd_active "$PYCLUSTER_SERVICE_NAME" 45 || die "service failed to restart"
 wait_for_systemd_active "$PYCLUSTER_WEB_SERVICE_NAME" 45 || die "web service failed to restart"

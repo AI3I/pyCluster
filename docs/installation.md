@@ -5,6 +5,7 @@
 - Linux
 - Python 3.11+
 - systemd for the supported deployment path
+- an accurate UTC clock (NTP)
 
 Deployment selects the newest supported Python 3.11+ interpreter installed on the host.
 
@@ -13,6 +14,28 @@ Recommended:
 - reverse proxy for public exposure
 - fast local storage for SQLite
 - fail2ban
+
+### Clock Accuracy
+
+Spot timestamps are shared with every linked node in `PC11`/`PC61` frames and
+summarized to peers through `PY09`, and duplicate suppression measures its
+window against them. A skewed clock therefore produces duplicate or missing
+spots locally and pushes bad timestamps to nodes downstream.
+
+Install and upgrade check for a running time synchronization service. When none
+is found and package installation is enabled, `chrony` is installed and enabled.
+An already-working provider - `systemd-timesyncd`, `chrony`, or `ntpd` - is left
+alone rather than replaced. Hosts that inherit an accurate clock from a
+hypervisor or container host are fine; deployment warns rather than failing, so
+verify the state yourself in that case:
+
+```bash
+timedatectl status
+chronyc tracking   # when chrony provides synchronization
+```
+
+`deploy/doctor.sh` reports the provider and synchronization state on its
+`time sync` line.
 
 ## Validated Platforms
 

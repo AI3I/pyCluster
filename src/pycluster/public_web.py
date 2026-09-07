@@ -3005,7 +3005,7 @@ class PublicWebServer:
                     source_node=self.config.node.node_call,
                     raw=raw,
                 )
-                inserted = await self.store.add_spot(spot)
+                inserted = await self.store.add_spot(spot, local=True)
                 if not inserted:
                     await self._write_response(
                         writer,

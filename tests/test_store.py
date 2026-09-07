@@ -305,16 +305,140 @@ def test_store_batch_insert_returns_only_inserted_spots(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
-def test_store_spot_dedupe_across_different_spotters(tmp_path: Path) -> None:
+def test_store_spot_dedupe_across_relay_paths(tmp_path: Path) -> None:
+    """The same spotter's spot relayed by two different nodes renders once."""
+
     async def run() -> None:
         db = tmp_path / "dupe_cross_peer.db"
         store = SpotStore(str(db))
         try:
             s1 = parse_spot_record("14074.0^K1ABC^1772337000^FT8 CQ TEST^N0CALL^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
-            s2 = parse_spot_record("14074.0^K1ABC^1772337001^FT8 CQ TEST^W1AW^226^226^VE7CC-1^8^5^7^4^^^75.23.154.42")
+            s2 = parse_spot_record("14074.0^K1ABC^1772337001^FT8 CQ TEST^N0CALL^226^226^VE7CC-1^8^5^7^4^^^75.23.154.42")
             assert await store.add_spot(s1) is True
             assert await store.add_spot(s2) is False
             assert await store.count_spots() == 1
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_store_spot_dedupe_keeps_distinct_spotters(tmp_path: Path) -> None:
+    """Two operators spotting the same DX are two spots, not a duplicate."""
+
+    async def run() -> None:
+        db = tmp_path / "dupe_two_spotters.db"
+        store = SpotStore(str(db))
+        try:
+            s1 = parse_spot_record("14074.0^K1ABC^1772337000^FT8 CQ TEST^N0CALL^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+            s2 = parse_spot_record("14074.0^K1ABC^1772337060^FT8 CQ TEST^W1AW^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+            assert await store.add_spot(s1) is True
+            assert await store.add_spot(s2) is True
+            assert await store.count_spots() == 2
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_store_spot_dedupe_ignores_comment_rewrites(tmp_path: Path) -> None:
+    """Nodes reformat comments, so the comment cannot be part of the identity."""
+
+    async def run() -> None:
+        db = tmp_path / "dupe_comment.db"
+        store = SpotStore(str(db))
+        try:
+            raw = parse_spot_record("14025.0^DL1ABC^1772337000^CW 22 dB 25 WPM CQ^K1AA-#^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+            summarised = parse_spot_record("14025.0^DL1ABC^1772337002^CW 22dB Q:3 Z:14,15^K1AA-#^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+            stripped = parse_spot_record("14025.0^DL1ABC^1772337004^CW 22dB Q3 Z1415^K1AA-#^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+            assert await store.add_spot(raw) is True
+            assert await store.add_spot(summarised) is False
+            assert await store.add_spot(stripped) is False
+            assert await store.count_spots() == 1
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_store_spot_dedupe_absorbs_frequency_rounding(tmp_path: Path) -> None:
+    """Paths round frequency independently; 0.1 kHz apart is the same signal."""
+
+    async def run() -> None:
+        db = tmp_path / "dupe_freq.db"
+        store = SpotStore(str(db))
+        try:
+            s1 = parse_spot_record("7003.5^VK9XYZ^1772337000^CQ TEST^W2BB^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+            s2 = parse_spot_record("7003.6^VK9XYZ^1772337001^CQ TEST^W2BB^226^226^VE7CC-1^8^5^7^4^^^75.23.154.42")
+            far = parse_spot_record("7010.0^VK9XYZ^1772337002^CQ TEST^W2BB^226^226^N2WQ-1^8^5^7^4^^^75.23.154.42")
+            assert await store.add_spot(s1) is True
+            assert await store.add_spot(s2) is False
+            assert await store.add_spot(far) is True
+            assert await store.count_spots() == 2
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_store_spot_dedupe_survives_skewed_peer_clock(tmp_path: Path) -> None:
+    """A future-dated spot must not evict entries belonging to other peers."""
+
+    async def run() -> None:
+        db = tmp_path / "dupe_skew.db"
+        store = SpotStore(str(db))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            good = Spot(14200.0, "JA1ZZZ", now, "SSB 59", "K3CC", "N2WQ-1", "")
+            skewed = Spot(21300.0, "PY2QQ", now + 1800, "loud", "K0MVH-1", "K0MVH-1", "")
+            assert await store.add_spot(good) is True
+            assert await store.add_spot(skewed) is True
+            repeat = Spot(14200.0, "JA1ZZZ", now + 5, "SSB 59", "K3CC", "VE7CC-1", "")
+            assert await store.add_spot(repeat) is False
+            assert await store.count_spots() == 2
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_store_spot_dedupe_seeded_across_restart(tmp_path: Path) -> None:
+    """Restarting must not re-admit spots still inside the suppression window."""
+
+    async def run() -> None:
+        db = tmp_path / "dupe_restart.db"
+        now = int(datetime.now(timezone.utc).timestamp())
+        spot = Spot(14025.0, "DL1ABC", now, "CW CQ", "K1AA", "N2WQ-1", "")
+        store = SpotStore(str(db))
+        try:
+            assert await store.add_spot(spot) is True
+        finally:
+            await store.close()
+
+        restarted = SpotStore(str(db))
+        try:
+            assert await restarted.add_spot(spot) is False
+            assert await restarted.count_spots() == 1
+        finally:
+            await restarted.close()
+
+    asyncio.run(run())
+
+
+def test_store_spot_dedupe_keeps_historical_import_intact(tmp_path: Path) -> None:
+    """Bulk history arrives at one instant but spans days; only real repeats merge."""
+
+    async def run() -> None:
+        db = tmp_path / "dupe_import.db"
+        store = SpotStore(str(db))
+        try:
+            base = 1772337000
+            rows = [
+                Spot(14025.0, "DL1ABC", base + day * 86400, "CW CQ", "K1AA", "N2WQ-1", "")
+                for day in range(5)
+            ]
+            rows.append(Spot(14025.0, "DL1ABC", base + 30, "CW CQ", "K1AA", "N2WQ-1", ""))
+            assert await store.add_spots(rows) == 5
         finally:
             await store.close()
 

@@ -322,6 +322,10 @@ if command -v lsblk >/dev/null 2>&1; then
 fi
 if [ -d /proc/pressure ]; then run_shell "Linux pressure stall information" "for file in /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory; do echo \"[\$file]\"; cat \"\$file\"; done"; fi
 if command -v timedatectl >/dev/null 2>&1; then run "Clock and synchronization" timedatectl status; fi
+# Measured offset, not just "is NTP on": spot timestamps are shared with linked
+# nodes, so the actual skew is what matters when diagnosing duplicate spots.
+if command -v chronyc >/dev/null 2>&1; then run_shell "Chrony tracking and sources" "chronyc tracking 2>&1; echo; chronyc sources -v 2>&1"; fi
+if command -v timedatectl >/dev/null 2>&1; then run_shell "systemd-timesyncd status" "timedatectl timesync-status 2>&1 || echo 'not managed by systemd-timesyncd'"; fi
 
 section "Runtime And Package Tooling"
 for command_name in python3 "$PYCLUSTER_PYTHON_LINK" git rsync curl openssl sqlite3 nginx systemctl; do

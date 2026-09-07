@@ -25,13 +25,14 @@ from .datafiles import describe_cty_file, describe_data_file, describe_wpxloc_fi
 from .geomag import WcyReading, WwvReading, canonicalize_wcy_text, canonicalize_wwv_text, parse_wcy_text, parse_wwv_text
 from .maidenhead import extract_locator
 from .live_spots import encode_rbn_spot, rbn_socket_address
+from .spot_dedupe import clamp_spot_epoch
 from .models import Spot, is_plausible_spot_call, is_plausible_spotter_call, is_valid_call, normalize_call
 from .netutil import detected_public_ip_addresses, valid_global_ip
 from .node_link import NodeLinkEngine
 from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, parse_wire_pc_frame, serialize_wire_protocol_frame
-from .py_protocol import PY_CAPABILITIES, PY_CLOCK_TYPE, PY_DATASETS_TYPE, PY_ERROR_TYPE, PY_FRAME_CAPABILITIES, PY_HEALTH_TYPE, PY_HELLO_TYPE, PY_NODEINFO_TYPE, PY_NOTICE_TYPE, PY_POLICY_TYPE, PY_PROBE_TYPE, PY_RBN_STATUS_TYPE, PY_REQUEST_TYPE, PY_SESSION_FRAME_TYPE, PY_TOPOLOGY_DIGEST_TYPE, PY_TOPOLOGY_RECORDS_TYPE, PY_WITHDRAW_TYPE, PyClockMessage, PyDatasetsMessage, PyErrorMessage, PyHealthMessage, PyHelloMessage, PyNodeInfoMessage, PyNoticeMessage, PyPolicyMessage, PyProbeMessage, PyRbnStatusMessage, PySessionFrameMessage, PyTopologyDigestEntry, PyTopologyDigestMessage, PyTopologyRecord, PyTopologyRecordsMessage, PyTopologyRequestMessage, PyWithdrawMessage
+from .py_protocol import PY_CAPABILITIES, PY_MAX_NEIGHBORS, PY_NEIGHBOR_FAMILIES, PY_CLOCK_TYPE, PY_DATASETS_TYPE, PY_ERROR_TYPE, PY_FRAME_CAPABILITIES, PY_HEALTH_TYPE, PY_HELLO_TYPE, PY_NEIGHBORS_TYPE, PY_NODEINFO_TYPE, PY_NOTICE_TYPE, PY_POLICY_TYPE, PY_PROBE_TYPE, PY_RBN_STATUS_TYPE, PY_REQUEST_TYPE, PY_SESSION_FRAME_TYPE, PY_TOPOLOGY_DIGEST_TYPE, PY_TOPOLOGY_RECORDS_TYPE, PY_WITHDRAW_TYPE, PyClockMessage, PyDatasetsMessage, PyErrorMessage, PyHealthMessage, PyHelloMessage, PyNeighborRecord, PyNeighborsMessage, PyNodeInfoMessage, PyNoticeMessage, PyPolicyMessage, PyProbeMessage, PyRbnStatusMessage, PySessionFrameMessage, PyTopologyDigestEntry, PyTopologyDigestMessage, PyTopologyRecord, PyTopologyRecordsMessage, PyTopologyRequestMessage, PyWithdrawMessage
 from .rbn import is_rbn_spot, parse_rbn_dx_line
 from .shdx import BAND_RANGES
 from .spot_filters import SpotFilterEntry, evaluate_spot_entries
@@ -50,6 +51,9 @@ _VIA_SUFFIX_RE = re.compile(r"\s*\[via:[^\]]+\]\s*$", re.IGNORECASE)
 _TRUSTED_WCY_SOURCES = frozenset({"DK0WCY"})
 _DXSPIDER_PC19_VERSION = "5457"
 _PEER_PREF_PREFIX = "peer.outbound."
+# Families a peer profile may assert, including pycluster so those links can be
+# recognized and left to PY01 direct_peers instead of PY14.
+_KNOWN_NODE_FAMILIES = frozenset({"pycluster", *PY_NEIGHBOR_FAMILIES})
 _RECONNECT_BASE_SECS = 5
 _RECONNECT_MAX_SECS = 300
 _PEER_HEARTBEAT_SECS = 60
@@ -216,8 +220,6 @@ class ClusterApp:
         self._rbn_feed_statuses: dict[str, dict[str, object]] = {}
         self._rbn_recent_spot_epochs: deque[int] = deque(maxlen=10000)
         self._rbn_telemetry_spots: deque[Spot] = deque(maxlen=200)
-        self._rbn_seen_order: deque[tuple[int, tuple[object, ...]]] = deque(maxlen=50000)
-        self._rbn_seen: set[tuple[object, ...]] = set()
         self._rbn_web_socket: socket.socket | None = None
         self._rbn_feed_status: dict[str, object] = {
             "state": "disabled" if not config.rbn.enabled else "stopped",
@@ -967,30 +969,13 @@ class ClusterApp:
                 await asyncio.sleep(0)
         return forwarded
 
-    @staticmethod
-    def _rbn_spot_key(spot: Spot) -> tuple[object, ...]:
-        return (
-            round(float(spot.freq_khz), 3),
-            normalize_call(spot.dx_call),
-            int(spot.epoch),
-            normalize_call(spot.spotter),
-            str(spot.info or ""),
-        )
-
     def _remember_rbn_spot(self, spot: Spot, now_epoch: int | None = None) -> bool:
         now = int(now_epoch or datetime.now(timezone.utc).timestamp())
-        cutoff = now - 600
-        while self._rbn_seen_order and self._rbn_seen_order[0][0] < cutoff:
-            _seen_epoch, stale_key = self._rbn_seen_order.popleft()
-            self._rbn_seen.discard(stale_key)
-        key = self._rbn_spot_key(spot)
-        if key in self._rbn_seen:
+        # Both ingest lanes share the store's cache. The RBN lane never persists
+        # its spots, but the same signal can reach us as an RBN spot on one path
+        # and a cluster spot on another, and it must not render twice.
+        if self.store.spot_dedupe.check(spot, now):
             return False
-        if len(self._rbn_seen_order) == self._rbn_seen_order.maxlen:
-            _seen_epoch, stale_key = self._rbn_seen_order.popleft()
-            self._rbn_seen.discard(stale_key)
-        self._rbn_seen.add(key)
-        self._rbn_seen_order.append((now, key))
         self._rbn_telemetry_spots.append(spot)
         return True
 
@@ -1348,13 +1333,16 @@ class ClusterApp:
     def _pc61_epoch(self, msg: Pc61Message) -> int:
         date_token = (msg.date_token or "").strip()
         time_token = (msg.time_token or "").strip().upper()
+        now = int(datetime.now(timezone.utc).timestamp())
         if date_token and time_token:
             try:
                 dt = datetime.strptime(f"{date_token} {time_token}", "%d-%b-%Y %H%MZ")
-                return int(dt.replace(tzinfo=timezone.utc).timestamp())
+                # Clamped: a peer whose clock runs fast would otherwise stamp
+                # spots into the future and skew every window they land in.
+                return clamp_spot_epoch(int(dt.replace(tzinfo=timezone.utc).timestamp()), now)
             except ValueError:
                 pass
-        return int(datetime.now(timezone.utc).timestamp())
+        return now
 
     async def _record_proto_state(self, peer_name: str, values: dict[str, str]) -> None:
         now = int(datetime.now(timezone.utc).timestamp())
@@ -1561,6 +1549,8 @@ class ClusterApp:
             capabilities.add("policy")
         if self.config.py_protocol.share_clock:
             capabilities.add("clock")
+        if self.config.py_protocol.share_neighbors:
+            capabilities.add("neighbors")
         return tuple(sorted(capabilities))
 
     def _effective_py_limits(self, peer_name: str) -> tuple[int, int, int]:
@@ -2152,6 +2142,77 @@ class ClusterApp:
             now, self._py_status_expiry(now),
         )
 
+    async def _build_py_neighbors(self, peer_name: str = "") -> PyNeighborsMessage:
+        """Report this node's direct non-pyCluster links.
+
+        pyCluster neighbors already travel in PY01 ``direct_peers``; this covers
+        the rest of the network this node touches. Only links held by this node
+        are reported, so a receiver always knows the claim is one hop deep.
+
+        The record set is trimmed to the frame size negotiated with ``peer_name``
+        so a node with many legacy links sends a shorter list rather than an
+        oversized frame that would be dropped.
+        """
+        now = int(datetime.now(timezone.utc).timestamp())
+        owner = normalize_call(self.config.node.node_call)
+        link_stats = await self.node_link.stats()
+        desired = await self._desired_peer_targets()
+        node_cfg = await self.store.list_user_prefs(self.config.node.node_call)
+
+        candidates: dict[str, tuple[str, str]] = {}
+        for name, row in link_stats.items():
+            candidates[str(name)] = (str(row.get("profile") or "").strip().lower(), "connected")
+        for name, row in desired.items():
+            if str(name) in candidates:
+                continue
+            candidates[str(name)] = (str(row.get("profile") or "").strip().lower(), "configured")
+
+        records: list[PyNeighborRecord] = []
+        seen: set[str] = set()
+        for name, (profile, state) in candidates.items():
+            call = normalize_call(name)
+            if not call or call == owner or call in seen or not is_valid_call(call):
+                continue
+            tag = re.sub(r"[^a-z0-9_.-]", "_", str(name).lower())
+            prefix = f"proto.peer.{tag}."
+            observed = str(node_cfg.get(prefix + "pc18.family") or "").strip().lower()
+            configured = "dxspider" if profile == "spider" else profile
+            # A PC18 banner is a positive observation of what the peer actually
+            # runs. The configured profile is only an operator assertion, so it
+            # is the weaker fallback, and an unrecognized value becomes
+            # "unknown" rather than being guessed at.
+            family = observed or (configured if configured in _KNOWN_NODE_FAMILIES else "")
+            if family == "pycluster":
+                continue
+            if family not in PY_NEIGHBOR_FAMILIES:
+                family = "unknown"
+            software = " ".join(
+                str(
+                    node_cfg.get(prefix + "pc18.summary")
+                    or node_cfg.get(prefix + "pc18.software")
+                    or ""
+                ).split()
+            )[:60]
+            seen.add(call)
+            records.append(PyNeighborRecord(call, family, software, state))
+            if len(records) >= PY_MAX_NEIGHBORS:
+                break
+        # Live links carry more information than a configured-but-idle target,
+        # so they are the last to be dropped when the frame has to shrink.
+        records.sort(key=lambda record: (record.state != "connected", record.call))
+        expires = self._py_status_expiry(now)
+        while True:
+            message = PyNeighborsMessage(
+                node_call=owner,
+                neighbors=tuple(records),
+                generated_epoch=now,
+                expires_epoch=expires,
+            )
+            frame = WirePcFrame(PY_NEIGHBORS_TYPE, message.to_fields())
+            if not records or self._py_frame_fits(frame, peer_name):
+                return message
+            records.pop()
+
     async def _send_py_metadata(self, peer_name: str, *, force: bool = False) -> int:
         peer_key = normalize_call(peer_name) or peer_name.upper()
         now = int(datetime.now(timezone.utc).timestamp())
@@ -2170,6 +2231,7 @@ class ClusterApp:
                 (self.config.py_protocol.share_notices, "notice"),
                 (self.config.py_protocol.share_policy, "policy"),
                 (self.config.py_protocol.share_clock, "clock"),
+                (self.config.py_protocol.share_neighbors, "neighbors"),
             )
             if enabled and capability in negotiated
         }
@@ -2188,6 +2250,8 @@ class ClusterApp:
             builders.append(("policy", PY_POLICY_TYPE, self._build_py_policy()))
         if "clock" in enabled_capabilities:
             builders.append(("clock", PY_CLOCK_TYPE, self._build_py_clock()))
+        if "neighbors" in enabled_capabilities:
+            builders.append(("neighbors", PY_NEIGHBORS_TYPE, await self._build_py_neighbors(peer_name)))
         sent = 0
         sendable = 0
         for _capability, frame_type, message in builders:
@@ -2586,6 +2650,27 @@ class ClusterApp:
                 "py.rbn.queue_state": rbn_status.queue_state,
                 "py.rbn.generated_epoch": str(rbn_status.generated_epoch),
                 "py.rbn.expires_epoch": str(rbn_status.expires_epoch),
+            })
+            return
+
+        if frame.pc_type == PY_NEIGHBORS_TYPE:
+            try:
+                neighbors = PyNeighborsMessage.from_fields(frame.payload_fields)
+            except ValueError:
+                await self.node_link.mark_policy_drop(peer_name, "invalid_py_neighbors")
+                await self._send_py_error(peer_name, "malformed", frame.pc_type, "NEIGHBORS payload is invalid")
+                return
+            if not await self._validate_py_metadata_message(peer_name, frame.pc_type, neighbors):
+                return
+            await self._touch_proto_activity(peer_name, frame.pc_type)
+            await self._record_proto_state(peer_name, {
+                "py.neighbors.records": json.dumps(
+                    [record.as_payload() for record in neighbors.neighbors],
+                    separators=(",", ":"),
+                ),
+                "py.neighbors.count": str(len(neighbors.neighbors)),
+                "py.neighbors.generated_epoch": str(neighbors.generated_epoch),
+                "py.neighbors.expires_epoch": str(neighbors.expires_epoch),
             })
             return
 

@@ -219,6 +219,82 @@ ensure_base_packages() {
   esac
 }
 
+# Accurate UTC is a protocol requirement here, not general hygiene. Spot
+# timestamps travel to every linked node in PC11/PC61 frames and are summarized
+# to peers in PY09, so a skewed clock corrupts duplicate suppression on this
+# node and feeds bad timestamps to everyone downstream of it.
+time_sync_provider() {
+  local unit
+  for unit in chronyd.service chrony.service systemd-timesyncd.service ntpd.service ntpsec.service openntpd.service; do
+    if systemctl is-active "$unit" >/dev/null 2>&1; then
+      printf '%s' "$unit"
+      return 0
+    fi
+  done
+  return 1
+}
+
+timedatectl_property() {
+  command -v timedatectl >/dev/null 2>&1 || return 1
+  timedatectl show --property="$1" --value 2>/dev/null
+}
+
+time_sync_status_line() {
+  local provider state ntp synced
+  provider="$(time_sync_provider 2>/dev/null)" || provider="none"
+  synced="$(timedatectl_property NTPSynchronized 2>/dev/null || printf '')"
+  ntp="$(timedatectl_property NTP 2>/dev/null || printf '')"
+  if [ "$synced" = "yes" ]; then
+    state="synchronized"
+  elif [ "$ntp" = "yes" ]; then
+    state="enabled, not yet synchronized"
+  elif [ -n "$ntp" ] || [ -n "$synced" ]; then
+    state="NOT synchronized"
+  else
+    state="unknown"
+  fi
+  printf '%s (%s)' "$provider" "$state"
+}
+
+ensure_time_sync_packages() {
+  # Only install when nothing already synchronizes the clock. Replacing a
+  # working systemd-timesyncd with chrony would be a disruptive change the
+  # operator did not ask for, and on Debian the two conflict outright.
+  if time_sync_provider >/dev/null 2>&1; then
+    return 0
+  fi
+  local mgr
+  mgr="$(pkg_manager)" || return 0
+  case "$mgr" in
+    apt|dnf|yum)
+      install_packages chrony || warn "could not install chrony; configure a time source manually"
+      ;;
+  esac
+}
+
+enable_time_sync_service() {
+  local unit
+  for unit in chronyd.service chrony.service systemd-timesyncd.service; do
+    if systemctl list-unit-files "$unit" >/dev/null 2>&1; then
+      systemctl enable "$unit" >/dev/null 2>&1 || true
+      systemctl start "$unit" >/dev/null 2>&1 || true
+      break
+    fi
+  done
+  # Harmless when a provider is already running; converges hosts where an NTP
+  # service is installed but synchronization was switched off.
+  if command -v timedatectl >/dev/null 2>&1; then
+    timedatectl set-ntp true >/dev/null 2>&1 || true
+  fi
+  if time_sync_provider >/dev/null 2>&1; then
+    log "time synchronization: $(time_sync_status_line)"
+  else
+    # Not fatal: containers and some virtual machines inherit the host clock,
+    # and refusing to install there would be wrong.
+    warn "no time synchronization service is running. pyCluster stamps spots with UTC and shares them with linked nodes; a skewed clock corrupts duplicate suppression here and upstream. Install chrony, or ensure the host supplies an accurate clock."
+  fi
+}
+
 python_version_ok() {
   local bin="$1"
   [ -x "$bin" ] || return 1

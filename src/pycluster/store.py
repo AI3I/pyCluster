@@ -10,6 +10,7 @@ import time
 
 from .models import Spot, normalize_call
 from .shdx import ShDxQuery
+from .spot_dedupe import DEFAULT_MAX_EPOCH_SKEW_SECONDS, SpotDeduper
 from .address_policy import address, network
 
 
@@ -238,9 +239,7 @@ class SpotStore:
         # immediately with "database is locked" instead of waiting its turn.
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._lock = asyncio.Lock()
-        self._spot_dupe_enabled = True
-        self._spot_dupe_ttl_seconds = 900
-        self._spot_dupe_cache: dict[str, int] = {}
+        self.spot_dedupe = SpotDeduper()
         self._conn.executescript(SCHEMA_SQL)
         # Migration-safe add for older DBs created before address field existed.
         try:
@@ -286,6 +285,38 @@ class SpotStore:
             "CREATE INDEX IF NOT EXISTS idx_messages_route_state ON messages(route_node, delivery_state, id ASC)"
         )
         self._conn.commit()
+        self._seed_spot_dedupe()
+
+    def _seed_spot_dedupe(self) -> None:
+        """Prime the dedupe cache from stored spots so a restart does not re-admit
+        everything still inside the suppression window."""
+        now = int(time.time())
+        cutoff = now - self.spot_dedupe.ttl_seconds
+        try:
+            rows = self._conn.execute(
+                """
+                SELECT dx_call, spotter, freq_khz, MAX(epoch) AS epoch
+                FROM spots
+                WHERE epoch >= ? AND epoch <= ?
+                GROUP BY dx_call, spotter, CAST(ROUND(freq_khz * 10) AS INTEGER)
+                """,
+                (cutoff, now + DEFAULT_MAX_EPOCH_SKEW_SECONDS),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+        for row in rows:
+            self.spot_dedupe.remember(
+                Spot(
+                    freq_khz=float(row["freq_khz"]),
+                    dx_call=str(row["dx_call"]),
+                    epoch=int(row["epoch"]),
+                    info="",
+                    spotter=str(row["spotter"]),
+                    source_node="",
+                    raw="",
+                ),
+                now,
+            )
 
     def _normalize_privilege(self, privilege: str | None) -> str:
         p = str(privilege or "").strip().lower()
@@ -734,11 +765,16 @@ class SpotStore:
             out.append(route)
         return out
 
-    async def add_spot(self, spot: Spot) -> bool:
+    async def add_spot(self, spot: Spot, *, local: bool = False) -> bool:
+        """Store a spot, unless it is blocked or repeats one already seen.
+
+        ``local`` marks a spot this node originated (an operator's ``dx``
+        command or a web submission) rather than one relayed to us.
+        """
         async with self._lock:
             if self._spot_blocked_nolock(spot):
                 return False
-            if self._spot_dupe_enabled and self._spot_duplicate_nolock(spot):
+            if self._spot_duplicate_nolock(spot, local=local):
                 return False
             self._conn.execute(
                 """
@@ -756,7 +792,7 @@ class SpotStore:
             for s in spots:
                 if self._spot_blocked_nolock(s):
                     continue
-                if self._spot_dupe_enabled and self._spot_duplicate_nolock(s):
+                if self._spot_duplicate_nolock(s):
                     continue
                 values.append((s.freq_khz, s.dx_call, s.epoch, s.info, s.spotter, s.source_node, s.raw))
             if not values:
@@ -777,7 +813,7 @@ class SpotStore:
             for s in spots:
                 if self._spot_blocked_nolock(s):
                     continue
-                if self._spot_dupe_enabled and self._spot_duplicate_nolock(s):
+                if self._spot_duplicate_nolock(s):
                     continue
                 self._conn.execute(
                     """
@@ -791,46 +827,22 @@ class SpotStore:
                 self._conn.commit()
         return inserted
 
-    def _spot_dupe_key(self, spot: Spot) -> str:
-        freq = f"{spot.freq_khz:.1f}"
-        info = (spot.info or "").strip().lower()
-        dx_call = (spot.dx_call or "").strip().upper()
-        # De-dupe across multiple linked nodes by the DX/frequency/comment tuple
-        # rather than the spotter, so the same spot relayed by different peers
-        # or seen from different upstream paths does not double-render locally.
-        return f"{dx_call}|{freq}|{info}"
-
-    def _prune_spot_dupes_nolock(self, now_epoch: int) -> None:
-        if not self._spot_dupe_cache:
-            return
-        cutoff = now_epoch - max(0, self._spot_dupe_ttl_seconds)
-        stale = [k for k, ts in self._spot_dupe_cache.items() if ts < cutoff]
-        for k in stale:
-            self._spot_dupe_cache.pop(k, None)
-
-    def _spot_duplicate_nolock(self, spot: Spot) -> bool:
-        now_epoch = int(spot.epoch)
-        self._prune_spot_dupes_nolock(now_epoch)
-        k = self._spot_dupe_key(spot)
-        prev = self._spot_dupe_cache.get(k)
-        if prev is not None and now_epoch - prev <= self._spot_dupe_ttl_seconds:
-            return True
-        self._spot_dupe_cache[k] = now_epoch
-        return False
+    def _spot_duplicate_nolock(self, spot: Spot, *, local: bool = False) -> bool:
+        # Arrival time, not spot.epoch: a peer with a fast clock must not be able
+        # to expire entries belonging to every other peer.
+        return self.spot_dedupe.check(spot, int(time.time()), match_comment=local)
 
     async def set_spot_dupe_enabled(self, enabled: bool) -> None:
         async with self._lock:
-            self._spot_dupe_enabled = bool(enabled)
+            self.spot_dedupe.enabled = bool(enabled)
 
     async def spot_dupe_enabled(self) -> bool:
         async with self._lock:
-            return self._spot_dupe_enabled
+            return self.spot_dedupe.enabled
 
     async def clear_spot_dupes(self) -> int:
         async with self._lock:
-            n = len(self._spot_dupe_cache)
-            self._spot_dupe_cache.clear()
-            return n
+            return self.spot_dedupe.clear()
 
     def _deny_rules_nolock(self) -> dict[str, list[str]]:
         cur = self._conn.execute(

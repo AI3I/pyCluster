@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import pytest
 import re
@@ -91,6 +91,70 @@ def _mk_config(db_path: str) -> AppConfig:
         public_web=PublicWebConfig(),
         store=StoreConfig(sqlite_path=db_path),
     )
+
+
+def test_rbn_and_cluster_lanes_share_one_dedupe_cache(tmp_path) -> None:
+    """The same signal must not render twice by arriving on both ingest lanes."""
+
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "cross_lane.db")))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            rbn = Spot(14025.0, "DL1ABC", now, "CW 22 dB 25 WPM CQ", "K1AA-#", "RBN", "")
+            assert app._remember_rbn_spot(rbn, now) is True
+            # Same skimmer spot relayed by a peer: different comment, different
+            # epoch resolution, different source node.
+            relayed = Spot(14025.1, "DL1ABC", now - 30, "CW 22dB Q:1 Z:14", "K1AA-#", "VE7CC-1", "")
+            assert await app.store.add_spot(relayed) is False
+            assert await app.store.count_spots() == 0
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_cluster_spot_suppresses_later_rbn_echo(tmp_path) -> None:
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "cross_lane_reverse.db")))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            assert await app.store.add_spot(Spot(21074.0, "VK9XYZ", now, "FT8", "W2BB", "N2WQ-1", "")) is True
+            echo = Spot(21074.0, "VK9XYZ", now + 10, "FT8 -12dB", "W2BB", "RBN", "")
+            assert app._remember_rbn_spot(echo, now + 10) is False
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_pc61_epoch_clamps_future_peer_clock(tmp_path) -> None:
+    """A peer whose clock runs fast must not stamp spots into the future."""
+
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "clamp.db")))
+        try:
+            now = datetime.now(timezone.utc)
+            ahead = now.replace(second=0, microsecond=0) + timedelta(hours=2)
+            msg = Pc61Message.from_fields(
+                [
+                    "14074.0",
+                    "K1ABC",
+                    ahead.strftime("%-d-%b-%Y"),
+                    ahead.strftime("%H%MZ"),
+                    "FT8",
+                    "N0CALL",
+                    "N2WQ-1",
+                    "127.0.0.1",
+                    "H1",
+                    "~",
+                ]
+            )
+            epoch = app._pc61_epoch(msg)
+            assert epoch <= int(now.timestamp()) + 1
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
 
 
 def test_ingest_pc61_adds_spot(tmp_path) -> None:
@@ -402,6 +466,7 @@ def test_pycluster_pc18_negotiates_one_py_hello_and_persists_remote_hello(tmp_pa
         cfg.py_protocol.share_notices = False
         cfg.py_protocol.share_policy = False
         cfg.py_protocol.share_clock = False
+        cfg.py_protocol.share_neighbors = False
         app = ClusterApp(cfg)
         sent: list[tuple[str, WirePcFrame]] = []
         try:
@@ -541,6 +606,7 @@ def test_py_node_info_is_not_advertised_when_operator_disables_sharing(tmp_path)
         cfg.py_protocol.share_notices = False
         cfg.py_protocol.share_policy = False
         cfg.py_protocol.share_clock = False
+        cfg.py_protocol.share_neighbors = False
         app = ClusterApp(cfg)
         sent: list[WirePcFrame] = []
         try:
@@ -1293,6 +1359,7 @@ def test_py_operational_families_are_not_advertised_when_disabled(tmp_path) -> N
     cfg.py_protocol.share_notices = False
     cfg.py_protocol.share_policy = False
     cfg.py_protocol.share_clock = False
+    cfg.py_protocol.share_neighbors = False
     app = ClusterApp(cfg)
     try:
         capabilities = app._local_py_capabilities()
@@ -1302,6 +1369,7 @@ def test_py_operational_families_are_not_advertised_when_disabled(tmp_path) -> N
         assert "notice" not in capabilities
         assert "policy" not in capabilities
         assert "clock" not in capabilities
+        assert "neighbors" not in capabilities
     finally:
         asyncio.run(app.store.close())
 
@@ -4098,7 +4166,9 @@ def test_rbn_sustained_ingest_is_bounded_and_never_persisted(tmp_path) -> None:
         app._publish_rbn_to_public_web = lambda _spot: None  # type: ignore[method-assign]
         now = int(datetime.now(timezone.utc).timestamp())
         pending = [
-            Spot(14000.0 + (idx % 1000) / 10, f"AI3I-{90 + idx % 10}", now + idx, "CW 20 dB", f"AI3I-{90 + idx % 10}", "RBN", "RBN")
+            # Distinct identities: spots are deduped on DX/spotter/frequency, so
+            # the stress load has to vary frequency rather than only timestamp.
+            Spot(14000.0 + idx / 10, f"AI3I-{90 + idx % 10}", now + idx, "CW 20 dB", f"AI3I-{90 + idx % 10}", "RBN", "RBN")
             for idx in range(20000)
         ]
         try:
@@ -4108,7 +4178,7 @@ def test_rbn_sustained_ingest_is_bounded_and_never_persisted(tmp_path) -> None:
             assert relayed == 0
             assert await app.store.count_spots() == 0
             assert len(app._rbn_recent_spot_epochs) == 10000
-            assert len(app._rbn_seen) <= 50000
+            assert len(app.store.spot_dedupe) <= 50000
             assert len(app.recent_rbn_spots()) == 200
             assert app.recent_rbn_spots()[0]['epoch'] == now + 19999
             assert app.recent_rbn_spots()[-1]['epoch'] == now + 19800

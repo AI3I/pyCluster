@@ -210,6 +210,7 @@ Important fields:
 - `share_rbn_status` - enables direct `PY06` RBN mode, connection, activity-rate, and queue summaries
 - `share_policy` - enables direct `PY08` registration, verification, MFA, and public-access booleans
 - `share_clock` - enables direct `PY09` UTC, uptime, and boot-time summaries
+- `share_neighbors` - enables direct `PY14` reporting of non-pyCluster nodes this node links to directly; never relayed
 - `share_notices` - enables structured `PY07` operator notices
 - `notice_severity`, `notice_message`, and `notice_expires_epoch` - dedicated notice content and explicit expiry; an empty message creates an inactive/cancel record
 - `max_hops`

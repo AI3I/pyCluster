@@ -2,6 +2,14 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.22 - 2026-09-07
+
+- Report non-pyCluster neighbors over the PY protocol. A new `PY14 NEIGHBORS` family, gated by the `neighbors` capability and the `share_neighbors` control, advertises the callsign, software family, version string, and link state of DXSpider, AR-Cluster, DX-NET, and CLX nodes this node links to directly, so PY peers can see the network beyond the pyCluster island. A PC18 banner outranks the configured peer profile and unrecognized software is reported as unknown rather than guessed at. The frame covers only the sender's own links and is never relayed. Reported nodes appear in Topology and the known-node catalog marked Legacy, and are searchable by software family.
+
+- Ensure host clock synchronization during install and upgrade. When no time service is running, `chrony` is installed and enabled; an already-working `systemd-timesyncd`, `chrony`, or `ntpd` is left alone rather than replaced, and hosts that inherit the clock from a hypervisor warn instead of failing the deployment. `deploy/doctor.sh` reports provider and synchronization state, and the support bundle captures measured offset via `chronyc tracking`.
+
+- Fix duplicate spots reaching users. Spot identity is now DX call, spotter, and frequency (within 0.2 kHz) instead of DX call, frequency, and comment, so a spot relayed by several peers renders once even when a node reformats its comment; the RBN and cluster ingest lanes now share one suppression cache instead of keying on incompatible tuples; the suppression window expires by arrival time and peer timestamps are clamped, so one peer's fast clock can no longer evict every other peer's entries; and the cache is primed from stored spots at startup so a restart does not re-admit the last 15 minutes. Two operators spotting the same DX are no longer collapsed into one, and an operator correcting the comment on their own spot is still accepted.
+
 ## 1.0.21 - 2026-09-06
 
 - Add filtered public spot JSON diagnostics, distinguish Clear Filters from the All source selector, and default the spot view to one hour while retaining saved preset ranges.

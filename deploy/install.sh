@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 require_root
 ensure_base_packages
+ensure_time_sync_packages
 ensure_supported_python
 refresh_source_tags_best_effort
 log "installing pyCluster into $PYCLUSTER_APP_DIR"
@@ -34,6 +35,7 @@ show_sysop_bootstrap_note
 restart_service_hard
 restart_web_service_hard
 enable_fail2ban_service
+enable_time_sync_service
 apply_imported_fail2ban_badips
 wait_for_systemd_active "$PYCLUSTER_SERVICE_NAME" 45 || die "service failed to start"
 wait_for_systemd_active "$PYCLUSTER_WEB_SERVICE_NAME" 45 || die "web service failed to start"

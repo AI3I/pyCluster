@@ -158,6 +158,7 @@ The remaining implemented version 2 metadata families are direct-peer, read-only
 - `PY07 NOTICE` reports a dedicated operator-controlled normal, maintenance, upgrading, degraded, or testing notice with monotonic sequence, explicit active/cancel state, creation time, and expiry. It is separate from the MOTD and never forwards arbitrary local text implicitly.
 - `PY08 POLICY` reports boolean registration, email-verification, MFA, and public/anonymous web availability. It contains no user-specific policy, account, or registration data.
 - `PY09 CLOCK` reports UTC epoch, process uptime, and process boot time. The receiver records an observed offset; it does not adjust either node's clock.
+- `PY14 NEIGHBORS` reports the callsign, software family, identified version string, and link state of the non-pyCluster cluster nodes this node links to directly. pyCluster neighbors already travel in `PY01` `direct_peers`; this covers the rest of the network a node touches, so a PY peer can see beyond the pyCluster island. Families are limited to `dxspider`, `arcluster`, `dxnet`, `clx`, and `unknown`; a peer whose PC18 banner matches nothing recognized is reported as `unknown` rather than guessed at. A PC18 observation outranks the configured peer profile, which is only an operator assertion. The frame reports only links the sender holds itself and is never relayed, so every record carries exactly one hop of provenance and no node can launder a third party's claim. It carries no transport, host, port, password, or user data.
 
 Each family has its own bilateral capability and local `share_*` control. These records are sent after negotiation and refreshed no more often than five minutes (or the lower configured `refresh_seconds`). Receivers enforce the authenticated callsign, future-time tolerance, bounded expiry, strict fields and enums, and frame/rate limits. The latest direct-peer records are persisted and exposed under the peer's `proto.py` object in the authenticated SysOp `/api/peers` response.
 
@@ -165,7 +166,7 @@ Inbound and outbound `PY` frames are capped by `max_frame_bytes` and `max_bytes_
 
 The `[py_protocol]` controls provide conservative boundaries for implemented and later frame families:
 
-- `share_node_info`, `share_topology`, `share_health`, `share_datasets`, `share_rbn_status`, `share_policy`, `share_clock`, and `share_notices` govern what this node may advertise.
+- `share_node_info`, `share_topology`, `share_health`, `share_datasets`, `share_rbn_status`, `share_policy`, `share_clock`, `share_neighbors`, and `share_notices` govern what this node may advertise.
 - `max_hops`, `max_records_per_frame`, `refresh_seconds`, and `record_ttl_seconds` constrain topology reconciliation.
 - No PY frame contains passwords, tokens, private keys, users, mail, registration records, logs, private addresses, full RBN spot streams, or remote configuration mutations.
 

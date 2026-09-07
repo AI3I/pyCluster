@@ -35,6 +35,7 @@ PY_SHARING_FIELDS = (
     "share_rbn_status",
     "share_policy",
     "share_clock",
+    "share_neighbors",
     "share_notices",
 )
 PROJECT_HOSTS = {"github.com", "www.github.com", "groups.io", "www.groups.io", "pyclusterapp.slack.com"}
