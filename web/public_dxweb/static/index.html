@@ -3304,6 +3304,48 @@ function resetStoredRuleEditor() {
   updateRuleCommand();
 }
 
+let ruleDxccEntities = [];
+function syncRuleEntitySelectors() {
+  for (const prefix of ['rule', 'rule-and']) {
+    const input = document.getElementById(`${prefix}-value`);
+    const condition = document.getElementById(`${prefix}-condition`).value;
+    let select = document.getElementById(`${prefix}-entity`);
+    if (!select) {
+      select = document.createElement('select');
+      select.id = `${prefix}-entity`;
+      input.after(select);
+      select.addEventListener('change', () => {
+        input.value = Array.from(select.selectedOptions, option => option.value).join(',');
+        updateRuleCommand();
+      });
+    }
+    const enabled = ['call_dxcc', 'spotter_dxcc', 'by_dxcc'].includes(condition);
+    input.hidden = enabled;
+    select.hidden = !enabled;
+    if (!enabled) continue;
+    const selected = new Set(input.value ? [input.value] : []);
+    const entries = [{value:'', name:uiText('filter_entity_select')}, ...ruleDxccEntities.map(entity => ({value:String(entity.id), name:entity.name}))];
+    for (const value of selected) {
+      if (!entries.some(entity => entity.value === value)) {
+        entries.push({value, name:fillUiText('filter_entity_unknown', {value})});
+      }
+    }
+    select.replaceChildren(...entries.map(entity => {
+      const option = document.createElement('option');
+      option.value = entity.value;
+      option.textContent = entity.name;
+      option.selected = selected.has(entity.value);
+      return option;
+    }));
+    if (!ruleDxccEntities.length) {
+      const option = document.createElement('option');
+      option.textContent = uiText('filter_entities_unavailable');
+      option.disabled = true;
+      select.appendChild(option);
+    }
+  }
+}
+
 function fillUiText(key, values={}) {
   return Object.entries(values).reduce(
     (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
@@ -3314,8 +3356,10 @@ function fillUiText(key, values={}) {
 function parseStoredRuleExpression(expr) {
   const text = String(expr || '').trim();
   if (/\s+and\s+/i.test(text)) return {condition:'raw', value:text};
-  const match = text.match(/^(call|callsign|by|on|call_zone|spotter_zone|by_zone|call_itu|spotter_itu|by_itu|call_cont|dx_cont|spotter_cont|by_cont|call_dxcc|info)\s+(.+)$/i);
-  return match ? {condition:match[1].toLowerCase(), value:match[2]} : {condition:'raw', value:text};
+  const match = text.match(/^(call|callsign|by|on|call_zone|spotter_zone|by_zone|call_itu|spotter_itu|by_itu|call_cont|dx_cont|spotter_cont|by_cont|call_dxcc|spotter_dxcc|by_dxcc|info)\s+(.+)$/i);
+  if (!match) return {condition:'raw', value:text};
+  const condition = match[1].toLowerCase();
+  return {condition:condition === 'by_dxcc' ? 'spotter_dxcc' : condition, value:match[2]};
 }
 
 function renderStoredFilterRules() {
@@ -3358,6 +3402,8 @@ async function loadStoredFilterRules() {
   if (!webToken) { storedFilterRules = []; renderStoredFilterRules(); return; }
   try {
     const data = await webJson(FILTER_RULES);
+    ruleDxccEntities = Array.isArray(data.dxcc_entities) ? data.dxcc_entities : [];
+    syncRuleEntitySelectors();
     storedFilterRules = Array.isArray(data.rules) ? data.rules : [];
     renderStoredFilterRules();
   } catch (err) {
@@ -3403,6 +3449,7 @@ function storedRuleExpression() {
   return expr;
 }
 function updateRuleCommand() {
+  syncRuleEntitySelectors();
   const family = document.getElementById('rule-family').value;
   const action = document.getElementById('rule-action').value;
   const slot = document.getElementById('rule-slot').value;

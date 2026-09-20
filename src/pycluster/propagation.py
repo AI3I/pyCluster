@@ -179,7 +179,9 @@ def signal_report_for_muf(
     zenith_deg: float,
     zenith_samples: tuple[float, ...] | None = None,
 ) -> str:
-    effective_muf = effective_muf_for_zenith(muf_mhz, zenith_deg)
+    # The supplied MUF is already path/time adjusted (MINIMUF or fallback).
+    # Applying solar attenuation again incorrectly erases all nighttime bands.
+    effective_muf = muf_mhz
     samples = zenith_samples or (zenith_deg,)
     daylight_strength = max(max(0.0, math.cos(math.radians(max(0.0, min(90.0, item))))) for item in samples)
     if freq_mhz <= 4.0 and daylight_strength > 0.05:

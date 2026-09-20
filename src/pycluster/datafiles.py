@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 
+from .satellite import load_tles
+
 _VERSION_RE = re.compile(r"VER(\d{8})")
 _TEXT_DATE_RE = re.compile(r"\b(\d{1,2}\s+[A-Za-z]+\s+\d{4})\b")
 _STALE_DAYS = 180
@@ -89,3 +91,27 @@ def describe_cty_file(path: str, *, loaded: bool = False) -> DataFileStatus:
 
 def describe_wpxloc_file(path: str, *, loaded: bool = False) -> DataFileStatus:
     return describe_data_file("wpxloc.raw", path, loaded=loaded)
+
+
+def describe_keps_file(path: str) -> dict[str, object]:
+    status = describe_data_file("KEPS", path).to_json()
+    status.update(version="", version_date="", element_count=0, oldest_epoch="", newest_epoch="")
+    if not status["exists"]:
+        return status
+    try:
+        records = load_tles(path)
+    except (OSError, ValueError):
+        records = []
+    if not records:
+        status.update(status="invalid", stale=True, note="No readable orbital elements.")
+        return status
+    oldest = min(record.epoch for record in records)
+    newest = max(record.epoch for record in records)
+    age = max(0, int((datetime.now(timezone.utc) - oldest).total_seconds() // 86400))
+    status.update(
+        status="stale" if age > 14 else "available", stale=age > 14,
+        version_date=newest.date().isoformat(), element_count=len(records),
+        oldest_epoch=oldest.isoformat(), newest_epoch=newest.isoformat(),
+        note=f"{len(records)} orbital elements; oldest is {age} days old. Element age is not download age.",
+    )
+    return status

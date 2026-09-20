@@ -28,7 +28,7 @@ from .address_policy import client_address
 from .rbn import is_rbn_spot
 from .ctydat import is_loaded as cty_loaded, load_cty, lookup as cty_lookup
 from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
-from .datafiles import describe_cty_file, describe_wpxloc_file
+from .datafiles import describe_cty_file, describe_wpxloc_file, describe_keps_file
 from .pathmeta import describe_session_path, describe_transport_dsn, normalize_recorded_path
 from .peer_profiles import normalize_profile
 from .public_web import _DEFAULT_ACTIVITY_RULES, _DEFAULT_COMMENT_TAGS, _DEFAULT_MODE_ORDER, _DEFAULT_MODE_RULES, _DEFAULT_RARE_ENTITIES
@@ -322,6 +322,7 @@ class WebAdminServer:
         return {
             "cty": describe_cty_file(self.config.public_web.cty_dat_path, loaded=cty_loaded()).to_json(),
             "wpxloc": describe_wpxloc_file(self.config.public_web.wpxloc_raw_path, loaded=wpx_loaded()).to_json(),
+            "keps": describe_keps_file(self.config.satellite.keps_path),
         }
 
     def _refresh_datafiles_if_changed(self) -> None:
@@ -2657,6 +2658,8 @@ table{
 .topology-tablewrap{overflow-x:hidden}
 #telemetry .tablewrap{max-height:480px;overflow:auto}
 #telemetry .tablewrap th{position:sticky;top:0;z-index:1}
+#protocolHistory .tablewrap{max-height:480px;overflow:auto}
+#protocolHistory .tablewrap th{position:sticky;top:0;z-index:1}
 th,td{
   padding:10px 11px;
   border-bottom:1px solid var(--table-border);
@@ -2931,7 +2934,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <header><h2>At A Glance</h2></header>
         <div class="body">
           <div class="sidebar-metrics">
-            <div class="sidebar-metric wide"><label>Software</label><strong id="navVersion">-</strong><div class="dataset-pills"><span class="dataset-pill warn" id="navCty">CTY.DAT · -</span><span class="dataset-pill warn" id="navWpx">wpxloc.raw · -</span></div></div>
+            <div class="sidebar-metric wide"><label>Software</label><strong id="navVersion">-</strong><div class="dataset-pills"><span class="dataset-pill warn" id="navCty">CTY.DAT · -</span><span class="dataset-pill warn" id="navWpx">wpxloc.raw · -</span><span class="dataset-pill warn" id="navKeps">KEPS · -</span></div><small id="navDatasetFiles"></small></div>
             <div class="sidebar-metric"><label>Uptime</label><strong id="navUptime">-</strong></div>
             <div class="sidebar-metric"><label>Spots</label><strong id="navSpots">-</strong></div>
             <div class="sidebar-metric"><label>Peers</label><strong id="navPeers">-</strong></div>
@@ -3418,7 +3421,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
             <div class="field"><label for="pstale" title="Minutes before a peer with known protocol state is considered stale.">Stale Minutes</label><input id="pstale" value="30" title="If no protocol updates arrive within this window, the peer health becomes stale."></div>
             <div class="field"><label for="pflap" title="Threshold at which repeated state changes mark a peer as flapping.">Flap Score</label><input id="pflap" value="3" title="Higher values make flap detection less sensitive."></div>
             <div class="field"><label for="pwindow" title="Time window used when evaluating protocol flap behavior.">Flap Window Seconds</label><input id="pwindow" value="300" title="Protocol state changes inside this window contribute to flap scoring."></div>
-            <div class="field"><label for="phlim" title="Maximum number of protocol history rows to load into the history table.">History Limit</label><input id="phlim" value="20" title="Increase this when investigating a noisy or unstable peer."></div>
+            <div class="field"><label for="phlim" title="Maximum number of retained state changes to load. This is not a raw frame log. Up to 200 events per family are retained for each peer.">History Limit</label><select id="phlim"><option>20</option><option>50</option><option>100</option><option>200</option></select></div>
           </div>
           <div class="card-grid protocol-glance" style="margin-top:12px">
             <article class="card compact"><span class="label">Peers</span><strong id="protoPeers">-</strong><span class="subtle" id="protoKnown">Known: -</span></article>
@@ -5188,7 +5191,9 @@ function fillNodeForm(data) {
   syncRbnPresetTogglesFromFeeds(rbnFeedsText);
   lastRbnEnabled = !!data.rbn_enabled;
   renderRbnStatus(data);
-  const datasets = data.datasets || {};
+  renderDatasetStatus(data.datasets || {});
+}
+function renderDatasetStatus(datasets) {
   const cty = datasets.cty || {};
   const wpxloc = datasets.wpxloc || {};
   const setDatasetPill = (id, label, row) => {
@@ -5198,13 +5203,29 @@ function fillNodeForm(data) {
     const version = String((row && (row.version || row.version_date)) || '').trim();
     el.textContent = `${label} · ${version || status}`;
     el.classList.remove('ok', 'warn');
-    el.classList.add(status === 'loaded' ? 'ok' : 'warn');
+    el.classList.add(['loaded','available'].includes(status) ? 'ok' : 'warn');
     const note = String((row && row.note) || '').trim();
-    el.title = note || `${label}: ${status}`;
+    el.title = `${note || label + ': ' + status} Release: ${version || 'unknown'}. File updated: ${row.modified_iso || 'unknown'}.`;
   };
   setDatasetPill('navCty', 'CTY.DAT', cty);
   setDatasetPill('navWpx', 'wpxloc.raw', wpxloc);
+  setDatasetPill('navKeps', 'KEPS', datasets.keps || {});
+  const fileDate = row => String(row.modified_iso || '').slice(0,10) || '-';
+  setText('navDatasetFiles', `Files updated (UTC): CTY ${fileDate(cty)}; WPX ${fileDate(wpxloc)}; KEPS ${fileDate(datasets.keps || {})}`);
 }
+let datasetStatusPending = false;
+async function refreshDatasetStatus() {
+  if (!webTok || !webIsSysop || document.hidden || datasetStatusPending) return;
+  const token = webTok;
+  datasetStatusPending = true;
+  try {
+    const data = await j('/api/datasets', {signal:AbortSignal.timeout(10000)});
+    if (webTok === token) renderDatasetStatus(data);
+  } catch (error) {
+    if (webTok === token) setText('navDatasetFiles', 'Dataset status refresh failed.');
+  } finally {datasetStatusPending = false;}
+}
+setInterval(refreshDatasetStatus, 60000);
 function renderRbnStatus(data) {
   const rbnStatus = data.rbn_status || {};
   const rbnState = String(rbnStatus.state || (data.rbn_enabled ? 'stopped' : 'disabled'));
@@ -7994,6 +8015,15 @@ if (restoreWebSession()) {
                     await self._write_response(writer, 200, self._json({"ok": True, **cur}))
                     return
                 await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                return
+
+            if path == "/api/datasets":
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                elif method != "GET":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                else:
+                    await self._write_response(writer, 200, self._json(self._dataset_status()))
                 return
 
             if path == "/api/proto/history":

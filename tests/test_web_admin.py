@@ -2285,6 +2285,15 @@ def test_web_admin_node_presentation_includes_dataset_status(tmp_path) -> None:
             assert data["datasets"]["cty"]["loaded"] is True
             assert data["datasets"]["cty"]["version"].startswith("VER")
             assert data["datasets"]["wpxloc"]["status"] == "missing"
+            assert "keps" in data["datasets"]
+            code, _, _ = await _http_request(srv, "GET", "/api/datasets")
+            assert code == 401
+            cty_path.write_text("Test: 05: 08: NA: 37: 95: 5: K:\n K;\nVER20260915\n", encoding="ascii")
+            code, _, body = await _http_request(srv, "GET", "/api/datasets", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            updated = json.loads(body)
+            assert updated["cty"]["version"] == "VER20260915"
+            assert updated["cty"]["modified_iso"]
         finally:
             await store.close()
 

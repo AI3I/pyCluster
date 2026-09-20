@@ -27,7 +27,7 @@ from .access_policy import CLUSTER_NODE_FAMILIES, default_access_allowed
 from .auth import hash_password, hash_password_async, is_password_hash, verify_password_async
 from .config import AppConfig, config_override_paths, load_config, node_presentation_defaults
 from .ctydat import load_cty, lookup
-from .wpxloc import is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
+from .wpxloc import entity_catalog, is_loaded as wpx_loaded, load_wpxloc, lookup as wpx_lookup
 from .datafiles import describe_cty_file, describe_wpxloc_file
 from .httputil import RequestBodyTooLarge, read_body, request_content_length, with_head_deadline
 from .geomag import canonicalize_wwv_text
@@ -844,6 +844,9 @@ class PublicWebServer:
             "filter_rule_deleted": "Rule deleted.",
             "filter_rule_update_failed": "Rule update failed:",
             "filter_rule_value_required": "Enter a filter value or expression.",
+            "filter_entity_select": "Select an entity",
+            "filter_entity_unknown": "Existing value: {value}",
+            "filter_entities_unavailable": "DXCC list unavailable; ask the SysOp to check WPXLOC.",
             "filter_rule_delete_confirm": "Delete {action}/{family} slot {slot}?",
             "deny_rules_empty": "No node-wide deny rules.",
             "deny_rules_load_failed": "Loading deny rules failed:",
@@ -2807,7 +2810,7 @@ class PublicWebServer:
                         for row in await self.store.list_filter_rules(call)
                         if str(row["family"] or "").strip().lower() in ({"spots"} if legacy_spots_path else {"spots", "rbn"})
                     ]
-                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "rules": rows}))
+                    await self._write_response(writer, 200, self._json({"ok": True, "call": call, "rules": rows, "dxcc_entities": entity_catalog()}))
                     return
                 if method == "POST":
                     payload = self._parse_json_body(body)

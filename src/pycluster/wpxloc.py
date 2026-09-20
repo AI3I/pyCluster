@@ -101,6 +101,16 @@ def is_loaded() -> bool:
     return bool(_prefix_map or _exact_map)
 
 
+def entity_catalog() -> list[dict[str, object]]:
+    """Return one display name per DXCC ID from the active dataset."""
+    entities: dict[int, str] = {}
+    for loc in (*_prefix_map.values(), *_exact_map.values()):
+        if loc.dxcc > 0:
+            entities.setdefault(loc.dxcc, loc.name)
+    return [{"id": key, "name": name} for key, name in
+            sorted(entities.items(), key=lambda item: (item[1].casefold(), item[0]))]
+
+
 def lookup(callsign: str) -> PrefixLocation | None:
     call = str(callsign or "").strip().upper()
     if not call:

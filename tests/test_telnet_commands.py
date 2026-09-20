@@ -2160,6 +2160,7 @@ def test_show_dx_wildcard_and_show_dxcc_alias_match_same_spots(tmp_path) -> None
     async def run() -> None:
         db = str(tmp_path / "show_dxcc_alias.db")
         cfg = _mk_config(db)
+        cfg.public_web.cty_dat_path = _write_cty(tmp_path)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
@@ -2719,6 +2720,7 @@ def test_show_aliases_mydx_newconfiguration_and_dxcc(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "show_aliases.db")
         cfg = _mk_config(db)
+        cfg.public_web.cty_dat_path = _write_cty(tmp_path)
         store = SpotStore(db)
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
@@ -2741,14 +2743,15 @@ def test_show_aliases_mydx_newconfiguration_and_dxcc(tmp_path) -> None:
 
             _, out = await srv._execute_command("N0CALL", "show/dxcc K1")
             assert "K1ABC" in out
-            assert "W1AW" not in out
+            assert "W1AW" in out
         finally:
             await store.close()
 
     asyncio.run(run())
 
 
-def test_show_dxcc_uses_cty_data_when_available(tmp_path) -> None:
+def test_show_dxcc_uses_cty_data_when_available(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("pycluster.telnet_server.wpx_lookup", lambda call: None)
     async def run() -> None:
         db = str(tmp_path / "show_dxcc_cty.db")
         cfg = _mk_config(db)
@@ -2757,14 +2760,49 @@ def test_show_dxcc_uses_cty_data_when_available(tmp_path) -> None:
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
-            _, out = await srv._execute_command("N0CALL", "show/dxcc K1")
-            assert "DXCC K1: United States" in out
-            assert "Continent: NA" in out
-            assert "CQ Zone: 5" in out
-            assert "ITU Zone: 8" in out
+            now = int(datetime.now(timezone.utc).timestamp())
+            for dx, comment in [("AI3I-90", "same entity"), ("AI3I-91", "other entity")]:
+                await store.add_spot(Spot(14030.0, dx, now, comment, "AI3I-99", "AI3I-98", ""))
+            original_lookup = lookup
+            monkeypatch.setattr("pycluster.telnet_server.lookup", lambda call: original_lookup(
+                "W" if call == "AI3I-90" else "VE" if call == "AI3I-91" else call))
+            _, out = await srv._execute_command("AI3I-99", "show/dxcc K1")
+            assert "AI3I-90" in out
+            assert "AI3I-91" not in out
+            assert "CQ Zone:" not in out
+            _, unknown = await srv._execute_command("AI3I-99", "show/dxcc ?")
+            assert "No DXCC entity found" in unknown
         finally:
             await store.close()
 
+    asyncio.run(run())
+
+
+def test_show_dxcc_groups_entity_ids_and_preserves_limits(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    entities = {"AI3I-90": 202, "AI3I-91": 202, "AI3I-92": 291}
+    monkeypatch.setattr("pycluster.telnet_server.wpx_lookup", lambda call:
+                        SimpleNamespace(dxcc=entities[call]) if call in entities else None)
+
+    async def run():
+        cfg = _mk_config(str(tmp_path / "entity.db"))
+        store = SpotStore(cfg.store.sqlite_path)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            now = int(datetime.now(timezone.utc).timestamp())
+            for i, dx in enumerate(entities):
+                await store.add_spot(Spot(14030.0, dx, now + i, "CW", "AI3I-99", "AI3I-98", ""))
+            # Personal rules must not restrict global entity history.
+            await store.set_filter_rule("AI3I-99", "spots", "reject", 1, "call AI3I-91", now)
+            out = await srv._cmd_show_dxcc("AI3I-99", "AI3I-90")
+            assert "AI3I-90" in out and "AI3I-91" in out and "AI3I-92" not in out
+            limited = await srv._cmd_show_dxcc("AI3I-99", "AI3I-90 1")
+            assert "AI3I-91" in limited and "AI3I-90" not in limited
+            empty = await srv._cmd_show_dxcc("AI3I-99", "AI3I-90 10 on 40m")
+            assert "No spots available" in empty
+        finally:
+            await store.close()
     asyncio.run(run())
 
 
@@ -3739,16 +3777,53 @@ def test_show_muf_dxspider_style_path_report(tmp_path) -> None:
             assert "Power :   26 dBW" in out
             assert "Location                       Lat / Long           Azim" in out
             assert "United States" in out
-            assert "UT LT  MUF Zen" in out
+            assert "UT LT  MUF Elev" in out
 
             _, out = await srv._execute_command("N0CALL", "show/muf RG65SM 2 long")
             assert "RxSens: -128 dBM SFI:" in out
             assert "Location                       Lat / Long           Azim" in out
             assert "European Russia" in out
-            assert "UT LT  MUF Zen" in out
+            assert "UT LT  MUF Elev" in out
         finally:
             await store.close()
 
+    asyncio.run(run())
+
+
+def test_muf_seychelles_regression_uses_profile_and_nighttime_path(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    when = datetime(2026, 9, 15, 18, tzinfo=timezone.utc)
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when if tz else when.replace(tzinfo=None)
+    monkeypatch.setattr(telnet_server_mod, "datetime", FixedDateTime)
+
+    async def run():
+        cfg = _mk_config(str(tmp_path / "muf-seychelles.db"))
+        cfg.node.node_locator = "FN00FS"
+        store = SpotStore(cfg.store.sqlite_path)
+        server = TelnetClusterServer(cfg, store, when)
+        monkeypatch.setattr(server, "_geo_lookup", lambda target: SimpleNamespace(
+            name="Seychelles", lat=-4.6666667, lon=55.4666667))
+        try:
+            now = int(when.timestamp())
+            await store.upsert_user_registry("AI3I-99", now, qra="EN63AA")
+            await store.set_user_pref("AI3I-99", "qra", "invalid-old-value", now)
+            await store.add_bulletin("wwv", "AI3I-90", "LOCAL", now, "SFI=104 A=6 K=2")
+            out = await server._cmd_show_muf("AI3I-99", "AI3I-90 5")
+            assert "Using " not in out
+            assert "QRA EN63AA" in out
+            rows = out.split("UT LT  MUF Elev", 1)[1].splitlines()[1:]
+            first = rows[0].split()
+            assert first[:2] == ["18", "21"]
+            assert abs(float(first[2]) - 27.8) < 0.3
+            assert -7 < float(first[3]) < -2
+            assert len(first) > 4  # Nighttime paths must not erase every band.
+            assert len(rows) == 5
+        finally:
+            await store.close()
     asyncio.run(run())
 
 
@@ -3768,7 +3843,7 @@ def test_muf_path_uses_midpoint_solar_zenith_for_signal_estimates(tmp_path) -> N
         assert zen_noon < zen_midnight
         assert srv._effective_muf_for_zenith(26.0, zen_noon) > srv._effective_muf_for_zenith(26.0, zen_midnight)
         assert srv._signal_report_for_muf(14.0, 26.0, zen_noon)
-        assert srv._signal_report_for_muf(14.0, 26.0, zen_midnight) == ""
+        assert srv._signal_report_for_muf(14.0, 26.0, zen_midnight)
         assert srv._signal_report_for_muf(1.8, 26.0, zen_noon) == ""
         assert srv._signal_report_for_muf(3.5, 26.0, zen_noon) == ""
         assert srv._signal_report_for_muf(1.8, 26.0, zen_midnight, (zen_midnight, zen_noon)) == ""

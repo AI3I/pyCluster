@@ -459,6 +459,12 @@ appear beneath it in equal-width columns, stacking on smaller screens.
 
 Use the `PY`, `PC`, and `All` tabs to separate event families.
 The configured history limit applies to the selected family.
+Choose 20, 50, 100, or 200 rows and Reload History; the table scrolls with
+sticky headings. Each peer retains up to 200 changes per family (PC, PY,
+and other), so frequent PY telemetry cannot evict PC identification history.
+These are state changes, not a frame capture: repeated PC61 spots need not
+produce history rows. Check Peer State counters and Activity for live traffic.
+Previously evicted events cannot be recovered by upgrading.
 Family selection is applied by the API before limiting results, so newer PC
 events cannot hide an older retained PY negotiation event. History values retain
 their original case.
@@ -472,6 +478,16 @@ Columns:
 - `To`
 
 This area is the main operator view for peer health and protocol instability.
+
+### Dataset Status
+
+At a Glance displays CTY/WPX release identifiers separately from local file-update
+dates. A newly downloaded file can still contain an older published dataset.
+These indicators refresh once per minute without reloading unsaved settings.
+KEPS displays the newest orbital-element date; its tooltip reports the number
+of elements and oldest-element age. Elements older than 14 days trigger a
+warning even if the file was downloaded today. Missing or invalid KEPS files
+are shown explicitly; no artificial KEPS version number is assigned.
 
 ## Topology
 

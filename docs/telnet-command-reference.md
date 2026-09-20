@@ -371,7 +371,7 @@ Global bad-call rules apply to DX spot ingress fields; `set/badspotter` is not a
 | `show/sun` | Show sun status. |
 | `show/grayline` | Show grayline status. |
 | `show/moon` | Show topocentric moon status, distance in kilometers and miles, and UTC rise/set times with event azimuths. |
-| `show/muf` | Show a MINIMUF 3.5 path estimate using the latest stored WWV solar-flux data. This is an hourly planning estimate, not a VOACAP prediction. `LT` is the destination-local solar hour. |
+| `show/muf` | Show a MINIMUF 3.5 path estimate using the latest stored WWV solar-flux data. This is an hourly planning estimate, not a VOACAP prediction. `LT` uses the destination longitude offset truncated to whole hours, not a civil time zone. `Elev` is midpoint solar elevation (negative at night), not zenith angle. Band signal labels are heuristic, not DXSpider path-loss predictions; the path MUF is not attenuated a second time at night. |
 | `show/contest` | Show contest-oriented information. |
 | `show/satellite [target]` | Show satellite spots, or predict passes for a named TLE target when a keps file is configured. |
 | `show/talk` | Show talk/chat status. |

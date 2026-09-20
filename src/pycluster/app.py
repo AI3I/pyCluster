@@ -1413,7 +1413,18 @@ class ClusterApp:
                 hist = []
             for ev in changed_events:
                 hist.append(ev)
-            hist = hist[-40:]
+            # Busy PY telemetry must not evict PC state changes (or vice versa).
+            retained: list[dict[str, object]] = []
+            counts: dict[str, int] = {}
+            for event in reversed(hist):
+                if not isinstance(event, dict):
+                    continue
+                key = str(event.get("key", "")).lower()
+                family = "py" if key.startswith(("py.", "py_")) else "pc" if re.match(r"pc\d+[._]", key) else "other"
+                if counts.get(family, 0) < 200:
+                    retained.append(event)
+                    counts[family] = counts.get(family, 0) + 1
+            hist = list(reversed(retained))
             await self.store.set_user_pref(
                 self.config.node.node_call,
                 pfx + "history",

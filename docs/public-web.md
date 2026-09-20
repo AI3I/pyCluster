@@ -222,6 +222,13 @@ Depending on node policy, a user may be allowed to post:
 Disabled actions in the UI reflect local policy.
 ## Rule Preview
 
+DXCC conditions use country-name dropdowns populated from the node's active
+WPXLOC dataset. Selecting a name writes its numeric entity ID into the shared
+rule, for both DX and spotter conditions, including the second AND condition.
+Existing values not in the current catalog are retained; advanced expressions
+remain editable as raw rules. If the catalog is unavailable, ask the SysOp to
+check the WPXLOC dataset rather than guessing an entity ID.
+
 The Rules editor can combine two conditions with AND and displays the equivalent
 telnet command. Its sample preview evaluates the stored rules plus the current
 editor draft, replacing only the same family/action/slot in memory. It does not

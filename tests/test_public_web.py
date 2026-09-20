@@ -21,6 +21,32 @@ from pycluster.public_web import PublicWebServer, _RbnLiveProtocol
 from pycluster.store import SpotStore
 
 
+def test_filter_entity_catalog_is_authenticated(tmp_path, monkeypatch):
+    from pycluster import wpxloc
+    monkeypatch.setattr(wpxloc, "_prefix_map", {
+        "AI3I-90": SimpleNamespace(dxcc=202, name="Puerto Rico"),
+        "AI3I-91": SimpleNamespace(dxcc=202, name="Puerto Rico"),
+        "AI3I-92": SimpleNamespace(dxcc=291, name="United States"),
+    })
+    monkeypatch.setattr(wpxloc, "_exact_map", {})
+
+    async def run():
+        cfg = _mk_config(str(tmp_path / "entities.db"))
+        store = SpotStore(cfg.store.sqlite_path)
+        server = PublicWebServer(cfg, store, datetime.now(timezone.utc))
+        try:
+            code, _, _ = await _http_request_ex(server, "GET", "/api/filters")
+            assert code == 401
+            token, _ = server._issue_web_token("AI3I-99")
+            code, _, body = await _http_request_ex(server, "GET", "/api/filters", headers={"X-Web-Token": token})
+            assert code == 200
+            assert json.loads(body)["dxcc_entities"] == [
+                {"id": 202, "name": "Puerto Rico"}, {"id": 291, "name": "United States"}]
+        finally:
+            await store.close()
+    asyncio.run(run())
+
+
 def test_filter_preview_draft_is_read_only_and_matches_telnet(tmp_path):
     from pycluster.telnet_server import TelnetClusterServer
 

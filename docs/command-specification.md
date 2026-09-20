@@ -116,7 +116,7 @@ These commands are user-facing and should remain visible in normal help and comm
 - `show/vhftable`
 - `show/prefix <prefix>`
 - `show/lastspot <call>`
-- `show/dxcc <prefix>`
+- `show/dxcc <prefix|call> [count] [on band] [day days]`: recent cluster spots for the entire entity, including alternate prefixes. Uses WPXLOC entity IDs, with CTY entity lookup when WPXLOC cannot resolve the target. Like `show/dx`, ignores personal filters and excludes RBN. Defaults to 10 results (maximum 200), scanning at most 10,000 candidate records. Use `show/lookup <prefix|call>` for entity information.
 - `show/qrz <call>`
 - `show/wm7d <call>`
 

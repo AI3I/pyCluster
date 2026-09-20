@@ -1925,6 +1925,26 @@ def test_ingest_pc11_accepts_slashed_calls(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_py_history_does_not_evict_pc_events(tmp_path) -> None:
+    async def run():
+        app = ClusterApp(_mk_config(str(tmp_path / "history-lanes.db")))
+        try:
+            await app._record_proto_state("AI3I-99", {"pc18.software": "pyCluster 1.0.23"})
+            for i in range(205):
+                await app._record_proto_state("AI3I-99", {"py.sync.sequence": str(i)})
+            prefs = await app.store.list_user_prefs(app.config.node.node_call)
+            history = json.loads(prefs["proto.peer.ai3i-99.history"])
+            assert len(history) == 201
+            assert history[0]["key"] == "pc18.software"
+            assert history[1]["to"] == "5"
+            assert history[-1]["to"] == "204"
+            # Ordinary telemetry does not count as a flapping identity.
+            assert prefs["proto.peer.ai3i-99.flap_score"] == "0"
+        finally:
+            await app.store.close()
+    asyncio.run(run())
+
+
 def test_ingest_pc24_pc50_pc51_record_proto_state(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ingest_proto_state.db")

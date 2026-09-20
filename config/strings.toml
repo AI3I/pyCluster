@@ -806,7 +806,7 @@ show_dupspots = "Show duplicate filtering for DX spots."
 show_dupwcy = "Show duplicate filtering for WCY bulletins."
 show_dupwwv = "Show duplicate filtering for WWV bulletins."
 show_dx = "Show recent DX spots."
-show_dxcc = "Show DXCC or entity information for a prefix or callsign."
+show_dxcc = "Show recent spots for the DXCC entity of a prefix or callsign; show/lookup displays entity information."
 show_dxcq = "Show whether CQ zone data is appended to DX spots."
 show_dxgrid = "Show whether grid data is appended to DX spots."
 show_dxitu = "Show whether ITU zone data is appended to DX spots."
@@ -922,7 +922,8 @@ status_on = "on"
 status_off = "off"
 
 [show.dxcc]
-usage = "Usage: show/dxcc <prefix>"
+usage = "Usage: show/dxcc <prefix|call> [count] [on band] [day days]"
+unknown = "No DXCC entity found for {call}; check the node's prefix datasets."
 
 [show.bands]
 title = "Band plan:"
@@ -1069,7 +1070,7 @@ rxsens = "RxSens: -128 dBM SFI:{sfi:4d}   R:{sunspots:4d}   Month: {month}   Day
 power = "Power :   26 dBW    Distance:{distance:6.0f} km    Delay:{delay:5.1f} ms"
 location_header = "Location                       Lat / Long           Azim"
 location_row = "{name:<30.30} {coords:<18}    {azim:>3.0f}"
-dxspider_header = "UT LT  MUF Zen  1.8  3.5  7.0 10.1 14.0 18.1 21.0 24.9 28.0 50.0"
+path_header = "UT LT  MUF Elev 1.8  3.5  7.0 10.1 14.0 18.1 21.0 24.9 28.0 50.0"
 
 [show.node]
 user_title = "User node profile: {target}"
@@ -1689,6 +1690,9 @@ filter_rule_saved = "Rule saved."
 filter_rule_deleted = "Rule deleted."
 filter_rule_update_failed = "Rule update failed:"
 filter_rule_value_required = "Enter a filter value or expression."
+filter_entity_select = "Select an entity"
+filter_entity_unknown = "Existing value: {value}"
+filter_entities_unavailable = "DXCC list unavailable; ask the SysOp to check WPXLOC."
 filter_rule_delete_confirm = "Delete {action}/{family} slot {slot}?"
 deny_rules_empty = "No node-wide deny rules."
 deny_rules_load_failed = "Loading deny rules failed:"

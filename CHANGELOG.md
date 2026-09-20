@@ -2,6 +2,14 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## 1.0.23 - Unreleased
+
+- Keep bounded PC/PY state-history retention independent, preventing busy PY links from evicting PC history; add scrollable Protocol History and a 20/50/100/200-row selector (#282, #283).
+- Refresh dataset indicators without overwriting unsaved settings, distinguish embedded release dates from file-update dates, and report KEPS element age/count with stale-data warnings (#284, #285).
+- Correct MUF solar-angle labeling and destination-hour rounding, avoid applying daylight attenuation twice, and prefer the saved registry grid over stale preference copies (#286). Signal labels remain heuristic rather than DXSpider path-loss predictions.
+- Offer named DXCC entity dropdowns for DX and spotter rules, including AND conditions, using IDs from the node's active WPXLOC dataset (#280). Existing compound and unknown values remain preserved when editing.
+- Make `show/dxcc` return recent spots for the entire entity, not just one prefix, using the existing history and VE7CC formatting paths (#281). Entity information remains available through `show/lookup`.
+
 ## 1.0.22 - 2026-09-07
 
 - Report non-pyCluster neighbors over the PY protocol. A new `PY14 NEIGHBORS` family, gated by the `neighbors` capability and the `share_neighbors` control, advertises the callsign, software family, version string, and link state of DXSpider, AR-Cluster, DX-NET, and CLX nodes this node links to directly, so PY peers can see the network beyond the pyCluster island. A PC18 banner outranks the configured peer profile and unrecognized software is reported as unknown rather than guessed at. The frame covers only the sender's own links and is never relayed. Reported nodes appear in Topology and the known-node catalog marked Legacy, and are searchable by software family.

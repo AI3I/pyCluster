@@ -5,6 +5,51 @@ from pathlib import Path
 import pytest
 
 
+def test_entity_dropdown_preserves_ids_and_existing_values():
+    if not shutil.which('node'):
+        pytest.skip('Node.js is required for browser-state validation')
+    html = Path('web/public_dxweb/static/index.html').read_text(encoding='utf-8')
+    function = 'function syncRuleEntitySelectors() {' + html.split(
+        'function syncRuleEntitySelectors() {', 1)[1].split('\n}', 1)[0] + '\n}'
+    script = '''
+const assert = require('node:assert/strict');
+const elements = {};
+function element(value='') {
+  return {value, children:[], handlers:{},
+    after(child){elements[child.id]=child;},
+    addEventListener(event, fn){this.handlers[event]=fn;},
+    replaceChildren(...children){this.children=children;},
+    appendChild(child){this.children.push(child);},
+    get selectedOptions(){return this.children.filter(child=>child.selected);}
+  };
+}
+for(const prefix of ['rule','rule-and']) {
+  elements[prefix+'-condition']=element(prefix==='rule'?'call_dxcc':'spotter_dxcc');
+  elements[prefix+'-value']=element(prefix==='rule'?'202':'291');
+}
+const document={getElementById:id=>elements[id],createElement:()=>element()};
+const uiText=key=>key, fillUiText=(key,args)=>args.value;
+let ruleDxccEntities=[{id:202,name:'Puerto Rico'},{id:291,name:'United States'}];
+let changes=0; const updateRuleCommand=()=>changes++;
+''' + function + '''
+syncRuleEntitySelectors();
+assert.equal(elements['rule-entity'].selectedOptions[0].textContent,'Puerto Rico');
+assert.equal(elements['rule-and-entity'].selectedOptions[0].value,'291');
+assert.equal(elements['rule-value'].hidden,true);
+elements['rule-entity'].children.forEach(option=>option.selected=option.value==='291');
+elements['rule-entity'].handlers.change();
+assert.equal(elements['rule-value'].value,'291');assert.equal(changes,1);
+elements['rule-value'].value='202,291';syncRuleEntitySelectors();
+assert.equal(elements['rule-entity'].selectedOptions[0].value,'202,291');
+ruleDxccEntities=[];syncRuleEntitySelectors();
+assert.equal(elements['rule-value'].value,'202,291');
+elements['rule-condition'].value='raw';syncRuleEntitySelectors();
+assert.equal(elements['rule-value'].hidden,false);assert.equal(elements['rule-entity'].hidden,true);
+'''
+    result = subprocess.run(['node', '-'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_rbn_display_filter_uses_classification_not_comment():
     if not shutil.which('node'):
         pytest.skip('Node.js is required for browser-state validation')

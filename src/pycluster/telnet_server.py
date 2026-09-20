@@ -2875,8 +2875,11 @@ class TelnetClusterServer:
         lines.append("Project: https://github.com/AI3I/pyCluster")
         return "\r\n".join(lines) + "\r\n"
 
-    async def _render_show_dx(self, call: str, arg: str | None, *, apply_user_filters: bool) -> str:
+    async def _render_show_dx(self, call: str, arg: str | None, *, apply_user_filters: bool,
+                              entity_target: str | None = None) -> str:
         query = parse_sh_dx_args(arg)
+        target_wpx = wpx_lookup(entity_target) if entity_target else None
+        target_cty = lookup(entity_target) if entity_target and self._cty_loaded else None
         requested_limit = query.limit
         lines: list[str] = []
         has_rbn_history_filters: bool | None = None
@@ -2891,6 +2894,15 @@ class TelnetClusterServer:
                 break
             scanned += len(rows)
             for row in rows:
+                if entity_target:
+                    if target_wpx:
+                        entity = wpx_lookup(str(row["dx_call"]))
+                        if entity is None or entity.dxcc != target_wpx.dxcc:
+                            continue
+                    else:
+                        entity = lookup(str(row["dx_call"])) if self._cty_loaded else None
+                        if entity is None or target_cty is None or entity.name != target_cty.name:
+                            continue
                 is_rbn = self._is_rbn_spot(str(row["dx_call"]), str(row["spotter"]), str(row["info"] or ""))
                 if is_rbn and not apply_user_filters:
                     continue
@@ -3050,22 +3062,14 @@ class TelnetClusterServer:
         return "\r\n".join(out) + "\r\n"
 
     async def _cmd_show_dxcc(self, call: str, arg: str | None) -> str:
-        pfx = (arg or "").strip().upper()
-        if not pfx:
-            return self._string("show.dxcc.usage", "Usage: show/dxcc <prefix>") + "\r\n"
-        if self._cty_loaded:
-            ent = lookup(pfx)
-            if ent:
-                lines = [
-                    f"DXCC {pfx}: {ent.name}",
-                    f"  Prefix: {ent.prefix}",
-                    f"  Continent: {ent.continent}",
-                    f"  CQ Zone: {ent.cq_zone}",
-                    f"  ITU Zone: {ent.itu_zone}",
-                    f"  Latitude / Longitude: {ent.lat:.2f} / {ent.lon:.2f}",
-                ]
-                return await self._format_console_lines(call, lines)
-        return await self._cmd_show_dx(call, pfx)
+        parts = (arg or "").strip().split(maxsplit=1)
+        if not parts:
+            return self._string("show.dxcc.usage", "Usage: show/dxcc <prefix|call> [count] [on band] [day days]") + "\r\n"
+        target = parts[0].upper()
+        if wpx_lookup(target) is None and (not self._cty_loaded or lookup(target) is None):
+            return self._render_string("show.dxcc.unknown", "No DXCC entity found for {call}; check the node's prefix datasets.", call=target) + "\r\n"
+        return await self._render_show_dx(call, parts[1] if len(parts) > 1 else None,
+                                          apply_user_filters=False, entity_target=target)
 
     async def _cmd_help(self, call: str) -> str:
         lines = [
@@ -3378,7 +3382,7 @@ class TelnetClusterServer:
             "dupwcy": "Show duplicate filtering for WCY bulletins.",
             "dupwwv": "Show duplicate filtering for WWV bulletins.",
             "dx": "Show recent DX spots.",
-            "dxcc": "Show DXCC or entity information for a prefix or callsign.",
+            "dxcc": "Show recent spots for the DXCC entity of a prefix or callsign; show/lookup displays entity information.",
             "dxcq": "Show whether CQ zone suffixes are appended to DX spots.",
             "dxgrid": "Show whether grid data is appended to DX spots.",
             "dxitu": "Show whether ITU zone suffixes are appended to DX spots.",
@@ -4783,10 +4787,10 @@ class TelnetClusterServer:
 
     async def _coords_context_for(self, call: str) -> tuple[tuple[float, float], str] | None:
         prefs = await self._load_prefs_for_call(call)
-        locator = (prefs.get("qra") or "").strip().upper()
-        if not locator:
-            reg = await self.store.get_user_registry(call)
-            locator = str(reg["qra"] or "").strip().upper() if reg else ""
+        reg = await self.store.get_user_registry(call)
+        locator = str(reg["qra"] or "").strip().upper() if reg else ""
+        if self._locator_to_coords(locator) is None:
+            locator = (prefs.get("qra") or "").strip().upper()
         locator_coords = self._locator_to_coords(locator) if locator else None
         location_text = str(prefs.get("location") or "").strip()
         location_source = str(prefs.get("location_source") or "").strip().lower()
@@ -5342,9 +5346,7 @@ class TelnetClusterServer:
             short_bearing = (short_bearing + 180.0) % 360.0
             reverse_bearing = (reverse_bearing + 180.0) % 360.0
         delay_ms = distance_km / 282.6
-        from_name = source.split(" ", 1)[1] if source.startswith("node grid square ") else (
-            self.config.node.qth if using_node_coords or source.startswith("QRA ") or source.startswith("location ") else source
-        )
+        from_name = self.config.node.qth if using_node_coords or source.startswith("node grid square ") else source
         sunspots = int(round(minimuf_sunspots_from_sfi(latest[1]) or estimate_sunspots_from_sfi(latest[1]) or 0))
         lines: list[str] = []
         if using_node_coords or source.startswith("node grid square "):
@@ -5374,7 +5376,7 @@ class TelnetClusterServer:
         if long_form:
             path_mid_lat, path_mid_lon = self._antipode(path_mid_lat, path_mid_lon)
         freq_cols = [1.8, 3.5, 7.0, 10.1, 14.0, 18.1, 21.0, 24.9, 28.0, 50.0]
-        header = self._string("show.muf.dxspider_header", "UT LT  MUF Zen  1.8  3.5  7.0 10.1 14.0 18.1 21.0 24.9 28.0 50.0")
+        header = self._string("show.muf.path_header", "UT LT  MUF Elev 1.8  3.5  7.0 10.1 14.0 18.1 21.0 24.9 28.0 50.0")
         lines.append(header)
         forecast_hours = max(2, min(limit if explicit_limit else 12, 24))
         current_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
@@ -5383,7 +5385,7 @@ class TelnetClusterServer:
         for hour_offset in range(forecast_hours):
             ts = now_hour + timedelta(hours=hour_offset)
             ut = ts.hour
-            local = int((ut + round(lon2 / 15.0)) % 24)
+            local = (ut + int(lon2 / 15.0)) % 24
             muf = latest_muf
             zen = self._solar_zenith_angle(ts, path_mid_lat, path_mid_lon)
             path_zen_samples = (
@@ -5393,7 +5395,7 @@ class TelnetClusterServer:
             )
             path_muf = minimuf35_muf(latest[1], ts, lat1, lon1, lat2, lon2)
             displayed_muf = path_muf if path_muf is not None else self._effective_muf_for_zenith(muf, zen)
-            row = f"{ut:2d} {local:2d} {displayed_muf:4.1f} {zen:4.0f}"
+            row = f"{ut:2d} {local:2d} {displayed_muf:4.1f} {90.0 - zen:4.0f}"
             if not long_form:
                 for freq in freq_cols:
                     sig = self._signal_report_for_muf(freq, displayed_muf, zen, path_zen_samples)
