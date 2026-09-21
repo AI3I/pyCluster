@@ -84,6 +84,15 @@ def test_telemetry_history_is_bounded_and_scrollable() -> None:
     assert "'/api/security?limit=' + byId('telemetryLimit').value" in text
 
 
+def test_dataset_update_dates_are_in_maintenance_not_sidebar() -> None:
+    html = WebAdminServer._render_index_html(None)
+    maintenance = html.split('id="node-group-maintenance"', 1)[1].split('id="nodeSettingsSaveActions"', 1)[0]
+    assert 'id="maintenanceDatasetFiles"' in maintenance
+    assert 'Files Updated (UTC)' in maintenance
+    assert 'navDatasetFiles' not in html
+    assert 'id="navCty"' in html and 'id="navWpx"' in html and 'id="navKeps"' in html
+
+
 def test_rendered_sysop_javascript_parses(tmp_path) -> None:
     if not shutil.which("node"):
         return

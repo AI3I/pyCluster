@@ -2934,7 +2934,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
         <header><h2>At A Glance</h2></header>
         <div class="body">
           <div class="sidebar-metrics">
-            <div class="sidebar-metric wide"><label>Software</label><strong id="navVersion">-</strong><div class="dataset-pills"><span class="dataset-pill warn" id="navCty">CTY.DAT · -</span><span class="dataset-pill warn" id="navWpx">wpxloc.raw · -</span><span class="dataset-pill warn" id="navKeps">KEPS · -</span></div><small id="navDatasetFiles"></small></div>
+            <div class="sidebar-metric wide"><label>Software</label><strong id="navVersion">-</strong><div class="dataset-pills"><span class="dataset-pill warn" id="navCty">CTY.DAT · -</span><span class="dataset-pill warn" id="navWpx">wpxloc.raw · -</span><span class="dataset-pill warn" id="navKeps">KEPS · -</span></div></div>
             <div class="sidebar-metric"><label>Uptime</label><strong id="navUptime">-</strong></div>
             <div class="sidebar-metric"><label>Spots</label><strong id="navSpots">-</strong></div>
             <div class="sidebar-metric"><label>Peers</label><strong id="navPeers">-</strong></div>
@@ -3205,6 +3205,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
               <div class="status-cell"><label>Cleanup Policy</label><span id="retentionStatus">Automatic cleanup is disabled.</span></div>
               <div class="status-cell"><label>Last Cleanup</label><span id="retentionLastRun">Never</span></div>
               <div class="status-cell"><label>Last Result</label><span id="retentionLastResult">No cleanup result is available.</span></div>
+              <div class="status-cell wide"><label>Files Updated (UTC)</label><span id="maintenanceDatasetFiles">-</span></div>
               <div class="status-cell wide"><label>Upgrade</label><span id="upgradeStatus">Upgrade status is unavailable.</span></div>
               <div class="status-cell"><label>Version Tags</label><span id="upgradeMetaTag">Version check and migration status will appear here.</span></div>
               <div class="status-cell"><label>Upgrade Target</label><span id="upgradeMetaPath">-</span></div>
@@ -5211,7 +5212,7 @@ function renderDatasetStatus(datasets) {
   setDatasetPill('navWpx', 'wpxloc.raw', wpxloc);
   setDatasetPill('navKeps', 'KEPS', datasets.keps || {});
   const fileDate = row => String(row.modified_iso || '').slice(0,10) || '-';
-  setText('navDatasetFiles', `Files updated (UTC): CTY ${fileDate(cty)}; WPX ${fileDate(wpxloc)}; KEPS ${fileDate(datasets.keps || {})}`);
+  setText('maintenanceDatasetFiles', `CTY ${fileDate(cty)}; WPX ${fileDate(wpxloc)}; KEPS ${fileDate(datasets.keps || {})}`);
 }
 let datasetStatusPending = false;
 async function refreshDatasetStatus() {
@@ -5222,7 +5223,7 @@ async function refreshDatasetStatus() {
     const data = await j('/api/datasets', {signal:AbortSignal.timeout(10000)});
     if (webTok === token) renderDatasetStatus(data);
   } catch (error) {
-    if (webTok === token) setText('navDatasetFiles', 'Dataset status refresh failed.');
+    if (webTok === token) setText('maintenanceDatasetFiles', 'Dataset status refresh failed.');
   } finally {datasetStatusPending = false;}
 }
 setInterval(refreshDatasetStatus, 60000);

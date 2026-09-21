@@ -481,8 +481,9 @@ This area is the main operator view for peer health and protocol instability.
 
 ### Dataset Status
 
-At a Glance displays CTY/WPX release identifiers separately from local file-update
-dates. A newly downloaded file can still contain an older published dataset.
+At a Glance displays CTY/WPX release identifiers. Local file-update dates appear
+under `Node Settings > Maintenance > Files Updated (UTC)`.
+A newly downloaded file can still contain an older published dataset.
 These indicators refresh once per minute without reloading unsaved settings.
 KEPS displays the newest orbital-element date; its tooltip reports the number
 of elements and oldest-element age. Elements older than 14 days trigger a
