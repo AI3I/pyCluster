@@ -11,5 +11,6 @@ config/pycluster.local.toml
 .codex
 .claude/
 .deploy-files.txt
-fixtures/live/dxspider/cty.dat
-fixtures/live/dxspider/wpxloc.raw
+
+# Local DXSpider capture data (may contain user records, IPs, credentials)
+fixtures/
