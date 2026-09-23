@@ -96,6 +96,19 @@ _US_STATE_CQ_ZONE = {
 }
 
 _US_STATE_RE = re.compile(r"\b([A-Z]{2})\s+\d{5}(?:-\d{4})?\b")
+_SECRET_ARG_WORDS = ("password", "passphrase", "passwd")
+
+
+def _redact_command_line(line: str) -> str:
+    """Drop everything after a password-like token (or dsn) so credentials never reach the log."""
+    words = line.split()
+    for i, word in enumerate(words):
+        for part in word.lower().split("/"):
+            if part == "dsn" or (len(part) >= 2 and any(w.startswith(part) for w in _SECRET_ARG_WORDS)):
+                if i + 1 < len(words):
+                    return " ".join(words[: i + 1] + ["<redacted>"])
+                return line
+    return line
 _CONFIG_AUTH_NODE_FIELDS = {
     "node_call",
     "node_alias",
@@ -10745,9 +10758,9 @@ class TelnetClusterServer:
         finally:
             elapsed_ms = (time.monotonic() - started) * 1000.0
             if elapsed_ms >= 1000.0:
-                LOG.warning("slow telnet command call=%s line=%r elapsed_ms=%.1f", call, line, elapsed_ms)
+                LOG.warning("slow telnet command call=%s line=%r elapsed_ms=%.1f", call, _redact_command_line(line), elapsed_ms)
             else:
-                LOG.debug("telnet command call=%s line=%r elapsed_ms=%.1f", call, line, elapsed_ms)
+                LOG.debug("telnet command call=%s line=%r elapsed_ms=%.1f", call, _redact_command_line(line), elapsed_ms)
 
     def _build_registry(self) -> dict[str, Callable[[str, str | None], Awaitable[str]]]:
         return {

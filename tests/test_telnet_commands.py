@@ -8781,3 +8781,19 @@ def test_show_muf_path_report_uses_west_longitudes_and_varies_by_hour(tmp_path) 
             await store.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("set/password hunter2", "set/password <redacted>"),
+        ("SET/PASSW hunter2", "SET/PASSW <redacted>"),
+        ("sysop/password K1ABC s3cret", "sysop/password <redacted>"),
+        ("sysop/peeraccount password K1ABC pw", "sysop/peeraccount password <redacted>"),
+        ("sysop/peer set N1ABC dsn tcp://user:pw@host:7300", "sysop/peer set N1ABC dsn <redacted>"),
+        ("set/page 20", "set/page 20"),
+        ("sh/dx 20", "sh/dx 20"),
+    ],
+)
+def test_redact_command_line_hides_credentials(line: str, expected: str) -> None:
+    assert telnet_server_mod._redact_command_line(line) == expected
