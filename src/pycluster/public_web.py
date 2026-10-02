@@ -2508,6 +2508,7 @@ class PublicWebServer:
                 token, exp = self._issue_web_token(call)
                 access = await self._access_snapshot(call, "web")
                 profile = await self._web_profile_snapshot(call)
+                self._audit("web", f"{call} login succeeded")
                 await self._write_response(
                     writer,
                     200,
@@ -2532,7 +2533,10 @@ class PublicWebServer:
                 if not tok and auth.lower().startswith("bearer "):
                     tok = auth[7:].strip()
                 if tok:
+                    call = self._web_call_from_headers(headers)
                     self._web_sessions.pop(tok, None)
+                    if call:
+                        self._audit("web", f"{call} logout succeeded")
                 await self._write_response(writer, 200, self._json({"ok": True}))
                 return
             if path == "/api/auth/me":
@@ -2957,6 +2961,7 @@ class PublicWebServer:
                     await self._write_response(writer, 401, self._json({"error": "web login required"}))
                     return
                 if not await self._access_allowed(call, "web", "spots"):
+                    self._audit("web", f"{call} spot post denied")
                     await self._write_response(writer, 403, self._json({"error": "spot posting not allowed via web"}))
                     return
                 payload = self._parse_json_body(body)
@@ -3020,6 +3025,7 @@ class PublicWebServer:
                     await self.publish_spot_fn(spot)
                 if inserted and self.relay_spot_fn:
                     await self.relay_spot_fn(spot)
+                self._audit("web", f"{call} spot post succeeded dx={dx_call} freq_khz={freq_khz:.1f}")
                 await self._write_response(writer, 200, self._json({"ok": True, "posted_by": call, "dx_call": dx_call, "freq_khz": freq_khz}))
                 return
             if path == "/api/chat":
@@ -3031,6 +3037,7 @@ class PublicWebServer:
                     await self._write_response(writer, 401, self._json({"error": "web login required"}))
                     return
                 if not await self._access_allowed(call, "web", "chat"):
+                    self._audit("web", f"{call} chat post denied")
                     await self._write_response(writer, 403, self._json({"error": "chat posting not allowed via web"}))
                     return
                 payload = self._parse_json_body(body)
@@ -3044,6 +3051,7 @@ class PublicWebServer:
                     await self.publish_chat_fn(call, text)
                 if self.relay_chat_fn:
                     await self.relay_chat_fn(call, text)
+                self._audit("web", f"{call} chat post succeeded")
                 await self._write_response(writer, 200, self._json({"ok": True, "posted_by": call, "category": "chat"}))
                 return
             if path == "/api/wcy":
@@ -3064,6 +3072,7 @@ class PublicWebServer:
                     return
                 category = path.split("/")[-1].lower()
                 if not await self._access_allowed(call, "web", category):
+                    self._audit("web", f"{call} {category} post denied")
                     await self._write_response(writer, 403, self._json({"error": f"{category} posting not allowed via web"}))
                     return
                 if category == "wwv":
@@ -3079,6 +3088,7 @@ class PublicWebServer:
                     await self.publish_bulletin_fn(category, call, scope, text)
                 if self.relay_bulletin_fn:
                     await self.relay_bulletin_fn(category, call, scope, text)
+                self._audit("web", f"{call} {category} post succeeded scope={scope}")
                 await self._write_response(writer, 200, self._json({"ok": True, "posted_by": call, "category": category, "scope": scope}))
                 return
             static = self._serve_static_path(path)

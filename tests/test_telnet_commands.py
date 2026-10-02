@@ -4309,6 +4309,7 @@ def test_bulletins_persist_across_server_restart(tmp_path) -> None:
         db = str(tmp_path / "persist.db")
         cfg = _mk_config(db)
         store1 = SpotStore(db)
+        await store1.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         srv1 = TelnetClusterServer(cfg, store1, datetime.now(timezone.utc))
         srv1._sessions[1] = Session(
             call="N0CALL",
@@ -4342,6 +4343,7 @@ def test_dxspider_wcy_and_wwv_command_syntax_is_canonicalized(tmp_path) -> None:
         db = str(tmp_path / "dxspider_geomag_cmds.db")
         cfg = _mk_config(db)
         store = SpotStore(db)
+        await store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
         try:
@@ -5185,6 +5187,7 @@ def test_load_and_stat_named_commands(tmp_path) -> None:
         db = str(tmp_path / "load_stat.db")
         cfg = _mk_config(db)
         store = SpotStore(db)
+        await store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(
             call="N0CALL",
@@ -6399,6 +6402,7 @@ def test_show_log_category_filter(tmp_path) -> None:
         db = str(tmp_path / "log_filter.db")
         cfg = _mk_config(db)
         store = SpotStore(db)
+        await store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
         srv._sessions[1] = Session(
             call="N0CALL",
@@ -6536,6 +6540,21 @@ def test_non_authenticated_users_are_read_only_by_default(tmp_path) -> None:
 
             _, out = await srv._execute_command("K1ABC", "announce full hello")
             assert "announce: not allowed via telnet" in out
+
+            for command, category in (
+                ("chat denied chat", "chat"),
+                ("wx denied weather", "wx"),
+                ("wwv sf=100,a=10,k=2", "wwv"),
+                ("wcy k=2,expk=2,a=10,r=20,sf=100", "wcy"),
+            ):
+                _, out = await srv._execute_command("K1ABC", command)
+                assert f"{category}: not allowed via telnet" in out
+                assert await store.list_bulletins(category, limit=1) == []
+
+            await store.set_user_pref("K1ABC", "access.telnet.wx", "on", now)
+            _, out = await srv._execute_command("K1ABC", "wx approved weather")
+            assert "wx: accepted" in out
+            assert len(await store.list_bulletins("wx", limit=1)) == 1
         finally:
             await store.close()
 

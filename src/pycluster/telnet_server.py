@@ -9736,6 +9736,9 @@ class TelnetClusterServer:
         return self._render_string("catchup.state", "Catch-up on login {state} for {call}.", state=state, call=call) + "\r\n"
 
     async def _cmd_chat(self, call: str, arg: str | None) -> str:
+        denied = await self._require_access(call, "telnet", "chat", "chat")
+        if denied:
+            return denied
         if not arg:
             return self._string("chat.usage", "Usage: chat <text>") + "\r\n"
         text = arg.strip()
@@ -9782,6 +9785,9 @@ class TelnetClusterServer:
         return self._render_string("groups.left", "Left group {group}.", group=grp) + "\r\n"
 
     async def _cmd_post_bulletin(self, call: str, arg: str | None, name: str) -> str:
+        denied = await self._require_access(call, "telnet", name, name)
+        if denied:
+            return denied
         if not arg:
             return self._render_string("bulletin.usage", "Usage: {name} <text>", name=name) + "\r\n"
         text = arg.strip()
@@ -9794,6 +9800,9 @@ class TelnetClusterServer:
         return self._render_string("bulletin.accepted", "{name}: accepted (local-safe)", name=name) + "\r\n"
 
     async def _cmd_post_wcy(self, call: str, arg: str | None) -> str:
+        denied = await self._require_access(call, "telnet", "wcy", "wcy")
+        if denied:
+            return denied
         if not arg:
             return self._string(
                 "bulletin.wcy_usage",
@@ -9811,6 +9820,9 @@ class TelnetClusterServer:
         return self._string("bulletin.wcy_accepted", "WCY accepted (local-safe).") + "\r\n"
 
     async def _cmd_post_wwv(self, call: str, arg: str | None) -> str:
+        denied = await self._require_access(call, "telnet", "wwv", "wwv")
+        if denied:
+            return denied
         if not arg:
             return self._string(
                 "bulletin.wwv_usage",

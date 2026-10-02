@@ -630,10 +630,16 @@ Categories currently exposed:
 
 - `System Operator`
 - `User`
+- `Web Activity`
 - `Config`
 - `Control`
 - `Connect`
 - `Disconnect`
+
+Web Activity records successful public web logins and logouts, accepted content
+posts, and posts denied by the access policy. It records the callsign and action;
+message bodies and session tokens are excluded. Like other Recent Audit entries,
+these events are kept in the runtime buffer and reset on restart.
 
 ### Audit
 

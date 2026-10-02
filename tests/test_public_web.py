@@ -2921,6 +2921,61 @@ def test_public_web_non_authenticated_users_are_read_only_by_default(tmp_path) -
             )
             assert code == 403
             assert json.loads(body.decode("utf-8"))["error"] == "spot posting not allowed via web"
+
+            for path, text, category in (
+                ("/api/chat", "denied chat", "chat"),
+                ("/api/wx", "denied weather", "wx"),
+                ("/api/wwv", "denied conditions", "wwv"),
+                ("/api/announce", "denied announcement", "announce"),
+            ):
+                code, _, body = await _http_request_ex(
+                    srv, "POST", path, json.dumps({"text": text}).encode("utf-8"),
+                    {"Content-Type": "application/json", "X-Web-Token": token},
+                )
+                assert code == 403
+                assert "posting not allowed via web" in body.decode("utf-8")
+                assert await store.list_bulletins(category, limit=1) == []
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_web_audit_records_posts_without_message_bodies(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "web_audit.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        now = int(datetime.now(timezone.utc).timestamp())
+        await store.upsert_user_registry("AI3I", now, privilege="user", email="ai3i@example.test")
+        await store.set_user_pref("AI3I", "password", "secret", now)
+        events: list[tuple[str, str]] = []
+        srv = PublicWebServer(cfg, store, datetime.now(timezone.utc), event_log_fn=lambda category, text: events.append((category, text)))
+        try:
+            code, _, body = await _http_request_ex(
+                srv, "POST", "/api/auth/login", json.dumps({"call": "AI3I", "password": "secret"}).encode(),
+                {"Content-Type": "application/json"},
+            )
+            assert code == 200
+            token = json.loads(body)["token"]
+            headers = {"Content-Type": "application/json", "X-Web-Token": token}
+            code, _, _ = await _http_request_ex(srv, "POST", "/api/chat", json.dumps({"text": "PRIVATE CHAT BODY"}).encode(), headers)
+            assert code == 200
+            code, _, _ = await _http_request_ex(srv, "POST", "/api/wx", json.dumps({"text": "PRIVATE WX BODY"}).encode(), headers)
+            assert code == 200
+            await store.set_user_pref("AI3I", "access.web.wx", "off", now)
+            code, _, _ = await _http_request_ex(srv, "POST", "/api/wx", json.dumps({"text": "DENIED WX BODY"}).encode(), headers)
+            assert code == 403
+            code, _, _ = await _http_request_ex(srv, "POST", "/api/auth/logout", headers=headers)
+            assert code == 200
+            assert events == [
+                ("web", "AI3I login succeeded"),
+                ("web", "AI3I chat post succeeded"),
+                ("web", "AI3I wx post succeeded scope=LOCAL"),
+                ("web", "AI3I wx post denied"),
+                ("web", "AI3I logout succeeded"),
+            ]
+            assert "PRIVATE" not in repr(events) and "secret" not in repr(events)
         finally:
             await store.close()
 

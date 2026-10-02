@@ -8,11 +8,11 @@ _NON_AUTH_DEFAULTS: dict[str, bool] = {
     "login": True,
     "spots": False,
     "rbn": False,
-    "chat": True,
+    "chat": False,
     "announce": False,
-    "wx": True,
-    "wcy": True,
-    "wwv": True,
+    "wx": False,
+    "wcy": False,
+    "wwv": False,
 }
 
 

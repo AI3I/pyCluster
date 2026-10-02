@@ -84,6 +84,29 @@ def test_telemetry_history_is_bounded_and_scrollable() -> None:
     assert "'/api/security?limit=' + byId('telemetryLimit').value" in text
 
 
+def test_web_activity_is_available_in_telemetry_audit(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "web_activity_audit.db"), admin_token="adm")
+        store = SpotStore(cfg.store.sqlite_path)
+        seen: list[set[str] | None] = []
+
+        def audit_rows(_limit: int, categories: set[str] | None):
+            seen.append(categories)
+            return [{"epoch": 1, "category": "web", "text": "AI3I chat post succeeded"}]
+
+        server = WebAdminServer(cfg, store, datetime.now(timezone.utc), lambda: 0, audit_rows_fn=audit_rows)
+        try:
+            assert '<option value="web">Web Activity</option>' in server._render_index_html()
+            code, _, body = await _http_request(server, "GET", "/api/audit?category=web", headers={"X-Admin-Token": "adm"})
+            assert code == 200
+            assert seen == [{"web"}]
+            assert json.loads(body)[0]["category"] == "web"
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_dataset_update_dates_are_in_maintenance_not_sidebar() -> None:
     html = WebAdminServer._render_index_html(None)
     maintenance = html.split('id="node-group-maintenance"', 1)[1].split('id="nodeSettingsSaveActions"', 1)[0]
@@ -938,7 +961,10 @@ def test_api_spots_marks_suspicious_calls_for_review(tmp_path) -> None:
         db = str(tmp_path / "web_spot_review.db")
         cfg = _mk_config(db, admin_token="adm")
         cty_file = tmp_path / "cty.dat"
-        cty_file.write_text("Testland: 05: 08: NA: 40.00: 75.00: 5.0: K:\n    K,=VER20260404;\n", encoding="ascii")
+        cty_file.write_text(
+            f"Testland: 05: 08: NA: 40.00: 75.00: 5.0: K:\n    K,=VER{datetime.now(timezone.utc):%Y%m%d};\n",
+            encoding="ascii",
+        )
         cfg.public_web.cty_dat_path = str(cty_file)
         store = SpotStore(db)
         srv = WebAdminServer(

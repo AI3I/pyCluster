@@ -88,7 +88,7 @@ sysop/restart telnet
 sysop/setprompt [{timestamp}] {node}{suffix}
 ```
 
-By default, `Non-Authenticated` users may log in but cannot post DX spots or announces until access is raised or overridden with `sysop/setaccess`.
+By default, `Non-Authenticated` users may log in but cannot post DX spots, chat, announcements, WX, WCY, or WWV until access is raised or overridden with `sysop/setaccess`.
 
 ## Full Command Reference
 

@@ -3600,6 +3600,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                   <option value="">All Categories</option>
                   <option value="sysop">System Operator</option>
                   <option value="user">User</option>
+                  <option value="web">Web Activity</option>
                   <option value="config">Config</option>
                   <option value="control">Control</option>
                   <option value="connect">Connect</option>
@@ -6464,7 +6465,7 @@ if (restoreWebSession()) {
                     return
                 limit = self._parse_limit(q, "limit", default=20, low=1, high=200)
                 category = str(q.get("category", [""])[0]).strip().lower()
-                allowed = {"sysop", "user", "config", "control", "connect", "disconnect"}
+                allowed = {"sysop", "user", "web", "config", "control", "connect", "disconnect"}
                 categories = {category} if category in allowed else None
                 rows = self.audit_rows_fn(limit, categories) if self.audit_rows_fn else []
                 await self._write_response(writer, 200, self._json(rows))

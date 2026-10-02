@@ -436,7 +436,7 @@ Prompt template tokens:
 
 Default access note:
 
-- `Non-Authenticated` users may log in, but DX spot posting and announce posting are off by default until a sysop changes access level or applies an explicit `sysop/setaccess` override.
+- `Non-Authenticated` users may log in, but DX spot, chat, announcement, WX, WCY, and WWV posting are off by default until a sysop changes access level or applies an explicit `sysop/setaccess` override.
 - DX spot posting can also be throttled separately from access control. Use `sysop/spotlimit default` to inspect node defaults and `sysop/spotlimit <call>` to inspect or override one user.
 
 Solar/sky views use the operator's stored QRA when available and fall back to the node grid square.
