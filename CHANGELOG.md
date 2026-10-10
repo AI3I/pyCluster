@@ -2,7 +2,11 @@
 
 All notable changes to pyCluster should be recorded here.
 
-## 1.0.23 - Unreleased
+## 1.0.23 - 2026-10-10
+
+- Deny chat, WX, WCY, and WWV posting by non-authenticated users by default on telnet and public web; enforce the telnet access matrix before storing or relaying those posts. SysOps can still grant explicit per-user access (#287).
+- Record public-web logins, logouts, accepted posts, and access-denied posts in the bounded Telemetry audit under Web Activity without storing message bodies or session tokens (#288).
+- Redact credentials from telnet command logging.
 
 - Keep bounded PC/PY state-history retention independent, preventing busy PY links from evicting PC history; add scrollable Protocol History and a 20/50/100/200-row selector (#282, #283).
 - Refresh dataset indicators without overwriting unsaved settings, distinguish embedded release dates from file-update dates, and report KEPS element age/count with stale-data warnings (#284, #285).

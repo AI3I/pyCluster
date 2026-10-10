@@ -2815,6 +2815,7 @@ def test_outbound_relay_defaults_on_for_local_session_and_can_be_disabled(tmp_pa
     async def run() -> None:
         db = str(tmp_path / "relay_gate.db")
         app = ClusterApp(_mk_config(db))
+        await app.store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         captured = []
 
         async def _peer_names():
@@ -2949,6 +2950,7 @@ def test_outbound_talk_relay_uses_pc10_and_optional_route(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "relay_talk_pc10.db")
         app = ClusterApp(_mk_config(db))
+        await app.store.upsert_user_registry("N9JR-10", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         captured: list[tuple[str, WirePcFrame]] = []
 
         async def _peer_names():
@@ -2983,6 +2985,7 @@ def test_outbound_wcy_and_wwv_use_dxspider_frames_for_dxspider_peers(tmp_path) -
     async def run() -> None:
         db = str(tmp_path / "relay_dxspider_geomag.db")
         app = ClusterApp(_mk_config(db))
+        await app.store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         captured = []
 
         async def _peer_names():
@@ -3388,6 +3391,7 @@ def test_outbound_relay_category_policy(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "relay_category.db")
         app = ClusterApp(_mk_config(db))
+        await app.store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         captured = []
 
         async def _peer_names():
@@ -3504,6 +3508,7 @@ def test_peer_specific_relay_policy_blocks_selected_peer(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "relay_peer_policy.db")
         app = ClusterApp(_mk_config(db))
+        await app.store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         sent = []
 
         async def _peer_names():
@@ -3572,6 +3577,7 @@ def test_route_accept_filter_limits_relay_peers(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "route_accept_filter.db")
         app = ClusterApp(_mk_config(db))
+        await app.store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         sent = []
 
         async def _peer_names():
@@ -3608,6 +3614,7 @@ def test_route_reject_filter_blocks_matching_peers(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "route_reject_filter.db")
         app = ClusterApp(_mk_config(db))
+        await app.store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         sent = []
 
         async def _peer_names():
@@ -3638,6 +3645,7 @@ def test_route_filter_slot_order_prefers_lowest_slot_match(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "route_slot_order.db")
         app = ClusterApp(_mk_config(db))
+        await app.store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         sent = []
 
         async def _peer_names():
@@ -4376,6 +4384,7 @@ def test_app_relay_chat_reaches_remote_engine_over_wire(tmp_path) -> None:
         cfg = _mk_config(db)
         cfg.node.node_call = "N0NODE-1"
         app = ClusterApp(cfg)
+        await app.store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         remote = NodeLinkEngine()
 
         async def _noop() -> None:
@@ -4429,6 +4438,7 @@ def test_app_relay_chat_fanout_blocks_selected_wire_peer(tmp_path) -> None:
         cfg = _mk_config(db)
         cfg.node.node_call = "N0NODE-1"
         app = ClusterApp(cfg)
+        await app.store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="user")
         remote1 = NodeLinkEngine()
         remote2 = NodeLinkEngine()
 
