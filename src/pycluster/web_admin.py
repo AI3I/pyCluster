@@ -131,8 +131,10 @@ class WebAdminServer:
         config_updated_fn=None,
         config_path: str | None = None,
         recent_rbn_spots_fn=None,
+        security_failure_fn=None,
     ) -> None:
         self.config = config
+        self._security_failure_fn = security_failure_fn
         self.store = store
         self.started_at = started_at
         self.session_count_fn = session_count_fn
@@ -1025,7 +1027,10 @@ class WebAdminServer:
         return re.sub(r"[^A-Z0-9/-]+", "_", raw)
 
     def _log_auth_failure(self, writer: asyncio.StreamWriter, headers: dict[str, str], channel: str, call: str, reason: str) -> None:
-        log_auth_failure(LOG, channel, self._client_ip(headers, writer), self._auth_log_call(call), reason)
+        ip = self._client_ip(headers, writer)
+        log_auth_failure(LOG, channel, ip, self._auth_log_call(call), reason)
+        if self._security_failure_fn:
+            self._security_failure_fn(channel, ip, reason)
 
     def _parse_json_body(self, body: bytes) -> dict[str, object]:
         if not body:
@@ -3149,6 +3154,7 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
                 <div class="checkrow"><input id="pySharePolicy" type="checkbox"><label for="pySharePolicy" title="Advertise a summary of local access requirements without changing another node's policy.">Access policy</label></div>
                 <div class="checkrow"><input id="pyShareClock" type="checkbox"><label for="pyShareClock" title="Share clock and uptime metadata for diagnostics; this does not synchronize clocks.">Clock and uptime</label></div>
                 <div class="checkrow"><input id="pyShareNeighbors" type="checkbox"><label for="pyShareNeighbors" title="Share the callsign and software of non-pyCluster nodes this node links to directly, so peers can see the wider network. Never relayed.">Non-pyCluster neighbors</label></div>
+                <div class="checkrow"><input id="pyShareSecurity" type="checkbox"><label for="pyShareSecurity" title="Exchange public IP login abuse summaries with directly authenticated pyCluster peers. Disabled by default. Reports never apply local blocks automatically.">Security advisories (PY15)</label></div>
                 <div class="checkrow"><input id="pySharePublicUrl" type="checkbox"><label for="pySharePublicUrl" title="Include the configured public user-facing URL in shared node information.">Public web URL</label></div>
                 <div class="checkrow"><input id="pyShareLocator" type="checkbox"><label for="pyShareLocator" title="Include this node's configured grid locator in shared node information.">Grid locator</label></div>
                 <div class="checkrow"><input id="pyShareQth" type="checkbox"><label for="pyShareQth" title="Include this node's configured location description in shared node information.">QTH</label></div>
@@ -3627,6 +3633,12 @@ html.light .health.flapping{background:rgba(185,87,50,.18);color:#6e341e}
           </div>
           <div class="subpanel" id="telemetry-panel-security">
             <section>
+              <h3>Security Advisories</h3>
+              <p class="mini">Reports from direct pyCluster peers are informational. A local block requires a System Operator action and expires after the chosen duration.</p>
+              <div class="actions"><button type="button" id="advisoriesReload">Reload Advisories</button></div>
+              <div class="tablewrap"><table class="responsive-records"><thead><tr><th>Address / Service</th><th>Event</th><th>Reporter / Provenance</th><th>When</th><th>Status</th><th>Action</th></tr></thead><tbody id="advisoryRows"><tr><td colspan="6">Loading advisories...</td></tr></tbody></table></div>
+            </section>
+            <section>
               <h3>Address Blocks</h3>
               <form id="addressBlockForm" class="form-grid compact-controls">
                 <div class="field"><label for="blockNetwork" title="An IPv4 or IPv6 address or CIDR network. Blocks apply to new telnet and web connections, including System Operator access.">IP / CIDR</label><input id="blockNetwork" required></div>
@@ -3779,7 +3791,10 @@ function setNodeGroup(group) {
 }
 function setTelemetryPanel(panel) {
   const target = String(panel || 'overview').toLowerCase();
-  if (target === 'security' && webTok) loadAddressBlocks().catch((err) => say(errText(err), false));
+  if (target === 'security' && webTok) {
+    loadAddressBlocks().catch((err) => say(errText(err), false));
+    loadAdvisories().catch((err) => say(errText(err), false));
+  }
   document.querySelectorAll('.subpanel[id^="telemetry-panel-"]').forEach((el) => {
     el.classList.toggle('active', el.id === `telemetry-panel-${target}`);
   });
@@ -4541,7 +4556,7 @@ function fillPySharing(data) {
   const fields = {
     pyEnabled:'enabled', pyShareNodeInfo:'share_node_info', pyShareTopology:'share_topology',
     pyShareHealth:'share_health', pyShareDatasets:'share_datasets', pyShareRbn:'share_rbn_status',
-    pySharePolicy:'share_policy', pyShareClock:'share_clock', pyShareNeighbors:'share_neighbors',
+    pySharePolicy:'share_policy', pyShareClock:'share_clock', pyShareNeighbors:'share_neighbors', pyShareSecurity:'share_security_advisories',
     pySharePublicUrl:'share_public_web_url', pyShareLocator:'share_locator', pyShareQth:'share_qth',
     pyShareContact:'share_sysop_contact',
   };
@@ -5485,6 +5500,7 @@ byId('pySharingSave').onclick = async () => {
         share_policy:byId('pySharePolicy').checked,
         share_clock:byId('pyShareClock').checked,
         share_neighbors:byId('pyShareNeighbors').checked,
+        share_security_advisories:byId('pyShareSecurity').checked,
         share_notices:byId('pyNoticeShare').checked,
         share_public_web_url:byId('pySharePublicUrl').checked,
         share_locator:byId('pyShareLocator').checked,
@@ -6150,6 +6166,41 @@ byId('addressBlockRows').onclick = async (event) => {
     await loadAddressBlocks();
   } catch (err) { say(errText(err), false); }
 };
+async function loadAdvisories() {
+  const rows = await j('/api/py-security-advisories?limit=200');
+  const body = byId('advisoryRows');
+  body.innerHTML = rows.map((row) => {
+    const local = row.local;
+    const blocks = row.local_blocks || [];
+    const activeBlock = blocks.find((block) => !block.removed_epoch);
+    const status = row.disposition === 'dismissed' ? 'Dismissed' : activeBlock ? 'Locally blocked' : row.active ? 'Active' : 'Expired';
+    const action = activeBlock && row.block_id === activeBlock.id
+      ? `<button type="button" data-advisory-action="unblock" data-advisory-id="${row.id}">Unblock</button>`
+      : row.active && !activeBlock && row.disposition !== 'dismissed'
+        ? `<button type="button" data-advisory-action="block" data-advisory-id="${row.id}">Block Locally</button>` : '';
+    return `<tr><td>${esc(row.address)}<div class="mini">${esc(row.service)}</div></td><td>${esc(row.category)} · ${row.event_count} in ${row.window_seconds}s</td><td>${esc(row.origin_node)} (${local ? 'local' : 'direct peer'})<div class="mini">via ${esc(row.learned_from)} · ${row.reporter_count} reporter(s) · peer blocked: ${row.reporter_local_blocked ? 'yes' : 'no'}</div></td><td>${esc(fmtEpoch(row.first_seen))} – ${esc(fmtEpoch(row.last_seen))}<div class="mini">Expires ${esc(fmtEpoch(row.expires_epoch))}; retained until ${esc(fmtEpoch(row.retained_until))}</div></td><td>${status}${activeBlock ? `<div class="mini">Block #${activeBlock.id}, expires ${activeBlock.expires_epoch ? esc(fmtEpoch(activeBlock.expires_epoch)) : 'never'}</div>` : ''}</td><td>${action} ${row.disposition !== 'dismissed' ? `<button type="button" data-advisory-action="dismiss" data-advisory-id="${row.id}">Dismiss</button>` : ''}</td></tr>`;
+  }).join('') || '<tr><td colspan="6">No security advisories in the last 72 hours.</td></tr>';
+  labelTableCells(body);
+}
+byId('advisoriesReload').onclick = () => loadAdvisories().catch((err) => say(errText(err), false));
+byId('advisoryRows').onclick = async (event) => {
+  const button = event.target.closest('[data-advisory-action]');
+  if (!button) return;
+  const action = button.dataset.advisoryAction;
+  let minutes = 0;
+  if (action === 'block') {
+    const raw = window.prompt('Local block duration in minutes (1–10080):', '1440');
+    if (raw === null) return;
+    minutes = Number(raw);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 10080) { say('Enter a duration from 1 to 10080 minutes.', false); return; }
+  }
+  if (!window.confirm(action === 'block' ? 'Apply this local address block to telnet and web access?' : action === 'unblock' ? 'Remove the local block created from this advisory?' : 'Dismiss this advisory?')) return;
+  try {
+    await j('/api/py-security-advisories', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:Number(button.dataset.advisoryId), action, minutes})});
+    await loadAdvisories();
+    await loadAddressBlocks();
+  } catch (err) { say(errText(err), false); }
+};
 document.querySelectorAll('[data-history-family]').forEach((button) => {
   button.onclick = () => setProtocolHistoryFamily(button.dataset.historyFamily || 'py');
 });
@@ -6491,9 +6542,12 @@ if (restoreWebSession()) {
                     actor = self._authorized_call(headers)
                     try:
                         if payload.get("action") == "remove":
-                            await self.store.remove_address_block(int(payload["id"]), actor)
+                            block_id = int(payload["id"])
+                            if await self.store.remove_address_block(block_id, actor):
+                                self._audit("sysop", f"{actor} removed address block {block_id}")
                         elif payload.get("action") == "add":
-                            await self.store.add_address_block(str(payload.get("network", "")), str(payload.get("reason", "")), actor, int(payload.get("minutes", 0)))
+                            block_id = await self.store.add_address_block(str(payload.get("network", "")), str(payload.get("reason", "")), actor, int(payload.get("minutes", 0)))
+                            self._audit("sysop", f"{actor} applied address block {block_id} for {payload.get('network', '')}")
                         else:
                             raise ValueError("Invalid address block action")
                     except (ValueError, TypeError, KeyError) as exc:
@@ -6505,6 +6559,60 @@ if (restoreWebSession()) {
                     now = int(time.time())
                     rows = [row for row in rows if row["removed_epoch"] or (row["expires_epoch"] and row["expires_epoch"] <= now)]
                 await self._write_response(writer, 200, self._json(rows))
+                return
+
+            if path == "/api/py-security-advisories":
+                if not self._is_authorized(headers):
+                    await self._write_response(writer, 401, self._json({"error": "unauthorized"}))
+                    return
+                if method == "GET":
+                    rows = await self.store.list_py_security_advisories(self._parse_limit(q, "limit", default=200, low=1, high=500))
+                    for row in rows:
+                        row["local"] = row["origin_node"] == self.config.node.node_call
+                    await self._write_response(writer, 200, self._json(rows))
+                    return
+                if method != "POST":
+                    await self._write_response(writer, 405, self._json({"error": "method not allowed"}))
+                    return
+                payload = self._parse_json_body(body)
+                actor = self._authorized_call(headers)
+                try:
+                    advisory_id = int(payload["id"])
+                    row = await self.store.get_py_security_advisory(advisory_id)
+                    if not row:
+                        raise ValueError("advisory not found")
+                    action = str(payload.get("action", ""))
+                    if action == "block":
+                        if int(row["expires_epoch"]) <= int(time.time()):
+                            raise ValueError("advisory has expired")
+                        minutes = int(payload.get("minutes", 0))
+                        if not 1 <= minutes <= 10080:
+                            raise ValueError("block duration must be 1 to 10080 minutes")
+                        advisory_network = ipaddress.ip_network(row["address"], strict=False)
+                        for block in await self.store.list_address_blocks():
+                            block_network = ipaddress.ip_network(block["network"])
+                            if advisory_network.version == block_network.version and advisory_network.subnet_of(block_network):
+                                raise ValueError(f"address already covered by local block {block['id']}")
+                        block_id = await self.store.add_address_block(row["address"], f"PY15 advisory {advisory_id} from {row['origin_node']}", actor, minutes)
+                        if not await self.store.set_py_security_disposition(advisory_id, "blocked", actor, block_id):
+                            await self.store.remove_address_block(block_id, actor)
+                            raise ValueError("advisory expired before block could be recorded")
+                        self._audit("sysop", f"{actor} applied address block {block_id} for PY15 advisory {advisory_id} until {int(time.time()) + minutes * 60}")
+                    elif action == "unblock":
+                        block_id = int(row["block_id"])
+                        if not block_id or not await self.store.remove_address_block(block_id, actor):
+                            raise ValueError("advisory block is not active")
+                        await self.store.set_py_security_disposition(advisory_id, "unblocked", actor)
+                        self._audit("sysop", f"{actor} removed address block {block_id} for PY15 advisory {advisory_id}")
+                    elif action == "dismiss":
+                        await self.store.set_py_security_disposition(advisory_id, "dismissed", actor, int(row["block_id"]))
+                        self._audit("sysop", f"{actor} dismissed PY15 advisory {advisory_id}")
+                    else:
+                        raise ValueError("invalid advisory action")
+                except (KeyError, TypeError, ValueError) as exc:
+                    await self._write_response(writer, 400, self._json({"error": str(exc)}))
+                    return
+                await self._write_response(writer, 200, self._json({"ok": True}))
                 return
 
             if path == "/api/security":
@@ -7848,6 +7956,7 @@ if (restoreWebSession()) {
                     "share_sysop_contact", "share_topology", "share_health", "share_datasets",
                     "share_rbn_status", "share_policy", "share_clock", "share_notices",
                     "share_neighbors",
+                    "share_security_advisories",
                 )
                 if method == "POST":
                     payload = self._parse_json_body(body)

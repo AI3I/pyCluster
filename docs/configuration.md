@@ -211,6 +211,7 @@ Important fields:
 - `share_policy` - enables direct `PY08` registration, verification, MFA, and public-access booleans
 - `share_clock` - enables direct `PY09` UTC, uptime, and boot-time summaries
 - `share_neighbors` - enables direct `PY14` reporting of non-pyCluster nodes this node links to directly; never relayed
+- `share_security_advisories` - enables bilateral `PY15` reports of abusive login sources; defaults to `false`; reports never block automatically
 - `share_notices` - enables structured `PY07` operator notices
 - `notice_severity`, `notice_message`, and `notice_expires_epoch` - dedicated notice content and explicit expiry; an empty message creates an inactive/cancel record
 - `max_hops`

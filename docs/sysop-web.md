@@ -196,8 +196,11 @@ This tab controls the optional private PY protocol used only between authenticat
 - explicit public URL, locator, QTH, and System Operator contact privacy controls
 - the shared metadata preview
 - structured network-notice sharing
+- opt-in security advisory exchange with directly authenticated pyCluster peers
 
 The controls are local policy settings. Existing pyCluster links must reconnect to negotiate newly enabled capabilities. Live negotiation state and alerts remain under `Protocol Health`; the known-node catalog and route provenance are under `Topology`.
+
+Telemetry > Security shows PY15 advisories for 72 hours with source, reporter count, expiry, and current local block state. A System Operator can explicitly apply a timed local block, remove a block created from that advisory, or dismiss the report. Peer reports never change local access policy automatically.
 
 ### Maintenance
 

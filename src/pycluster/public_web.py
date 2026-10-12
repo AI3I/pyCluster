@@ -224,8 +224,10 @@ class PublicWebServer:
         event_log_fn=None,
         strings_path: str | None = None,
         config_path: str | None = None,
+        security_failure_fn=None,
     ) -> None:
         self.config = config
+        self._security_failure_fn = security_failure_fn
         self._config_path = Path(config_path).expanduser().resolve() if config_path else None
         self._config_signature = self._runtime_config_signature()
         self.store = store
@@ -959,7 +961,10 @@ class PublicWebServer:
         return re.sub(r"[^A-Z0-9/-]+", "_", raw)
 
     def _log_auth_failure(self, writer: asyncio.StreamWriter, headers: dict[str, str], channel: str, call: str, reason: str) -> None:
-        log_auth_failure(LOG, channel, self._client_ip(headers, writer), self._auth_log_call(call), reason)
+        ip = self._client_ip(headers, writer)
+        log_auth_failure(LOG, channel, ip, self._auth_log_call(call), reason)
+        if self._security_failure_fn:
+            self._security_failure_fn(channel, ip, reason)
 
     def _issue_web_token(self, call: str, ttl_seconds: int = 8 * 3600) -> tuple[str, int]:
         tok = secrets.token_urlsafe(24)

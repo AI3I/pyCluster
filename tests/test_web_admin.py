@@ -18,6 +18,8 @@ from pycluster.mfa import SMTPMailer, totp_code
 from pycluster.models import Spot
 from pycluster.registration import registration_state
 from pycluster.store import SpotStore
+from pycluster.py_protocol import PySecurityAdvisoryMessage
+import time
 from pycluster.telnet_server import TelnetClusterServer
 from pycluster.web_admin import WebAdminServer
 
@@ -56,6 +58,32 @@ def test_rbn_status_endpoint_returns_current_state_without_config(tmp_path) -> N
             assert code == 200 and json.loads(body) == status
             code, _, _ = await _http_request(server, 'POST', '/api/rbn/status', headers=headers)
             assert code == 405
+        finally:
+            await store.close()
+    asyncio.run(run())
+
+
+def test_py15_api_requires_sysop_and_manual_block_lifecycle(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py15_web.db"), admin_token="adm")
+        store = SpotStore(cfg.store.sqlite_path)
+        server = WebAdminServer(cfg, store, datetime.now(timezone.utc), lambda: 0)
+        now = int(time.time())
+        report = PySecurityAdvisoryMessage("AI3I-91", "8.8.8.8", "telnet", "brute-force", now - 60, now, 5, 300, 1, now, now + 1800, False)
+        try:
+            await store.add_py_security_advisory(report, "AI3I-91", now)
+            assert (await _http_request(server, "GET", "/api/py-security-advisories"))[0] == 401
+            auth = {"X-Admin-Token": "adm"}
+            code, _, body = await _http_request(server, "GET", "/api/py-security-advisories", headers=auth)
+            assert code == 200
+            advisory_id = json.loads(body)[0]["id"]
+            assert not await store.address_blocked("8.8.8.8")
+            payload = json.dumps({"id": advisory_id, "action": "block", "minutes": 30}).encode()
+            assert (await _http_request(server, "POST", "/api/py-security-advisories", headers=auth, body=payload))[0] == 200
+            assert await store.address_blocked("8.8.8.8")
+            payload = json.dumps({"id": advisory_id, "action": "unblock"}).encode()
+            assert (await _http_request(server, "POST", "/api/py-security-advisories", headers=auth, body=payload))[0] == 200
+            assert not await store.address_blocked("8.8.8.8")
         finally:
             await store.close()
     asyncio.run(run())

@@ -28,8 +28,7 @@ PY_SESSION_FRAME_TYPE = "PY11"
 PY_PROBE_TYPE = "PY12"
 PY_WITHDRAW_TYPE = "PY13"
 PY_NEIGHBORS_TYPE = "PY14"
-# PY15 is reserved for distributed security advisories (issue #276) and must
-# not be reused by another family.
+PY_SECURITY_ADVISORY_TYPE = "PY15"
 PY_ERROR_TYPE = "PY99"
 PY_CAPABILITIES = ("probe", "py99-error", "session-binding")
 PY_FRAME_CAPABILITIES = {
@@ -47,6 +46,7 @@ PY_FRAME_CAPABILITIES = {
     "PY12": "probe",
     "PY13": "topology-withdraw",
     "PY14": "neighbors",
+    PY_SECURITY_ADVISORY_TYPE: "security-advisory",
     PY_ERROR_TYPE: "py99-error",
 }
 # Cluster software this node can positively identify on a direct link. A peer
@@ -57,6 +57,70 @@ PY_NEIGHBOR_STATES = ("configured", "connected")
 PY_MAX_NEIGHBORS = 64
 _CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+
+
+@dataclass(frozen=True, slots=True)
+class PySecurityAdvisoryMessage:
+    origin_node: str
+    address: str
+    service: str
+    category: str
+    first_seen: int
+    last_seen: int
+    count: int
+    window_seconds: int
+    sequence: int
+    created_epoch: int
+    expires_epoch: int
+    reporter_local_blocked: bool
+    hop_count: int = 0
+    protocol_version: str = PY_PROTOCOL_VERSION
+
+    @classmethod
+    def from_fields(cls, fields: list[str]) -> "PySecurityAdvisoryMessage":
+        if len(fields) != 3 or fields[0].strip() != PY_PROTOCOL_VERSION or fields[1].strip().upper() != "SECURITY_ADVISORY":
+            raise ValueError("invalid PY15 field layout")
+        payload = _decode_payload(fields[2])
+        expected = {"origin_node", "address", "service", "category", "first_seen", "last_seen", "count", "window_seconds", "sequence", "created_epoch", "expires_epoch", "reporter_local_blocked", "hop_count"}
+        if set(payload) != expected:
+            raise ValueError("PY15 contains unknown or missing fields")
+        origin = normalize_call(str(payload["origin_node"]))
+        if not is_valid_call(origin):
+            raise ValueError("invalid PY15 origin")
+        raw_address = payload["address"]
+        if not isinstance(raw_address, str) or not raw_address or "%" in raw_address:
+            raise ValueError("invalid PY15 address")
+        try:
+            parsed = ipaddress.ip_network(raw_address, strict=False)
+        except ValueError as exc:
+            raise ValueError("invalid PY15 address") from exc
+        if isinstance(parsed, ipaddress.IPv4Network):
+            if parsed.prefixlen != 32 or not parsed.network_address.is_global or parsed.network_address.is_multicast:
+                raise ValueError("PY15 requires a public IPv4 address")
+            canonical_address = str(parsed.network_address)
+        else:
+            if parsed.prefixlen != 64 or not parsed.network_address.is_global or parsed.network_address.is_multicast or parsed.network_address.ipv4_mapped:
+                raise ValueError("PY15 requires a public IPv6 /64")
+            canonical_address = str(parsed)
+        service = payload["service"]
+        category = payload["category"]
+        if not isinstance(service, str) or not isinstance(category, str) or service not in {"telnet", "user-web", "sysop-web", "peer-link"} or category not in {"brute-force", "abusive-login"}:
+            raise ValueError("invalid PY15 service or category")
+        names = ("first_seen", "last_seen", "count", "window_seconds", "sequence", "created_epoch", "expires_epoch", "hop_count")
+        if any(type(payload[name]) is not int for name in names) or type(payload["reporter_local_blocked"]) is not bool:
+            raise ValueError("invalid PY15 values")
+        first, last, count, window, sequence, created, expires, hops = (payload[name] for name in names)
+        if not (0 < first <= last <= created < expires and 0 < count <= 10000 and 60 <= window <= 3600 and 0 < sequence <= 2**63 - 1 and expires - created <= 3600 and hops == 0 and last - first <= window and created - last <= 3600):
+            raise ValueError("invalid PY15 timing or provenance")
+        return cls(origin, canonical_address, service, category, first, last, count, window, sequence, created, expires, payload["reporter_local_blocked"], hops)
+
+    def to_fields(self) -> list[str]:
+        payload = {name: getattr(self, name) for name in ("origin_node", "address", "service", "category", "first_seen", "last_seen", "count", "window_seconds", "sequence", "created_epoch", "expires_epoch", "reporter_local_blocked", "hop_count")}
+        fields = [self.protocol_version, "SECURITY_ADVISORY", _encode_payload(payload)]
+        valid = self.from_fields(fields)
+        payload["origin_node"] = valid.origin_node
+        payload["address"] = valid.address
+        return [self.protocol_version, "SECURITY_ADVISORY", _encode_payload(payload)]
 
 
 @dataclass(frozen=True, slots=True)

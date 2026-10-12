@@ -182,11 +182,11 @@ filter store would violate the shared-state architecture.
 
 ## PY Security Advisories
 
-A separate proposed `PY` capability can exchange short-lived reports that a
-source address is attacking a node. Reports should be informational by default,
-retained locally for about 72 hours, rate-limited, signed or otherwise tied to
-an authenticated direct peer, and never cause automatic network-wide blocking.
-The System Operator may inspect evidence and explicitly apply a local block.
+`PY15 SECURITY_ADVISORY` now exchanges short-lived reports between directly
+authenticated, capability-negotiated pyCluster peers when each node opts in.
+Reports are informational, retained locally for 72 hours subject to storage
+limits, rate-limited, and never cause automatic network-wide blocking. The
+System Operator may inspect a report and explicitly apply a timed local block.
 
 This mechanism must account for NAT, shared carriers, IPv4 and IPv6 prefixes,
 spoofed or mistaken reports, conflicting observations, expiry, and malicious
@@ -201,5 +201,5 @@ participating nodes. It must not become a distributed automatic firewall.
 5. Prototype verified pycluster.net DNS/DDNS and ACME delegation independently.
 6. Measure operator adoption before building health-checked login pools.
 7. Write a separate threat model and protocol specification before federated
-   identity or distributed security advisories enter production code.
+   identity enters production code.
 

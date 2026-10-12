@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import fnmatch
 import hashlib
+import ipaddress
 import json
 import logging
 from pathlib import Path
@@ -32,7 +33,7 @@ from .node_link import NodeLinkEngine
 from .pathmeta import describe_transport_dsn
 from .peer_profiles import normalize_profile
 from .protocol import Pc10Message, Pc11Message, Pc12Message, Pc18Message, Pc23Message, Pc24Message, Pc28Message, Pc29Message, Pc30Message, Pc31Message, Pc32Message, Pc33Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, parse_wire_pc_frame, serialize_wire_protocol_frame
-from .py_protocol import PY_CAPABILITIES, PY_MAX_NEIGHBORS, PY_NEIGHBOR_FAMILIES, PY_CLOCK_TYPE, PY_DATASETS_TYPE, PY_ERROR_TYPE, PY_FRAME_CAPABILITIES, PY_HEALTH_TYPE, PY_HELLO_TYPE, PY_NEIGHBORS_TYPE, PY_NODEINFO_TYPE, PY_NOTICE_TYPE, PY_POLICY_TYPE, PY_PROBE_TYPE, PY_RBN_STATUS_TYPE, PY_REQUEST_TYPE, PY_SESSION_FRAME_TYPE, PY_TOPOLOGY_DIGEST_TYPE, PY_TOPOLOGY_RECORDS_TYPE, PY_WITHDRAW_TYPE, PyClockMessage, PyDatasetsMessage, PyErrorMessage, PyHealthMessage, PyHelloMessage, PyNeighborRecord, PyNeighborsMessage, PyNodeInfoMessage, PyNoticeMessage, PyPolicyMessage, PyProbeMessage, PyRbnStatusMessage, PySessionFrameMessage, PyTopologyDigestEntry, PyTopologyDigestMessage, PyTopologyRecord, PyTopologyRecordsMessage, PyTopologyRequestMessage, PyWithdrawMessage
+from .py_protocol import PY_CAPABILITIES, PY_MAX_NEIGHBORS, PY_NEIGHBOR_FAMILIES, PY_CLOCK_TYPE, PY_DATASETS_TYPE, PY_ERROR_TYPE, PY_FRAME_CAPABILITIES, PY_HEALTH_TYPE, PY_HELLO_TYPE, PY_NEIGHBORS_TYPE, PY_NODEINFO_TYPE, PY_NOTICE_TYPE, PY_POLICY_TYPE, PY_PROBE_TYPE, PY_RBN_STATUS_TYPE, PY_REQUEST_TYPE, PY_SECURITY_ADVISORY_TYPE, PY_SESSION_FRAME_TYPE, PY_TOPOLOGY_DIGEST_TYPE, PY_TOPOLOGY_RECORDS_TYPE, PY_WITHDRAW_TYPE, PyClockMessage, PyDatasetsMessage, PyErrorMessage, PyHealthMessage, PyHelloMessage, PyNeighborRecord, PyNeighborsMessage, PyNodeInfoMessage, PyNoticeMessage, PyPolicyMessage, PyProbeMessage, PyRbnStatusMessage, PySecurityAdvisoryMessage, PySessionFrameMessage, PyTopologyDigestEntry, PyTopologyDigestMessage, PyTopologyRecord, PyTopologyRecordsMessage, PyTopologyRequestMessage, PyWithdrawMessage
 from .rbn import is_rbn_spot, parse_rbn_dx_line
 from .shdx import BAND_RANGES
 from .spot_filters import SpotFilterEntry, evaluate_spot_entries
@@ -139,6 +140,11 @@ class ClusterApp:
         self._py_remote_limits: dict[str, tuple[int, int, int]] = {}
         self._py_probe_pending: dict[str, tuple[str, int, float]] = {}
         self._py_probe_epoch: dict[str, int] = {}
+        self._py_security_failures: dict[tuple[str, str, str], list[int]] = {}
+        self._py_security_last_sent: dict[tuple[str, str, str], int] = {}
+        self._py_security_sequence = int(time.time() * 1000000)
+        self._py_security_rx_times: dict[str, deque[int]] = {}
+        self._py_security_publish_lock = asyncio.Lock()
         self._py_refresh_task: asyncio.Task[None] | None = None
         self._mail_stream_seq = 0
         self._outbound_mail: dict[tuple[str, str], dict[str, object]] = {}
@@ -167,6 +173,7 @@ class ClusterApp:
             on_sessions_changed_fn=self._sync_legacy_user_roster,
             on_node_login_fn=self.accept_inbound_node_login,
             strings_path=strings_path,
+            security_failure_fn=self._record_security_failure,
         )
         self.web = WebAdminServer(
             config=config,
@@ -196,6 +203,7 @@ class ClusterApp:
             rbn_reconfigure_fn=self.reconfigure_rbn_feed,
             config_updated_fn=self._apply_runtime_config,
             config_path=config_path,
+            security_failure_fn=self._record_security_failure,
         )
         self.public_web = PublicWebServer(
             config=config,
@@ -212,6 +220,7 @@ class ClusterApp:
             event_log_fn=self.telnet.record_event,
             strings_path=strings_path,
             config_path=config_path,
+            security_failure_fn=self._record_security_failure,
         )
         self._node_ingest_task: asyncio.Task[None] | None = None
         self._peer_reconnect_task: asyncio.Task[None] | None = None
@@ -1562,7 +1571,60 @@ class ClusterApp:
             capabilities.add("clock")
         if self.config.py_protocol.share_neighbors:
             capabilities.add("neighbors")
+        if self.config.py_protocol.share_security_advisories:
+            capabilities.add("security-advisory")
         return tuple(sorted(capabilities))
+
+    def _record_security_failure(self, channel: str, raw_ip: str, reason: str) -> None:
+        if not self.config.py_protocol.enabled or not self.config.py_protocol.share_security_advisories:
+            return
+        if reason not in {"bad_password", "bad_password_recoverable", "invalid_credentials_verified", "invalid_credentials_unverified", "invalid_callsign", "mfa_invalid_totp", "mfa_invalid_code", "invalid_password"}:
+            return
+        services = {"telnet": "telnet", "public-web": "user-web", "sysop-web": "sysop-web", "peer-link": "peer-link"}
+        service = services.get(channel)
+        if not service:
+            return
+        category = "abusive-login" if reason == "invalid_callsign" else "brute-force"
+        try:
+            address = ipaddress.ip_address(raw_ip)
+            if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            if not address.is_global or address.is_multicast or address.is_unspecified:
+                return
+            target = str(address) if address.version == 4 else str(ipaddress.ip_network((address, 64), strict=False))
+        except (ValueError, TypeError):
+            return
+        now = int(time.time())
+        key = (target, service, category)
+        if len(self._py_security_failures) >= 4096 and key not in self._py_security_failures:
+            oldest = min(self._py_security_failures, key=lambda item: self._py_security_failures[item][-1])
+            self._py_security_failures.pop(oldest, None)
+            self._py_security_last_sent.pop(oldest, None)
+        recent = [epoch for epoch in self._py_security_failures.get(key, []) if epoch > now - 300]
+        recent.append(now)
+        self._py_security_failures[key] = recent[-100:]
+        if len(recent) >= 5 and now - self._py_security_last_sent.get(key, 0) >= 300:
+            self._py_security_last_sent[key] = now
+            asyncio.create_task(self._publish_py_security_advisory(target, service, category, recent[0], now, len(recent)))
+
+    async def _publish_py_security_advisory(self, address: str, service: str, category: str, first: int, last: int, count: int) -> None:
+        async with self._py_security_publish_lock:
+            await self._publish_py_security_advisory_locked(address, service, category, first, last, count)
+
+    async def _publish_py_security_advisory_locked(self, address: str, service: str, category: str, first: int, last: int, count: int) -> None:
+        self._py_security_sequence = max(self._py_security_sequence + 1, int(time.time() * 1000000))
+        advisory = PySecurityAdvisoryMessage(
+            self.config.node.node_call, address, service, category, first, last,
+            count, 300, self._py_security_sequence, last, last + 1800,
+            any(ipaddress.ip_network(address, strict=False).version == ipaddress.ip_network(block["network"]).version
+                and ipaddress.ip_network(address, strict=False).subnet_of(ipaddress.ip_network(block["network"]))
+                for block in await self.store.list_address_blocks()),
+        )
+        frame = WirePcFrame(PY_SECURITY_ADVISORY_TYPE, advisory.to_fields())
+        await self.store.add_py_security_advisory(advisory, self.config.node.node_call)
+        for peer, capabilities in tuple(self._py_negotiated_capabilities.items()):
+            if {"security-advisory", "session-binding"}.issubset(capabilities) and self._py_frame_fits(frame, peer):
+                await self._send_py_frame(peer, frame)
 
     def _effective_py_limits(self, peer_name: str) -> tuple[int, int, int]:
         peer_key = normalize_call(peer_name) or peer_name.upper()
@@ -2349,6 +2411,9 @@ class ClusterApp:
                     },
                 )
                 return
+            if peer_key in self._py_remote_capabilities:
+                await self.node_link.mark_policy_drop(peer_name, "duplicate_py_hello")
+                return
             remote_capabilities = frozenset(hello.capabilities)
             negotiated = frozenset(set(self._local_py_capabilities()).intersection(remote_capabilities))
             ptag = re.sub(r"[^a-z0-9_.-]", "_", peer_name.lower())
@@ -2432,6 +2497,31 @@ class ClusterApp:
         if required_capability is None or required_capability not in negotiated:
             await self.node_link.mark_policy_drop(peer_name, "unsupported_py_type")
             await self._send_py_error(peer_name, "unsupported-type", frame.pc_type, "Frame capability was not negotiated")
+            return
+
+        if frame.pc_type == PY_SECURITY_ADVISORY_TYPE:
+            if "session-binding" not in negotiated:
+                await self.node_link.mark_policy_drop(peer_name, "unbound_py_security_advisory")
+                return
+            try:
+                advisory = PySecurityAdvisoryMessage.from_fields(frame.payload_fields)
+            except ValueError:
+                await self.node_link.mark_policy_drop(peer_name, "invalid_py_security_advisory")
+                return
+            now = int(time.time())
+            if (advisory.origin_node != peer_key or advisory.created_epoch > now + 300
+                    or advisory.created_epoch < now - 300 or advisory.expires_epoch <= now):
+                await self.node_link.mark_policy_drop(peer_name, "stale_or_relayed_py_security_advisory")
+                return
+            arrivals = self._py_security_rx_times.setdefault(peer_key, deque())
+            while arrivals and arrivals[0] <= now - 60:
+                arrivals.popleft()
+            if len(arrivals) >= 12:
+                await self.node_link.mark_policy_drop(peer_name, "py_security_advisory_rate_limit")
+                return
+            arrivals.append(now)
+            await self.store.add_py_security_advisory(advisory, peer_key, now)
+            await self._touch_proto_activity(peer_name, frame.pc_type)
             return
 
         if frame.pc_type == PY_ERROR_TYPE:

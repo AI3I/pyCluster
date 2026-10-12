@@ -3598,7 +3598,7 @@ def test_show_qra_apropos_and_notimpl(tmp_path) -> None:
             assert "SET commands" in out
             _, out = await srv._execute_command("N0CALL", "commands startup")
             assert "startup" in out
-            assert "Unset startup." in out or "Set startup." in out
+            assert "automatic login list" in out or "automatically after login" in out
             _, out = await srv._execute_command("N0CALL", "show/commands sendconf")
             assert "send_config" not in out
             now = int(datetime.now(timezone.utc).timestamp())
@@ -6370,6 +6370,69 @@ def test_sysop_services_and_restart(tmp_path) -> None:
             await store.close()
 
     asyncio.run(run())
+
+
+def test_easter_eggs_are_callable_but_not_catalogued(tmp_path) -> None:
+    async def run() -> None:
+        store = SpotStore(str(tmp_path / "easter_eggs.db"))
+        srv = TelnetClusterServer(_mk_config(str(tmp_path / "easter_eggs.db")), store, datetime.now(timezone.utc))
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        eggs = ("show/ai3i", "show/n9jr", "show/dxspider", "show/spout")
+        try:
+            catalog = srv._catalog_registry()
+            registry = srv._build_registry()
+            assert all(command in registry and command not in catalog for command in eggs)
+            assert all(command not in dict(srv._build_shortcut_catalog(registry)) for command in eggs)
+
+            for command in eggs:
+                _, result = await srv._execute_command("N0CALL", command)
+                assert result.strip() and result.strip() != "?"
+                _, result = await srv._execute_command("N0CALL", f"show/commands {command}")
+                assert "No commands match" in result
+                _, result = await srv._execute_command("N0CALL", f"apropos {command}")
+                assert "No commands match" in result
+                _, result = await srv._execute_command("N0CALL", f"show/apropos {command}")
+                assert "No commands match" in result
+                _, result = await srv._execute_command("N0CALL", f"show/shortcuts {command}")
+                assert "No shortcuts match" in result
+
+            _, dxspider = await srv._execute_command("N0CALL", "show/dxspider")
+            _, spout = await srv._execute_command("N0CALL", "show/spout")
+            assert dxspider == spout
+
+            _, capabilities = await srv._execute_command("N0CALL", "show/capabilities")
+            assert f"Commands: {len(catalog)}" in capabilities
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
+def test_command_descriptions_explain_effects_in_default_and_bundled_catalogs(tmp_path) -> None:
+    async def run(strings_path: str | None) -> None:
+        db = str(tmp_path / ("descriptions-bundled.db" if strings_path else "descriptions-default.db"))
+        store = SpotStore(db)
+        srv = TelnetClusterServer(_mk_config(db), store, datetime.now(timezone.utc), strings_path=strings_path)
+        srv._sessions[1] = Session(call="N0CALL", writer=_DummyWriter(), connected_at=datetime.now(timezone.utc))
+        await store.upsert_user_registry("N0CALL", int(datetime.now(timezone.utc).timestamp()), privilege="sysop")
+        cases = {
+            "set/totp": "Enroll an authenticator app for login MFA",
+            "unset/totp": "Remove authenticator MFA and turn off email MFA fallback",
+            "set/protoack": "Acknowledge protocol alerts",
+            "unset/control": "Restore the default enabled system control policy",
+            "show/qrz": "configured QRZ XML service",
+            "load/db": "database size, spot count, and registered-user count",
+        }
+        try:
+            for command, explanation in cases.items():
+                _, output = await srv._execute_command("N0CALL", f"show/commands {command}")
+                assert command in output
+                assert explanation in output
+        finally:
+            await store.close()
+
+    asyncio.run(run(None))
+    asyncio.run(run(str(Path(__file__).resolve().parents[1] / "config" / "strings.toml")))
 
 
 def test_sysop_namespace_hidden_and_denied_for_normal_users(tmp_path) -> None:

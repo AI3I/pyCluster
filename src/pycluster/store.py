@@ -26,6 +26,32 @@ CREATE TABLE IF NOT EXISTS address_blocks (
     removed_epoch INTEGER NOT NULL DEFAULT 0,
     removed_by TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS py_security_advisories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin_node TEXT NOT NULL,
+    learned_from TEXT NOT NULL,
+    address TEXT NOT NULL,
+    service TEXT NOT NULL,
+    category TEXT NOT NULL,
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL,
+    event_count INTEGER NOT NULL,
+    window_seconds INTEGER NOT NULL,
+    sequence INTEGER NOT NULL,
+    created_epoch INTEGER NOT NULL,
+    expires_epoch INTEGER NOT NULL,
+    reporter_local_blocked INTEGER NOT NULL,
+    hop_count INTEGER NOT NULL DEFAULT 0,
+    received_epoch INTEGER NOT NULL,
+    retained_until INTEGER NOT NULL,
+    disposition TEXT NOT NULL DEFAULT 'new',
+    disposition_by TEXT NOT NULL DEFAULT '',
+    disposition_epoch INTEGER NOT NULL DEFAULT 0,
+    block_id INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(origin_node, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_py_security_retention ON py_security_advisories(retained_until);
+CREATE INDEX IF NOT EXISTS idx_py_security_address ON py_security_advisories(address, received_epoch DESC);
 CREATE TABLE IF NOT EXISTS spots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     freq_khz REAL NOT NULL,
@@ -372,6 +398,88 @@ class SpotStore:
         except ValueError:
             return False
         return any(candidate in network(row['network']) for row in await self.list_address_blocks())
+
+    async def add_py_security_advisory(self, advisory, learned_from: str, now: int | None = None) -> bool:
+        """Keep direct reports for 72 hours; a repeated sequence never extends retention."""
+        now = int(time.time()) if now is None else now
+        async with self._lock:
+            self._conn.execute("DELETE FROM py_security_advisories WHERE retained_until<=?", (now,))
+            existing = self._conn.execute(
+                "SELECT MAX(sequence) FROM py_security_advisories WHERE origin_node=?",
+                (advisory.origin_node,),
+            ).fetchone()[0]
+            if existing is not None and advisory.sequence <= existing:
+                self._conn.commit()
+                return False
+            self._conn.execute(
+                """INSERT INTO py_security_advisories
+                (origin_node,learned_from,address,service,category,first_seen,last_seen,event_count,
+                 window_seconds,sequence,created_epoch,expires_epoch,reporter_local_blocked,hop_count,
+                 received_epoch,retained_until)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (advisory.origin_node, learned_from, advisory.address, advisory.service,
+                 advisory.category, advisory.first_seen, advisory.last_seen, advisory.count,
+                 advisory.window_seconds, advisory.sequence, advisory.created_epoch,
+                 advisory.expires_epoch, int(advisory.reporter_local_blocked), advisory.hop_count,
+                 now, now + 72 * 3600),
+            )
+            # Bound data even when many authenticated reporters send distinct sequences.
+            self._conn.execute("""DELETE FROM py_security_advisories WHERE id IN
+                (SELECT id FROM py_security_advisories WHERE origin_node=? AND address=?
+                 ORDER BY received_epoch DESC,id DESC LIMIT -1 OFFSET 64)""",
+                (advisory.origin_node, advisory.address),
+            )
+            self._conn.execute("""DELETE FROM py_security_advisories WHERE id IN
+                (SELECT id FROM py_security_advisories WHERE origin_node=?
+                 ORDER BY received_epoch DESC,id DESC LIMIT -1 OFFSET 512)""",
+                (advisory.origin_node,),
+            )
+            self._conn.execute("""DELETE FROM py_security_advisories WHERE id IN
+                (SELECT id FROM py_security_advisories ORDER BY received_epoch DESC,id DESC LIMIT -1 OFFSET 4096)""")
+            self._conn.commit()
+            return True
+
+    async def list_py_security_advisories(self, limit: int = 200, now: int | None = None) -> list[dict]:
+        now = int(time.time()) if now is None else now
+        async with self._lock:
+            self._conn.execute("DELETE FROM py_security_advisories WHERE retained_until<=?", (now,))
+            rows = [dict(row) for row in self._conn.execute(
+                "SELECT * FROM py_security_advisories ORDER BY received_epoch DESC,id DESC LIMIT ?",
+                (min(max(int(limit), 1), 4096),),
+            ).fetchall()]
+            reporters = {row["address"]: row["reporter_count"] for row in self._conn.execute(
+                """SELECT address, COUNT(DISTINCT origin_node) AS reporter_count
+                   FROM py_security_advisories WHERE expires_epoch>? GROUP BY address""", (now,)
+            ).fetchall()}
+            self._conn.commit()
+        blocks = await self.list_address_blocks()
+        for row in rows:
+            row["active"] = row["expires_epoch"] > now
+            row["reporter_count"] = reporters.get(row["address"], 0)
+            advisory_network = network(row["address"])
+            row["local_blocks"] = [block for block in blocks
+                if advisory_network.version == network(block["network"]).version
+                and advisory_network.subnet_of(network(block["network"]))]
+        return rows
+
+    async def set_py_security_disposition(self, advisory_id: int, disposition: str, actor: str, block_id: int = 0) -> bool:
+        if disposition not in {"dismissed", "blocked", "unblocked"}:
+            raise ValueError("invalid advisory disposition")
+        async with self._lock:
+            cur = self._conn.execute(
+                "UPDATE py_security_advisories SET disposition=?,disposition_by=?,disposition_epoch=?,block_id=? WHERE id=? AND retained_until>?",
+                (disposition, actor, int(time.time()), block_id, advisory_id, int(time.time())),
+            )
+            self._conn.commit()
+            return bool(cur.rowcount)
+
+    async def get_py_security_advisory(self, advisory_id: int) -> dict | None:
+        async with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM py_security_advisories WHERE id=? AND retained_until>?",
+                (advisory_id, int(time.time())),
+            ).fetchone()
+            return dict(row) if row else None
 
     async def optimize(self) -> dict[str, int]:
         async with self._lock:

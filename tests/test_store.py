@@ -5,6 +5,33 @@ from pathlib import Path
 from pycluster.models import Spot, parse_spot_record
 from pycluster.shdx import parse_sh_dx_args
 from pycluster.store import SpotStore
+from pycluster.py_protocol import PySecurityAdvisoryMessage
+import time
+
+
+def test_py15_retention_dedup_and_manual_block(tmp_path: Path) -> None:
+    async def run() -> None:
+        store = SpotStore(str(tmp_path / "py15.db"))
+        now = int(time.time())
+        def report(origin: str, sequence: int):
+            return PySecurityAdvisoryMessage(origin, "8.8.8.8", "telnet", "brute-force", now - 60, now, 5, 300, sequence, now, now + 1800, False)
+        try:
+            assert await store.add_py_security_advisory(report("AI3I-91", 1), "AI3I-91", now)
+            assert not await store.add_py_security_advisory(report("AI3I-91", 1), "AI3I-91", now + 1)
+            assert await store.add_py_security_advisory(report("AI3I-92", 1), "AI3I-92", now)
+            rows = await store.list_py_security_advisories(now=now)
+            assert len(rows) == 2 and rows[0]["reporter_count"] == 2
+            assert not await store.address_blocked("8.8.8.8")
+            block_id = await store.add_address_block("8.8.8.8", "PY15 test", "AI3I", 30)
+            assert await store.set_py_security_disposition(rows[0]["id"], "blocked", "AI3I", block_id)
+            assert (await store.list_py_security_advisories(now=now))[0]["local_blocks"][0]["id"] == block_id
+            assert await store.remove_address_block(block_id, "AI3I")
+            assert await store.set_py_security_disposition(rows[0]["id"], "unblocked", "AI3I")
+            assert (await store.get_py_security_advisory(rows[0]["id"]))["disposition"] == "unblocked"
+            assert await store.list_py_security_advisories(now=now + 72 * 3600 + 1) == []
+        finally:
+            await store.close()
+    asyncio.run(run())
 
 
 def test_store_round_trip(tmp_path: Path) -> None:

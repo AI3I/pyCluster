@@ -289,6 +289,7 @@ class TelnetClusterServer:
         on_node_login_fn: Callable[[str, str, asyncio.StreamReader, asyncio.StreamWriter, list[str] | None], Awaitable[bool]]
         | None = None,
         strings_path: str | None = None,
+        security_failure_fn=None,
     ) -> None:
         self.config = config
         self.store = store
@@ -317,6 +318,7 @@ class TelnetClusterServer:
         self._on_message_fn = on_message_fn
         self._on_sessions_changed_fn = on_sessions_changed_fn
         self._on_node_login_fn = on_node_login_fn
+        self._security_failure_fn = security_failure_fn
         self._filters: dict[str, dict[str, dict[str, list[FilterRule]]]] = {}
         self._filters_loaded_at: dict[str, float] = {}
         self._events: list[EventLogEntry] = []
@@ -660,6 +662,8 @@ class TelnetClusterServer:
 
     def _log_auth_failure(self, channel: str, peer, call: str, reason: str) -> None:
         log_auth_failure(LOG, channel, self._peer_host(peer), self._auth_log_call(call), reason)
+        if self._security_failure_fn:
+            self._security_failure_fn(channel, self._peer_host(peer), reason)
 
     async def _telnet_password_recovery_available(self, call: str) -> bool:
         email = await self._email_for_call(call)
@@ -3121,7 +3125,7 @@ class TelnetClusterServer:
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_commands(self, call: str, arg: str | None) -> str:
-        reg = self._build_registry()
+        reg = self._catalog_registry()
         needle = (arg or "").strip().lower()
         top_cmds = sorted(set(self._top_level_canonical_tokens()))
         grouped = self._canonical_grouped_keys(reg)
@@ -3287,6 +3291,16 @@ class TelnetClusterServer:
 
     def _command_summary(self, cmd: str) -> str:
         key = f"commands.summary.{self._command_summary_key(cmd)}"
+        explicit = self._COMMAND_DESCRIPTIONS.get(cmd)
+        if explicit:
+            return self._string(key, explicit)
+        if "/" in cmd:
+            group, sub = cmd.split("/", 1)
+            subject = self._SETTING_SUBJECTS.get(sub)
+            if subject and group == "set":
+                return self._string(key, f"Turn on {subject}; an on/off value may be supplied.")
+            if subject and group == "unset":
+                return self._string(key, f"Turn off {subject}.")
         top_map = {
             "help": "Show the operator help overview.",
             "commands": "List commands or a command family.",
@@ -3315,7 +3329,7 @@ class TelnetClusterServer:
             "export": "Export local data to a file.",
             "export_users": "Export registered users to CSV.",
             "status": "Show current operator session status.",
-            "uptime": "Show node uptime.",
+            "uptime": "Show how long the node has been running.",
             "who": "List connected users.",
             "chat": "Send a chat-style message.",
             "join": "Join a chat or bulletin group.",
@@ -3351,7 +3365,7 @@ class TelnetClusterServer:
             "talk": "Send an immediate talk message to a user.",
             "time": "Show the current UTC time.",
             "type": "Run a startup-safe type alias.",
-            "users": "Show the registered user list.",
+            "users": "Show connected users and their session status.",
             "version": "Show program version information.",
             "uncatchup": "Disable recent DX catch-up on login.",
             "wcy": "Post a WCY propagation bulletin.",
@@ -3395,7 +3409,7 @@ class TelnetClusterServer:
             "dupwcy": "Show duplicate filtering for WCY bulletins.",
             "dupwwv": "Show duplicate filtering for WWV bulletins.",
             "dx": "Show recent DX spots.",
-            "dxcc": "Show recent spots for the DXCC entity of a prefix or callsign; show/lookup displays entity information.",
+            "dxcc": "Show recent DX spots for the DXCC entity of a prefix or callsign.",
             "dxcq": "Show whether CQ zone suffixes are appended to DX spots.",
             "dxgrid": "Show whether grid data is appended to DX spots.",
             "dxitu": "Show whether ITU zone suffixes are appended to DX spots.",
@@ -3580,7 +3594,7 @@ class TelnetClusterServer:
         return self._string(key, "Command.")
 
     async def _cmd_show_shortcuts(self, call: str, arg: str | None) -> str:
-        reg = self._build_registry()
+        reg = self._catalog_registry()
         needle = (arg or "").strip().lower()
         rows = list(self._build_shortcut_catalog(reg))
         if needle:
@@ -3611,7 +3625,7 @@ class TelnetClusterServer:
         return await self._format_console_lines(call, lines)
 
     async def _cmd_show_capabilities(self, _call: str, _arg: str | None) -> str:
-        reg = self._build_registry()
+        reg = self._catalog_registry()
         fams = {"show": 0, "set": 0, "unset": 0, "accept": 0, "reject": 0, "clear": 0, "load": 0, "stat": 0}
         for k in reg:
             g = k.split("/", 1)[0]
@@ -4351,7 +4365,7 @@ class TelnetClusterServer:
         term = (arg or "").strip().lower()
         if not term:
             return self._string("show.apropos.usage", "Usage: show/apropos <term>") + "\r\n"
-        commands = sorted(self._build_registry().keys())
+        commands = sorted(self._catalog_registry())
         commands = [c for c in commands if await self._command_visible_for(call, c)]
         matches = [c for c in commands if term in c]
         if not matches:
@@ -4488,7 +4502,7 @@ class TelnetClusterServer:
             lines.append(self._render_string("show.dxqsl.ready", "  Ready: {state}", state="yes" if exp and imp else "no"))
             return await self._format_console_lines(call, lines)
         if name == "cmd_cache":
-            reg = self._build_registry()
+            reg = self._catalog_registry()
             show_n = sum(1 for k in reg if k.startswith("show/"))
             set_n = sum(1 for k in reg if k.startswith("set/"))
             unset_n = sum(1 for k in reg if k.startswith("unset/"))
@@ -4709,7 +4723,7 @@ class TelnetClusterServer:
         return await self._cmd_show_muf(target, arg)
 
     async def _cmd_show_cmdcache_direct(self, _call: str, _arg: str | None) -> str:
-        reg = self._build_registry()
+        reg = self._catalog_registry()
         show_n = sum(1 for k in reg if k.startswith("show/"))
         set_n = sum(1 for k in reg if k.startswith("set/"))
         unset_n = sum(1 for k in reg if k.startswith("unset/"))
@@ -8565,7 +8579,7 @@ class TelnetClusterServer:
         return target
 
     async def _cmd_load_aliases(self, _call: str, _arg: str | None) -> str:
-        reg = self._build_registry()
+        reg = self._catalog_registry()
         grouped = sum(1 for k in reg if "/" in k)
         top_level = len(reg) - grouped
         direct_alias = len(self._direct_alias_map())
@@ -8586,7 +8600,7 @@ class TelnetClusterServer:
         return self._render_string("load.bands", "Loaded {bands} band definitions with {spots} observed spot(s).", bands=len(BAND_RANGES), spots=total_spots) + "\r\n"
 
     async def _cmd_load_cmdcache(self, _call: str, _arg: str | None) -> str:
-        reg = self._build_registry()
+        reg = self._catalog_registry()
         groups = sorted({k.split("/", 1)[0] for k in reg if "/" in k})
         shortcuts = len(self._build_shortcut_catalog(reg))
         return self._render_string("load.cmdcache", "Command cache loaded: {commands} commands, {groups} groups, {shortcuts} shortcuts.", commands=len(reg), groups=len(groups), shortcuts=shortcuts) + "\r\n"
@@ -9642,7 +9656,7 @@ class TelnetClusterServer:
         needle = (arg or "").strip().lower()
         if not needle:
             return self._string("apropos.usage", "Usage: apropos <pattern>") + "\r\n"
-        reg = self._build_registry()
+        reg = self._catalog_registry()
         matches = sorted(k for k in reg if needle in k)
         visible: list[str] = []
         for cmd in matches:
@@ -10334,7 +10348,7 @@ class TelnetClusterServer:
         }
         picks: dict[tuple[object, object], str] = {}
         for key, h in registry.items():
-            if "/" not in key:
+            if "/" not in key or key in self._EASTER_EGG_COMMANDS:
                 continue
             sig = (getattr(h, "__func__", h), getattr(h, "__self__", None))
             prev = picks.get(sig)
@@ -10774,6 +10788,239 @@ class TelnetClusterServer:
             else:
                 LOG.debug("telnet command call=%s line=%r elapsed_ms=%.1f", call, _redact_command_line(line), elapsed_ms)
 
+    _EASTER_EGG_COMMANDS = frozenset({"show/ai3i", "show/n9jr", "show/dxspider", "show/spout"})
+
+    _SETTING_SUBJECTS = {
+        "agwengine": "AGW packet engine integration",
+        "agwmonitor": "AGW packet monitoring",
+        "announce": "announcement delivery",
+        "anntalk": "announcement-to-talk forwarding",
+        "bbs": "BBS compatibility mode",
+        "beep": "audible alerts in your session",
+        "believe": "trust of incoming cluster data",
+        "debug": "debug output for your session",
+        "dupann": "duplicate announcement filtering",
+        "dupeph": "duplicate ephemeris filtering",
+        "dupspots": "duplicate DX spot filtering",
+        "dupwcy": "duplicate WCY bulletin filtering",
+        "dupwwv": "duplicate WWV bulletin filtering",
+        "dx": "DX spot delivery",
+        "dxcq": "CQ zone suffixes on DX spots",
+        "dxgrid": "grid square suffixes on DX spots",
+        "dxitu": "ITU zone suffixes on DX spots",
+        "echo": "local command echo",
+        "here": "HERE presence announcements",
+        "hops": "hop-related routing controls",
+        "isolate": "session isolation",
+        "localnode": "local-node mode",
+        "lockout": "login lockout mode",
+        "logininfo": "login banner details",
+        "nowrap": "output without 80-column wrapping",
+        "prompt": "the custom prompt setting",
+        "rbn": "RBN/Skimmer report delivery",
+        "register": "automatic user registration",
+        "routepc19": "PC19 route distribution",
+        "senddbg": "debug frame transmission",
+        "send_dbg": "debug frame transmission",
+        "sendpc16": "outgoing PC16 frames",
+        "talk": "talk message delivery",
+        "ve7cc": "VE7CC compatibility mode",
+        "wantpc16": "acceptance of incoming PC16 frames",
+        "wantpc9x": "acceptance of incoming PC9x frames",
+        "wcy": "WCY propagation bulletin delivery",
+        "wwv": "WWV propagation bulletin delivery",
+        "wx": "weather bulletin delivery",
+    }
+
+    _COMMAND_DESCRIPTIONS = {
+        "register": "Register your callsign with the local cluster.",
+        "show/agwengine": "Show whether AGW packet engine integration is enabled.",
+        "show/agwmonitor": "Show whether AGW packet monitoring is enabled.",
+        "show/ann": "Show recent announcement bulletins.",
+        "show/bbs": "Show whether BBS compatibility mode is enabled.",
+        "show/beep": "Show whether audible session alerts are enabled.",
+        "show/believe": "Show whether incoming cluster data is trusted.",
+        "show/buddy": "List callsigns in your buddy list.",
+        "show/control": "Show system control state and recent control events.",
+        "show/echo": "Show whether local command echo is enabled.",
+        "show/groups": "Show your joined groups and group settings.",
+        "show/here": "Show whether HERE presence announcements are enabled.",
+        "show/isolate": "Show whether session isolation is enabled.",
+        "show/lockout": "Show whether login lockout mode is enabled.",
+        "show/logininfo": "Show whether login banner details are enabled.",
+        "show/ve7cc": "Show whether VE7CC compatibility mode is enabled.",
+        "show/outbox": "Show recently sent and queued personal messages.",
+        "show/address": "Show your stored mailing address.",
+        "show/email": "Show your stored email address.",
+        "show/homenode": "Show your configured home node.",
+        "show/name": "Show your stored operator name.",
+        "show/qra": "Show your stored grid square locator.",
+        "show/qth": "Show your stored location description.",
+        "show/location": "Show your stored location string.",
+        "show/usdb": "Show locally stored US callsign database fields for a callsign.",
+        "show/users": "Show connected users and their session status.",
+        "show/usstate": "Show your stored US state value.",
+        "show/qrz": "Look up a callsign using the configured QRZ XML service.",
+        "set/address": "Update your stored mailing address.",
+        "set/arcluster": "Select the AR-Cluster compatibility profile for your session or a peer.",
+        "set/baddx": "Block DX spots that match a callsign or pattern.",
+        "set/badnode": "Block cluster nodes that match a callsign or pattern.",
+        "set/badspotter": "Block spots from a spotter callsign or pattern.",
+        "set/badword": "Block messages containing a word or pattern.",
+        "set/buddy": "Add a callsign to your buddy list.",
+        "set/clx": "Select the CLX compatibility profile for your session or a peer.",
+        "set/control": "Turn system control commands on or off (sysop only).",
+        "set/beep": "Enable audible alerts in your session.",
+        "set/dupspots": "Enable global DX spot duplicate filtering.",
+        "set/dxnet": "Select the DXNet compatibility profile for your session or a peer.",
+        "set/dxspider": "Select the DXSpider compatibility profile for your session or a peer.",
+        "set/email": "Update your stored email address.",
+        "set/echo": "Enable local command echo in your session.",
+        "set/here": "Enable HERE presence announcements.",
+        "set/home": "Set your preferred home cluster node.",
+        "set/homebbs": "Set your preferred home BBS callsign.",
+        "set/homenode": "Set your preferred home cluster node.",
+        "set/ingestpeer": "Set which traffic types are accepted from a specific peer.",
+        "set/language": "Set the language used for your session messages.",
+        "set/location": "Set your stored location string.",
+        "set/maxconnect": "Set the maximum allowed connections for a callsign (0–100).",
+        "set/mfa": "Enable email MFA, enroll an authenticator, or restore the node default.",
+        "set/name": "Set your operator name in the local registry.",
+        "set/node": "Set your preferred cluster node.",
+        "set/nowrap": "Disable 80-column wrapping for your session output.",
+        "set/obscount": "Set the obscure-count threshold (0–9999).",
+        "set/page": "Set the number of output lines per page.",
+        "set/passphrase": "Store a gateway passphrase for your account.",
+        "set/password": "Change your password using a repeated confirmation value.",
+        "set/pinginterval": "Set the network ping interval in seconds (5–3600).",
+        "set/privilege": "Set a privilege override for a user (sysop only).",
+        "set/prompt": "Set your prompt text or turn the custom prompt setting on or off.",
+        "set/protoack": "Acknowledge protocol alerts for one peer or all peers.",
+        "set/protothreshold": "Set a protocol alert threshold by name and value.",
+        "set/qra": "Set your grid square locator.",
+        "set/qth": "Set your stored location description.",
+        "set/relay": "Set relay policy for a traffic type.",
+        "set/relaypeer": "Set relay policy for a traffic type from a specific peer.",
+        "set/startup": "Add a command to run automatically after login.",
+        "set/sys_location": "Set the system location string for your account.",
+        "set/sys_qra": "Set the system grid square locator for your account.",
+        "set/syslocation": "Set the system location string for your account.",
+        "set/sysqra": "Set the system grid square locator for your account.",
+        "set/totp": "Enroll an authenticator app for login MFA, show its setup key, and enable email fallback.",
+        "set/usdb": "Add or update a callsign in the local US callsign database.",
+        "set/user": "Update fields in a local user record (sysop only).",
+        "set/uservar": "Set a named variable for a user account.",
+        "set/usstate": "Set your stored US state value.",
+        "set/var": "Store a named variable for a local user account.",
+        "unset/arcluster": "Restore the DXSpider compatibility profile from AR-Cluster.",
+        "unset/baddx": "Remove a blocked DX spot callsign or pattern.",
+        "unset/badnode": "Remove a blocked cluster node callsign or pattern.",
+        "unset/badspotter": "Remove a blocked spotter callsign or pattern.",
+        "unset/badword": "Remove a blocked message word or pattern.",
+        "unset/buddy": "Remove a callsign from your buddy list.",
+        "unset/clx": "Restore the DXSpider compatibility profile from CLX.",
+        "unset/control": "Restore the default enabled system control policy (sysop only).",
+        "unset/dxnet": "Restore the DXSpider compatibility profile from DXNet.",
+        "unset/dupspots": "Disable global DX spot duplicate filtering.",
+        "unset/email": "Clear your stored email address.",
+        "unset/ingestpeer": "Restore the default ingest policy for a specific peer.",
+        "unset/mfa": "Disable email and authenticator MFA and clear pending challenges.",
+        "unset/passphrase": "Clear your stored gateway passphrase.",
+        "unset/password": "Clear your stored password value.",
+        "unset/privilege": "Reset a user's privilege to ordinary user level.",
+        "unset/protoack": "Clear protocol alert acknowledgements for one peer or all peers.",
+        "unset/protothreshold": "Restore a protocol alert threshold to its default.",
+        "unset/relay": "Restore default relay policy for a traffic type.",
+        "unset/relaypeer": "Restore default relay policy for a specific peer and traffic type.",
+        "unset/startup": "Remove a command from your automatic login list.",
+        "unset/totp": "Remove authenticator MFA and turn off email MFA fallback.",
+        "unset/uservar": "Clear a named variable from a user account.",
+        "unset/usstate": "Clear your stored US state value.",
+        "unset/var": "Clear a stored variable from a local user account.",
+        "accept/announce": "Allow announcement traffic matching a filter rule.",
+        "accept/rbn": "Allow RBN reports matching a filter rule.",
+        "accept/route": "Allow route updates matching a filter rule.",
+        "accept/spots": "Allow DX spots matching a filter rule.",
+        "reject/announce": "Block announcement traffic matching a filter rule.",
+        "reject/rbn": "Block RBN reports matching a filter rule.",
+        "reject/route": "Block route updates matching a filter rule.",
+        "reject/spots": "Block DX spots matching a filter rule.",
+        "clear/acc": "Remove all allow rules from your traffic filters.",
+        "clear/accept": "Remove all allow rules from your traffic filters.",
+        "clear/announce": "Clear announcement traffic filter rules.",
+        "clear/dupefile": "Clear the tracked duplicate-file entries.",
+        "clear/protohistory": "Clear recorded protocol event history.",
+        "clear/rbn": "Clear RBN report filter rules.",
+        "clear/rej": "Remove all block rules from your traffic filters.",
+        "clear/reject": "Remove all block rules from your traffic filters.",
+        "clear/route": "Clear route update filter rules.",
+        "clear/spots": "Clear DX spot filter rules.",
+        "create/user": "Create a local user record for a callsign.",
+        "delete/user": "Delete a local user record for a callsign.",
+        "delete/usdb": "Delete a callsign or field from the local US callsign database.",
+        "get/keps": "Download current satellite orbital elements.",
+        "load/aliases": "Show the loaded command and alias counts.",
+        "load/badmsg": "Count the stored blocked-message rules.",
+        "load/badwords": "Count the stored blocked-word rules.",
+        "load/bands": "Show band-plan count and observed DX spot count.",
+        "load/cmdcache": "Show command, family, and shortcut counts.",
+        "load/db": "Show database size, spot count, and registered-user count.",
+        "load/dxqsl": "Show DXQSL import and export settings for a callsign.",
+        "load/forward": "Count stored forwarding fields for a callsign.",
+        "load/hops": "Show inbound and outbound peer counts.",
+        "load/keps": "Show local satellite element count and last request time.",
+        "load/messages": "Show total and unread message counts for a callsign.",
+        "load/prefixes": "List prefixes observed in recent DX spots.",
+        "load/swop": "Count saved startup commands for a callsign.",
+        "load/usdb": "Count local US callsign database entries for a callsign.",
+        "stat/channel": "Show inbound and outbound peers and frame traffic counts.",
+        "stat/db": "Show stored DX spot and user registry counts.",
+        "stat/msg": "Show total and unread message counts for your callsign.",
+        "stat/nodeconfig": "Count stored node configuration preferences.",
+        "stat/pc19list": "List local callsigns with PC19 routing enabled.",
+        "stat/prack": "Show peer protocol acknowledgement statistics.",
+        "stat/proto": "Show overall peer protocol health statistics.",
+        "stat/protoack": "Show peer protocol acknowledgement statistics.",
+        "stat/protoacks": "Show peer protocol acknowledgement statistics.",
+        "stat/protoalerts": "Show current protocol alert counts by peer.",
+        "stat/protoevents": "Show recorded protocol event counts.",
+        "stat/protohistory": "Show recorded protocol state change counts.",
+        "stat/queue": "Show queued traffic and forwarding counts.",
+        "stat/route": "Show peer route and transport traffic counts.",
+        "stat/routenode": "Show inbound and outbound route node counts.",
+        "stat/routeuser": "Show active user sessions and peer link counts.",
+        "stat/spot": "Show stored DX spot counts and activity.",
+        "stat/spots": "Show stored DX spot counts and activity.",
+        "stat/user": "Show the number of active user sessions.",
+        "stat/userconfig": "Count stored user preferences.",
+        "stat/users": "Show registered and connected user counts.",
+        "stat/wcy": "Show stored WCY bulletin counts.",
+        "stat/wwv": "Show stored WWV bulletin counts.",
+        "sysop/access": "Show channel and capability access for a user.",
+        "sysop/audit": "Show recent sysop and security audit events.",
+        "sysop/blocklogin": "Block or unblock login for a callsign.",
+        "sysop/clearmfa": "Clear a user's MFA enrollment and pending challenges.",
+        "sysop/clearpassword": "Clear a local user's stored password.",
+        "sysop/homenode": "Set a user's home cluster node.",
+        "sysop/ipblock": "Add, remove, or list blocked IP addresses.",
+        "sysop/password": "Set or replace a local user's password.",
+        "sysop/path": "Show a callsign or peer route path.",
+        "sysop/peer": "Add, change, remove, or list peer connections.",
+        "sysop/peeraccount": "Manage peer login accounts and passwords.",
+        "sysop/peerprofile": "Set a peer's cluster compatibility profile.",
+        "sysop/restart": "Restart telnet, sysop web, or both services.",
+        "sysop/services": "Show service health and runtime status.",
+        "sysop/setaccess": "Change channel and capability access for a user.",
+        "sysop/setprompt": "Set the sysop login prompt template.",
+        "sysop/showuser": "Show a detailed local user record.",
+        "sysop/spotlimit": "Show or set per-user DX spot posting limits.",
+        "sysop/sysops": "List local sysop accounts and activity.",
+        "sysop/users": "List local user accounts and activity.",
+    }
+
+    def _catalog_registry(self) -> dict[str, Callable[[str, str | None], Awaitable[str]]]:
+        return {key: handler for key, handler in self._build_registry().items() if key not in self._EASTER_EGG_COMMANDS}
+
     def _build_registry(self) -> dict[str, Callable[[str, str | None], Awaitable[str]]]:
         return {
             # show/*
@@ -10794,6 +11041,7 @@ class TelnetClusterServer:
             "show/program": self._cmd_show_program,
             "show/ai3i": self._cmd_show_ai3i,
             "show/n9jr": self._cmd_show_n9jr,
+            "show/dxspider": self._cmd_show_spout,
             "show/spout": self._cmd_show_spout,
             "show/time": self._cmd_show_time,
             "show/date": self._cmd_show_date,

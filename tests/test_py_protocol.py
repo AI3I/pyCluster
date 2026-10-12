@@ -14,6 +14,7 @@ from pycluster.py_protocol import (
     PyProbeMessage,
     PyRbnStatusMessage,
     PySessionFrameMessage,
+    PySecurityAdvisoryMessage,
     PyTopologyDigestEntry,
     PyTopologyDigestMessage,
     PyTopologyRecord,
@@ -21,6 +22,22 @@ from pycluster.py_protocol import (
     PyTopologyRequestMessage,
     PyWithdrawMessage,
 )
+import time
+
+
+def test_py15_canonical_public_addresses_and_strict_payload() -> None:
+    now = int(time.time())
+    advisory = PySecurityAdvisoryMessage("AI3I-91", "2001:4860:abcd:1234:99::/64", "telnet", "brute-force", now - 60, now, 5, 300, 1, now, now + 1800, False)
+    decoded = PySecurityAdvisoryMessage.from_fields(advisory.to_fields())
+    assert decoded.address == "2001:4860:abcd:1234::/64"
+    assert decoded.hop_count == 0
+    ipv4 = PySecurityAdvisoryMessage("AI3I-91", "8.8.8.8", "user-web", "abusive-login", now - 60, now, 5, 300, 2, now, now + 1800, True)
+    assert PySecurityAdvisoryMessage.from_fields(ipv4.to_fields()).address == "8.8.8.8"
+    for address in ("127.0.0.1", "192.168.1.5", "224.0.0.1", "8.8.8.0/24", "fc00::/64", "ff05::/64"):
+        with pytest.raises(ValueError):
+            PySecurityAdvisoryMessage("AI3I-91", address, "telnet", "brute-force", now - 60, now, 5, 300, 3, now, now + 1800, False).to_fields()
+    with pytest.raises(ValueError):
+        PySecurityAdvisoryMessage("AI3I-91", "8.8.8.8", "telnet", "brute-force", now - 60, now, 5, 300, 4, now, now + 1800, False, 1).to_fields()
 
 
 def test_py_session_frame_round_trip_and_rejects_nested_frames() -> None:

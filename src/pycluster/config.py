@@ -149,6 +149,7 @@ class PyProtocolConfig:
     share_clock: bool = True
     share_neighbors: bool = True
     share_notices: bool = True
+    share_security_advisories: bool = False
     notice_severity: str = "normal"
     notice_message: str = ""
     notice_expires_epoch: int = 0

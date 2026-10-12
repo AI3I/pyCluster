@@ -116,7 +116,7 @@ These commands are user-facing and should remain visible in normal help and comm
 - `show/vhftable`
 - `show/prefix <prefix>`
 - `show/lastspot <call>`
-- `show/dxcc <prefix|call> [count] [on band] [day days]`: recent cluster spots for the entire entity, including alternate prefixes. Uses WPXLOC entity IDs, with CTY entity lookup when WPXLOC cannot resolve the target. Like `show/dx`, ignores personal filters and excludes RBN. Defaults to 10 results (maximum 200), scanning at most 10,000 candidate records. Use `show/lookup <prefix|call>` for entity information.
+- `show/dxcc <prefix|call> [count] [on band] [day days]`: recent cluster spots for the entire entity, including alternate prefixes. Uses WPXLOC entity IDs, with CTY entity lookup when WPXLOC cannot resolve the target. Like `show/dx`, ignores personal filters and excludes RBN. Defaults to 10 results (maximum 200), scanning at most 10,000 candidate records.
 - `show/qrz <call>`
 - `show/wm7d <call>`
 
@@ -390,11 +390,11 @@ Commands that need review before they are promoted as stable:
 - external lookup/show commands: `show/db0sdx`, `show/ik3qar`, `show/wm7d`, `show/dxqsl`, which should be classified as optional integrations with clear unavailable output
 - `load/*` commands, which currently report loaded state but are not all true reload operations
 
-The `show/ai3i`, `show/n9jr`, and `show/spout` commands are intentional easter eggs and are excluded from cleanup scoring.
+The `show/ai3i`, `show/n9jr`, `show/dxspider`, and `show/spout` commands are intentional easter eggs and are excluded from cleanup scoring. They remain callable but are omitted from command catalogs, search, shortcuts, and capability counts. `show/dxspider` and `show/spout` display the same verse.
 
 ## Compatibility Commands to Hide or Deprecate
 
-The current registry recognizes hundreds of commands. A local scan of `telnet_server.py` shows 370 grouped commands, including 85 `set/*`, 63 `unset/*`, and 141 `show/*` entries. Many `set/*` and `unset/*` commands are generic named-variable wrappers rather than clearly designed pyCluster features.
+The registry recognizes hundreds of grouped commands. Many `set/*` and `unset/*` commands are generic named-variable wrappers rather than clearly designed pyCluster features.
 
 These should not be promoted in normal help. Each should either graduate to stable behavior with tests and documentation, or move to deprecated/removed.
 

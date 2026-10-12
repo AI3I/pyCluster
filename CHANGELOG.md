@@ -2,6 +2,15 @@
 
 All notable changes to pyCluster should be recorded here.
 
+## Unreleased
+
+## 1.0.24 - 2026-10-12
+
+- Add opt-in `PY15 SECURITY_ADVISORY` exchange for direct, authenticated pyCluster peers. Public address login-abuse summaries are bounded, retained for 72 hours, and reviewable in SysOp Telemetry; local blocks require an explicit timed SysOp action (#276).
+- Reject repeated `PY00 HELLO` frames on an active peer session so they cannot reset the receive sequence and permit replay of earlier bound frames.
+- Keep `show/ai3i`, `show/n9jr`, `show/dxspider`, and `show/spout` callable as easter eggs while omitting them from command discovery and capability counts.
+- Clarify command descriptions across the catalog, including MFA enrollment, protocol acknowledgements, QRZ lookup, and commands that report stored state.
+
 ## 1.0.23 - 2026-10-10
 
 - Deny chat, WX, WCY, and WWV posting by non-authenticated users by default on telnet and public web; enforce the telnet access matrix before storing or relaying those posts. SysOps can still grant explicit per-user access (#287).
@@ -12,7 +21,7 @@ All notable changes to pyCluster should be recorded here.
 - Refresh dataset indicators without overwriting unsaved settings, distinguish embedded release dates from file-update dates, and report KEPS element age/count with stale-data warnings (#284, #285).
 - Correct MUF solar-angle labeling and destination-hour rounding, avoid applying daylight attenuation twice, and prefer the saved registry grid over stale preference copies (#286). Signal labels remain heuristic rather than DXSpider path-loss predictions.
 - Offer named DXCC entity dropdowns for DX and spotter rules, including AND conditions, using IDs from the node's active WPXLOC dataset (#280). Existing compound and unknown values remain preserved when editing.
-- Make `show/dxcc` return recent spots for the entire entity, not just one prefix, using the existing history and VE7CC formatting paths (#281). Entity information remains available through `show/lookup`.
+- Make `show/dxcc` return recent spots for the entire entity, not just one prefix, using the existing history and VE7CC formatting paths (#281).
 
 ## 1.0.22 - 2026-09-07
 

@@ -93,6 +93,7 @@ share_rbn_status = true
 share_policy = true
 share_clock = true
 share_notices = true
+share_security_advisories = false
 notice_severity = "normal"
 notice_message = ""
 notice_expires_epoch = 0

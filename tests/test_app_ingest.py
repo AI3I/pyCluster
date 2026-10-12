@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import pytest
 import re
+import time
 
 from pycluster import __version__
 from pycluster.app import ClusterApp
@@ -22,6 +23,7 @@ from pycluster.py_protocol import (
     PyProbeMessage,
     PyRbnStatusMessage,
     PySessionFrameMessage,
+    PySecurityAdvisoryMessage,
     PyTopologyDigestEntry,
     PyTopologyDigestMessage,
     PyTopologyRecord,
@@ -1232,15 +1234,116 @@ def test_py_session_binding_rejects_replay_and_stale_session(tmp_path) -> None:
             frame = WirePcFrame("PY11", bound.to_fields())
             await app._handle_py_frame(peer, frame)
             await app._handle_py_frame(peer, frame)
+            duplicate_hello = PyHelloMessage(
+                peer, "1.0.23", tuple(capabilities), int(datetime.now(timezone.utc).timestamp()),
+                session_id=session_id,
+            )
+            await app._handle_py_frame(peer, WirePcFrame("PY00", duplicate_hello.to_fields()))
+            assert app._py_rx_sequences[peer] == 1
+            await app._handle_py_frame(peer, frame)
             stale = PySessionFrameMessage(
                 "22345678-1234-5678-9234-567812345678", 2, "PY99", tuple(error.to_fields()),
             )
             await app._handle_py_frame(peer, WirePcFrame("PY11", stale.to_fields()))
             await app._handle_py_frame(peer, WirePcFrame("PY99", error.to_fields()))
-            assert drops == ["replayed_py_session_frame", "stale_py_session", "unbound_py_session_frame"]
+            assert drops == [
+                "replayed_py_session_frame", "duplicate_py_hello", "replayed_py_session_frame",
+                "stale_py_session", "unbound_py_session_frame",
+            ]
         finally:
             await app.store.close()
 
+    asyncio.run(run())
+
+
+def test_py15_requires_direct_bound_peer_and_never_blocks(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py15.db"))
+        cfg.node.node_call = "AI3I-91"
+        cfg.py_protocol.share_security_advisories = True
+        app = ClusterApp(cfg)
+        peer = "AI3I-90"
+        session = "12345678-1234-4678-9234-567812345678"
+        drops: list[str] = []
+        try:
+            app._pycluster_identified_peers.add(peer)
+            app._py_remote_capabilities[peer] = frozenset({"security-advisory", "session-binding"})
+            app._py_negotiated_capabilities[peer] = frozenset({"security-advisory", "session-binding"})
+            app._py_remote_session_ids[peer] = session
+            async def drop(_peer, reason):
+                drops.append(reason)
+            app.node_link.mark_policy_drop = drop
+            now = int(time.time())
+            report = PySecurityAdvisoryMessage(peer, "8.8.8.8", "telnet", "brute-force", now - 60, now, 5, 300, 1, now, now + 1800, False)
+            frame = WirePcFrame("PY11", PySessionFrameMessage(session, 1, "PY15", tuple(report.to_fields())).to_fields())
+            await app._handle_py_frame(peer, frame)
+            assert len(await app.store.list_py_security_advisories()) == 1
+            assert not await app.store.address_blocked("8.8.8.8")
+            await app._handle_py_frame(peer, frame)
+            assert "replayed_py_session_frame" in drops
+            relayed = PySecurityAdvisoryMessage("AI3I-92", "8.8.4.4", "telnet", "brute-force", now - 60, now, 5, 300, 2, now, now + 1800, False)
+            await app._handle_py_frame(peer, WirePcFrame("PY11", PySessionFrameMessage(session, 2, "PY15", tuple(relayed.to_fields())).to_fields()))
+            assert "stale_or_relayed_py_security_advisory" in drops
+            assert len(await app.store.list_py_security_advisories()) == 1
+        finally:
+            await app.store.close()
+    asyncio.run(run())
+
+
+def test_py15_local_login_aggregation_is_opt_in_and_public_only(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py15_local.db"))
+        cfg.node.node_call = "AI3I-91"
+        app = ClusterApp(cfg)
+        try:
+            for _ in range(5):
+                app._record_security_failure("telnet", "8.8.8.8", "bad_password")
+            assert not await app.store.list_py_security_advisories()
+            cfg.py_protocol.share_security_advisories = True
+            for _ in range(5):
+                app._record_security_failure("telnet", "192.168.1.9", "bad_password")
+            assert not await app.store.list_py_security_advisories()
+            for _ in range(5):
+                app._record_security_failure("telnet", "8.8.8.8", "bad_password")
+            await _wait_until_async(lambda: _has_py15_advisory(app))
+            rows = await app.store.list_py_security_advisories()
+            assert rows[0]["address"] == "8.8.8.8"
+            assert rows[0]["event_count"] == 5
+            assert rows[0]["origin_node"] == "AI3I-91"
+        finally:
+            await app.store.close()
+    asyncio.run(run())
+
+
+async def _has_py15_advisory(app: ClusterApp) -> bool:
+    return bool(await app.store.list_py_security_advisories())
+
+
+def test_py15_receive_rate_limit(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py15_rate.db"))
+        cfg.py_protocol.share_security_advisories = True
+        app = ClusterApp(cfg)
+        peer = "AI3I-90"
+        session = "12345678-1234-4678-9234-567812345678"
+        drops: list[str] = []
+        try:
+            app._pycluster_identified_peers.add(peer)
+            app._py_remote_capabilities[peer] = frozenset({"security-advisory", "session-binding"})
+            app._py_negotiated_capabilities[peer] = frozenset({"security-advisory", "session-binding"})
+            app._py_remote_session_ids[peer] = session
+            async def drop(_peer, reason):
+                drops.append(reason)
+            app.node_link.mark_policy_drop = drop
+            now = int(time.time())
+            for seq in range(1, 14):
+                report = PySecurityAdvisoryMessage(peer, "8.8.8.8", "telnet", "brute-force", now - 60, now, 5, 300, seq, now, now + 1800, False)
+                bound = PySessionFrameMessage(session, seq, "PY15", tuple(report.to_fields()))
+                await app._handle_py_frame(peer, WirePcFrame("PY11", bound.to_fields()))
+            assert len(await app.store.list_py_security_advisories()) == 12
+            assert drops == ["py_security_advisory_rate_limit"]
+        finally:
+            await app.store.close()
     asyncio.run(run())
 
 
