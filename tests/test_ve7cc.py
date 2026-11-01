@@ -40,7 +40,7 @@ def test_vhf_grid_separator_does_not_truncate_cc11_for_hrd() -> None:
     fields = line.split("^")
     assert len(fields) == 20
     assert fields[:10] == [
-        "CC11", "432472.0", "OZ7IGY", "1-Nov-2026", "1357Z",
+        "CC11", "432472.0", "OZ7IGY", " 1-Nov-2026", "1357Z",
         "JO43KH<>JO55WM 539", "DL8QS", "", "", "VE7CC-1",
     ]
     assert line.endswith("^^")

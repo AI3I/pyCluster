@@ -8677,17 +8677,19 @@ def test_ve7cc_vhf_grid_separator_survives_live_and_history_output(tmp_path) -> 
         session = Session("N0CALL", writer, datetime.now(timezone.utc))
         session.vars["ve7cc"] = "on"
         srv._sessions[1] = session
-        epoch = int(datetime.now(timezone.utc).timestamp())
+        epoch = int(datetime(2026, 11, 1, 13, 57, tzinfo=timezone.utc).timestamp())
         spot = Spot(432472.0, "OZ7IGY", epoch, "JO43KH<TR>JO55WM 539", "DL8QS", "VE7CC-1", "")
         try:
             assert await store.add_spot(spot)
             assert await srv.publish_spot(spot) == 1
             live = writer.buffer.decode("utf-8").strip()
             assert len(live.split("^")) == 20
+            assert "^ 1-" in live
             assert "JO43KH<>JO55WM 539^DL8QS" in live
             assert "<TR>" not in live
             _, history = await srv._execute_command("N0CALL", "sh/dx 1")
             assert len(history.strip().split("^")) == 20
+            assert "^ 1-" in history
             assert "JO43KH<>JO55WM 539^DL8QS" in history
         finally:
             await store.close()

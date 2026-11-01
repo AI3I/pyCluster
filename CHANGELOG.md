@@ -5,6 +5,7 @@ All notable changes to pyCluster should be recorded here.
 ## Unreleased
 
 - Replace DXSpider's `<TR>` VHF grid separator with `<>` in VE7CC/CC11 output to avoid the shortened records observed in HRD's DXCluster console.
+- Match DXSpider's space-padded day in VE7CC/CC11 dates, as observed in a working HRD session on the first day of the month.
 
 ## 1.0.24 - 2026-10-12
 

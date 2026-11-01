@@ -61,4 +61,8 @@ def format_cc11(
         spotted.grid,
         spotting.grid,
     )
-    return "^".join(_field(value) for value in fields)
+    clean_fields = [_field(value) for value in fields]
+    # DXSpider's cldate uses a two-character day. Keep its leading space:
+    # _field() intentionally trims whitespace in all other CC11 fields.
+    clean_fields[3] = f"{when.day:2d}-{when:%b-%Y}"
+    return "^".join(clean_fields)
