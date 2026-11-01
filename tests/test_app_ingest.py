@@ -1256,6 +1256,45 @@ def test_py_session_binding_rejects_replay_and_stale_session(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_py_session_frame_sends_keep_sequence_order_per_peer(tmp_path) -> None:
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "py_send_order.db")))
+        peer = "AI3I-90"
+        other_peer = "AI3I-92"
+        app._py_negotiated_capabilities[peer] = frozenset({"session-binding"})
+        app._py_negotiated_capabilities[other_peer] = frozenset({"session-binding"})
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        sent: list[tuple[str, int]] = []
+
+        async def _send(name: str, frame: WirePcFrame) -> bool:
+            envelope = PySessionFrameMessage.from_fields(frame.payload_fields)
+            if name == peer and envelope.sequence == 1:
+                first_entered.set()
+                await release_first.wait()
+            sent.append((name, envelope.sequence))
+            return True
+
+        app.node_link.send = _send  # type: ignore[method-assign]
+        frame = WirePcFrame("PY99", PyErrorMessage("malformed", "PY12", "test", 1).to_fields())
+        try:
+            first = asyncio.create_task(app._send_py_frame(peer, frame))
+            await asyncio.wait_for(first_entered.wait(), timeout=1)
+            second = asyncio.create_task(app._send_py_frame(peer, frame))
+            await asyncio.sleep(0)
+            assert app._py_tx_sequences[peer] == 1
+            assert await app._send_py_frame(other_peer, frame)
+            assert sent == [(other_peer, 1)]
+            release_first.set()
+            assert await asyncio.gather(first, second) == [True, True]
+            assert sent == [(other_peer, 1), (peer, 1), (peer, 2)]
+        finally:
+            release_first.set()
+            await app.store.close()
+
+    asyncio.run(run())
+
+
 def test_py15_requires_direct_bound_peer_and_never_blocks(tmp_path) -> None:
     async def run() -> None:
         cfg = _mk_config(str(tmp_path / "py15.db"))

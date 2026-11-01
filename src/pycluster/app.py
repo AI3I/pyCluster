@@ -136,6 +136,7 @@ class ClusterApp:
         self._py_session_ids: dict[str, str] = {}
         self._py_remote_session_ids: dict[str, str] = {}
         self._py_tx_sequences: dict[str, int] = {}
+        self._py_send_locks: dict[str, asyncio.Lock] = {}
         self._py_rx_sequences: dict[str, int] = {}
         self._py_remote_limits: dict[str, tuple[int, int, int]] = {}
         self._py_probe_pending: dict[str, tuple[str, int, float]] = {}
@@ -1640,20 +1641,21 @@ class ClusterApp:
 
     async def _send_py_frame(self, peer_name: str, frame: WirePcFrame) -> bool:
         peer_key = normalize_call(peer_name) or peer_name.upper()
-        outgoing = frame
-        if frame.pc_type != PY_HELLO_TYPE and "session-binding" in self._py_negotiated_capabilities.get(peer_key, frozenset()):
-            sequence = self._py_tx_sequences.get(peer_key, 0) + 1
-            message = PySessionFrameMessage(
-                self._py_session_ids.setdefault(peer_key, str(uuid.uuid4())),
-                sequence,
-                frame.pc_type,
-                tuple(frame.payload_fields),
-            )
-            outgoing = WirePcFrame(PY_SESSION_FRAME_TYPE, message.to_fields())
-            if not self._py_frame_fits(outgoing, peer_name):
-                return False
-            self._py_tx_sequences[peer_key] = sequence
-        return await self.node_link.send(peer_name, outgoing) is not False
+        async with self._py_send_locks.setdefault(peer_key, asyncio.Lock()):
+            outgoing = frame
+            if frame.pc_type != PY_HELLO_TYPE and "session-binding" in self._py_negotiated_capabilities.get(peer_key, frozenset()):
+                sequence = self._py_tx_sequences.get(peer_key, 0) + 1
+                message = PySessionFrameMessage(
+                    self._py_session_ids.setdefault(peer_key, str(uuid.uuid4())),
+                    sequence,
+                    frame.pc_type,
+                    tuple(frame.payload_fields),
+                )
+                outgoing = WirePcFrame(PY_SESSION_FRAME_TYPE, message.to_fields())
+                if not self._py_frame_fits(outgoing, peer_name):
+                    return False
+                self._py_tx_sequences[peer_key] = sequence
+            return await self.node_link.send(peer_name, outgoing) is not False
 
     async def _send_py_probe(self, peer_name: str, *, force: bool = False) -> bool:
         peer_key = normalize_call(peer_name) or peer_name.upper()
@@ -1718,7 +1720,7 @@ class ClusterApp:
             max_records_per_frame=self.config.py_protocol.max_records_per_frame,
             max_hops=self.config.py_protocol.max_hops,
         )
-        if await self.node_link.send(peer_name, WirePcFrame(PY_HELLO_TYPE, hello.to_fields())) is False:
+        if not await self._send_py_frame(peer_name, WirePcFrame(PY_HELLO_TYPE, hello.to_fields())):
             return False
         self._py_hello_sent.add(peer_key)
         now = int(datetime.now(timezone.utc).timestamp())

@@ -4,6 +4,9 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+## 1.0.25 - 2026-11-01
+
+- Serialize PY frame sends per peer so session-bound sequence numbers follow transmission order under concurrent sends.
 - Replace DXSpider's `<TR>` VHF grid separator with `<>` in VE7CC/CC11 output to avoid the shortened records observed in HRD's DXCluster console.
 - Match DXSpider's space-padded day in VE7CC/CC11 dates, as observed in a working HRD session on the first day of the month.
 
