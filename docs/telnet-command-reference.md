@@ -83,6 +83,8 @@ It also supports direct commands such as:
 current user. Both historical output from `sh/dx` or `sh/mydx` and subsequent
 live spots use CC11 while the preference is enabled. `show/ve7cc` reports the
 stored state, and `unset/ve7cc` restores normal human-readable spot lines.
+VHF comments using the DXSpider `<TR>` grid separator are sent as `<>` in CC11.
+In HRD's DXCluster console, records containing `<TR>` appeared cut off at that marker.
 
 The mode command does not send a spot backlog. Client software controls the
 initial history count independently, for example with `sh/mydx 200`. pyCluster

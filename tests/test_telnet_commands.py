@@ -8667,6 +8667,33 @@ def test_ve7cc_mode_persists_and_formats_history_and_live_spots(tmp_path) -> Non
     asyncio.run(run())
 
 
+def test_ve7cc_vhf_grid_separator_survives_live_and_history_output(tmp_path) -> None:
+    async def run() -> None:
+        db = str(tmp_path / "ve7cc_vhf.db")
+        cfg = _mk_config(db)
+        store = SpotStore(db)
+        srv = TelnetClusterServer(cfg, store, datetime.now(timezone.utc))
+        writer = _DummyWriter()
+        session = Session("N0CALL", writer, datetime.now(timezone.utc))
+        session.vars["ve7cc"] = "on"
+        srv._sessions[1] = session
+        epoch = int(datetime.now(timezone.utc).timestamp())
+        spot = Spot(432472.0, "OZ7IGY", epoch, "JO43KH<TR>JO55WM 539", "DL8QS", "VE7CC-1", "")
+        try:
+            assert await store.add_spot(spot)
+            assert await srv.publish_spot(spot) == 1
+            live = writer.buffer.decode("utf-8").strip()
+            assert len(live.split("^")) == 20
+            assert "JO43KH<>JO55WM 539^DL8QS" in live
+            assert "<TR>" not in live
+            _, history = await srv._execute_command("N0CALL", "sh/dx 1")
+            assert len(history.strip().split("^")) == 20
+            assert "JO43KH<>JO55WM 539^DL8QS" in history
+        finally:
+            await store.close()
+    asyncio.run(run())
+
+
 def test_unset_ve7cc_survives_tcp_reconnect(tmp_path) -> None:
     async def run() -> None:
         db = str(tmp_path / "ve7cc_reconnect.db")

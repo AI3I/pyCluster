@@ -4,6 +4,8 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+- Replace DXSpider's `<TR>` VHF grid separator with `<>` in VE7CC/CC11 output to avoid the shortened records observed in HRD's DXCluster console.
+
 ## 1.0.24 - 2026-10-12
 
 - Add opt-in `PY15 SECURITY_ADVISORY` exchange for direct, authenticated pyCluster peers. Public address login-abuse summaries are bounded, retained for 72 hours, and reviewable in SysOp Telemetry; local blocks require an explicit timed SysOp action (#276).

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 import unicodedata
 
 
@@ -18,6 +19,10 @@ class CC11Location:
 def _field(value: object) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = text.encode("ascii", errors="ignore").decode("ascii")
+    # Some VHF spot comments use DXSpider's <TR> grid separator. HRD's console
+    # shows those CC11 records cut off at the marker; <> is the same separator
+    # used by VHF comments that HRD displays completely.
+    text = re.sub(r"<TR>", "<>", text, flags=re.IGNORECASE)
     text = text.replace("^", " ").replace("\r", " ").replace("\n", " ")
     return " ".join(text.split())
 
