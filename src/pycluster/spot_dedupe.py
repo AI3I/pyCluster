@@ -69,10 +69,10 @@ class SpotDeduper:
     """Shared suppression of spots already seen, across every ingest lane.
 
     Each entry records the spot timestamps seen for one identity plus the time
-    they last arrived. The duplicate decision compares spot timestamps, so a
-    historical import spanning days is not collapsed into a handful of rows;
-    expiry uses arrival time, so a peer with a skewed clock cannot evict entries
-    belonging to every other peer.
+    they last arrived. Historical imports compare spot timestamps, so events
+    spanning days remain distinct. Live spots also compare arrival times when
+    one copy has a badly skewed timestamp. Expiry uses arrival time, so a peer
+    with a skewed clock cannot evict entries belonging to every other peer.
     """
 
     def __init__(
@@ -92,6 +92,9 @@ class SpotDeduper:
         self.max_comments_per_key = max(1, int(max_comments_per_key))
         # key -> (spot epochs seen, arrival of the most recent, comments seen)
         self._seen: dict[tuple[str, str, int], tuple[list[int], int, list[str]]] = {}
+        # Only live arrivals participate in the clock-skew fallback. Imported
+        # history may contain distinct spots with the same identity across days.
+        self._live_seen: dict[tuple[str, str, int], tuple[list[int], int]] = {}
 
     def __len__(self) -> int:
         return len(self._seen)
@@ -102,6 +105,7 @@ class SpotDeduper:
         cutoff = int(arrival_epoch) - self.ttl_seconds
         for key in [k for k, entry in self._seen.items() if entry[1] < cutoff]:
             self._seen.pop(key, None)
+            self._live_seen.pop(key, None)
 
     def _enforce_capacity(self) -> None:
         overflow = len(self._seen) - self.max_entries
@@ -109,15 +113,17 @@ class SpotDeduper:
             return
         for key in sorted(self._seen, key=lambda k: self._seen[k][1])[:overflow]:
             self._seen.pop(key, None)
+            self._live_seen.pop(key, None)
 
-    def check(self, spot: Spot, arrival_epoch: int, *, match_comment: bool = False) -> bool:
+    def check(self, spot: Spot, arrival_epoch: int, *, match_comment: bool = False, live: bool = False) -> bool:
         """Return True when this spot repeats one already seen, else remember it.
 
         ``match_comment`` is for spots this node originated. A locally typed
         comment is stable - no relay has reformatted it - so an operator
         correcting their own comment is honoured while an exact repeat is still
-        suppressed. Network spots must never key on the comment: see
-        ``spot_identity_key``.
+        suppressed. ``live`` also catches an echoed spot whose peer timestamp
+        is hours wrong, while bulk historical imports remain timestamp-based.
+        Network spots must never key on the comment: see ``spot_identity_key``.
         """
         if not self.enabled:
             return False
@@ -128,18 +134,29 @@ class SpotDeduper:
         comment = normalize_comment(spot.info)
         tolerance = self.freq_tolerance_tenths
         for offset in range(-tolerance, tolerance + 1):
-            entry = self._seen.get((dx_call, spotter, tenths + offset))
+            key = (dx_call, spotter, tenths + offset)
+            entry = self._seen.get(key)
             if entry is None:
                 continue
-            if not any(abs(spot_epoch - seen) <= self.ttl_seconds for seen in entry[0]):
+            same_spot_time = any(abs(spot_epoch - seen) <= self.ttl_seconds for seen in entry[0])
+            live_entry = self._live_seen.get(key) if live else None
+            same_live_arrival = bool(
+                live_entry
+                and arrival - live_entry[1] <= self.ttl_seconds
+                and (
+                    abs(spot_epoch - arrival) <= DEFAULT_MAX_EPOCH_SKEW_SECONDS
+                    or any(abs(seen - live_entry[1]) <= DEFAULT_MAX_EPOCH_SKEW_SECONDS for seen in live_entry[0])
+                )
+            )
+            if not same_spot_time and not same_live_arrival:
                 continue
             if match_comment and comment not in entry[2]:
                 continue
             return True
-        self.remember(spot, arrival)
+        self.remember(spot, arrival, live=live)
         return False
 
-    def remember(self, spot: Spot, arrival_epoch: int) -> None:
+    def remember(self, spot: Spot, arrival_epoch: int, *, live: bool = False) -> None:
         key = spot_identity_key(spot)
         entry = self._seen.get(key)
         epochs = list(entry[0]) if entry else []
@@ -155,9 +172,16 @@ class SpotDeduper:
         comments.append(comment)
         del comments[: -self.max_comments_per_key]
         self._seen[key] = (epochs, int(arrival_epoch), comments)
+        if live:
+            previous_live = self._live_seen.get(key)
+            live_epochs = list(previous_live[0]) if previous_live else []
+            live_epochs.append(int(spot.epoch))
+            del live_epochs[: -self.max_epochs_per_key]
+            self._live_seen[key] = (live_epochs, int(arrival_epoch))
         self._enforce_capacity()
 
     def clear(self) -> int:
         count = len(self._seen)
         self._seen.clear()
+        self._live_seen.clear()
         return count

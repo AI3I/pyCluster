@@ -3883,7 +3883,8 @@ function updateGreyLine() {
   const pts      = [];
   for (let lng = -180; lng <= 180; lng += 1) {
     const dR    = (lng - sub.lon) * Math.PI/180;
-    const tLat  = Math.atan2(-Math.cos(dR), Math.tan(subLatR)) * 180/Math.PI;
+    // atan keeps the terminator latitude in [-90, 90] in both solar seasons.
+    const tLat  = Math.atan(-Math.cos(dR) / Math.tan(subLatR)) * 180/Math.PI;
     pts.push([Math.max(-89, Math.min(89, tLat)), lng]);
   }
   // Close through the dark pole so the filled mask stays on the night side.

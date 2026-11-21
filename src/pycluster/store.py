@@ -342,6 +342,7 @@ class SpotStore:
                     raw="",
                 ),
                 now,
+                live=True,
             )
 
     def _normalize_privilege(self, privilege: str | None) -> str:
@@ -900,7 +901,7 @@ class SpotStore:
             for s in spots:
                 if self._spot_blocked_nolock(s):
                     continue
-                if self._spot_duplicate_nolock(s):
+                if self._spot_duplicate_nolock(s, live=False):
                     continue
                 values.append((s.freq_khz, s.dx_call, s.epoch, s.info, s.spotter, s.source_node, s.raw))
             if not values:
@@ -921,7 +922,7 @@ class SpotStore:
             for s in spots:
                 if self._spot_blocked_nolock(s):
                     continue
-                if self._spot_duplicate_nolock(s):
+                if self._spot_duplicate_nolock(s, live=False):
                     continue
                 self._conn.execute(
                     """
@@ -935,10 +936,10 @@ class SpotStore:
                 self._conn.commit()
         return inserted
 
-    def _spot_duplicate_nolock(self, spot: Spot, *, local: bool = False) -> bool:
+    def _spot_duplicate_nolock(self, spot: Spot, *, local: bool = False, live: bool = True) -> bool:
         # Arrival time, not spot.epoch: a peer with a fast clock must not be able
         # to expire entries belonging to every other peer.
-        return self.spot_dedupe.check(spot, int(time.time()), match_comment=local)
+        return self.spot_dedupe.check(spot, int(time.time()), match_comment=local, live=live and not local)
 
     async def set_spot_dupe_enabled(self, enabled: bool) -> None:
         async with self._lock:

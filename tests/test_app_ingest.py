@@ -10,7 +10,7 @@ from pycluster.app import ClusterApp
 from pycluster.config import AppConfig, NodeConfig, PublicWebConfig, RBNFeedConfig, StoreConfig, TelnetConfig, WebConfig
 from pycluster.models import Spot
 from pycluster.node_link import LinkPeer, NodeLinkEngine
-from pycluster.protocol import Pc10Message, Pc11Message, Pc12Message, Pc23Message, Pc24Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame
+from pycluster.protocol import Pc10Message, Pc11Message, Pc12Message, Pc23Message, Pc24Message, Pc50Message, Pc51Message, Pc61Message, Pc73Message, Pc93Message, WirePcFrame, serialize_wire_protocol_frame
 from pycluster.py_protocol import (
     PyErrorMessage,
     PyClockMessage,
@@ -174,6 +174,37 @@ def test_ingest_pc61_adds_spot(tmp_path) -> None:
             assert rows[0]["dx_call"] == "K1ABC"
             assert rows[0]["spotter"] == "N0CALL"
             assert rows[0]["source_node"] == "N2WQ-1"
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_ingest_rejects_live_spot_echo_with_stale_peer_clock(tmp_path) -> None:
+    async def run() -> None:
+        app = ClusterApp(_mk_config(str(tmp_path / "stale_peer_echo.db")))
+        published: list[Spot] = []
+
+        async def publish(spot: Spot) -> int:
+            published.append(spot)
+            return 1
+
+        app.telnet.publish_spot = publish  # type: ignore[method-assign]
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        stale = now - timedelta(hours=14, minutes=6)
+        try:
+            current = Pc11Message.from_fields([
+                "7047.5", "K5WA", now.strftime("%-d-%b-%Y"), now.strftime("%H%MZ"),
+                "CW", "NC3Y", "W3LPL", "H1", "~",
+            ])
+            await app._handle_node_link_item("WB3FFV-2", WirePcFrame("PC11", current.to_fields()), current)
+            echoed = Pc61Message.from_fields([
+                "7047.5", "K5WA", stale.strftime("%-d-%b-%Y"), stale.strftime("%H%MZ"),
+                "CW", "NC3Y", "W3LPL", "127.0.0.1", "H1", "~",
+            ])
+            await app._handle_node_link_item("N9JR-3", WirePcFrame("PC61", echoed.to_fields()), echoed)
+            assert await app.store.count_spots() == 1
+            assert len(published) == 1
         finally:
             await app.store.close()
 
@@ -914,6 +945,68 @@ def test_py_topology_digest_sends_terminal_empty_snapshot_when_entry_is_too_larg
             assert message.more is False
             assert message.page_number == 1
             assert "AI3I-90" in app._py_topology_digest_sent
+        finally:
+            await app.store.close()
+
+    asyncio.run(run())
+
+
+def test_py_topology_digest_paginates_for_session_envelope(tmp_path) -> None:
+    async def run() -> None:
+        cfg = _mk_config(str(tmp_path / "py_topology_envelope.db"))
+        cfg.node.node_call = "N9JR-3"
+        cfg.py_protocol.enabled = True
+        cfg.py_protocol.share_topology = True
+        app = ClusterApp(cfg)
+        peer = "N9JR-4"
+        app._py_negotiated_capabilities[peer] = frozenset(
+            {"session-binding", "request", "topology-digest", "topology-records"}
+        )
+        app._py_session_ids[peer] = "12345678-1234-5678-9234-567812345678"
+        sent: list[WirePcFrame] = []
+
+        async def _send(_peer: str, frame: WirePcFrame) -> bool:
+            sent.append(frame)
+            return True
+
+        app.node_link.send = _send  # type: ignore[method-assign]
+        now = int(time.time())
+        try:
+            for index, call in enumerate(("AI3I-15", "IZ3MEZ-6", "K0MVH-1", "N9JR-4", "SM7IUN-3"), 1):
+                info = PyNodeInfoMessage(
+                    call, f"12345678-1234-5678-9234-{index:012d}", index,
+                    "1.0.25", "", "FN00FS", "Test node", "",
+                    ("telnet",), app._local_py_capabilities(),
+                    now, now + 3600,
+                )
+                await app.store.upsert_py_node_record(
+                    app._py_record_from_info(
+                        info, source_node=call, learned_from=call,
+                        hop_count=0, confidence="direct",
+                    ), now,
+                )
+            assert await app._send_py_topology_digest(peer, force=True)
+            assert len(sent) > 1
+            assert all(frame.pc_type == "PY11" for frame in sent)
+            assert all(len(serialize_wire_protocol_frame(frame).encode()) <= 2048 for frame in sent)
+            pages = [PyTopologyDigestMessage.from_fields(
+                list(PySessionFrameMessage.from_fields(frame.payload_fields).inner_fields)
+            ) for frame in sent]
+            assert [page.page_number for page in pages] == list(range(1, len(pages) + 1))
+            assert [page.more for page in pages] == [True] * (len(pages) - 1) + [False]
+            assert {entry.node_call for page in pages for entry in page.entries} == {
+                "AI3I-15", "IZ3MEZ-6", "K0MVH-1", "N9JR-3", "SM7IUN-3"
+            }
+            sent.clear()
+            assert await app._send_py_topology_records(peer, ("AI3I-15", "IZ3MEZ-6"))
+            assert len(sent) == 2
+            assert all(len(serialize_wire_protocol_frame(frame).encode()) <= 2048 for frame in sent)
+            records = [PyTopologyRecordsMessage.from_fields(
+                list(PySessionFrameMessage.from_fields(frame.payload_fields).inner_fields)
+            ) for frame in sent]
+            assert {record.node_info.node_call for message in records for record in message.records} == {
+                "AI3I-15", "IZ3MEZ-6"
+            }
         finally:
             await app.store.close()
 

@@ -984,7 +984,7 @@ class ClusterApp:
         # Both ingest lanes share the store's cache. The RBN lane never persists
         # its spots, but the same signal can reach us as an RBN spot on one path
         # and a cluster spot on another, and it must not render twice.
-        if self.store.spot_dedupe.check(spot, now):
+        if self.store.spot_dedupe.check(spot, now, live=True):
             return False
         self._rbn_telemetry_spots.append(spot)
         return True
@@ -1888,6 +1888,15 @@ class ClusterApp:
 
     def _py_frame_fits(self, frame: WirePcFrame, peer_name: str = "") -> bool:
         limit = self._effective_py_limits(peer_name)[0] if peer_name else self.config.py_protocol.max_frame_bytes
+        if peer_name and frame.pc_type not in {PY_HELLO_TYPE, PY_SESSION_FRAME_TYPE}:
+            peer_key = normalize_call(peer_name) or peer_name.upper()
+            if "session-binding" in self._py_negotiated_capabilities.get(peer_key, frozenset()):
+                frame = WirePcFrame(PY_SESSION_FRAME_TYPE, PySessionFrameMessage(
+                    self._py_session_ids.get(peer_key, str(uuid.UUID(int=0))),
+                    self._py_tx_sequences.get(peer_key, 0) + 1,
+                    frame.pc_type,
+                    tuple(frame.payload_fields),
+                ).to_fields())
         return len(serialize_wire_protocol_frame(frame).encode("utf-8")) <= limit
 
     async def _send_py_topology_digest(self, peer_name: str, *, force: bool = False) -> bool:

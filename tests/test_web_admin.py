@@ -616,7 +616,6 @@ def test_public_web_static_supports_sidebar_hide_toggle() -> None:
 
 def test_public_web_greyline_mask_closes_through_dark_pole() -> None:
     text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
-    assert "const tLat  = Math.atan2(-Math.cos(dR), Math.tan(subLatR))" in text
     assert "const pole = sub.lat >= 0 ? -89.9 : 89.9;" in text
     assert "Close through the dark pole" in text
     assert "24.06570982441908*D + utcH" not in text
@@ -627,6 +626,36 @@ def test_public_web_greyline_mask_closes_through_dark_pole() -> None:
     assert "attributionControl:true" in text
     assert "OpenStreetMap</a> contributors" in text
     assert "color:'rgba(255,211,42,0.78)'" in text
+
+
+def test_public_web_greyline_masks_night_in_both_seasons() -> None:
+    if not shutil.which("node"):
+        return
+    text = Path("/home/jdlewis/GitHub/pyCluster/web/public_dxweb/static/index.html").read_text(encoding="utf-8")
+    update = text.split("function updateGreyLine() {", 1)[1].split("function isNearGreyline", 1)[0]
+    script = """
+let greyLineLayer = null;
+let greyLineVisible = true;
+let sub;
+const map = {};
+const L = {polygon: pts => ({pts, addTo() {return this;}, remove() {}})};
+function getSubsolarPoint() {return sub;}
+function updateGreyLine() {""" + update + """
+const result = [];
+for (const lat of [-20, 20]) {
+  sub = {lat, lon: 0};
+  updateGreyLine();
+  result.push([greyLineLayer.pts[180][0], greyLineLayer.pts[360][0], greyLineLayer.pts[361][0]]);
+}
+console.log(JSON.stringify(result));
+"""
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    southern_sun, northern_sun = json.loads(result.stdout)
+    assert 69 < southern_sun[0] < 71 and -71 < southern_sun[1] < -69
+    assert southern_sun[2] > 89
+    assert -71 < northern_sun[0] < -69 and 69 < northern_sun[1] < 71
+    assert northern_sun[2] < -89
 
 
 def test_web_admin_static_exposes_taxonomy_editor() -> None:

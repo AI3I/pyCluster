@@ -429,6 +429,35 @@ def test_store_spot_dedupe_survives_skewed_peer_clock(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_live_spot_dedupe_rejects_echo_with_stale_peer_time(tmp_path: Path) -> None:
+    async def run() -> None:
+        store = SpotStore(str(tmp_path / "dupe_stale_echo.db"))
+        now = int(datetime.now(timezone.utc).timestamp())
+        stale = now - 14 * 3600 - 6 * 60
+        try:
+            current = Spot(7047.5, "K5WA", now, "CW", "NC3Y", "W3LPL", "")
+            echoed = Spot(7047.5, "K5WA", stale, "CW", "NC3Y", "W3LPL", "")
+            assert await store.add_spot(current)
+            assert not await store.add_spot(echoed)
+
+            old_first = Spot(7032.0, "AA4CF", stale, "CW", "AA0AW", "AE5E", "")
+            fresh_echo = Spot(7032.0, "AA4CF", now, "CW", "AA0AW", "AE5E", "")
+            assert await store.add_spot(old_first)
+            assert not await store.add_spot(fresh_echo)
+
+            historical = Spot(7032.0, "AA4CF", stale - 86400, "CW", "AA0AW", "AE5E", "")
+            assert await store.add_spot(historical)
+            imported = Spot(14017.2, "KK7L", stale, "CW", "N9CO", "N2WQ-1", "")
+            assert await store.add_spots([imported]) == 1
+            genuine_live = Spot(14017.2, "KK7L", now, "CW", "N9CO", "N2WQ-1", "")
+            assert await store.add_spot(genuine_live)
+            assert await store.count_spots() == 5
+        finally:
+            await store.close()
+
+    asyncio.run(run())
+
+
 def test_store_spot_dedupe_seeded_across_restart(tmp_path: Path) -> None:
     """Restarting must not re-admit spots still inside the suppression window."""
 

@@ -4,6 +4,12 @@ All notable changes to pyCluster should be recorded here.
 
 ## Unreleased
 
+## 1.0.26 - 2026-11-21
+
+- Correct the public map's greyline mask during the southern-sun season so the night shading follows the dark hemisphere.
+- Page PY topology digests and record replies against their session-wrapped wire size, allowing routes to propagate across 2,048-byte links (#290).
+- Suppress live DX spot echoes from peers with badly skewed timestamps when the same spot arrives through another path; keep bulk historical imports distinct.
+
 ## 1.0.25 - 2026-11-01
 
 - Serialize PY frame sends per peer so session-bound sequence numbers follow transmission order under concurrent sends.
